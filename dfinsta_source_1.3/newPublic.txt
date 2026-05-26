@@ -1,0 +1,56 @@
+    <public type="font" name="google_sans" id="0x7f140000" />
+    <public type="font" name="google_sans_display" id="0x7f140001" />
+    <public type="font" name="google_sans_medium" id="0x7f140002" />
+    <public type="xml" name="instander_settings" id="0x7f150003" />
+    <public type="style" name="InstanderFollow" id="0x7f13050b" />
+    <public type="style" name="Theme.AppCompat.Light.NoActionBar.FullScreen" id="0x7f13050c" />
+    <public type="style" name="DfInstagramPreference" id="0x7f13050d" />
+    <public type="color" name="instander_ic_color" id="0x7f060402" />
+    <public type="color" name="instander_unfollowbtn_color" id="0x7f060403" />
+    <public type="color" name="instander_unfollowbtn_color_press" id="0x7f060404" />
+    <public type="color" name="instander_unfollowbtn_color_bkg" id="0x7f060405" />
+    <public type="color" name="instander_title_color" id="0x7f060406" />
+    <public type="color" name="instander_summary_color" id="0x7f060407" />
+    <public type="color" name="instander_splash_bkg_color" id="0x7f060408" />
+    <public type="color" name="textswitch_color" id="0x7f060409" />
+    <public type="color" name="textswitch_secondary_color" id="0x7f06040a" />
+    <public type="array" name="version_entries" id="0x7f030015" />
+    <public type="array" name="version_entryvalues" id="0x7f030016" />
+    <public type="id" name="pref_content" id="0x7f092ad5" />
+    <public type="istring" name="instander" id="0x7f0f0000"/>
+    <public type="istring" name="version" id="0x7f0f0001"/>
+    <public type="istring" name="version_code" id="0x7f0f0002"/>
+    <public type="istring" name="version_codename" id="0x7f0f0003"/>
+    <public type="istring" name="pref_based_summary" id="0x7f0f0004"/>
+    <public type="istring" name="msg_welcome_title" id="0x7f0f0005"/>
+    <public type="istring" name="msg_welcome_text" id="0x7f0f0006"/>
+    <public type="istring" name="pref_about_nav_title" id="0x7f0f0007"/>
+    <public type="istring" name="pref_about_title" id="0x7f0f0008"/>
+    <public type="istring" name="pref_dev" id="0x7f0f0009"/>
+    <public type="istring" name="pref_dev_summary" id="0x7f0f000a"/>
+    <public type="istring" name="pref_based_title" id="0x7f0f000b"/>
+    <public type="istring" name="pref_contact" id="0x7f0f000c"/>
+    <public type="istring" name="pref_contact_summary" id="0x7f0f000c"/>
+    <public type="istring" name="pref_thanks_title" id="0x7f0f000c"/>
+    <public type="istring" name="pref_thanks_summary" id="0x7f0f000d"/>
+    <public type="istring" name="pref_donate" id="0x7f0f000e"/>
+    <public type="istring" name="pref_donate_summary" id="0x7f0f000f"/>
+    <public type="istring" name="pref_ethereum" id="0x7f0f0010"/>
+    <public type="istring" name="ethcopypassdone" id="0x7f0f0011"/>
+    <public type="istring" name="pref_bitcoin" id="0x7f0f0012"/>
+    <public type="istring" name="btccopypassdone" id="0x7f0f0013"/>
+    <public type="istring" name="dfinstagram_settings_title" id="0x7f0f0014"/>
+    <public type="istring" name="dfinstagram_settings_header" id="0x7f0f0015"/>
+    <public type="istring" name="dfinstagram_disable_feed" id="0x7f0f0016"/>
+    <public type="istring" name="dfinstagram_disable_explore" id="0x7f0f0017"/>
+    <public type="istring" name="dfinstagram_disable_reels" id="0x7f0f0018"/>
+    <public type="istring" name="dfinstagram_disable_shopping" id="0x7f0f0019"/>
+    <public type="istring" name="dfinstagram_disable_stories" id="0x7f0f0020"/>
+    <public type="istring" name="dfinstagram_disable_suggested_posts" id="0x7f0f0021"/>
+    <public type="istring" name="pref_hardcore_mode" id="0x7f0f001a"/>
+    <public type="istring" name="pref_hardcore_mode_header" id="0x7f0f001b"/>
+    <public type="istring" name="hardcore_mode_explainer_header" id="0x7f0f001c"/>
+    <public type="istring" name="hardcore_mode_explainer" id="0x7f0f001d"/>
+    <public type="istring" name="hardcore_mode_enable" id="0x7f0f001e"/>
+    <public type="istring" name="close_translate" id="0x7f0f001f"/>
+    <public type="istring" name="hardcore_mode_blocked_changes" id="0x7f0f0020"/>

@@ -1,0 +1,9 @@
+    <style name="DfInstagramPreference" parent="@style/IgPanorama">
+        <item name="android:windowBackground">@color/black</item>
+        <item name="android:listDivider">@null</item>
+        <item name="android:statusBarColor">@color/black</item>
+        <item name="android:navigationBarColor">@color/black</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="colorAccent">@color/blue_5</item>
+        <item name="colorPrimary">@android:color/white</item>
+    </style>

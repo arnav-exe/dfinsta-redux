@@ -1,0 +1,25 @@
+    <style name="InstanderFollow">
+        <item name="android:textColor">#ff616161</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:layout_gravity">bottom|center</item>
+        <item name="android:singleLine">true</item>
+    </style>
+    <style name="Theme.AppCompat.Light.NoActionBar.FullScreen" parent="@style/Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowActionBar">false</item>
+    </style>
+    <style name="DfInstagramPreference" parent="@style/IgPanorama">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:listDivider">@null</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:statusBarColor">@android:color/white</item>
+        <item name="android:navigationBarColor">@android:color/white</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="colorAccent">@color/blue_5</item>
+        <item name="colorPrimary">@android:color/white</item>
+        <item name="dialogCornerRadius">?android:dialogCornerRadius</item>
+    </style>

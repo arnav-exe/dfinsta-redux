@@ -1,0 +1,6 @@
+    <array name="version_entries">
+        <item>@istring/version_codename</item>
+    </array>
+    <string-array name="version_entryvalues">
+        <item>0</item>
+    </string-array>

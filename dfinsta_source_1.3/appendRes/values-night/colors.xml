@@ -1,0 +1,7 @@
+    <color name="instander_ic_color">@android:color/white</color>
+    <color name="instander_unfollowbtn_color">#ffdbdbdb</color>
+    <color name="instander_unfollowbtn_color_press">#80dbdbdb</color>
+    <color name="instander_unfollowbtn_color_bkg">@android:color/white</color>
+    <color name="instander_title_color">@android:color/white</color>
+    <color name="instander_summary_color">#ffb3b3b3</color>
+    <color name="instander_splash_bkg_color">#ff292929</color>

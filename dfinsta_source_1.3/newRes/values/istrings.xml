@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item type="istring" name="instander">DFinstagram</item>
+    <item type="istring" name="version">version: 1.3.0</item>
+    <item type="istring" name="version_code">1.3.0</item>
+    <item type="istring" name="version_codename">1.3.0</item>
+    <item type="istring" name="pref_based_summary">300.0.0.29.110</item>
+    <item type="istring" name="msg_welcome_title">Welcome to Distraction Free Instagram</item>
+    <item type="istring" name="msg_welcome_text">&lt;b>DistractionFreeInstagram&lt;/b> is a modification of the Instagram application for Android that removes the most distracting features. The app is not affiliated with Facebook Inc. and is distributed completely free!&lt;br>&lt;br>&lt;b>Everything is disabled by default&lt;/b>&lt;br>You can adjust the settings in DistractionFree Settings — in the profile menu;&lt;br></item>
+    <item type="istring" name="pref_about_nav_title">Distraction Free settings</item>
+    <item type="istring" name="pref_about_title">About</item>
+    <item type="istring" name="pref_dev">Dmitry Gavrilov aka the_dise</item>
+    <item type="istring" name="pref_dev_summary">Lead developer of Instander, a popular mod which this mod was based on</item>
+    <item type="istring" name="pref_based_title">Based on Instagram</item>
+    <item type="istring" name="pref_contact">Contact</item>
+    <item type="istring" name="pref_contact_summary">contact@distractionfreeapps.com</item>
+    <item type="istring" name="pref_thanks_title">Acknowledgement</item>
+    <item type="istring" name="pref_thanks_summary">People and open source projects that helped the development of DistractionFreeInstagram</item>
+    <item type="istring" name="pref_donate">Ways to donate</item>
+    <item type="istring" name="pref_donate_summary">Bitcoin, Ethereum</item>
+    <item type="istring" name="pref_ethereum">Ethereum</item>
+    <item type="istring" name="ethcopypassdone">Ethereum address copied successfully</item>
+    <item type="istring" name="pref_bitcoin">Bitcoin</item>
+    <item type="istring" name="btccopypassdone">Bitcoin address copied successfully</item>
+    <item type="istring" name="close_translate">Close</item>
+
+    <item type="istring" name="dfinstagram_settings_title">Distraction Free Settings</item>
+    <item type="istring" name="dfinstagram_settings_header">Distraction Free</item>
+    <item type="istring" name="dfinstagram_disable_feed">Disable feed</item>
+    <item type="istring" name="dfinstagram_disable_explore">Disable explore</item>
+    <item type="istring" name="dfinstagram_disable_reels">Disable reels</item>
+    <item type="istring" name="dfinstagram_disable_shopping">Disable shopping</item>
+    <item type="istring" name="dfinstagram_disable_stories">Disable stories</item>
+    <item type="istring" name="dfinstagram_disable_suggested_posts">Disable suggested posts</item>
+
+    <item type="istring" name="pref_hardcore_mode">Hardcore Mode</item>
+    <item type="istring" name="pref_hardcore_mode_header">Hardcore Mode</item>
+    <item type="istring" name="hardcore_mode_explainer_header">For people who are serious about eliminating distractions.</item>
+    <item type="istring" name="hardcore_mode_explainer">With hardcore mode on, you cannot reenable any feature that you have disabled. To disable hardcore mode, you need to reinstall the app.</item>
+    <item type="istring" name="hardcore_mode_enable">Enable hardcore mode</item>
+    <item type="istring" name="hardcore_mode_blocked_changes">You can\'t disable this, hardcore mode is on!</item>
+
+</resources>

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <Preference android:enabled="false" android:layout="@layout/instander_action_bar" android:title="@istring/dfinstagram_settings_header" />
+    <SwitchPreference android:icon="@drawable/tab_home_drawable" android:layout="@layout/instander_item" android:title="@istring/dfinstagram_disable_feed" android:key="disable_feed" android:defaultValue="true" />
+    <SwitchPreference android:icon="@drawable/instagram_search_selector" android:layout="@layout/instander_item" android:title="@istring/dfinstagram_disable_explore" android:key="disable_explore" android:defaultValue="true" />
+    <SwitchPreference android:icon="@drawable/tab_clips_drawable" android:layout="@layout/instander_item" android:title="@istring/dfinstagram_disable_reels" android:key="disable_reels" android:defaultValue="true" />
+    <SwitchPreference android:icon="@drawable/tab_shopping_drawable" android:layout="@layout/instander_item" android:title="@istring/dfinstagram_disable_shopping" android:key="disable_shopping" android:defaultValue="true" />
+    <SwitchPreference android:icon="@drawable/instagram_clock_dotted_pano_outline_24" android:layout="@layout/instander_item" android:title="@istring/dfinstagram_disable_stories" android:key="disable_stories" android:defaultValue="true" />
+    <PreferenceScreen android:icon="@drawable/ic_donate" android:layout="@layout/instander_item" android:title="@istring/pref_donate" android:key="pref_caterory_general" android:summary="@istring/pref_donate_summary">
+        <Preference android:enabled="false" android:layout="@layout/instander_action_bar" android:title="@istring/pref_donate" />
+        <Preference android:icon="@drawable/ic_bitcoin" android:layout="@layout/instander_item" android:title="@istring/pref_bitcoin" android:key="donate_btc" />
+        <Preference android:icon="@drawable/ic_eth" android:layout="@layout/instander_item" android:title="@istring/pref_ethereum" android:key="donate_eth" />
+    </PreferenceScreen>
+    <PreferenceScreen android:icon="@drawable/ic_hardcore" android:layout="@layout/instander_item" android:title="@istring/pref_hardcore_mode">
+        <Preference android:enabled="false" android:layout="@layout/instander_action_bar" android:title="@istring/pref_hardcore_mode_header" />
+        <Preference android:enabled="false" android:layout="@layout/instander_item_disable" android:title="@istring/hardcore_mode_explainer_header" android:summary="@istring/hardcore_mode_explainer" />
+        <SwitchPreference android:icon="@drawable/ic_hardcore" android:layout="@layout/instander_item" android:title="@istring/hardcore_mode_enable" android:key="enable_hardcore" android:defaultValue="false" />
+    </PreferenceScreen>
+
+    <PreferenceScreen android:icon="@drawable/ic_info" android:layout="@layout/instander_item" android:title="@istring/pref_about_title">
+        <Preference android:enabled="false" android:layout="@layout/instander_action_bar" android:title="@istring/pref_about_title" />
+        <ListPreference android:enabled="false" android:entries="@array/version_entries" android:layout="@layout/instander_about_info" android:summary="@istring/version" android:defaultValue="0" android:entryValues="@array/version_entryvalues" />
+        <Preference android:icon="@drawable/ic_info" android:layout="@layout/instander_item" android:title="@istring/pref_based_title" android:key="pref_base" android:summary="@istring/pref_based_summary">
+            <intent android:action="android.intent.action.VIEW" android:data="https://play.google.com/store/apps/details?id=com.instagram.android" />
+        </Preference>
+        <Preference android:icon="@drawable/ic_mail" android:layout="@layout/instander_item" android:title="@istring/pref_contact" android:key="pref_contact" android:summary="@istring/pref_contact_summary">
+            <intent android:action="android.intent.action.SEND" android:data="mailto:contact@distractionfreeapps.com"/>
+        </Preference>
+        <PreferenceScreen android:icon="@drawable/ic_thanks" android:layout="@layout/instander_item" android:title="@istring/pref_thanks_title" android:key="pref_category_dev" android:summary="@istring/pref_thanks_summary">
+            <Preference android:enabled="false" android:layout="@layout/instander_action_bar" android:title="@istring/pref_thanks_title" />
+            <Preference android:icon="@drawable/ic_dev" android:layout="@layout/instander_item" android:title="@istring/pref_dev" android:summary="@istring/pref_dev_summary" />
+        </PreferenceScreen>
+    </PreferenceScreen>
+</PreferenceScreen>
