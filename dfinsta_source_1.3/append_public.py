@@ -2,7 +2,7 @@ public = "instagram_source/res/values/public.xml"
 
 codes = set()
 nums = {}
-with open(public, 'r') as file:
+with open(public, 'r', encoding="utf-8") as file:
     lines = file.readlines()
     for line in lines:
         if "id=" in line:
@@ -37,7 +37,7 @@ print(get_higher_hex_prefix(last_used))
 new_public_file = "newPublic.txt"
 
 new_lines = []
-with open(new_public_file, 'r') as file:
+with open(new_public_file, 'r', encoding="utf-8") as file:
     for line in file.readlines():
         num += 1
         i = line.index('type="') + 6

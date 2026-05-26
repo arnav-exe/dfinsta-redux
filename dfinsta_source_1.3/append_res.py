@@ -9,7 +9,7 @@ def append(source, dest):
                 raise ValueError("FileNotFound")
 
             source_path = os.path.join(subdir, file)
-            with open(source_path, 'r') as source_file:
+            with open(source_path, 'r', encoding="utf-8") as source_file:
                 new_lines = source_file.readlines()
 
             with open(target_path, "r+") as f:
