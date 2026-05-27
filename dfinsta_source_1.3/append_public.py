@@ -36,6 +36,10 @@ print(get_higher_hex_prefix(last_used))
 
 new_public_file = "newPublic.txt"
 
+existing_content = ''.join(lines)
+if 'name="instander_settings"' in existing_content:
+    exit(0)
+
 new_lines = []
 with open(new_public_file, 'r', encoding="utf-8") as file:
     for line in file.readlines():

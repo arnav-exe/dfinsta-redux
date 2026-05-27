@@ -10,6 +10,8 @@ added = False
 with open(manifest, "r+") as f:
     for line in f.readlines():
         lines.append(line)
+        if "com.dfinstagram.preference.Preference" in line:
+            added = True
         if "</activity>" in line and not added:
             lines += new_activities
             print("appended new activities to manifest")
