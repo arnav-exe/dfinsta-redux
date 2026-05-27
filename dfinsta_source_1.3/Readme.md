@@ -1,3 +1,37 @@
+# Build Instructions (WINDOWS, CURRENT)
+
+## One-time setup
+
+**Keystore** (required to sign the APK — do this once):
+```powershell
+keytool -genkey -v -keystore "$env:USERPROFILE\.android\dfinsta-release-key.keystore" -alias dfinsta -keyalg RSA -keysize 2048 -validity 10000
+```
+Set a password when prompted — you'll need it on every build.
+
+**apktool** — must be version **2.9.3**. apktool 3.x dropped aapt1 support which this project requires.
+
+## Per-build
+
+```powershell
+# 1. Decompile the APK (only needed once, or after a full clean)
+.\extract.ps1 -ApkPath Instagram_300.0.0.29.110.apk
+
+# 2. Build, sign, and install
+.\build.ps1 -Version 1.3
+```
+
+`build.ps1` requires a connected Android device with USB debugging enabled for the final `adb install` step. The signed APK (`dfinsta_<Version>.apk`) is produced regardless.
+
+## Full rebuild from scratch
+
+```powershell
+Remove-Item -Recurse -Force instagram_source
+.\extract.ps1 -ApkPath Instagram_300.0.0.29.110.apk
+.\build.ps1 -Version 1.3
+```
+
+---
+
 # Distraction Free Instagram
 
 Ok so roughly how this thing works is that it uses apktool to decompile the instagram app, then we copy over

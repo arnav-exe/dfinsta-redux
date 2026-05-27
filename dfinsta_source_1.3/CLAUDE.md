@@ -17,18 +17,26 @@ Currently built against Instagram v300.0.0.29.110.
 
 ## Build Commands
 
-```bash
+**On Windows (PowerShell):**
+```powershell
 # One-time: decompile the Instagram APK (produces instagram_source/)
-./extract.sh Instagram_300.0.0.29.110.apk
+.\extract.ps1 -ApkPath Instagram_300.0.0.29.110.apk
 
-# Build and install (pass a version label as $1)
-./build.sh 1.3
+# Build and install (pass a version label)
+.\build.ps1 -Version 1.3
 
 # Full rebuild from scratch
+Remove-Item -Recurse -Force instagram_source; .\extract.ps1 -ApkPath Instagram_300.0.0.29.110.apk; .\build.ps1 -Version 1.3
+```
+
+**On macOS/Linux (bash):**
+```bash
+./extract.sh Instagram_300.0.0.29.110.apk
+./build.sh 1.3
 rm -rf instagram_source && ./extract.sh Instagram_300.0.0.29.110.apk && ./build.sh 1.3
 ```
 
-`build.sh` runs the Python preprocessing scripts, copies files into `instagram_source/`, rebuilds with apktool, aligns+signs the APK with `~/.android/dfinsta-release-key.keystore`, and installs via `adb install`.
+Note: `build.sh` sources `~/.zshrc` on line 2; on Windows use `build.ps1` instead. Both scripts run the same Python preprocessing steps, copy files into `instagram_source/`, rebuild with apktool, align+sign with `~/.android/dfinsta-release-key.keystore` (Windows: `$env:USERPROFILE\.android\...`), and install via `adb install`.
 
 ## Running Tests
 
@@ -103,7 +111,7 @@ Instagram obfuscates class names per release, so every update requires manual sm
 2. Update all class/method references in `overwriteCode/` smali files.
 3. Update references in `newCode/` smali files.
 4. Update `ExternalSyntheticLambda0` in `PreferenceFragment.smali` to point to the correct `FeedCacheCoordinator` method (the one calling `invoke-virtual {v0}, Ljava/util/AbstractCollection;->clear()V`).
-5. Update the version string in `istrings`.
+5. Update the version string in `newRes/values/istrings.xml`.
 6. Manually test that changing settings clears the feed cache.
 
 ## Smali Reference
