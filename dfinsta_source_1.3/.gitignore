@@ -1,3 +1,4 @@
+.claude/
 *.iml
 .gradle
 /local.properties
@@ -5,6 +6,7 @@
 .DS_Store
 /instagram_source/
 *.apk
+*.idsig
 /captures
 .externalNativeBuild
 .cxx

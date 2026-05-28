@@ -30,9 +30,45 @@ Remove-Item -Recurse -Force instagram_source
 .\build.ps1 -Version 1.3
 ```
 
+
+# DATA I HAVE:
+
+| **DF insta version** | **Source code** | **APK** | **Corresponding insta APK** |
+|---|---|---|---|
+| 1.3 | ✅ | ✅ | ✅ (300) |
+| 1.4.1 | ❌ | ✅ | ✅ (340) |
+| 1.x.x | ❌ | ❌ | ✅ (430) |
+
+
+# NEXT STEPS
+
+1. verify current version (1.3) `extract.sh` and `build.sh` works on ubuntu
+
+1. `/init` codex on current codebase, figure out what appendRes, newCode, newRes, overwriteCode. etc. do
+
+1. use `apktool -d` to decompile dfinsta 1.3 and instagram 300.xxx.xx.xx and get agent to learn differences between the two
+
+1. 
+
+
+
+# BREAKDOWN OF CUSTOM FOLDERS
+
+**`newCode/`** — Brand new code written from scratch that doesn't exist in Instagram. Written in smali (Android's low-level bytecode). Implements the settings screen, toggle switches, and `hooks.smali` which intercepts Instagram's network requests to block ads, reels, explore, etc.
+
+**`overwriteCode/`** — Modified copies of Instagram's own internal files. The build replaces Instagram's originals with these. Changes are minimal — just enough to add entry points that call into `newCode`. The trickiest part to maintain: Instagram renames these files every version.
+
+**`newRes/`** — Entirely new visual assets copied in during build: icons for the settings screen, XML layout files defining the settings UI, fonts, and all custom text strings (`istrings.xml`).
+
+**`appendRes/`** — Extra lines to append into Instagram's *existing* resource files (colours, styles, etc.). Unlike `newRes/` which adds new files, this extends files that are already there. Handled by `append_res.py` during build.
+
+**`styling/`** — A single file: a modified version of Instagram's logo for dark mode. A one-off visual tweak.
+
+**`ui-automator/`** — A small automated test project. Connects to a physical Android device, launches the app, and checks the login screen appears. Written in Kotlin, completely separate from the mod itself.
+
 ---
 
-# Distraction Free Instagram
+# Distraction Free Instagram (old readme from 1.3)
 
 Ok so roughly how this thing works is that it uses apktool to decompile the instagram app, then we copy over
 the new files and then recompile it. The tricky issue is that instagram obfuscates their code, meaning that the
