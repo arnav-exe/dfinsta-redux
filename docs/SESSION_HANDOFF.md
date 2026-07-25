@@ -34,7 +34,7 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `122baa8 document hardened baseline` (branch `harden-1.4.1`)
 - `f8cb5ff capture disabled feature state` (branch `harden-1.4.1`)
 
-Current branch: `harden-1.4.1`, created from `master` after `806ec54`.
+Current branch: `master`. The validated `harden-1.4.1` branch was fast-forwarded into `master` through `fa90270`.
 
 ## Golden Reconstruction State
 
@@ -186,9 +186,9 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 
 ## Immediate Next Actions
 
-1. Merge the validated `harden-1.4.1` branch back to `master`.
-2. Continue 430 candidate-manifest generation from `docs/PORT_430_MAPPING.md`.
-3. Build the minimal 430 context/Tigon/settings prototype before porting brittle cache internals.
+1. Continue 430 candidate-manifest generation from `docs/PORT_430_MAPPING.md`.
+2. Build the minimal 430 context/Tigon/settings prototype before porting brittle cache internals.
+3. Keep `docs/SESSION_HANDOFF.md` current at each 430 build/device checkpoint.
 5. Instrument lazy action-bar state before attempting a visibility fix.
 6. Continue the decoded Instagram 430 mapping in `docs/PORT_430_MAPPING.md`; do not patch generated string tables or copy old obfuscated classes.
 
