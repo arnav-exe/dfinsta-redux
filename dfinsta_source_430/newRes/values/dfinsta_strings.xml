@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="dfinsta_settings_title">Distraction-free settings</string>
+    <string name="dfinsta_disable_feed">Disable feed</string>
+    <string name="dfinsta_disable_feed_summary">Block timeline requests after restart</string>
+    <string name="dfinsta_disable_explore">Disable Explore</string>
+    <string name="dfinsta_disable_explore_summary">Block Explore requests after restart</string>
+    <string name="dfinsta_disable_reels">Disable Reels</string>
+    <string name="dfinsta_disable_reels_summary">Block Reels requests after restart</string>
+    <string name="dfinsta_disable_stories">Disable Stories</string>
+    <string name="dfinsta_disable_stories_summary">Block story tray requests after restart</string>
+    <string name="dfinsta_disable_shopping">Disable Shopping</string>
+    <string name="dfinsta_disable_shopping_summary">Block shopping requests after restart</string>
+</resources>

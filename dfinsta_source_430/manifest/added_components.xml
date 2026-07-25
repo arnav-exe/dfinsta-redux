@@ -1,0 +1,1 @@
+<activity xmlns:android="http://schemas.android.com/apk/res/android" android:exported="false" android:name="com.dfinstagram.preference.Preference" android:theme="@android:style/Theme.Material.Light.NoActionBar" />

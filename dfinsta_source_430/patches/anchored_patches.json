@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "operations": [
+    {
+      "id": "set_app_context",
+      "descriptor": "Lcom/instagram/app/InstagramAppShell;",
+      "mode": "insert_after",
+      "anchor": [
+        "invoke-super {v0}, Landroid/app/Application;->onCreate()V"
+      ],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
+      "expected_marker_count": 1,
+      "payload": [
+        "",
+        "    invoke-static {v0}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V"
+      ]
+    },
+    {
+      "id": "tigon_url_block",
+      "descriptor": "Lcom/instagram/api/tigon/TigonServiceLayer;",
+      "mode": "insert_after",
+      "anchor": [
+        ":try_start_0",
+        "iget-object v1, p1, LX/05ez;->A08:Ljava/net/URI;"
+      ],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V",
+      "expected_marker_count": 1,
+      "payload": [
+        "",
+        "    invoke-static {v1}, Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V"
+      ]
+    },
+    {
+      "id": "install_settings_long_click",
+      "descriptor": "LX/06X7;",
+      "mode": "replace",
+      "anchor": [
+        "new-instance v13, LX/0LAk;",
+        "invoke-direct {v13, v5, v12}, LX/0LAk;-><init>(Ljava/lang/Object;I)V"
+      ],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/SettingsWrapper;",
+      "expected_marker_count": 2,
+      "payload": [
+        "    new-instance v13, Lcom/dfinstagram/SettingsWrapper;",
+        "",
+        "    invoke-direct {v13}, Lcom/dfinstagram/SettingsWrapper;-><init>()V"
+      ]
+    }
+  ]
+}

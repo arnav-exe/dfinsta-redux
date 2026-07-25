@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+    <SwitchPreference
+        android:defaultValue="true"
+        android:key="disable_feed"
+        android:summary="@string/dfinsta_disable_feed_summary"
+        android:title="@string/dfinsta_disable_feed" />
+    <SwitchPreference
+        android:defaultValue="true"
+        android:key="disable_explore"
+        android:summary="@string/dfinsta_disable_explore_summary"
+        android:title="@string/dfinsta_disable_explore" />
+    <SwitchPreference
+        android:defaultValue="true"
+        android:key="disable_reels"
+        android:summary="@string/dfinsta_disable_reels_summary"
+        android:title="@string/dfinsta_disable_reels" />
+    <SwitchPreference
+        android:defaultValue="true"
+        android:key="disable_stories"
+        android:summary="@string/dfinsta_disable_stories_summary"
+        android:title="@string/dfinsta_disable_stories" />
+    <SwitchPreference
+        android:defaultValue="true"
+        android:key="disable_shopping"
+        android:summary="@string/dfinsta_disable_shopping_summary"
+        android:title="@string/dfinsta_disable_shopping" />
+</PreferenceScreen>
