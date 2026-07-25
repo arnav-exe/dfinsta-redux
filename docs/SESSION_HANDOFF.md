@@ -27,8 +27,10 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `5341178 audit old app residue`
 - `fc777b0 add session handoff`
 - `bb7ff4d add device contract runner`
+- `806ec54 map first 430 hooks`
+- `bcccf53 drop startup tracking` (branch `harden-1.4.1`)
 
-Branch: `master`.
+Current branch: `harden-1.4.1`, created from `master` after `806ec54`.
 
 ## Golden Reconstruction State
 
@@ -132,15 +134,26 @@ DFInsta only replaces Instagram's existing long-click listener. Instagram reads 
 
 Preferred future fix: deliver the actual initial app-bar offset state after the fragment is registered with the behavior. Do not permanently force `A1b=true`. Full investigation and acceptance criteria: `docs/FUTURE_WORK.md`.
 
-## Privacy Findings and Recommended Policy
+## Privacy Policy and Implementation
 
 Amplitude is unconditionally started from `InstagramAppShell` and sends Android ID, event `dfinsta_start`, and version to `https://api2.amplitude.com/2/httpapi` using an embedded API key. No consent or opt-out exists. Recommendation: remove from hardened baseline and do not port to 430.
 
 ACRA installs an uncaught-exception handler and prepares an external email to `bugs@distractionfreeapps.com` with model/brand/version/stack trace fields. No visible opt-out exists. Recommendation: remove inherited ACRA; add a maintained explicit opt-in flow later only if needed.
 
-Full audit: `docs/PRIVACY_1.4.1.md`.
+The user approved the recommended hardened policy on 2026-07-25: remove Amplitude, ACRA, and the proven-safe dead residue while deferring broad resource pruning.
 
-No privacy code has been removed yet because oracle fidelity and future product policy were intentionally separated.
+Commit `bcccf53` implements the privacy portion:
+
+- Removed the two Amplitude classes.
+- Removed all 79 bundled ACRA classes.
+- Removed the `ReportsCrashes` annotation patch and ACRA/Amplitude startup payload.
+- Retained only `startapp.setContext()` after `Application.onCreate()`.
+- Added hardened APK verification that rejects Amplitude, any `Lcom/acra/` descriptor, and `ReportsCrashes`; default oracle verification remains available.
+- Reconstruction unit suite now has ten passing tests.
+
+This commit has not yet completed the full clean apktool rebuild/device regression. That is the exact next checkpoint.
+
+Full historical audit: `docs/PRIVACY_1.4.1.md`.
 
 ## Cleanup Findings
 
@@ -156,16 +169,13 @@ Proven safe-removal boundary:
 
 Large inherited resource groups are only statically unreferenced and require full settings traversal before pruning. Full conservative audit: `docs/CLEANUP_1.4.1.md`.
 
-No cleanup code has been applied yet.
+Safe dead-code cleanup has not yet been applied. It follows the privacy build checkpoint as a separate commit.
 
 ## Immediate Next Actions
 
-1. Obtain/record user policy choice for hardened baseline:
-   - Recommended: remove Amplitude and ACRA.
-   - Recommended: remove proven safe dead residue.
-   - Defer broad resource pruning.
-2. Apply policy changes in separate commits/branches.
-3. Rebuild 1.4.1 from clean stock and rerun startup/settings plus Feed/Explore/Reels/Stories contracts.
+1. Rebuild privacy-hardened 1.4.1 from clean stock and verify the hardened DEX contract.
+2. Apply proven-safe dead residue cleanup as a separate commit, then rebuild again.
+3. Sign/install the final hardened APK and rerun startup/settings plus Feed/Explore/Reels/Stories contracts.
 4. Extend the committed host-side runner from startup/settings primitives into safe feature-state evidence after policy hardening.
 5. Instrument lazy action-bar state before attempting a visibility fix.
 6. Continue the decoded Instagram 430 mapping in `docs/PORT_430_MAPPING.md`; do not patch generated string tables or copy old obfuscated classes.
