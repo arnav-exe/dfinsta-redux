@@ -84,6 +84,8 @@ The reproducible test APK is:
 - Reels behavior has a strong contrast: unchecked plus restart rendered and played reel content; checked plus restart rendered a handled request-error screen. Neither state crashed the process.
 - UI Automator may fail with `could not get idle state` while an enabled Reel is continuously rendering. Reels automation must support screenshot/process assertions or another non-idle-aware capture mechanism rather than requiring an idle hierarchy dump.
 - Explore and Reels were restored to checked and the app was restarted after comparison testing. Final switch state was verified as all five true before restart.
+- Stories has a confirmed safe contrast. With `Disable stories` unchecked and the process restarted, three other users' unseen tray entries appeared alongside the current user's story. With the switch checked and restarted, only the current user's story remained. No story was opened or marked seen.
+- Stories was restored to checked; all five switches were verified true and the app restarted afterward.
 
 The existing UI Automator test's `Password` assertion is stale for this first-run screen. Startup tests should assert the process and accept a small versioned set of known logged-out anchors rather than one historical screen string.
 
@@ -92,8 +94,8 @@ The existing UI Automator test's `Password` assertion is stale for this first-ru
 1. Enter settings through profile `Options` long-press after login.
 2. Assert the five switch labels, ordering, and default checked states.
 3. Toggle each switch off/on, restart the app after each state change, and verify persistence plus behavior.
-4. Verify Hardcore Mode behavior and document whether it prevents later changes.
-5. Exercise Stories, Shopping, and profile-ad behavior independently; feed, Explore, and Reels have confirmed on/off contrasts.
+4. Verify Hardcore Mode only on disposable app data; static analysis shows it prevents disabling itself through the UI.
+5. Exercise Shopping and profile-ad behavior independently; feed, Explore, Reels, and Stories have confirmed on/off contrasts.
 6. Isolate feed-cache clearing from the already confirmed restart behavior.
 7. Attribute handled request failures to specific Tigon requests using network evidence rather than UI inference.
 8. Record whether ACRA or Amplitude network activity occurs; do not infer this only from static code.

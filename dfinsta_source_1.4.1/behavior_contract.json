@@ -30,7 +30,13 @@
       {"order": 4, "label": "Disable shopping", "key": "disable_shopping", "default_checked": true},
       {"order": 5, "label": "Disable stories", "key": "disable_stories", "default_checked": true}
     ],
-    "process_restart_required_after_change": true
+    "process_restart_required_after_change": true,
+    "hardcore": {
+      "key": "enable_hardcore",
+      "default_checked": false,
+      "ui_reversible": false,
+      "test_risk": "Enabling blocks its own disable action and requires app-data reset for normal recovery"
+    }
   },
   "features": {
     "feed": {
@@ -50,16 +56,30 @@
       "automation_note": "Continuous playback can prevent UI Automator from reaching idle"
     },
     "stories": {
-      "verified_contrast": false,
-      "disabled_observation": "Current user's own story remains visible; no other tray entries observed"
+      "verified_contrast": true,
+      "disabled_observation": "Current user's own story remains visible; other users' tray entries are absent",
+      "enabled_observation": "Three other users' unseen story entries appeared after process restart without opening them"
     },
-    "shopping": {"verified_contrast": false},
-    "profile_ads": {"verified_contrast": false, "visible_switch": false}
+    "shopping": {
+      "verified_contrast": false,
+      "static_warning": "Direct helper checks minshop, but all three patched identifiers contain minishops and therefore pass through unchanged; only URI-path Tigon blocking may remain effective"
+    },
+    "profile_ads": {
+      "verified_contrast": false,
+      "visible_switch": false,
+      "key": "disable_adds",
+      "default": true
+    },
+    "feed_cache": {
+      "verified_in_isolation": false,
+      "trigger": "Cached-feature switch changes to true only",
+      "implementation": "Asynchronous coordinator/database reset plus non-recursive deletion of direct files under http_responses and cold_start",
+      "risks": ["null coordinator silently skips database clear", "no completion signal", "worker exceptions are not surfaced"]
+    }
   },
   "pending": [
     "Make profile Options render immediately without breaking app-bar behavior",
     "Hardcore Mode behavior",
-    "Stories enabled/disabled contrast",
     "Shopping enabled/disabled contrast",
     "Profile-ad behavior",
     "Feed-cache clearing isolated from process restart",

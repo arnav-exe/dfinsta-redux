@@ -69,5 +69,8 @@ The result should describe the intentional 1.4.1 delta, not preserve complete mo
 - Active Reels can prevent UI Automator from reaching idle. Device automation needs a non-idle-compatible screenshot/process assertion for continuous media surfaces.
 - Restored all five disable switches to checked and restarted the app after comparative testing.
 - Added `dfinsta_source_1.4.1/behavior_contract.json` so confirmed selectors, restart requirements, feature contrasts, and pending tests are machine-readable inputs for future orchestration rather than facts an agent must infer from prose.
+- Confirmed Stories contrast without opening any entry: enabling showed three other users' unseen stories; disabling left only the current user's own story. Restored all switches and restarted afterward.
+- Static audit found that direct Shopping substitutions are no-ops because `minshop` does not match the patched `minishops` identifiers; only URI-path Tigon blocking may remain effective.
+- Static audit confirmed Hardcore Mode is effectively irreversible through the UI and cache clearing is asynchronous, partial, and triggered only when a disable switch changes to true.
 - `DistractionFree` does not rewrite responses. Its methods return the original endpoint string when a feature is enabled and an empty string when disabled; host patches replace the corresponding stock `const-string` instructions with these calls.
 - Startup also initializes ACRA and posts an asynchronous `dfinsta_start` event containing Android ID and app version to Amplitude. This is part of the 1.4.1 oracle delta but is analytically separate from distraction blocking and needs an explicit retain/remove decision later.

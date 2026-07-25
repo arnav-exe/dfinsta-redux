@@ -52,6 +52,8 @@ Recovered endpoint families:
 
 Profile-ad removal uses the misspelled key `disable_adds`, defaults true, and has no settings switch. It is effectively always enabled.
 
+The three direct Shopping substitutions are ineffective: every wrapped identifier contains `minishops`, which does not contain the contiguous substring `minshop`. Those helpers always return the original identifier. Only `hooks.throwIfBlocked()` may still block a request when its actual URI path contains `minishop`; Bloks identifiers carried outside the URI path are unaffected.
+
 ### Request blocking
 
 `TigonServiceLayer.startRequest()` reads `LX/1Os.A09` (`URI`) and calls `hooks.throwIfBlocked()` inside the existing request failure try/catch. This retains the robust 1.3 path-based blocking mechanism.
@@ -74,9 +76,13 @@ The preference activity is not exported, so `adb am start` cannot bypass this in
 
 The UI exposes feed, Explore, Reels, Shopping, Stories, and hardcore-mode controls. It contains a suggested-post string and code key but no suggested-post switch or active rewrite hook.
 
+Hardcore Mode defaults false and has no confirmation. Once enabled, its change listener rejects false values for itself and the five disable switches, so it cannot be turned off through the UI. Testing it requires disposable app data.
+
 ### Feed-cache lifecycle
 
 `LX/2XI` captures `FeedCacheCoordinator`, clears the static reference in `onDestroy()`, and shows the one-time welcome dialog. The preference cache clearer directly accesses 340-specific coordinator, flash-cache, session, database, and obfuscated fields.
+
+Cache clearing runs asynchronously only when a cached-feature switch changes to true. Re-enabling a feature does not clear caches. Filesystem cleanup removes only direct files, not nested directories; a null coordinator silently skips the in-memory/database path; there is no completion feedback.
 
 ## Manifest and Resources
 
