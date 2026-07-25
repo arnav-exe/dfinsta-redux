@@ -15,9 +15,9 @@ Completion requires:
 
 ## Immediate Roadmap
 
-1. Run controlled, restart-bounded Feed, Explore, Reels, Stories, and Shopping on/off contrasts on the settings-validated 430 graft; restore all settings afterward.
-2. Verify preference persistence and confirm other-user profiles do not receive the self-profile settings action.
-3. Resolve direct-site coverage, profile-ad policy, Shopping caller coverage, and redesigned cache invalidation before claiming broader parity.
+1. Resolve Shopping caller coverage or explicitly retire/label the feature partial; URI matching does not cover non-path Bloks identifiers.
+2. Decide profile-ad policy and redesign cache invalidation for 430's changed architecture.
+3. Confirm other-user profiles do not receive the self-profile settings action.
 4. Wrap the proven deterministic build/sign/install/validation activities in the durable agentic workflow.
 
 ## Lazy Profile Options
@@ -70,4 +70,5 @@ Do not simply force `A1b=true` on every `LX/66Y.configureActionBar()` call: that
 - Broad resource pruning remains deferred until full runtime settings traversal.
 - Decide whether hidden forced profile-ad blocking becomes a visible setting.
 - Fix or intentionally retire Shopping blocking; direct helpers currently test `minshop` against `minishops` identifiers.
+- Treat cache state as a first-class test boundary. On 430, Reels retained enough media to survive restart and ten swipes; the disabled endpoint result became visible only after cache exhaustion.
 - Decide whether Hardcore Mode remains effectively irreversible through the UI.

@@ -39,8 +39,10 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `44b9a26 attach 430 settings listener` (superseded 430 settings-host hypothesis)
 - `a75e60d launch configured app activity` (contract launcher intent and foreground assertion)
 - `cb63ded patch live 430 profile action` (current `ProfileActionBar` settings hook)
+- `e617551 block 430 reels homecoming` (corrected stale URI path; insufficient alone because cached media remained)
+- `47408db restore direct reels blocking` (ports the proven endpoint-emptying behavior to the central 430 Reels builder)
 
-Current branch: `port-430`. It is based on `master` commit `6f1efa7`; `HEAD` is `cb63ded`. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
+Current branch: `port-430`. It is based on `master` commit `6f1efa7` and includes implementation commits through `47408db`. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
 
 ## Golden Reconstruction State
 
@@ -95,13 +97,14 @@ The historical 340 oracle APK was pulled and confirmed byte-identical to `apks/d
 
 Current installed state:
 
-- Installed APK: `work/430-graft-v3/dfinsta_430-graft-v3-test.apk`.
-- SHA-256: `95fab99680031aee8ffde3a5f9a202f47e6c4067626c94e9dffb948a9edb048e`.
+- Installed APK: `work/430-graft-v5/dfinsta_430-graft-v5-test.apk`.
+- SHA-256: `6185edd97aa17542390fd104a9dba6ec38dae43febed7dd555e217eccf08bb62`.
 - Package/version preflight passes for `com.instagram.android` / `430.0.0.53.80` (`383611248`).
 - Cold MAIN/LAUNCHER alias launch reaches `com.instagram.mainactivity.InstagramMainActivity`; the runner requires that foreground activity and reports no AndroidRuntime fatal or resource crash.
 - Profile `Options` appears immediately in 430. Long-press opens the framework dialog on the first attempt without a swipe.
 - The dialog contains exactly Feed, Explore, Reels, Stories, and Shopping, all checked from inherited 1.4.1 preferences.
 - A normal Options tap still enters Instagram's stock options/settings surface.
+- Feed, Explore, Stories, and Reels have restart-bounded enabled/disabled contrasts. Reels required exhausting a large retained media cache before the disabled endpoint behavior became visible.
 - Do not clear app data, uninstall, or otherwise destroy the preserved login/preferences state without explicit user approval.
 - Do not enable Hardcore Mode if returning to a 340 build on this data; it is not reversible through the 340 UI.
 
@@ -197,12 +200,12 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 
 ## Immediate Next Actions
 
-1. Run restart-bounded Feed, Explore, Reels, Stories, and Shopping enabled/disabled contrasts on 430. Restore all five settings to checked afterward and do not claim feature validation before the contrasts.
-2. Verify preference mutation and persistence explicitly through the framework dialog, including a process restart.
-3. Verify an unrelated-user profile does not receive the DFInsta long-click action.
-4. Resolve retained-contract gaps separately: direct endpoint coverage, profile-ad policy, Shopping's non-URI Bloks identifiers, and redesigned cache invalidation.
+1. Decide and implement the Shopping policy. Current URI matching is partial and does not cover Bloks identifiers outside URI paths; do not claim Shopping parity yet.
+2. Decide whether hidden profile-ad blocking remains part of the retained contract, and port its two mapped request builders if retained.
+3. Redesign cache invalidation for 430. The old coordinator classes are gone, and Reels demonstrated that a process restart alone does not invalidate retained content.
+4. Verify an unrelated-user profile does not receive the DFInsta long-click action.
 5. Add the proven 430 build/sign/install/device sequence to the durable orchestration layer without moving ambiguous mapping into deterministic scripts.
-6. Keep `docs/SESSION_HANDOFF.md` and `docs/PORT_430_MAPPING.md` current at every behavior checkpoint.
+6. Keep `docs/SESSION_HANDOFF.md` and `docs/PORT_430_MAPPING.md` current at every checkpoint.
 
 ## Instagram 430 State
 
@@ -229,15 +232,15 @@ Commit `a128481` therefore pivoted to a resource-free build. The maintained 430 
 
 There is no custom Activity, manifest component, resource file, or application resource ID. Dialog text and choice labels are literals in custom DEX code. Preference changes are immediate but require an explicit process restart to evaluate behavior cleanly.
 
-The build still uses apktool 2.9.3/aapt1 plus the isolated API 36 framework to assemble changed DEX files in an intermediate APK. It then grafts exactly `classes.dex`, `classes3.dex`, `classes6.dex`, and new `classes20.dex` into the exact stock APK. Stock signing artifacts are removed; every other stock ZIP entry is copied. In particular, the binary `AndroidManifest.xml`, `resources.arsc`, and every `res/` entry come from stock unchanged. The four grafts correspond to the Tigon host hook, app-start context hook, profile settings hook, and four custom classes respectively.
+The build still uses apktool 2.9.3/aapt1 plus the isolated API 36 framework to assemble changed DEX files in an intermediate APK. It then grafts exactly `classes.dex`, `classes3.dex`, `classes4.dex`, `classes6.dex`, and new `classes20.dex` into the exact stock APK. Stock signing artifacts are removed; every other stock ZIP entry is copied. In particular, the binary `AndroidManifest.xml`, `resources.arsc`, and every `res/` entry come from stock unchanged. The five grafts correspond to the Tigon host hook, app-start context hook, direct Reels endpoints, profile settings hook, and four custom classes respectively.
 
 ### Static result
 
-- Artifact: `work/430-graft-v3/dfinsta_430-graft-v3-test.apk`.
-- SHA-256: `95fab99680031aee8ffde3a5f9a202f47e6c4067626c94e9dffb948a9edb048e`.
+- Artifact: `work/430-graft-v5/dfinsta_430-graft-v5-test.apk`.
+- SHA-256: `6185edd97aa17542390fd104a9dba6ec38dae43febed7dd555e217eccf08bb62`.
 - The static verifier passed the exact 20-DEX set (`classes.dex` through `classes20.dex`).
 - It found exactly the four allowed custom descriptors and none of the forbidden legacy/privacy/resource-dependent symbols.
-- It found all three required host hooks: `TigonServiceLayer` request blocking in `classes.dex`, `InstagramAppShell` context capture in `classes3.dex`, and `SettingsWrapper` installation in `classes6.dex`.
+- It found all four required host-hook markers: Tigon request blocking in `classes.dex`, context capture in `classes3.dex`, direct Reels endpoint replacement in `classes4.dex`, and settings installation in `classes6.dex`.
 - Stock binary `AndroidManifest.xml` and `resources.arsc` are byte-identical.
 - The complete set of `res/` names and every `res/` entry's bytes are identical to stock.
 
@@ -249,14 +252,19 @@ The build still uses apktool 2.9.3/aapt1 plus the isolated API 36 framework to a
 - The contract-driven alias launch reaches foreground `InstagramMainActivity` with no fatal or missing-resource crash.
 - The live 430 Options view is built by `LX/077K` from self-profile model `LX/077N`, not by the legacy `LX/06X7` action builder.
 - The guarded listener patch makes Options long-clickable; the framework dialog opens on attempt one and shows all five inherited checked settings.
-- Normal Options click behavior is preserved. Feature on/off contrasts remain pending.
+- Normal Options click behavior is preserved.
+- Feed: disabled shows only own Story and no feed content; enabled shows other Stories and feed content.
+- Explore: disabled shows an empty search shell and refresh failure; enabled shows a populated grid.
+- Stories: disabled leaves only own Story; enabled shows other users' Stories.
+- Reels: the URI-only v4 still allowed cached playback. Production v5 also replaces the three central `LX/05t2` endpoint selections with empty strings when disabled. A temporary endpoint-only invocation tag proved the live `clips/discover/stream/` path; after 50 swipes exhausted retained media, disabled Reels stayed on a content-free skeleton. Re-enabling Reels after cache exhaustion immediately restored fresh playable content.
+- All five settings were restored checked, the non-logging v5 APK was reinstalled, and final cold startup passed.
 
 ### Current limitations
 
 - Implemented scope is application-context capture, five-family Tigon URI blocking, and the framework settings dialog only.
 - No direct endpoint substitutions, profile-ad rule, feed-cache clearing, welcome flow, custom resources, custom Activity, Amplitude, or ACRA are present. No lazy-profile repair is needed on 430 because Options renders immediately.
 - Shopping coverage is partial because Bloks identifiers transported outside URI paths are not covered.
-- Settings entry and checked-state rendering are validated; feature effects are not yet validated.
+- Settings, Feed, Explore, Reels, and Stories are behavior-validated. Shopping, profile ads, and cache invalidation remain incomplete.
 - The resource-free architecture intentionally cannot add ordinary Android resources or manifest components. Any future feature that requires them needs a proven non-lossy resource strategy, not a return to the known-broken full apktool resource rebuild.
 
 Tracked first-pass mapping: `docs/PORT_430_MAPPING.md`.

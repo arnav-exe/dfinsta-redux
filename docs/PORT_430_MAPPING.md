@@ -1,8 +1,8 @@
 # Instagram 430 Port State and Mapping
 
-Status: minimal resource-free DEX graft built, statically verified, signed, installed, and settings-validated. Feature contrasts remain.
+Status: production resource-free DEX graft built, statically verified, signed, installed, and behavior-validated for settings, Feed, Explore, Reels, and Stories. Shopping remains partial.
 
-Current branch: `port-430` at `cb63ded`.
+Current branch: `port-430`, with implementation commits through `47408db`.
 
 Relevant commits:
 
@@ -11,6 +11,8 @@ Relevant commits:
 - `94523c8 read settings title from contract`: made the device runner read the selected behavior contract's settings title.
 - `a75e60d launch configured app activity`: added contract-defined MAIN/LAUNCHER startup and foreground-activity validation.
 - `cb63ded patch live 430 profile action`: attached settings to the live self-profile `ProfileActionBar` model.
+- `e617551 block 430 reels homecoming`: corrected the stale 340 URI path for 430.
+- `47408db restore direct reels blocking`: ports direct central Reels endpoint replacement and adds `classes4.dex` to the verified graft.
 
 ## Target
 
@@ -25,8 +27,8 @@ Apktool emitted resource string-chunk warnings but baksmaled all DEX files succe
 
 ## Exact Current Build
 
-- Artifact: `work/430-graft-v3/dfinsta_430-graft-v3-test.apk`
-- SHA-256: `95fab99680031aee8ffde3a5f9a202f47e6c4067626c94e9dffb948a9edb048e`
+- Artifact: `work/430-graft-v5/dfinsta_430-graft-v5-test.apk`
+- SHA-256: `6185edd97aa17542390fd104a9dba6ec38dae43febed7dd555e217eccf08bb62`
 - Installed successfully as an in-place update.
 - Package/version preflight: passed for `430.0.0.53.80` / `383611248`.
 - Static verification: passed.
@@ -35,7 +37,7 @@ The verifier proves:
 
 - Exactly 20 DEX files, `classes.dex` through `classes20.dex`.
 - Exactly four custom descriptors: `startapp`, `dfinstagram`, `hooks`, and `SettingsWrapper`.
-- Exactly the three expected host-hook markers in the expected DEX files.
+- Exactly the four expected host-hook markers in the expected DEX files.
 - No forbidden legacy, Activity, resource-dependent, ACRA, or Amplitude symbols in custom DEX.
 - Byte-identical stock binary `AndroidManifest.xml` and `resources.arsc`.
 - Identical stock `res/` entry names and byte-identical contents for every entry.
@@ -55,6 +57,7 @@ The supported prototype architecture is therefore resource-free. Apktool/aapt1 a
 
 - `classes.dex`: patched `TigonServiceLayer`.
 - `classes3.dex`: patched `InstagramAppShell`.
+- `classes4.dex`: patched central Reels endpoint builder `LX/05t2`.
 - `classes6.dex`: patched live profile action renderer `LX/077K`.
 - `classes20.dex`: four custom DFInsta classes.
 
@@ -65,6 +68,7 @@ Stock signature metadata is removed for re-signing. All other entries are copied
 - `startapp` captures the `Application` context after `Application.onCreate()`.
 - `dfinstagram` reads five checked-by-default flags from the existing `com.instagram` shared-preference file.
 - `hooks.throwIfBlocked(URI)` enforces Feed, Explore, Reels, Stories, and partial Shopping rules in Tigon's existing `IOException` failure path.
+- `hooks.replaceReelsEndpoint(String)` returns the selected central Reels endpoint when enabled and `""` when disabled, matching the validated 340 behavior.
 - `SettingsWrapper` is attached to the current-profile Options `ImageView` guarded by self-profile action model `LX/077N`, and opens a framework multi-choice `AlertDialog` titled `Distraction-free settings - restart required`.
 - There is no custom manifest entry, custom Activity, XML preference screen, custom resource, or fixed `0x7f...` application resource reference.
 - Changes require a process restart for clean behavior evaluation.
@@ -78,6 +82,7 @@ This design deliberately excludes direct endpoint replacements, profile-ad block
 - Profile Options is present immediately. It is long-clickable after the `LX/077K` patch, and the settings dialog opens on the first attempt without header swipes.
 - Exactly five choices render in order: Feed, Explore, Reels, Stories, Shopping. All inherited values are checked.
 - Normal Options click still enters Instagram's stock surface.
+- Feed, Explore, Stories, and Reels have enabled/disabled device contrasts. Reels retains a large media cache across process restarts; disabled validation required exhausting it before the empty-endpoint result became visible.
 - The in-place update preserved login and preferences created under the current 340 installation.
 - Do not clear data or uninstall without explicit user approval.
 
@@ -134,9 +139,12 @@ Skip the `LX/05jj` whitelist entry.
 
 ### Reels
 
-Patch direct paths:
+The production patch now covers the canonical `CLIPS_TAB` builder `LX/05t2` at three unique assignments:
 
 - `LX/05t2;->A07(...)` and `A09(...)` in `smali_classes4/X/05t2.smali`
+
+The replaced selections are `clips/discover/`, `clips/homecoming/`, and `clips/discover/stream/`. Other mapped candidates below remain deferred unless a future device trace proves they serve the primary tab:
+
 - `LX/0aOK;->C18(...)` and `DGa(...)` in `smali_classes15/X/0aOK.smali`
 - `LX/0ZSA;->A03(...)` and `A04(...)` in `smali_classes15/X/0ZSA.smali`
 
@@ -223,9 +231,9 @@ The current-user 430 Options action appears immediately after Profile navigation
 
 ## Next Deterministic Work
 
-1. Run restart-bounded Feed, Explore, Reels, Stories, and Shopping enabled/disabled validation and restore all five checked values afterward.
-2. Verify preference mutation/persistence and confirm an unrelated-user profile does not receive the long-click action.
-3. Only then consider direct-site coverage, profile ads, Shopping caller coverage, and cache invalidation. Keep those separate from the minimal proven path.
+1. Resolve Shopping's non-URI Bloks coverage and decide whether the feature is retained or intentionally partial.
+2. Decide and implement profile-ad policy, then redesign cache invalidation against 430's new cache architecture.
+3. Confirm an unrelated-user profile does not receive the settings long-click action.
 4. Add the proven mechanical flow to the durable agentic orchestration layer.
 5. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
 

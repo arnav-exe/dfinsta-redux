@@ -4,7 +4,7 @@
   "package": "com.instagram.android",
   "base_version_name": "430.0.0.53.80",
   "base_version_code": 383611248,
-  "implementation_status": "DEX-graft tooling prepared; build, signing, startup, and device behavior are pending",
+  "implementation_status": "Production v5 DEX graft built, signed, installed, settings-validated, and behavior-validated for Feed, Explore, Reels, and Stories",
   "privacy": {
     "amplitude_startup_telemetry": false,
     "acra_crash_reporting": false
@@ -40,7 +40,7 @@
           "features": ["explore"],
           "selector": {"resource_id": "com.instagram.android:id/search_tab", "content_desc": "Search and explore"},
           "disabled_state_assertions": [
-            {"name": "search_shell_observation", "kind": "visible_text", "anchors": ["Ask Meta AI or search"], "match": "all", "severity": "evidence"},
+            {"name": "search_shell_observation", "kind": "visible_text", "anchors": ["Search with Meta AI"], "match": "all", "severity": "evidence"},
             {"name": "discovery_text_absent", "kind": "absent_text", "anchors": ["Suggested for you"], "match": "all", "severity": "evidence"}
           ]
         },
@@ -50,8 +50,7 @@
           "selector": {"resource_id": "com.instagram.android:id/clips_tab", "content_desc": "Reels"},
           "allow_screenshot_process_fallback": true,
           "disabled_state_assertions": [
-            {"name": "handled_request_error_observation", "kind": "visible_text", "anchors": ["We're sorry, but something went wrong. Please try again."], "match": "all", "severity": "evidence"},
-            {"name": "reel_item_text_absent", "kind": "absent_text", "anchors": ["Follow"], "match": "all", "severity": "evidence"}
+            {"name": "cached_items_exhausted_observation", "kind": "absent_text", "anchors": ["Follow"], "match": "all", "severity": "evidence"}
           ]
         }
       ]
@@ -65,7 +64,6 @@
     "preference_file": "com.instagram",
     "entry": [
       "select resource-id com.instagram.android:id/profile_tab",
-      "if Options is absent, navigate Home then Profile and swipe down toward the profile header",
       "poll for content-desc Options with long-clickable=true",
       "long-click Options",
       "assert the framework multi-choice dialog title and five labels"
@@ -80,23 +78,18 @@
     "process_restart_required_after_change": true
   },
   "features": {
-    "feed": {"implementation": "Tigon URI blocking", "verified_contrast": false},
-    "explore": {"implementation": "Tigon URI blocking", "verified_contrast": false},
-    "reels": {"implementation": "Tigon URI blocking", "verified_contrast": false},
-    "stories": {"implementation": "Tigon URI blocking", "verified_contrast": false},
+    "feed": {"implementation": "Tigon URI blocking", "verified_contrast": true},
+    "explore": {"implementation": "Tigon URI blocking", "verified_contrast": true},
+    "reels": {"implementation": "Tigon URI blocking plus direct central endpoint replacement", "verified_contrast": true, "warning": "cached Reels can survive process restart; disabled validation requires cache exhaustion"},
+    "stories": {"implementation": "Tigon URI blocking", "verified_contrast": true},
     "shopping": {"implementation": "partial Tigon URI blocking", "verified_contrast": false, "warning": "Bloks identifiers outside URI paths are not covered"},
     "profile_ads": {"implementation": "not ported", "verified_contrast": false}
   },
   "pending": [
-    "Run the apktool/aapt1 intermediate build and stock-APK DEX graft",
-    "Sign and install the grafted APK",
-    "Startup and settings-dialog smoke test",
-    "Feed enabled/disabled contrast",
-    "Explore enabled/disabled contrast",
-    "Reels enabled/disabled contrast",
-    "Stories enabled/disabled contrast",
     "Shopping caller-level blocking",
     "Profile-ad blocking",
-    "Lazy profile Options behavior"
+    "Redesigned cache invalidation",
+    "Other-user profile long-click exclusion",
+    "Durable agentic orchestration"
   ]
 }
