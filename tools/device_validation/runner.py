@@ -40,6 +40,7 @@ class UiNode:
     clickable: bool
     long_clickable: bool
     checked: bool
+    selected: bool
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +53,7 @@ class UiNode:
             "clickable": self.clickable,
             "long_clickable": self.long_clickable,
             "checked": self.checked,
+            "selected": self.selected,
         }
 
 
@@ -112,6 +114,7 @@ def parse_ui_xml(xml: str | bytes) -> list[UiNode]:
                 clickable=attributes.get("clickable") == "true",
                 long_clickable=attributes.get("long-clickable") == "true",
                 checked=attributes.get("checked") == "true",
+                selected=attributes.get("selected") == "true",
             )
         )
     return nodes
@@ -135,12 +138,69 @@ def find_nodes(nodes: Iterable[UiNode], **criteria: Any) -> list[UiNode]:
     return matches
 
 
+def selector_criteria(selector: dict[str, Any]) -> dict[str, str]:
+    allowed = {"text", "resource_id", "content_desc"}
+    unsupported = set(selector) - allowed
+    if unsupported:
+        raise ValueError(f"Unsupported selector keys: {', '.join(sorted(unsupported))}")
+    criteria = {key: value for key, value in selector.items() if key in allowed and isinstance(value, str) and value}
+    if not criteria:
+        raise ValueError("Selector requires non-empty text, resource_id, or content_desc")
+    return criteria
+
+
+def find_selector_nodes(nodes: Iterable[UiNode], selector: dict[str, Any]) -> list[UiNode]:
+    return find_nodes(nodes, **selector_criteria(selector))
+
+
+def evaluate_text_assertions(nodes: Iterable[UiNode], assertions: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    visible_text = {node.text for node in nodes if node.text}
+    results = []
+    for assertion in assertions:
+        kind = assertion.get("kind")
+        anchors = assertion.get("anchors")
+        match = assertion.get("match", "all")
+        severity = assertion.get("severity", "required")
+        if kind not in {"visible_text", "absent_text"}:
+            raise ValueError(f"Unsupported text assertion kind: {kind!r}")
+        if not isinstance(anchors, list) or not anchors or not all(isinstance(anchor, str) and anchor for anchor in anchors):
+            raise ValueError("Text assertion anchors must be a non-empty string list")
+        if match not in {"all", "any"}:
+            raise ValueError(f"Unsupported text assertion match: {match!r}")
+        if severity not in {"required", "evidence"}:
+            raise ValueError(f"Unsupported text assertion severity: {severity!r}")
+        anchor_matches = {anchor: (anchor in visible_text) for anchor in anchors}
+        values = list(anchor_matches.values())
+        passed = all(values) if match == "all" else any(values)
+        if kind == "absent_text":
+            passed = not any(values) if match == "all" else not all(values)
+        results.append(
+            {
+                "name": assertion.get("name"),
+                "kind": kind,
+                "anchors": anchors,
+                "match": match,
+                "severity": severity,
+                "passed": passed,
+                "anchor_visible": anchor_matches,
+            }
+        )
+    return results
+
+
 def dump_ui(adb: Adb, destination: Path) -> list[UiNode]:
     remote = "/data/local/tmp/dfinsta-window.xml"
     adb.run("shell", "uiautomator", "dump", remote, timeout=20)
     destination.parent.mkdir(parents=True, exist_ok=True)
     adb.run("pull", remote, str(destination))
     return parse_ui_xml(destination.read_text(encoding="utf-8"))
+
+
+def capture_screenshot(adb: Adb, destination: Path, name: str) -> None:
+    remote = f"/data/local/tmp/dfinsta-{name}.png"
+    adb.run("shell", "screencap", "-p", remote)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    adb.run("pull", remote, str(destination))
 
 
 def tap(adb: Adb, node: UiNode) -> None:
@@ -352,6 +412,156 @@ def reels_capture(adb: Adb, contract: dict[str, Any], contract_path: Path, artif
     )
 
 
+def _not_evaluated_assertions(assertions: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": assertion.get("name"),
+            "kind": assertion.get("kind"),
+            "anchors": assertion.get("anchors"),
+            "match": assertion.get("match", "all"),
+            "severity": assertion.get("severity", "required"),
+            "passed": None,
+            "anchor_visible": None,
+        }
+        for assertion in assertions
+    ]
+
+
+def feature_state(
+    adb: Adb,
+    contract: dict[str, Any],
+    contract_path: Path,
+    artifact_dir: Path,
+    target_names: Sequence[str] | None,
+    leave_settings: bool,
+) -> dict[str, Any]:
+    package = contract["package"]
+    config = contract["device_validation"]["feature_state"]
+    targets = config["targets"]
+    if target_names:
+        requested = set(target_names)
+        unknown = requested - {target["name"] for target in targets}
+        if unknown:
+            raise ValueError(f"Unknown feature-state targets: {', '.join(sorted(unknown))}")
+        targets = [target for target in targets if target["name"] in requested]
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    steps: list[str] = []
+    current_nodes: list[UiNode] | None = None
+    initial_error = None
+    try:
+        current_nodes = dump_ui(adb, artifact_dir / "feature-state-initial.xml")
+    except (AdbError, ET.ParseError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        initial_error = str(exc)
+
+    settings_exit = {"requested": leave_settings, "pressed_back": False}
+    if leave_settings and current_nodes is not None:
+        settings_selector = config["settings_screen_selector"]
+        if find_selector_nodes(current_nodes, settings_selector):
+            adb.run("shell", "input", "keyevent", "KEYCODE_BACK")
+            settings_exit["pressed_back"] = True
+            steps.append("press_back_from_settings")
+            time.sleep(config["poll_interval_seconds"])
+            current_nodes = None
+
+    target_results = []
+    for target in targets:
+        name = target["name"]
+        navigation_error = None
+        nav_node = None
+        for attempt in range(1, config["poll_attempts"] + 1):
+            if current_nodes is None:
+                try:
+                    current_nodes = dump_ui(adb, artifact_dir / f"{name}-navigation.xml")
+                except (AdbError, ET.ParseError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                    navigation_error = str(exc)
+                    current_nodes = None
+            if current_nodes is not None:
+                matches = find_selector_nodes(current_nodes, target["selector"])
+                if matches:
+                    nav_node = matches[0]
+                    break
+            if attempt < config["poll_attempts"]:
+                time.sleep(config["poll_interval_seconds"])
+
+        if nav_node is not None:
+            tap(adb, nav_node)
+            steps.append(f"tap_{name}_navigation")
+            time.sleep(config["poll_interval_seconds"])
+
+        screenshot = artifact_dir / f"{name}.png"
+        capture_screenshot(adb, screenshot, f"feature-state-{name}")
+        hierarchy = artifact_dir / f"{name}.xml"
+        hierarchy_error = None
+        captured_nodes = None
+        try:
+            captured_nodes = dump_ui(adb, hierarchy)
+        except (AdbError, ET.ParseError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            hierarchy_error = str(exc)
+
+        assertions = (
+            evaluate_text_assertions(captured_nodes, target["disabled_state_assertions"])
+            if captured_nodes is not None
+            else _not_evaluated_assertions(target["disabled_state_assertions"])
+        )
+        required_assertions_ok = all(
+            assertion["passed"] is not False
+            for assertion in assertions
+            if assertion["severity"] == "required"
+        )
+        pid = package_process(adb, package)
+        fallback_allowed = target.get("allow_screenshot_process_fallback", False)
+        hierarchy_required = not fallback_allowed
+        capture_ok = screenshot.exists() and (captured_nodes is not None or not hierarchy_required)
+        navigation_ok = nav_node is not None
+        target_results.append(
+            {
+                "name": name,
+                "features": target["features"],
+                "ok": pid is not None and navigation_ok and capture_ok and required_assertions_ok,
+                "navigation": {
+                    "selector": target["selector"],
+                    "found": nav_node is not None,
+                    "verified": navigation_ok,
+                    "error": navigation_error,
+                },
+                "process_alive": pid is not None,
+                "process_id": pid,
+                "capture_mode": "hierarchy_and_screenshot" if captured_nodes is not None else "screenshot_process_fallback",
+                "hierarchy": str(hierarchy) if captured_nodes is not None else None,
+                "screenshot": str(screenshot) if screenshot.exists() else None,
+                "node_count": len(captured_nodes) if captured_nodes is not None else None,
+                "hierarchy_error": hierarchy_error,
+                "disabled_state_assertions": assertions,
+            }
+        )
+        current_nodes = captured_nodes
+
+    final_pid = package_process(adb, package)
+    logcat_args = ["logcat", "-d", "-v", "threadtime"]
+    if final_pid:
+        logcat_args.extend(["--pid", final_pid.split()[0]])
+    logcat = adb.run(*logcat_args, timeout=30, check=False).stdout
+    fatal_lines = fatal_log_lines(logcat)
+    checks = {
+        "process_alive": final_pid is not None,
+        "no_android_runtime_fatal": not fatal_lines,
+        "targets_ok": all(target["ok"] for target in target_results),
+    }
+    return evidence(
+        "feature-state",
+        contract_path,
+        ok=all(checks.values()),
+        checks=checks,
+        process_id=final_pid,
+        settings_exit=settings_exit,
+        initial_hierarchy_error=initial_error,
+        steps=steps,
+        targets=target_results,
+        fatal_logcat=fatal_lines,
+    )
+
+
 def boolean_argument(value: str) -> bool:
     if value.lower() in {"true", "1", "yes"}:
         return True
@@ -385,6 +595,13 @@ def build_parser() -> argparse.ArgumentParser:
     settings_parser.add_argument("--attempts", type=int, default=6)
     settings_parser.add_argument("--poll-interval", type=float, default=1)
     subparsers.add_parser("reels-capture")
+    feature_parser = subparsers.add_parser("feature-state")
+    feature_parser.add_argument("--target", action="append", dest="targets")
+    feature_parser.add_argument(
+        "--leave-settings",
+        action="store_true",
+        help="press Back only when the contract settings-screen selector is visible",
+    )
     return parser
 
 
@@ -405,8 +622,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = node_lookup_evidence(adb, contract_path, args, args.output or artifact_dir / "window.xml")
         elif args.action == "enter-settings":
             result = enter_settings(adb, contract, contract_path, artifact_dir, args.attempts, args.poll_interval)
-        else:
+        elif args.action == "reels-capture":
             result = reels_capture(adb, contract, contract_path, artifact_dir)
+        else:
+            result = feature_state(adb, contract, contract_path, artifact_dir, args.targets, args.leave_settings)
     except (AdbError, ET.ParseError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         result = evidence(args.action, contract_path, ok=False, error=str(exc))
     print(json.dumps(result, indent=2, sort_keys=True))
