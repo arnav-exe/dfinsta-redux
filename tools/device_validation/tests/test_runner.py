@@ -18,6 +18,7 @@ from runner import (
     find_selector_nodes,
     parse_ui_xml,
     selector_criteria,
+    startup_intent_arguments,
 )
 
 
@@ -140,6 +141,25 @@ class TextAssertionTests(unittest.TestCase):
 
 
 class CommandConstructionTests(unittest.TestCase):
+    def test_builds_contract_launcher_intent(self) -> None:
+        self.assertEqual(
+            startup_intent_arguments(
+                {
+                    "component": "com.example/.Launcher",
+                    "action": "android.intent.action.MAIN",
+                    "categories": ["android.intent.category.LAUNCHER"],
+                }
+            ),
+            [
+                "-a",
+                "android.intent.action.MAIN",
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "-n",
+                "com.example/.Launcher",
+            ],
+        )
+
     def test_builds_serialized_adb_command(self) -> None:
         adb = Adb("C:/Android/platform-tools/adb.exe", "device-123")
         self.assertEqual(

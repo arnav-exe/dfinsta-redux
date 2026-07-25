@@ -10,12 +10,15 @@
     "acra_crash_reporting": false
   },
   "startup": {
-    "component": "com.instagram.android/com.instagram.mainactivity.LauncherActivity",
+    "component": "com.instagram.android/com.instagram.android.activity.MainTabActivity",
+    "action": "android.intent.action.MAIN",
+    "categories": ["android.intent.category.LAUNCHER"],
+    "foreground_activity": "com.instagram.android/com.instagram.mainactivity.InstagramMainActivity",
     "logged_out_accepted_anchor_sets": [
       ["Join Instagram", "I already have a profile"],
       ["Password"]
     ],
-    "required": ["process_alive", "no_android_runtime_fatal"]
+    "required": ["process_alive", "no_android_runtime_fatal", "foreground_activity"]
   },
   "device_validation": {
     "feature_state": {

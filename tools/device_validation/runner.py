@@ -228,6 +228,17 @@ def package_process(adb: Adb, package: str) -> str | None:
     return result.stdout.strip() or None
 
 
+def startup_intent_arguments(config: dict[str, Any]) -> list[str]:
+    arguments: list[str] = []
+    action = config.get("action")
+    if action:
+        arguments.extend(["-a", action])
+    for category in config.get("categories", []):
+        arguments.extend(["-c", category])
+    arguments.extend(["-n", config["component"]])
+    return arguments
+
+
 def preflight(adb: Adb, contract: dict[str, Any], contract_path: Path) -> dict[str, Any]:
     package = contract["package"]
     state = adb.run("get-state", check=False)
@@ -258,11 +269,20 @@ def startup(adb: Adb, contract: dict[str, Any], contract_path: Path, wait: float
     package = contract["package"]
     adb.run("logcat", "-c")
     adb.run("shell", "am", "force-stop", package)
-    start = adb.run("shell", "am", "start", "-W", "-n", contract["startup"]["component"], timeout=45)
+    start = adb.run(
+        "shell",
+        "am",
+        "start",
+        "-W",
+        *startup_intent_arguments(contract["startup"]),
+        timeout=45,
+    )
     time.sleep(wait)
     pid = package_process(adb, package)
     logcat = adb.run("logcat", "-d", "-v", "threadtime", timeout=30).stdout
     fatal_lines = fatal_log_lines(logcat)
+    activities = adb.run("shell", "dumpsys", "activity", "activities", check=False).stdout
+    expected_foreground = contract["startup"].get("foreground_activity")
     ui_error = None
     matched_anchors = None
     try:
@@ -270,13 +290,18 @@ def startup(adb: Adb, contract: dict[str, Any], contract_path: Path, wait: float
         matched_anchors = accepted_startup_anchor_set(nodes, contract["startup"]["logged_out_accepted_anchor_sets"])
     except (AdbError, ET.ParseError, OSError, ValueError) as exc:
         ui_error = str(exc)
-    checks = {"process_alive": pid is not None, "no_android_runtime_fatal": not fatal_lines}
+    checks = {
+        "process_alive": pid is not None,
+        "no_android_runtime_fatal": not fatal_lines,
+        "foreground_activity": expected_foreground is None or expected_foreground in activities,
+    }
     return evidence(
         "startup",
         contract_path,
         ok=all(checks[name] for name in contract["startup"]["required"]),
         checks=checks,
         process_id=pid,
+        expected_foreground_activity=expected_foreground,
         accepted_logged_out_anchor_set=matched_anchors,
         ui_capture_error=ui_error,
         fatal_logcat=fatal_lines,
