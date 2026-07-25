@@ -19,7 +19,7 @@ Completion requires:
 2. Decide whether the hardened baseline removes Amplitude, ACRA, and proven dead residue.
 3. Automate the confirmed 1.4.1 device contract.
 4. Rebuild and revalidate the hardened 1.4.1 baseline.
-5. Map semantic hooks to Instagram 430, build, and test.
+5. Continue the first-pass 430 mapping in `docs/PORT_430_MAPPING.md`, build, and test.
 6. Wrap deterministic activities in the durable agentic workflow.
 
 ## Lazy Profile Options

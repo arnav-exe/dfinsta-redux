@@ -25,6 +25,8 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `e074910 record feature gaps`
 - `8365b72 audit startup privacy`
 - `5341178 audit old app residue`
+- `fc777b0 add session handoff`
+- `bb7ff4d add device contract runner`
 
 Branch: `master`.
 
@@ -164,14 +166,15 @@ No cleanup code has been applied yet.
    - Defer broad resource pruning.
 2. Apply policy changes in separate commits/branches.
 3. Rebuild 1.4.1 from clean stock and rerun startup/settings plus Feed/Explore/Reels/Stories contracts.
-4. Add host-side or UI Automator device runner implementing `behavior_contract.json`:
-   - ADB process/crash checks
-   - Restart after setting changes
-   - Lazy Options stimulation/polling
-   - Screenshot fallback for Reels
-   - Structured JSON evidence
+4. Extend the committed host-side runner from startup/settings primitives into safe feature-state evidence after policy hardening.
 5. Instrument lazy action-bar state before attempting a visibility fix.
-6. Begin Instagram 430 extraction and semantic host mapping only after the hardened 1.4.1 baseline is green.
+6. Continue the decoded Instagram 430 mapping in `docs/PORT_430_MAPPING.md`; do not patch generated string tables or copy old obfuscated classes.
+
+## Instagram 430 State
+
+Stock 430 decoded successfully into ignored `work/430-port/stock-430` in 28.36 seconds. It has 19 DEX trees and 179,190 descriptors. All old obfuscated hook descriptors are gone. Stable named Tigon/startup/profile types map cleanly; endpoint occurrences expanded and require method-role classification; mixed-media endpoint literals disappeared; the feed cache architecture changed completely.
+
+Tracked first-pass mapping: `docs/PORT_430_MAPPING.md`.
 
 ## Worktree Warning
 
