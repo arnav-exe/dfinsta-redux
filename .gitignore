@@ -1,5 +1,9 @@
 *.zip
 instagram_source/
+/work/
+/apktool_2.9.3.jar
+__pycache__/
+*.py[cod]
 
 #--------------------------------------------------#
 # The following was generated with gitignore.nvim: #
