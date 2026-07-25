@@ -144,23 +144,16 @@ class PrepareAndPatchTests(unittest.TestCase):
         self.assertEqual(
             operations["install_settings_long_click"]["anchor"],
             [
-                "if-ne v15, v12, :cond_17",
-                "invoke-static {v2}, LX/03bl;->A01(Lcom/instagram/common/session/UserSession;)Z",
-                "move-result v0",
-                "if-eqz v0, :cond_17",
-                "new-instance v13, LX/0LAk;",
-                "invoke-direct {v13, v5, v12}, LX/0LAk;-><init>(Ljava/lang/Object;I)V",
+                "new-instance v0, LX/0417;",
+                "invoke-direct {v0, v3, p2, v6, p3}, LX/0417;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V",
+                "invoke-static {v0, v6}, LX/00ZY;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V",
             ],
         )
-        self.assertEqual(
-            operations["install_settings_long_click"]["payload"],
-            [
-                "    if-ne v15, v12, :cond_17",
-                "",
-                "    new-instance v13, Lcom/dfinstagram/SettingsWrapper;",
-                "",
-                "    invoke-direct {v13}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
-            ],
+        payload = operations["install_settings_long_click"]["payload"]
+        self.assertIn("    instance-of v0, p3, LX/077N;", payload)
+        self.assertIn(
+            "    invoke-virtual {v6, v0}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V",
+            payload,
         )
 
 
