@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "variant": "430_minimal_tigon",
+  "package": "com.instagram.android",
+  "base_version_name": "430.0.0.53.80",
+  "base_version_code": 383611248,
+  "implementation_status": "DEX-graft tooling prepared; build, signing, startup, and device behavior are pending",
+  "privacy": {
+    "amplitude_startup_telemetry": false,
+    "acra_crash_reporting": false
+  },
+  "startup": {
+    "component": "com.instagram.android/com.instagram.mainactivity.LauncherActivity",
+    "logged_out_accepted_anchor_sets": [
+      ["Join Instagram", "I already have a profile"],
+      ["Password"]
+    ],
+    "required": ["process_alive", "no_android_runtime_fatal"]
+  },
+  "device_validation": {
+    "feature_state": {
+      "poll_attempts": 5,
+      "poll_interval_seconds": 1,
+      "settings_screen_selector": {"text": "Distraction-free settings - restart required"},
+      "targets": [
+        {
+          "name": "home",
+          "features": ["feed", "stories"],
+          "selector": {"resource_id": "com.instagram.android:id/feed_tab", "content_desc": "Home"},
+          "disabled_state_assertions": [
+            {"name": "own_story_observation", "kind": "visible_text", "anchors": ["Your story"], "match": "all", "severity": "evidence"},
+            {"name": "feed_item_text_absent", "kind": "absent_text", "anchors": ["Suggested for you", "Liked by"], "match": "all", "severity": "evidence"}
+          ]
+        },
+        {
+          "name": "explore",
+          "features": ["explore"],
+          "selector": {"resource_id": "com.instagram.android:id/search_tab", "content_desc": "Search and explore"},
+          "disabled_state_assertions": [
+            {"name": "search_shell_observation", "kind": "visible_text", "anchors": ["Ask Meta AI or search"], "match": "all", "severity": "evidence"},
+            {"name": "discovery_text_absent", "kind": "absent_text", "anchors": ["Suggested for you"], "match": "all", "severity": "evidence"}
+          ]
+        },
+        {
+          "name": "reels",
+          "features": ["reels"],
+          "selector": {"resource_id": "com.instagram.android:id/clips_tab", "content_desc": "Reels"},
+          "allow_screenshot_process_fallback": true,
+          "disabled_state_assertions": [
+            {"name": "handled_request_error_observation", "kind": "visible_text", "anchors": ["We're sorry, but something went wrong. Please try again."], "match": "all", "severity": "evidence"},
+            {"name": "reel_item_text_absent", "kind": "absent_text", "anchors": ["Follow"], "match": "all", "severity": "evidence"}
+          ]
+        }
+      ]
+    }
+  },
+  "settings": {
+    "surface": "framework AlertDialog",
+    "activity": null,
+    "title": "Distraction-free settings - restart required",
+    "positive_button": "Close",
+    "preference_file": "com.instagram",
+    "entry": [
+      "select resource-id com.instagram.android:id/profile_tab",
+      "if Options is absent, navigate Home then Profile and swipe down toward the profile header",
+      "poll for content-desc Options with long-clickable=true",
+      "long-click Options",
+      "assert the framework multi-choice dialog title and five labels"
+    ],
+    "choices": [
+      {"order": 1, "label": "Disable feed", "key": "disable_feed", "default_checked": true},
+      {"order": 2, "label": "Disable Explore", "key": "disable_explore", "default_checked": true},
+      {"order": 3, "label": "Disable Reels", "key": "disable_reels", "default_checked": true},
+      {"order": 4, "label": "Disable Stories", "key": "disable_stories", "default_checked": true},
+      {"order": 5, "label": "Disable Shopping", "key": "disable_shopping", "default_checked": true}
+    ],
+    "process_restart_required_after_change": true
+  },
+  "features": {
+    "feed": {"implementation": "Tigon URI blocking", "verified_contrast": false},
+    "explore": {"implementation": "Tigon URI blocking", "verified_contrast": false},
+    "reels": {"implementation": "Tigon URI blocking", "verified_contrast": false},
+    "stories": {"implementation": "Tigon URI blocking", "verified_contrast": false},
+    "shopping": {"implementation": "partial Tigon URI blocking", "verified_contrast": false, "warning": "Bloks identifiers outside URI paths are not covered"},
+    "profile_ads": {"implementation": "not ported", "verified_contrast": false}
+  },
+  "pending": [
+    "Run the apktool/aapt1 intermediate build and stock-APK DEX graft",
+    "Sign and install the grafted APK",
+    "Startup and settings-dialog smoke test",
+    "Feed enabled/disabled contrast",
+    "Explore enabled/disabled contrast",
+    "Reels enabled/disabled contrast",
+    "Stories enabled/disabled contrast",
+    "Shopping caller-level blocking",
+    "Profile-ad blocking",
+    "Lazy profile Options behavior"
+  ]
+}
