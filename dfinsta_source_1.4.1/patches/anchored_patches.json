@@ -19,42 +19,16 @@
       ]
     },
     {
-      "id": "app_crash_annotation",
-      "descriptor": "Lcom/instagram/app/InstagramAppShell;",
-      "mode": "insert_after",
-      "anchor": [".implements LX/0Z5;"],
-      "expected_anchor_count": 1,
-      "marker": "Lcom/acra/annotation/ReportsCrashes;",
-      "expected_marker_count": 1,
-      "payload": [
-        "",
-        ".annotation runtime Lcom/acra/annotation/ReportsCrashes;",
-        "    formKey = \"\"",
-        "    mailTo = \"bugs@distractionfreeapps.com\"",
-        "    mode = .enum Lcom/acra/ReportingInteractionMode;->TOAST:Lcom/acra/ReportingInteractionMode;",
-        "    resToastText = 0x7f180025",
-        ".end annotation"
-      ]
-    },
-    {
-      "id": "app_startup",
+      "id": "set_app_context",
       "descriptor": "Lcom/instagram/app/InstagramAppShell;",
       "mode": "insert_after",
       "anchor": ["invoke-super {v9}, Landroid/app/Application;->onCreate()V"],
       "expected_anchor_count": 1,
-      "marker": "Lcom/dfinstagram/AmplitudeEventsSender;->sendEventsAsync()V",
+      "marker": "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
       "expected_marker_count": 1,
       "payload": [
         "",
-        "    invoke-static {v9}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
-        "",
-        "    invoke-static {v9}, Lcom/acra/ACRA;->init(Landroid/app/Application;)V",
-        "",
-        "    new-instance v11, Lcom/dfinstagram/AmplitudeEventsSender;",
-        "",
-        "    invoke-direct {v11, v9}, Lcom/dfinstagram/AmplitudeEventsSender;-><init>(Landroid/app/Application;)V",
-        "",
-        "    invoke-virtual {v11}, Lcom/dfinstagram/AmplitudeEventsSender;->sendEventsAsync()V"
+        "    invoke-static {v9}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V"
       ]
     },
     {

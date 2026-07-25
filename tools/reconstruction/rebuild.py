@@ -79,6 +79,7 @@ def main() -> None:
             python,
             str(TOOLS / "verify_apk.py"),
             str(args.output_apk),
+            "--hardened",
             "--output",
             str(verification),
         ]
