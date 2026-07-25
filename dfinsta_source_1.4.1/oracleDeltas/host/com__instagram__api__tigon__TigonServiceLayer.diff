@@ -1,0 +1,18 @@
+--- stock/smali/com/instagram/api/tigon/TigonServiceLayer.smali
++++ modified/smali/com/instagram/api/tigon/TigonServiceLayer.smali
+@@ -1,6 +1,5 @@
+ .class public final Lcom/instagram/api/tigon/TigonServiceLayer;
+ .super Ljava/lang/Object;
+-.source ""
+ .implements LX/15a;
+ .field public static final Companion:LX/1E0;
+ .field public static final HUC_HTTP_STACK:Ljava/lang/String; = "huc"
+@@ -825,6 +824,8 @@
+ invoke-virtual {v11, v7, v8}, Lcom/instagram/api/tigon/TigonServiceLayer;->validateRequestBody(LX/1Os;LX/1Oz;)V
+ invoke-virtual {v11, v7, v8}, Lcom/instagram/api/tigon/TigonServiceLayer;->logQPL(LX/1Os;LX/1Oz;)V
+ :try_start_0
++iget-object v0, v7, LX/1Os;->A09:Ljava/net/URI;
++invoke-static {v0}, Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V
+ iget-object v0, v11, Lcom/instagram/api/tigon/TigonServiceLayer;->service:Lcom/instagram/service/tigon/IGTigonService;
+ iget-object v1, v0, Lcom/instagram/service/tigon/IGTigonService;->mTigonServiceHolder:Lcom/facebook/tigon/iface/TigonServiceHolder;
+ instance-of v0, v1, Lcom/facebook/tigon/tigonmns/TigonMNSServiceHolder;

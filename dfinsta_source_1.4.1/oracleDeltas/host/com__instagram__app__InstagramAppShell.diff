@@ -1,0 +1,83 @@
+--- stock/smali/com/instagram/app/InstagramAppShell.smali
++++ modified/smali/com/instagram/app/InstagramAppShell.smali
+@@ -3,6 +3,12 @@
+ .source ""
+ .implements LX/08u;
+ .implements LX/0Z5;
++.annotation runtime Lcom/acra/annotation/ReportsCrashes;
++formKey = ""
++mailTo = "bugs@distractionfreeapps.com"
++mode = .enum Lcom/acra/ReportingInteractionMode;->TOAST:Lcom/acra/ReportingInteractionMode;
++resToastText = 0x7f180025
++.end annotation
+ .field public A00:LX/0Iy;
+ .field public A01:Z
+ .field public A02:J
+@@ -443,7 +449,6 @@
+ invoke-virtual {v8, v7}, Ljava/io/File;->setWritable(Z)Z
+ :try_end_7
+ .catch Ljava/io/IOException; {:try_start_7 .. :try_end_7} :catch_2
+-.catch Ljava/io/IOException; {:try_start_7 .. :try_end_7} :catch_6
+ .catchall {:try_start_7 .. :try_end_7} :catchall_2
+ :catch_2
+ :try_start_8
+@@ -494,7 +499,6 @@
+ invoke-virtual {v1, v7}, Ljava/io/File;->setWritable(Z)Z
+ :try_end_9
+ .catch Ljava/io/IOException; {:try_start_9 .. :try_end_9} :catch_3
+-.catch Ljava/io/IOException; {:try_start_9 .. :try_end_9} :catch_6
+ .catchall {:try_start_9 .. :try_end_9} :catchall_2
+ :catch_3
+ :try_start_a
+@@ -1743,7 +1747,6 @@
+ goto :goto_14
+ :try_end_2d
+ .catch Ljava/io/IOException; {:try_start_2d .. :try_end_2d} :catch_7
+-.catch Ljava/io/IOException; {:try_start_2d .. :try_end_2d} :catch_d
+ .catch Ljava/lang/RuntimeException; {:try_start_2d .. :try_end_2d} :catch_c
+ .catchall {:try_start_2d .. :try_end_2d} :catchall_f
+ :catch_7
+@@ -1779,7 +1782,6 @@
+ move-result-object v13
+ :try_end_2e
+ .catch Ljava/io/IOException; {:try_start_2e .. :try_end_2e} :catch_9
+-.catch Ljava/io/IOException; {:try_start_2e .. :try_end_2e} :catch_d
+ .catch Ljava/lang/RuntimeException; {:try_start_2e .. :try_end_2e} :catch_c
+ .catchall {:try_start_2e .. :try_end_2e} :catchall_f
+ :try_start_2f
+@@ -2009,7 +2011,6 @@
+ move-result v14
+ :try_end_43
+ .catch Ljava/io/IOException; {:try_start_43 .. :try_end_43} :catch_9
+-.catch Ljava/io/IOException; {:try_start_43 .. :try_end_43} :catch_d
+ .catch Ljava/lang/RuntimeException; {:try_start_43 .. :try_end_43} :catch_c
+ .catchall {:try_start_43 .. :try_end_43} :catchall_f
+ :catch_9
+@@ -2064,7 +2065,6 @@
+ if-eqz v0, :cond_5d
+ :try_end_45
+ .catch Ljava/io/IOException; {:try_start_45 .. :try_end_45} :catch_a
+-.catch Ljava/io/IOException; {:try_start_45 .. :try_end_45} :catch_d
+ .catch Ljava/lang/RuntimeException; {:try_start_45 .. :try_end_45} :catch_c
+ .catchall {:try_start_45 .. :try_end_45} :catchall_f
+ :try_start_46
+@@ -2131,7 +2131,6 @@
+ throw v0
+ :try_end_4b
+ .catch Ljava/io/IOException; {:try_start_4b .. :try_end_4b} :catch_a
+-.catch Ljava/io/IOException; {:try_start_4b .. :try_end_4b} :catch_d
+ .catch Ljava/lang/RuntimeException; {:try_start_4b .. :try_end_4b} :catch_c
+ .catchall {:try_start_4b .. :try_end_4b} :catchall_f
+ :catch_a
+@@ -2656,6 +2655,11 @@
+ :cond_0
+ move-object/from16 v9, p0
+ invoke-super {v9}, Landroid/app/Application;->onCreate()V
++invoke-static {v9}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V
++invoke-static {v9}, Lcom/acra/ACRA;->init(Landroid/app/Application;)V
++new-instance v11, Lcom/dfinstagram/AmplitudeEventsSender;
++invoke-direct {v11, v9}, Lcom/dfinstagram/AmplitudeEventsSender;-><init>(Landroid/app/Application;)V
++invoke-virtual {v11}, Lcom/dfinstagram/AmplitudeEventsSender;->sendEventsAsync()V
+ const-wide/16 v11, 0x1
+ invoke-static {v11, v12}, Lcom/facebook/systrace/Systrace;->A0E(J)Z
+ move-result v0

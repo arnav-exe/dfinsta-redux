@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "operations": [
+    {
+      "id": "tigon_url_block",
+      "descriptor": "Lcom/instagram/api/tigon/TigonServiceLayer;",
+      "mode": "insert_after",
+      "anchor": [
+        "invoke-virtual {v11, v7, v8}, Lcom/instagram/api/tigon/TigonServiceLayer;->logQPL(LX/1Os;LX/1Oz;)V",
+        ":try_start_0"
+      ],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V",
+      "expected_marker_count": 1,
+      "payload": [
+        "    iget-object v0, v7, LX/1Os;->A09:Ljava/net/URI;",
+        "",
+        "    invoke-static {v0}, Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V"
+      ]
+    },
+    {
+      "id": "app_crash_annotation",
+      "descriptor": "Lcom/instagram/app/InstagramAppShell;",
+      "mode": "insert_after",
+      "anchor": [".implements LX/0Z5;"],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/acra/annotation/ReportsCrashes;",
+      "expected_marker_count": 1,
+      "payload": [
+        "",
+        ".annotation runtime Lcom/acra/annotation/ReportsCrashes;",
+        "    formKey = \"\"",
+        "    mailTo = \"bugs@distractionfreeapps.com\"",
+        "    mode = .enum Lcom/acra/ReportingInteractionMode;->TOAST:Lcom/acra/ReportingInteractionMode;",
+        "    resToastText = 0x7f180025",
+        ".end annotation"
+      ]
+    },
+    {
+      "id": "app_startup",
+      "descriptor": "Lcom/instagram/app/InstagramAppShell;",
+      "mode": "insert_after",
+      "anchor": ["invoke-super {v9}, Landroid/app/Application;->onCreate()V"],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/AmplitudeEventsSender;->sendEventsAsync()V",
+      "expected_marker_count": 1,
+      "payload": [
+        "",
+        "    invoke-static {v9}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
+        "",
+        "    invoke-static {v9}, Lcom/acra/ACRA;->init(Landroid/app/Application;)V",
+        "",
+        "    new-instance v11, Lcom/dfinstagram/AmplitudeEventsSender;",
+        "",
+        "    invoke-direct {v11, v9}, Lcom/dfinstagram/AmplitudeEventsSender;-><init>(Landroid/app/Application;)V",
+        "",
+        "    invoke-virtual {v11}, Lcom/dfinstagram/AmplitudeEventsSender;->sendEventsAsync()V"
+      ]
+    },
+    {
+      "id": "capture_feed_cache",
+      "descriptor": "LX/2XI;",
+      "mode": "insert_after",
+      "anchor": ["check-cast v3, Lcom/instagram/mainfeed/network/FeedCacheCoordinator;"],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/startapp;->setFeedCache(Lcom/instagram/mainfeed/network/FeedCacheCoordinator;)V",
+      "expected_marker_count": 1,
+      "payload": [
+        "",
+        "    invoke-static {v3}, Lcom/dfinstagram/startapp;->setFeedCache(Lcom/instagram/mainfeed/network/FeedCacheCoordinator;)V"
+      ]
+    },
+    {
+      "id": "clear_feed_cache_reference",
+      "descriptor": "LX/2XI;",
+      "mode": "insert_after",
+      "anchor": [".method public final onDestroy()V", ".locals 10"],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/startapp;->clearFeedCache()V",
+      "expected_marker_count": 1,
+      "payload": [
+        "",
+        "    invoke-static {}, Lcom/dfinstagram/startapp;->clearFeedCache()V"
+      ]
+    },
+    {
+      "id": "show_welcome_dialog",
+      "descriptor": "LX/2XI;",
+      "mode": "insert_after",
+      "anchor": [
+        "invoke-virtual {v3}, LX/3dt;->getRootActivity()Landroid/app/Activity;",
+        "move-result-object v11"
+      ],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/dfinstagram;->checkVersion(Landroid/app/Activity;)V",
+      "expected_marker_count": 1,
+      "payload": [
+        "",
+        "    invoke-static {v11}, Lcom/dfinstagram/dfinstagram;->checkVersion(Landroid/app/Activity;)V"
+      ]
+    },
+    {
+      "id": "remove_stock_settings_long_click",
+      "descriptor": "LX/66Y;",
+      "mode": "replace",
+      "anchor": [
+        "new-instance v9, LX/FAE;",
+        "invoke-direct {v9, v5}, LX/FAE;-><init>(LX/66Y;)V"
+      ],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/SettingsWrapper;",
+      "expected_marker_count": 2,
+      "payload": []
+    },
+    {
+      "id": "install_dfinsta_settings_long_click",
+      "descriptor": "LX/66Y;",
+      "mode": "insert_before",
+      "anchor": ["iput-object v9, v1, LX/365;->A0H:Landroid/view/View$OnLongClickListener;"],
+      "expected_anchor_count": 2,
+      "occurrence": 0,
+      "marker": "Lcom/dfinstagram/SettingsWrapper;",
+      "expected_marker_count": 2,
+      "payload": [
+        "    new-instance v9, Lcom/dfinstagram/SettingsWrapper;",
+        "",
+        "    invoke-direct {v9}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
+        ""
+      ]
+    }
+  ]
+}

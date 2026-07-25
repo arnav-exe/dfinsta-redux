@@ -1,0 +1,35 @@
+--- stock/smali/X/2XI.smali
++++ modified/smali/X/2XI.smali
+@@ -2628,7 +2628,7 @@
+ invoke-direct {v14, v0, v4, v0, v1}, LX/2eX;-><init>(LX/0gr;Lcom/instagram/common/session/UserSession;LX/2Wy;LX/1DD;)V
+ iput-object v14, v5, LX/2ZY;->A0b:LX/2eX;
+ :cond_e
+-const-string v18, "eof"
++const-string/jumbo v18, "eof"
+ invoke-static {v2, v3}, Ljava/lang/Long;->valueOf(J)Ljava/lang/Long;
+ move-result-object v16
+ sub-int/2addr v7, v11
+@@ -5385,6 +5385,7 @@
+ move-result-object v3
+ check-cast v3, LX/1gu;
+ check-cast v3, Lcom/instagram/mainfeed/network/FeedCacheCoordinator;
++invoke-static {v3}, Lcom/dfinstagram/startapp;->setFeedCache(Lcom/instagram/mainfeed/network/FeedCacheCoordinator;)V
+ :cond_28
+ :goto_f
+ invoke-virtual {v0}, LX/2XI;->A05()Lcom/instagram/common/session/UserSession;
+@@ -6593,6 +6594,7 @@
+ .end method
+ .method public final onDestroy()V
+ .locals 10
++invoke-static {}, Lcom/dfinstagram/startapp;->clearFeedCache()V
+ const v0, 0x6e13888d
+ invoke-static {v0}, LX/0cv;->A02(I)I
+ move-result v4
+@@ -7976,6 +7978,7 @@
+ :goto_1
+ invoke-virtual {v3}, LX/3dt;->getRootActivity()Landroid/app/Activity;
+ move-result-object v11
++invoke-static {v11}, Lcom/dfinstagram/dfinstagram;->checkVersion(Landroid/app/Activity;)V
+ invoke-virtual {v3}, LX/2XI;->A08()LX/2ZY;
+ move-result-object v0
+ invoke-virtual {v0}, LX/2ZY;->A04()LX/2Rn;

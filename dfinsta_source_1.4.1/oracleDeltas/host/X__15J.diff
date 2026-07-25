@@ -1,0 +1,19 @@
+--- stock/smali/X/15J.smali
++++ modified/smali/X/15J.smali
+@@ -1,6 +1,5 @@
+ .class public final LX/15J;
+ .super Ljava/lang/Object;
+-.source ""
+ .field public final A00:Landroid/content/Context;
+ .field public final A01:Lcom/instagram/common/session/UserSession;
+ .field public final A02:LX/15R;
+@@ -110,7 +109,8 @@
+ iput-object v8, v2, LX/184;->A02:Ljava/lang/Integer;
+ sget-object v0, LX/04d;->A01:Ljava/lang/Integer;
+ invoke-virtual {v2, v0}, LX/186;->A04(Ljava/lang/Integer;)V
+-const-string/jumbo v0, "feed/timeline/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemovePosts()Ljava/lang/String;
++move-result-object v0
+ invoke-virtual {v2, v0}, LX/186;->A06(Ljava/lang/String;)V
+ iput-object v5, v2, LX/184;->A01:LX/183;
+ const-class v11, LX/18D;

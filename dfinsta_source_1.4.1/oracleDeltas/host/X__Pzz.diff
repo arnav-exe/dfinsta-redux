@@ -1,0 +1,18 @@
+--- stock/smali_classes9/X/Pzz.smali
++++ modified/smali_classes9/X/Pzz.smali
+@@ -1,6 +1,5 @@
+ .class public final LX/Pzz;
+ .super LX/QHo;
+-.source ""
+ .implements LX/0mi;
+ .field public A00:J
+ .field public A01:Ljava/lang/Object;
+@@ -183,6 +182,8 @@
+ iget-wide v8, v2, LX/OYy;->A00:J
+ const/4 v6, 0x0
+ const-string v5, "com.bloks.www.minishops.storefront.ig"
++invoke-static {v5}, Lcom/dfinstagram/DistractionFree;->improveRemoveShopping(Ljava/lang/String;)Ljava/lang/String;
++move-result-object v5
+ :goto_1
+ invoke-static/range {v3 .. v9}, LX/82X;->A03(Landroid/content/Context;LX/82W;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;J)V
+ goto :goto_0

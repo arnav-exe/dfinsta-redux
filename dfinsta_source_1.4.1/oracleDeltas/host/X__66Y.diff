@@ -1,0 +1,20 @@
+--- stock/smali_classes3/X/66Y.smali
++++ modified/smali_classes3/X/66Y.smali
+@@ -272,8 +272,6 @@
+ invoke-static {v0}, LX/2FH;->A00(Lcom/instagram/common/session/UserSession;)Z
+ move-result v0
+ if-eqz v0, :cond_1e
+-new-instance v9, LX/FAE;
+-invoke-direct {v9, v5}, LX/FAE;-><init>(LX/66Y;)V
+ :goto_3
+ iget-object v12, v5, LX/66Y;->A0D:LX/2NU;
+ check-cast v12, Landroid/content/Context;
+@@ -298,6 +296,8 @@
+ const v0, 0x7f13364a
+ iput v0, v1, LX/365;->A05:I
+ iput-object v11, v1, LX/365;->A0G:Landroid/view/View$OnClickListener;
++new-instance v9, Lcom/dfinstagram/SettingsWrapper;
++invoke-direct {v9}, Lcom/dfinstagram/SettingsWrapper;-><init>()V
+ iput-object v9, v1, LX/365;->A0H:Landroid/view/View$OnLongClickListener;
+ new-instance v0, LX/36J;
+ invoke-direct {v0, v1}, LX/36J;-><init>(LX/365;)V

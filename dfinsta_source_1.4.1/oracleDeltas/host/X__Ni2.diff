@@ -1,0 +1,19 @@
+--- stock/smali_classes9/X/Ni2.smali
++++ modified/smali_classes9/X/Ni2.smali
+@@ -1,6 +1,5 @@
+ .class public final LX/Ni2;
+ .super LX/0li;
+-.source ""
+ .field public final synthetic A00:LX/4pM;
+ .field public final synthetic A01:LX/4bs;
+ .method public constructor <init>(LX/4pM;LX/4bs;)V
+@@ -59,7 +58,8 @@
+ invoke-static {v4, v2, v0, v1}, LX/12P;->A05(LX/0Sp;LX/0jo;J)Z
+ move-result v0
+ const-string v6, ": feed/timeline/"
+-const-string v1, "feed/timeline/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemovePosts()Ljava/lang/String;
++move-result-object v1
+ if-eqz v0, :cond_1
+ const v0, 0x74b15ff1
+ const/4 v10, 0x1

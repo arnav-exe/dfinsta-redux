@@ -1,0 +1,31 @@
+--- stock/smali_classes3/X/51R.smali
++++ modified/smali_classes3/X/51R.smali
+@@ -2800,7 +2800,8 @@
+ const-string p0, "disabled_snooze_expiration_lockout_manager"
+ return-object p0
+ :pswitch_3a3
+-const-string p0, "discover/topical_explore/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveExplore()Ljava/lang/String;
++move-result-object p0
+ return-object p0
+ :pswitch_3a4
+ const-string p0, "discovery"
+@@ -6052,7 +6053,8 @@
+ const-string p0, "client_token"
+ return-object p0
+ :pswitch_7df
+-const-string p0, "clips/discover/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReels()Ljava/lang/String;
++move-result-object p0
+ return-object p0
+ :pswitch_7e0
+ const-string p0, "clips_audio_filters_privacy_snackbar_shown_count"
+@@ -11987,6 +11989,8 @@
+ return-object p0
+ :pswitch_f99
+ const-string p0, "com.bloks.www.minishops.ad.storefront"
++invoke-static {p0}, Lcom/dfinstagram/DistractionFree;->improveRemoveShopping(Ljava/lang/String;)Ljava/lang/String;
++move-result-object p0
+ return-object p0
+ :pswitch_f9a
+ const-string p0, "com.facebook.orca"

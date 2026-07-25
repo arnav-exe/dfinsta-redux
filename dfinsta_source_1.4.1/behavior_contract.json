@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "package": "com.instagram.android",
+  "base_version_name": "340.0.0.22.109",
+  "base_version_code": 374010893,
+  "startup": {
+    "component": "com.instagram.android/com.instagram.mainactivity.LauncherActivity",
+    "logged_out_accepted_anchor_sets": [
+      ["Join Instagram", "I already have a profile"],
+      ["Password"]
+    ],
+    "required": ["process_alive", "no_android_runtime_fatal"]
+  },
+  "settings": {
+    "activity": "com.dfinstagram.preference.Preference",
+    "exported": false,
+    "entry": [
+      "select resource-id com.instagram.android:id/profile_tab",
+      "if Options is absent, navigate Home then Profile and swipe down toward the profile header",
+      "poll for content-desc Options with long-clickable=true",
+      "long-click Options",
+      "assert text Distraction Free settings"
+    ],
+    "welcome_action": "Settings",
+    "switch_resource_id": "android:id/switch_widget",
+    "switches": [
+      {"order": 1, "label": "Disable feed", "key": "disable_feed", "default_checked": true},
+      {"order": 2, "label": "Disable explore", "key": "disable_explore", "default_checked": true},
+      {"order": 3, "label": "Disable reels", "key": "disable_reels", "default_checked": true},
+      {"order": 4, "label": "Disable shopping", "key": "disable_shopping", "default_checked": true},
+      {"order": 5, "label": "Disable stories", "key": "disable_stories", "default_checked": true}
+    ],
+    "process_restart_required_after_change": true
+  },
+  "features": {
+    "feed": {
+      "verified_contrast": true,
+      "disabled_observation": "No feed posts after process restart",
+      "enabled_observation": "Feed post loaded in a process session started with disable_feed=false"
+    },
+    "explore": {
+      "verified_contrast": true,
+      "disabled_observation": "Search shell visible with no discovery grid",
+      "enabled_observation": "Populated discovery grid visible after process restart"
+    },
+    "reels": {
+      "verified_contrast": true,
+      "disabled_observation": "Handled request error visible and process remains alive",
+      "enabled_observation": "Playable reel content visible after process restart",
+      "automation_note": "Continuous playback can prevent UI Automator from reaching idle"
+    },
+    "stories": {
+      "verified_contrast": false,
+      "disabled_observation": "Current user's own story remains visible; no other tray entries observed"
+    },
+    "shopping": {"verified_contrast": false},
+    "profile_ads": {"verified_contrast": false, "visible_switch": false}
+  },
+  "pending": [
+    "Hardcore Mode behavior",
+    "Stories enabled/disabled contrast",
+    "Shopping enabled/disabled contrast",
+    "Profile-ad behavior",
+    "Feed-cache clearing isolated from process restart",
+    "Request-level Tigon attribution",
+    "ACRA network behavior",
+    "Amplitude network behavior"
+  ]
+}

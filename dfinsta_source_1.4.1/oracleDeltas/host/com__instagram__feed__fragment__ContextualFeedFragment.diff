@@ -1,0 +1,24 @@
+--- stock/smali_classes2/com/instagram/feed/fragment/ContextualFeedFragment.smali
++++ modified/smali_classes2/com/instagram/feed/fragment/ContextualFeedFragment.smali
+@@ -1,6 +1,5 @@
+ .class public final Lcom/instagram/feed/fragment/ContextualFeedFragment;
+ .super LX/2XJ;
+-.source ""
+ .implements LX/1DD;
+ .implements LX/2cs;
+ .implements LX/2XK;
+@@ -400,10 +399,12 @@
+ invoke-direct {v7, v8, v0}, LX/1H7;-><init>(LX/0jo;I)V
+ sget-object v11, LX/04d;->A01:Ljava/lang/Integer;
+ invoke-virtual {v7, v11}, LX/186;->A04(Ljava/lang/Integer;)V
+-const-string v0, "feed/reels_tray/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveStories()Ljava/lang/String;
++move-result-object v0
+ invoke-virtual {v7, v0}, LX/186;->A06(Ljava/lang/String;)V
+ iput-object v1, v7, LX/1H7;->A02:LX/1H3;
+-const-string v0, "feed/reels_tray/_v1"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveStoriesV1()Ljava/lang/String;
++move-result-object v0
+ iput-object v0, v7, LX/186;->A0A:Ljava/lang/String;
+ invoke-virtual {v7, v9}, LX/186;->A03(Ljava/lang/Integer;)V
+ if-eqz v4, :cond_1

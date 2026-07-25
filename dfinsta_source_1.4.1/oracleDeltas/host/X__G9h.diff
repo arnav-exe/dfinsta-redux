@@ -1,0 +1,32 @@
+--- stock/smali_classes7/X/G9h.smali
++++ modified/smali_classes7/X/G9h.smali
+@@ -714,10 +714,12 @@
+ goto/16 :goto_1
+ :cond_7
+ if-eqz v5, :cond_8
+-const-string v13, "mixed_media/discover/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsMixed()Ljava/lang/String;
++move-result-object v13
+ goto/16 :goto_1
+ :cond_8
+-const-string v13, "clips/discover/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReels()Ljava/lang/String;
++move-result-object v13
+ goto/16 :goto_1
+ :cond_9
+ invoke-static {v8}, LX/6SR;->A00(Lcom/instagram/common/session/UserSession;)LX/1H7;
+@@ -839,10 +841,12 @@
+ goto/16 :goto_2
+ :cond_6
+ if-eqz v1, :cond_7
+-const-string v10, "mixed_media/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsMixedStream()Ljava/lang/String;
++move-result-object v10
+ goto/16 :goto_1
+ :cond_7
+-const-string v10, "clips/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsStream()Ljava/lang/String;
++move-result-object v10
+ goto/16 :goto_1
+ :cond_8
+ invoke-static {v5, v0}, LX/6SR;->A02(Lcom/instagram/common/session/UserSession;I)LX/184;

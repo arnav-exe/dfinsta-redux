@@ -1,0 +1,19 @@
+--- stock/smali_classes7/X/GUk.smali
++++ modified/smali_classes7/X/GUk.smali
+@@ -1,6 +1,5 @@
+ .class public final LX/GUk;
+ .super Ljava/lang/Object;
+-.source ""
+ .implements LX/0IR;
+ .field public A00:I
+ .field public A01:I
+@@ -67,7 +66,8 @@
+ invoke-static {v0}, LX/Aup;->A07(LX/0jo;)LX/1H7;
+ move-result-object v2
+ invoke-virtual {v2, v1}, LX/186;->A04(Ljava/lang/Integer;)V
+-const-string v0, "profile_ads/get_profile_ads/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveAdsProfile()Ljava/lang/String;
++move-result-object v0
+ invoke-virtual {v2, v0}, LX/186;->A06(Ljava/lang/String;)V
+ const-class v1, LX/AvC;
+ const-class v0, LX/AvB;

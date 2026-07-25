@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <corners android:radius="5.0dip" />
+            <stroke android:width="1.0dip" android:color="@color/instander_unfollowbtn_color" />
+            <gradient android:startColor="@color/instander_unfollowbtn_color_press" android:endColor="@color/instander_unfollowbtn_color_press" android:angle="-90.0" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="5.0dip" />
+            <stroke android:width="1.0dip" android:color="@color/instander_unfollowbtn_color" />
+            <gradient android:startColor="@color/instander_unfollowbtn_color_bkg" android:endColor="@color/instander_unfollowbtn_color_bkg" android:angle="-90.0" />
+        </shape>
+    </item>
+</selector>

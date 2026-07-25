@@ -1,0 +1,13 @@
+{
+  "base_instagram": "340.0.0.22.109",
+  "dfinsta_version": "1.4.1",
+  "copied_classes": {
+    "acra": 79,
+    "dfinstagram": 13
+  },
+  "copied_resource_files": 91,
+  "append_resource_files": 8,
+  "changed_value_entries": 2,
+  "added_manifest_components": 2,
+  "direct_hook_diffs": 23
+}

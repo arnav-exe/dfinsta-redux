@@ -1,0 +1,19 @@
+--- stock/smali/X/2Za.smali
++++ modified/smali/X/2Za.smali
+@@ -1,6 +1,5 @@
+ .class public final LX/2Za;
+ .super Ljava/lang/Object;
+-.source ""
+ .implements LX/2Zb;
+ .implements LX/0jp;
+ .field public A00:J
+@@ -1507,7 +1506,8 @@
+ invoke-direct {v3, v8}, LX/1H7;-><init>(LX/0jo;)V
+ sget-object v2, LX/04d;->A01:Ljava/lang/Integer;
+ invoke-virtual {v3, v2}, LX/186;->A04(Ljava/lang/Integer;)V
+-const-string/jumbo v2, "feed/reels_tray/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveStories()Ljava/lang/String;
++move-result-object v2
+ invoke-virtual {v3, v2}, LX/186;->A06(Ljava/lang/String;)V
+ const-class v7, LX/1Gz;
+ new-instance v6, LX/0wV;

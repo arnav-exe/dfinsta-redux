@@ -1,0 +1,19 @@
+--- stock/smali/X/186.smali
++++ modified/smali/X/186.smali
+@@ -1,6 +1,5 @@
+ .class public abstract LX/186;
+ .super Ljava/lang/Object;
+-.source ""
+ .implements LX/187;
+ .field public A00:J
+ .field public A01:J
+@@ -100,7 +99,8 @@
+ if-eqz v3, :cond_59
+ sget-object v17, LX/0jl;->A00:LX/0rF;
+ invoke-static/range {v17 .. v17}, LX/13Y;->A01(LX/0rF;)LX/13a;
+-const-string/jumbo v5, "feed/timeline/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemovePosts()Ljava/lang/String;
++move-result-object v5
+ invoke-virtual {v2, v5}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+ move-result v16
+ if-eqz v16, :cond_2

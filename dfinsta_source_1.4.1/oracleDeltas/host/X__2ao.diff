@@ -1,0 +1,19 @@
+--- stock/smali/X/2ao.smali
++++ modified/smali/X/2ao.smali
+@@ -1,6 +1,5 @@
+ .class public final LX/2ao;
+ .super Ljava/lang/Object;
+-.source ""
+ .field public A00:J
+ .field public A01:J
+ .field public A02:J
+@@ -1451,7 +1450,8 @@
+ invoke-virtual {v0}, LX/2aA;->A00()Ljava/lang/String;
+ move-result-object v16
+ iget-object v1, v2, LX/2ao;->A0W:LX/2Zn;
+-const-string/jumbo v0, "feed/timeline/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemovePosts()Ljava/lang/String;
++move-result-object v0
+ invoke-interface {v1, v0}, LX/2Zn;->ATR(Ljava/lang/String;)Ljava/util/Map;
+ move-result-object v21
+ sget-object v6, LX/0Sp;->A05:LX/0Sp;

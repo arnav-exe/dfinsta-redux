@@ -1,0 +1,19 @@
+--- stock/smali_classes7/X/GBY.smali
++++ modified/smali_classes7/X/GBY.smali
+@@ -1,6 +1,5 @@
+ .class public final LX/GBY;
+ .super Ljava/lang/Object;
+-.source ""
+ .implements LX/0IR;
+ .field public A00:I
+ .field public A01:I
+@@ -140,7 +139,8 @@
+ invoke-static {v7}, LX/Aup;->A07(LX/0jo;)LX/1H7;
+ move-result-object v8
+ invoke-virtual {v8, v12}, LX/186;->A04(Ljava/lang/Integer;)V
+-const-string v0, "profile_ads/get_profile_ads/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveAdsProfile()Ljava/lang/String;
++move-result-object v0
+ invoke-virtual {v8, v0}, LX/186;->A06(Ljava/lang/String;)V
+ const-class v12, LX/AvC;
+ const-class v0, LX/AvB;

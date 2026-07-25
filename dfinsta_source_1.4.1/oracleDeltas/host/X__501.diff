@@ -1,0 +1,102 @@
+--- stock/smali_classes2/X/501.smali
++++ modified/smali_classes2/X/501.smali
+@@ -140,7 +140,8 @@
+ new-instance v4, Ljava/lang/Throwable;
+ invoke-direct {v4}, Ljava/lang/Throwable;-><init>()V
+ const/4 v5, 0x2
+-const-string v1, "clips/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsStream()Ljava/lang/String;
++move-result-object v1
+ invoke-static {p1}, LX/1Cd;->A08(Lcom/instagram/common/session/UserSession;)Z
+ move-result v0
+ if-eqz v0, :cond_2
+@@ -284,7 +285,8 @@
+ iput-wide v0, v2, LX/508;->A00:J
+ iget-object v0, v2, LX/508;->A02:Ljava/util/HashSet;
+ invoke-virtual {v0}, Ljava/util/AbstractCollection;->clear()V
+-const-string v2, "clips/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsStream()Ljava/lang/String;
++move-result-object v2
+ const/4 v1, 0x1
+ invoke-static {p1}, LX/2bJ;->A00(Lcom/instagram/common/session/UserSession;)LX/2bJ;
+ move-result-object v0
+@@ -314,7 +316,8 @@
+ if-eqz v0, :cond_1
+ invoke-static {p1}, LX/1Cd;->A08(Lcom/instagram/common/session/UserSession;)Z
+ move-result v0
+-const-string v5, "clips/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsStream()Ljava/lang/String;
++move-result-object v5
+ const-wide/32 v6, 0xa8c0
+ move-object v4, p2
+ if-eqz v0, :cond_0
+@@ -357,7 +360,8 @@
+ const/16 v3, 0x13
+ new-instance v5, LX/8eA;
+ invoke-direct {v5, v3, v0, v1, v6}, LX/8eA;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V
+-const-string v11, "clips/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsStream()Ljava/lang/String;
++move-result-object v11
+ iget-object v3, v0, LX/501;->A04:LX/5Hw;
+ if-eqz v3, :cond_2
+ invoke-virtual {v3}, LX/5Hw;->A01()Ljava/lang/String;
+@@ -465,7 +469,8 @@
+ if-eqz v3, :cond_5
+ invoke-static {v1}, LX/6SR;->A01(Lcom/instagram/common/session/UserSession;)LX/184;
+ move-result-object v23
+-const-string v29, "mixed_media/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsMixedStream()Ljava/lang/String;
++move-result-object v29
+ :goto_4
+ sget-object v25, LX/04d;->A0C:Ljava/lang/Integer;
+ const/16 v26, 0x0
+@@ -521,7 +526,8 @@
+ const/16 v3, 0x28
+ new-instance v5, LX/8eD;
+ invoke-direct {v5, v3, v6, v0, v1}, LX/8eD;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V
+-const-string v12, "clips/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsStream()Ljava/lang/String;
++move-result-object v12
+ iget-object v3, v0, LX/501;->A04:LX/5Hw;
+ if-eqz v3, :cond_f
+ invoke-virtual {v3}, LX/5Hw;->A01()Ljava/lang/String;
+@@ -625,7 +631,8 @@
+ const-class v5, LX/Aw8;
+ const-class v0, LX/AwK;
+ invoke-virtual {v3, v7, v5, v0, v4}, LX/1H7;->A0K(LX/106;Ljava/lang/Class;Ljava/lang/Class;Z)V
+-const-string v25, "mixed_media/discover/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsMixed()Ljava/lang/String;
++move-result-object v25
+ :goto_8
+ sget-object v21, LX/04d;->A0C:Ljava/lang/Integer;
+ move-object/from16 v23, v15
+@@ -793,7 +800,8 @@
+ if-eqz v0, :cond_1
+ invoke-static {p1}, LX/19N;->A00(Lcom/instagram/common/session/UserSession;)LX/19O;
+ move-result-object v3
+-const-string v2, "clips/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsStream()Ljava/lang/String;
++move-result-object v2
+ const-wide/32 v0, 0xa8c0
+ invoke-virtual {v3, v2, v0, v1, v4}, LX/19O;->A03(Ljava/lang/String;JZ)Ljava/lang/Integer;
+ move-result-object v0
+@@ -801,7 +809,8 @@
+ :cond_1
+ invoke-static {p1}, LX/1II;->A00(Lcom/instagram/common/session/UserSession;)LX/19P;
+ move-result-object v3
+-const-string v2, "clips/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsStream()Ljava/lang/String;
++move-result-object v2
+ const-wide/32 v0, 0xa8c0
+ invoke-virtual {v3, v2, v0, v1, v4}, LX/19P;->A05(Ljava/lang/String;JZ)Ljava/lang/Integer;
+ move-result-object v0
+@@ -1025,7 +1034,8 @@
+ invoke-virtual {p1, v0, v1}, LX/0jo;->A01(Ljava/lang/Class;LX/0n6;)Ljava/lang/Object;
+ move-result-object v3
+ check-cast v3, LX/506;
+-const-string v2, "clips/discover/stream/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveReelsStream()Ljava/lang/String;
++move-result-object v2
+ invoke-static {p1}, LX/1Cd;->A08(Lcom/instagram/common/session/UserSession;)Z
+ move-result v0
+ if-eqz v0, :cond_0

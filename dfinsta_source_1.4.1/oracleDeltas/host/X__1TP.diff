@@ -1,0 +1,22 @@
+--- stock/smali/X/1TP.smali
++++ modified/smali/X/1TP.smali
+@@ -1,13 +1,15 @@
+ .class public abstract LX/1TP;
+ .super Ljava/lang/Object;
+-.source ""
+ .field public static final A00:Ljava/util/List;
+ .method public static constructor <clinit>()V
+ .locals 7
+-const-string/jumbo v0, "feed/timeline/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemovePosts()Ljava/lang/String;
++move-result-object v0
+ const-string/jumbo v1, "feed/timeline_stream/"
+-const-string v2, "discover/topical_explore/"
+-const-string/jumbo v3, "feed/reels_tray/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveExplore()Ljava/lang/String;
++move-result-object v2
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemoveStories()Ljava/lang/String;
++move-result-object v3
+ const-string/jumbo v4, "feed/injected_reels_media/"
+ const-string/jumbo v5, "feed/reels_media/"
+ const-string/jumbo v6, "feed/reels_media_stream/"

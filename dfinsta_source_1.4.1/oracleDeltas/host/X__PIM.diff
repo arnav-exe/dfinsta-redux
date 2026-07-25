@@ -1,0 +1,19 @@
+--- stock/smali_classes9/X/PIM.smali
++++ modified/smali_classes9/X/PIM.smali
+@@ -1,6 +1,5 @@
+ .class public final LX/PIM;
+ .super Ljava/lang/Object;
+-.source ""
+ .implements LX/0jc;
+ .field public final A00:Landroid/content/Context;
+ .field public final A01:Landroid/os/Handler;
+@@ -81,7 +80,8 @@
+ invoke-static {}, LX/0Pl;->A0D()LX/0oF;
+ move-result-object v7
+ sget-object v6, LX/Q83;->A00:LX/Q83;
+-const-string v5, "feed/timeline/"
++invoke-static {}, Lcom/dfinstagram/DistractionFree;->improveRemovePosts()Ljava/lang/String;
++move-result-object v5
+ const/16 v4, -0x14
+ const/4 v0, 0x5
+ invoke-static {v8, v0, v7}, LX/7hq;->A1M(Ljava/lang/Object;ILjava/lang/Object;)V
