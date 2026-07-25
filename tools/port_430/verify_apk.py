@@ -16,6 +16,7 @@ REQUIRED_CUSTOM_SYMBOLS = [
 HOST_HOOK_MARKERS = {
     "classes.dex": "Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V",
     "classes3.dex": "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
+    "classes4.dex": "Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
     "classes6.dex": "Lcom/dfinstagram/SettingsWrapper;",
 }
 

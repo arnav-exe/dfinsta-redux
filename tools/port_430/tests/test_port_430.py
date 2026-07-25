@@ -110,6 +110,10 @@ class SourcePolicyTests(unittest.TestCase):
 
         self.assertIn('const-string v1, "/api/v1/clips/homecoming/"', hooks)
         self.assertNotIn('const-string v1, "/api/v1/clips/home/"', hooks)
+        self.assertIn(
+            "replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;", hooks
+        )
+        self.assertIn('const-string p0, ""', hooks)
 
 
 class PrepareAndPatchTests(unittest.TestCase):
@@ -131,7 +135,7 @@ class PrepareAndPatchTests(unittest.TestCase):
             self.assertEqual((output / "res/raw/item").read_bytes(), b"resource")
             self.assertEqual((output / "smali_classes20/pkg/Only.smali").read_bytes(), b"class")
 
-    def test_has_three_exact_430_anchored_patches(self) -> None:
+    def test_has_six_exact_430_anchored_patches(self) -> None:
         manifest = json.loads(
             (SOURCE / "patches/anchored_patches.json").read_text(encoding="utf-8")
         )
@@ -139,11 +143,29 @@ class PrepareAndPatchTests(unittest.TestCase):
 
         self.assertEqual(
             set(operations),
-            {"set_app_context", "tigon_url_block", "install_settings_long_click"},
+            {
+                "set_app_context",
+                "tigon_url_block",
+                "install_settings_long_click",
+                "replace_reels_discover_endpoint",
+                "replace_reels_homecoming_endpoint",
+                "replace_reels_stream_endpoint",
+            },
         )
         self.assertEqual(
-            {operation["marker"] for operation in operations.values()},
-            set(HOST_HOOK_MARKERS.values()),
+            {
+                operations[operation_id]["marker"]
+                for operation_id in (
+                    "set_app_context",
+                    "tigon_url_block",
+                    "install_settings_long_click",
+                )
+            },
+            {
+                marker
+                for dex_name, marker in HOST_HOOK_MARKERS.items()
+                if dex_name != "classes4.dex"
+            },
         )
         self.assertEqual(
             operations["tigon_url_block"]["anchor"],
@@ -163,6 +185,18 @@ class PrepareAndPatchTests(unittest.TestCase):
             "    invoke-virtual {v6, v0}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V",
             payload,
         )
+        for operation_id, register, endpoint in (
+            ("replace_reels_discover_endpoint", "v8", "clips/discover/"),
+            ("replace_reels_homecoming_endpoint", "v9", "clips/homecoming/"),
+            ("replace_reels_stream_endpoint", "v9", "clips/discover/stream/"),
+        ):
+            operation = operations[operation_id]
+            self.assertEqual(operation["descriptor"], "LX/05t2;")
+            self.assertEqual(operation["anchor"], [f'const-string {register}, "{endpoint}"'])
+            self.assertIn(
+                f"    invoke-static {{{register}}}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+                operation["payload"],
+            )
 
 
 class GraftTests(unittest.TestCase):
@@ -185,6 +219,7 @@ class GraftTests(unittest.TestCase):
                 "classes.dex": b"stock-1",
                 "classes2.dex": b"stock-2",
                 "classes3.dex": b"stock-3",
+                "classes4.dex": b"stock-4",
                 "classes6.dex": b"stock-6",
                 "META-INF/MANIFEST.MF": b"signature",
                 "META-INF/CERT.RSA": b"signature",

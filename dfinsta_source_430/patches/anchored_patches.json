@@ -58,6 +58,57 @@
         "",
         "    :dfinsta_skip_settings_long_click"
       ]
+    },
+    {
+      "id": "replace_reels_discover_endpoint",
+      "descriptor": "LX/05t2;",
+      "mode": "replace",
+      "anchor": ["const-string v8, \"clips/discover/\""],
+      "expected_anchor_count": 1,
+      "marker": ":dfinsta_reels_discover_endpoint",
+      "expected_marker_count": 1,
+      "payload": [
+        "    :dfinsta_reels_discover_endpoint",
+        "    const-string v8, \"clips/discover/\"",
+        "",
+        "    invoke-static {v8}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "",
+        "    move-result-object v8"
+      ]
+    },
+    {
+      "id": "replace_reels_homecoming_endpoint",
+      "descriptor": "LX/05t2;",
+      "mode": "replace",
+      "anchor": ["const-string v9, \"clips/homecoming/\""],
+      "expected_anchor_count": 1,
+      "marker": ":dfinsta_reels_homecoming_endpoint",
+      "expected_marker_count": 1,
+      "payload": [
+        "    :dfinsta_reels_homecoming_endpoint",
+        "    const-string v9, \"clips/homecoming/\"",
+        "",
+        "    invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "",
+        "    move-result-object v9"
+      ]
+    },
+    {
+      "id": "replace_reels_stream_endpoint",
+      "descriptor": "LX/05t2;",
+      "mode": "replace",
+      "anchor": ["const-string v9, \"clips/discover/stream/\""],
+      "expected_anchor_count": 1,
+      "marker": ":dfinsta_reels_stream_endpoint",
+      "expected_marker_count": 1,
+      "payload": [
+        "    :dfinsta_reels_stream_endpoint",
+        "    const-string v9, \"clips/discover/stream/\"",
+        "",
+        "    invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "",
+        "    move-result-object v9"
+      ]
     }
   ]
 }

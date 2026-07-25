@@ -10,7 +10,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 REPOSITORY = TOOLS.parents[1]
 ANCHORED_PATCHER = REPOSITORY / "tools" / "reconstruction" / "apply_anchored_patches.py"
-GRAFT_NAMES = {"classes.dex", "classes3.dex", "classes6.dex", "classes20.dex"}
+GRAFT_NAMES = {"classes.dex", "classes3.dex", "classes4.dex", "classes6.dex", "classes20.dex"}
 
 
 def is_signature_artifact(name: str) -> bool:

@@ -10,6 +10,23 @@
     return-void
 .end method
 
+.method public static replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;
+    .locals 1
+
+    const-string v0, "disable_reels"
+
+    invoke-static {v0}, Lcom/dfinstagram/dfinstagram;->getBoolTrueEz(Ljava/lang/String;)Z
+
+    move-result v0
+
+    if-eqz v0, :cond_return_endpoint
+
+    const-string p0, ""
+
+    :cond_return_endpoint
+    return-object p0
+.end method
+
 .method public static throwIfBlocked(Ljava/net/URI;)V
     .locals 3
 
