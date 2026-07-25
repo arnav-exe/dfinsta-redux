@@ -11,63 +11,6 @@
     return-void
 .end method
 
-.method private static getRealPathFromURI(Landroid/content/Context;Landroid/net/Uri;)Ljava/lang/String;
-    .locals 10
-
-    const/4 v4, 0x0
-
-    const/4 v1, 0x1
-
-    new-array v3, v1, [Ljava/lang/String;
-
-    const/4 v1, 0x0
-
-    const-string v2, "_data"
-
-    aput-object v2, v3, v1
-
-    new-instance v0, Landroidx/loader/content/CursorLoader;
-
-    move-object v1, p0
-
-    move-object v2, p1
-
-    move-object v5, v4
-
-    move-object v6, v4
-
-    invoke-direct/range {v0 .. v6}, Landroidx/loader/content/CursorLoader;-><init>(Landroid/content/Context;Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)V
-
-    invoke-virtual {v0}, Landroidx/loader/content/CursorLoader;->loadInBackground()Landroid/database/Cursor;
-
-    move-result-object v8
-
-    if-eqz v8, :cond_0
-
-    const-string v1, "_data"
-
-    invoke-interface {v8, v1}, Landroid/database/Cursor;->getColumnIndexOrThrow(Ljava/lang/String;)I
-
-    move-result v7
-
-    invoke-interface {v8}, Landroid/database/Cursor;->moveToFirst()Z
-
-    invoke-interface {v8, v7}, Landroid/database/Cursor;->getString(I)Ljava/lang/String;
-
-    move-result-object v9
-
-    invoke-interface {v8}, Landroid/database/Cursor;->close()V
-
-    :goto_0
-    return-object v9
-
-    :cond_0
-    const-string v9, "null"
-
-    goto :goto_0
-.end method
-
-
 # virtual methods
 .method public final getSession()LX/0aT;
     .locals 1

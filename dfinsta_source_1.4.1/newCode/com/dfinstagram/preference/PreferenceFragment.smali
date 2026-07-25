@@ -16,9 +16,6 @@
 
 .field private downloadFolder:Landroid/preference/Preference;
 
-.field private updateList:Landroid/preference/Preference;
-
-
 # direct methods
 .method public constructor <init>()V
     .locals 0
@@ -73,14 +70,6 @@
     if-nez v0, :cond_0
 
     const-string v0, "disable_stories"
-
-    invoke-virtual {p0, v0}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
-
-    move-result v0
-
-    if-nez v0, :cond_0
-
-    const-string v0, "disable_suggested_posts"
 
     invoke-virtual {p0, v0}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
 
@@ -519,32 +508,6 @@
 
     goto :goto_0
 
-    :sswitch_9
-    const-string v11, "save_backup"
-
-    invoke-virtual {v10, v11}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
-
-    move-result v10
-
-    if-eqz v10, :cond_0
-
-    const/16 v9, 0xa
-
-    goto :goto_0
-
-    :sswitch_a
-    const-string v11, "restore_backup"
-
-    invoke-virtual {v10, v11}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
-
-    move-result v10
-
-    if-eqz v10, :cond_0
-
-    const/16 v9, 0xb
-
-    goto :goto_0
-
     :sswitch_b
     nop
 
@@ -665,16 +628,6 @@
 
     goto/16 :goto_1
 
-    :pswitch_a
-    invoke-static {}, Lcom/dfinstagram/backup/PrefsBackupHelper;->performBackup()V
-
-    goto/16 :goto_1
-
-    :pswitch_b
-    invoke-static {}, Lcom/dfinstagram/backup/PrefsBackupHelper;->restoreBackup()V
-
-    goto/16 :goto_1
-
     :pswitch_c
     nop
 
@@ -692,9 +645,7 @@
         -0x6ac19d17 -> :sswitch_5
         -0x5e049c8e -> :sswitch_8
         -0x4fd494b0 -> :sswitch_6
-        -0x28c3bb6d -> :sswitch_a
         -0x2821d85b -> :sswitch_4
-        0x14227ac4 -> :sswitch_9
         0x2889ba08 -> :sswitch_0
         0x30082881 -> :sswitch_1
         0x300833c9 -> :sswitch_7
@@ -716,8 +667,8 @@
         :pswitch_7
         :pswitch_8
         :pswitch_9
-        :pswitch_a
-        :pswitch_b
+        :goto_1
+        :goto_1
         :pswitch_c
         :pswitch_d
     .end packed-switch
@@ -768,14 +719,6 @@
 
     :cond_1
     return-void
-
-    invoke-static {}, Lcom/dfinstagram/followers/Tracker;->getInstance()Lcom/OM7753/gold/followers/Tracker;
-
-    move-result-object v1
-
-    invoke-virtual {v1}, Lcom/dfinstagram/followers/Tracker;->stopService()V
-
-    goto :goto_0
 .end method
 
 .method public showFileListerDialog()V

@@ -29,7 +29,6 @@
     <item type="istring" name="dfinstagram_disable_reels">Disable reels</item>
     <item type="istring" name="dfinstagram_disable_shopping">Disable shopping</item>
     <item type="istring" name="dfinstagram_disable_stories">Disable stories</item>
-    <item type="istring" name="dfinstagram_disable_suggested_posts">Disable suggested posts</item>
     <item type="istring" name="pref_hardcore_mode">Hardcore Mode</item>
     <item type="istring" name="pref_hardcore_mode_header">Hardcore Mode</item>
     <item type="istring" name="hardcore_mode_explainer_header">For people who are serious about eliminating distractions.</item>
@@ -37,6 +36,5 @@
     <item type="istring" name="hardcore_mode_enable">Enable hardcore mode</item>
     <item type="istring" name="close_translate">Close</item>
     <item type="istring" name="hardcore_mode_blocked_changes">"You can't disable this, hardcore mode is on!"</item>
-    <item type="istring" name="bug_report">DistractionFreeInstagram has crashed! Please submit a bug report via email</item>
     <item type="istring" name="to_settings">Settings</item>
 </resources>

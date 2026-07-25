@@ -5,11 +5,6 @@
 # static fields
 .field public static final TAG:Ljava/lang/String; = "instamod"
 
-.field private static bufferStreamField:Ljava/lang/reflect/Field;
-
-.field private static readBufferField:Ljava/lang/reflect/Field;
-
-
 # direct methods
 .method public constructor <init>()V
     .locals 0
@@ -63,24 +58,6 @@
     invoke-static {v0}, Ljava/lang/System;->exit(I)V
 
     return-void
-.end method
-
-.method private static str2Bytes(Ljava/lang/String;)[B
-    .locals 1
-    .annotation system Ldalvik/annotation/Throws;
-        value = {
-            Ljava/io/UnsupportedEncodingException;
-        }
-    .end annotation
-
-    .prologue
-    const-string v0, "UTF-8"
-
-    invoke-virtual {p0, v0}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
-
-    move-result-object v0
-
-    return-object v0
 .end method
 
 .method public static throwIfBlocked(Ljava/net/URI;)V

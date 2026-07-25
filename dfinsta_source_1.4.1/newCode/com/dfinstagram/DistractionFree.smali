@@ -36,29 +36,6 @@
     goto :goto_0
 .end method
 
-.method public static improveRemoveComments()Ljava/lang/String;
-    .locals 1
-
-    .prologue
-    const-string v0, "disable_comments"
-
-    invoke-static {v0}, Lcom/dfinstagram/dfinstagram;->getBoolTrueEz(Ljava/lang/String;)Z
-
-    move-result v0
-
-    if-eqz v0, :cond_0
-
-    const-string v0, ""
-
-    :goto_0
-    return-object v0
-
-    :cond_0
-    const-string v0, "media/%s/comments/"
-
-    goto :goto_0
-.end method
-
 .method public static improveRemoveExplore()Ljava/lang/String;
     .locals 1
 
@@ -101,29 +78,6 @@
 
     :cond_0
     const-string v0, "discover/topical_explore_stream/"
-
-    goto :goto_0
-.end method
-
-.method public static improveRemoveLimitedComments()Ljava/lang/String;
-    .locals 1
-
-    .prologue
-    const-string v0, "disable_comments"
-
-    invoke-static {v0}, Lcom/dfinstagram/dfinstagram;->getBoolTrueEz(Ljava/lang/String;)Z
-
-    move-result v0
-
-    if-eqz v0, :cond_0
-
-    const-string v0, ""
-
-    :goto_0
-    return-object v0
-
-    :cond_0
-    const-string v0, "limited_interactions/%s/comments/limited_comments/"
 
     goto :goto_0
 .end method
@@ -313,29 +267,6 @@
 
     :cond_0
     const-string v0, "feed/reels_tray/_v1"
-
-    goto :goto_0
-.end method
-
-.method public static improveRemoveStreamComments()Ljava/lang/String;
-    .locals 1
-
-    .prologue
-    const-string v0, "disable_comments"
-
-    invoke-static {v0}, Lcom/dfinstagram/dfinstagram;->getBoolTrueEz(Ljava/lang/String;)Z
-
-    move-result v0
-
-    if-eqz v0, :cond_0
-
-    const-string v0, ""
-
-    :goto_0
-    return-object v0
-
-    :cond_0
-    const-string v0, "media/%s/stream_comments/"
 
     goto :goto_0
 .end method

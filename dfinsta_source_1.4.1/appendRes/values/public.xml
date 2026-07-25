@@ -92,14 +92,12 @@
 <public id="0x7f0b3f8f" name="pref_content" type="id" />
 <public id="0x7f0b000e" name="translate" type="id" />
 <public id="0x7f180015" name="btccopypassdone" type="istring" />
-<public id="0x7f180025" name="bug_report" type="istring" />
 <public id="0x7f180023" name="close_translate" type="istring" />
 <public id="0x7f180019" name="dfinstagram_disable_explore" type="istring" />
 <public id="0x7f180018" name="dfinstagram_disable_feed" type="istring" />
 <public id="0x7f18001a" name="dfinstagram_disable_reels" type="istring" />
 <public id="0x7f18001b" name="dfinstagram_disable_shopping" type="istring" />
 <public id="0x7f18001c" name="dfinstagram_disable_stories" type="istring" />
-<public id="0x7f18001d" name="dfinstagram_disable_suggested_posts" type="istring" />
 <public id="0x7f180017" name="dfinstagram_settings_header" type="istring" />
 <public id="0x7f180016" name="dfinstagram_settings_title" type="istring" />
 <public id="0x7f180013" name="ethcopypassdone" type="istring" />
