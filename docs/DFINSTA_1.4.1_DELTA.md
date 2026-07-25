@@ -68,6 +68,8 @@ The three direct Shopping substitutions are ineffective: every wrapped identifie
 
 The Amplitude event sends Android ID, event name `dfinsta_start`, and the DFInsta version to `https://api2.amplitude.com/2/httpapi` using an embedded API key. This is oracle behavior, not a required distraction-blocking feature; retaining it requires an explicit decision.
 
+See `docs/PRIVACY_1.4.1.md` for the full startup telemetry and crash-report audit. The recommended hardened-baseline policy is to remove both Amplitude and inherited ACRA rather than port them to 430.
+
 ### Settings entry
 
 `LX/66Y` replaces Instagram's existing long-click listener with `SettingsWrapper`, which opens `com.dfinstagram.preference.Preference`. Device observation confirms the entry point is a long-press on the top-right `Options` control on the current user's profile. Long-pressing the bottom Profile tab instead opens Instagram's stock account switcher. The welcome dialog uses the same wrapper for its Settings button.
