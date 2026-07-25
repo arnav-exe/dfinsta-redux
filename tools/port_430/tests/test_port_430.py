@@ -141,6 +141,27 @@ class PrepareAndPatchTests(unittest.TestCase):
             operations["tigon_url_block"]["anchor"],
             [":try_start_0", "iget-object v1, p1, LX/05ez;->A08:Ljava/net/URI;"],
         )
+        self.assertEqual(
+            operations["install_settings_long_click"]["anchor"],
+            [
+                "if-ne v15, v12, :cond_17",
+                "invoke-static {v2}, LX/03bl;->A01(Lcom/instagram/common/session/UserSession;)Z",
+                "move-result v0",
+                "if-eqz v0, :cond_17",
+                "new-instance v13, LX/0LAk;",
+                "invoke-direct {v13, v5, v12}, LX/0LAk;-><init>(Ljava/lang/Object;I)V",
+            ],
+        )
+        self.assertEqual(
+            operations["install_settings_long_click"]["payload"],
+            [
+                "    if-ne v15, v12, :cond_17",
+                "",
+                "    new-instance v13, Lcom/dfinstagram/SettingsWrapper;",
+                "",
+                "    invoke-direct {v13}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
+            ],
+        )
 
 
 class GraftTests(unittest.TestCase):
