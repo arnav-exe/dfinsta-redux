@@ -101,6 +101,11 @@ The privacy-hardened test APK is:
 - Cold launch completed in 1.883 seconds; the process remained alive and no fatal log marker appeared.
 - Lazy settings entry succeeded on attempt two using Profile > Home > Profile > header swipe > semantic `Options` long-press.
 - The settings title rendered and exactly five `android:id/switch_widget` nodes remained checked.
+- Non-mutating `feature-state --leave-settings` capture passed for all three navigation targets while the process remained alive with no fatal trace.
+- Home exposed `Your story` and neither `Suggested for you` nor `Liked by`; hierarchy and screenshot evidence were captured.
+- Explore exposed required search-shell anchor `Ask Meta AI or search` with no `Suggested for you` discovery anchor.
+- Reels exposed the required handled request error with no `Follow` item anchor.
+- Artifacts are under ignored `work/device-runner/hardened-features/`.
 
 The existing UI Automator test's `Password` assertion is stale for this first-run screen. Startup tests should assert the process and accept a small versioned set of known logged-out anchors rather than one historical screen string.
 

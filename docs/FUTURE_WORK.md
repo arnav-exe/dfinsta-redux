@@ -15,10 +15,10 @@ Completion requires:
 
 ## Immediate Roadmap
 
-1. Extend automated feature capture beyond startup/settings and rerun disabled-state regressions on the hardened APK.
-2. Continue the first-pass 430 mapping in `docs/PORT_430_MAPPING.md` and produce the minimal first build.
-3. Resolve Shopping/profile-ad/cache policy before claiming their 430 behavior.
-4. Instrument the lazy action bar before attempting a visibility fix.
+1. Continue the first-pass 430 mapping in `docs/PORT_430_MAPPING.md` and produce the minimal first build.
+2. Resolve Shopping/profile-ad/cache policy before claiming their 430 behavior.
+3. Instrument the lazy action bar before attempting a visibility fix.
+4. Extend device automation to controlled on/off contrasts without ever enabling Hardcore Mode.
 5. Wrap deterministic activities in the durable agentic workflow.
 
 ## Lazy Profile Options

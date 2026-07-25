@@ -31,6 +31,8 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `bcccf53 drop startup tracking` (branch `harden-1.4.1`)
 - `8dcb161 refresh session handoff` (branch `harden-1.4.1`)
 - `2d024e1 trim dead app residue` (branch `harden-1.4.1`)
+- `122baa8 document hardened baseline` (branch `harden-1.4.1`)
+- `f8cb5ff capture disabled feature state` (branch `harden-1.4.1`)
 
 Current branch: `harden-1.4.1`, created from `master` after `806ec54`.
 
@@ -162,6 +164,7 @@ The final clean build and safe live regression passed.
 - Cold startup stayed alive with no fatal trace.
 - Settings route succeeded through the lazy-menu recovery sequence.
 - Exactly five switches remained checked.
+- Non-mutating disabled-state capture passed for Home/feed+Stories, Explore, and Reels. Required Explore/Reels anchors passed; Home evidence showed own story and no feed-item anchors. Process stayed alive with no fatal trace.
 
 Full historical audit: `docs/PRIVACY_1.4.1.md`.
 
@@ -183,9 +186,9 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 
 ## Immediate Next Actions
 
-1. Extend the committed host-side runner from startup/settings primitives into safe disabled-state feature evidence.
-2. Capture hardened Feed/Explore/Reels/Stories disabled-state regressions without changing preferences.
-3. Merge the validated `harden-1.4.1` branch back to `master`.
+1. Merge the validated `harden-1.4.1` branch back to `master`.
+2. Continue 430 candidate-manifest generation from `docs/PORT_430_MAPPING.md`.
+3. Build the minimal 430 context/Tigon/settings prototype before porting brittle cache internals.
 5. Instrument lazy action-bar state before attempting a visibility fix.
 6. Continue the decoded Instagram 430 mapping in `docs/PORT_430_MAPPING.md`; do not patch generated string tables or copy old obfuscated classes.
 
