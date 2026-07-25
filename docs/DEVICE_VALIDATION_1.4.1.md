@@ -87,6 +87,21 @@ The reproducible test APK is:
 - Stories has a confirmed safe contrast. With `Disable stories` unchecked and the process restarted, three other users' unseen tray entries appeared alongside the current user's story. With the switch checked and restarted, only the current user's story remained. No story was opened or marked seen.
 - Stories was restored to checked; all five switches were verified true and the app restarted afterward.
 
+## Hardened Baseline Results
+
+The privacy-hardened test APK is:
+
+`work/1.4.1-reconstruction/dfinsta-1.4.1-hardened-final.apk`
+
+- Signed SHA-256: `61d7cf895c7f460faaf454f52ee2af3378e827a5f0cf20a886c3378a25ab1cd5`.
+- APK Signature Scheme v3 verifies with the same debug signer as the prior reconstruction.
+- Installed successfully with `adb install -r`; logged-in app data and switch state were preserved.
+- Hardened DEX verification confirms no Amplitude sender, ACRA descriptor, or `ReportsCrashes` annotation remains.
+- Device runner preflight matched package version `340.0.0.22.109` / code `374010893`.
+- Cold launch completed in 1.883 seconds; the process remained alive and no fatal log marker appeared.
+- Lazy settings entry succeeded on attempt two using Profile > Home > Profile > header swipe > semantic `Options` long-press.
+- The settings title rendered and exactly five `android:id/switch_widget` nodes remained checked.
+
 The existing UI Automator test's `Password` assertion is stale for this first-run screen. Startup tests should assert the process and accept a small versioned set of known logged-out anchors rather than one historical screen string.
 
 ## Required Reconstruction Tests
@@ -98,7 +113,7 @@ The existing UI Automator test's `Password` assertion is stale for this first-ru
 5. Exercise Shopping and profile-ad behavior independently; feed, Explore, Reels, and Stories have confirmed on/off contrasts.
 6. Isolate feed-cache clearing from the already confirmed restart behavior.
 7. Attribute handled request failures to specific Tigon requests using network evidence rather than UI inference.
-8. Record whether ACRA or Amplitude network activity occurs; do not infer this only from static code.
+8. Historical ACRA/Amplitude runtime characterization is optional oracle research; the hardened DEX contract proves neither implementation is shipped.
 
 Automation should locate controls by package/resource ID/accessibility description and visible text. Pixel coordinates are capture-specific fallback evidence, not durable selectors.
 

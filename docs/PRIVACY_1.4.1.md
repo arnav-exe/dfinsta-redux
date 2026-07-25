@@ -10,6 +10,10 @@ This document describes reconstructed oracle behavior. Reproducing historical be
 
 Both systems are reachable oracle behavior, not dead code. Removal requires a rebuild plus startup/crash-path verification.
 
+## Policy Status
+
+The user approved the recommendation. The maintained 1.4.1 baseline removes both systems, and hardened DEX verification rejects their symbols. A clean build, in-place installation, cold startup, and settings regression passed. The historical analysis below remains as oracle evidence; neither subsystem should be ported to 430.
+
 ## Amplitude Startup Event
 
 `InstagramAppShell.onCreate()` constructs `AmplitudeEventsSender` and calls `sendEventsAsync()` after initializing app context and ACRA. The wiring is recorded in:

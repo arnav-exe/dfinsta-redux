@@ -73,4 +73,15 @@ The result should describe the intentional 1.4.1 delta, not preserve complete mo
 - Static audit found that direct Shopping substitutions are no-ops because `minshop` does not match the patched `minishops` identifiers; only URI-path Tigon blocking may remain effective.
 - Static audit confirmed Hardcore Mode is effectively irreversible through the UI and cache clearing is asynchronous, partial, and triggered only when a disable switch changes to true.
 - `DistractionFree` does not rewrite responses. Its methods return the original endpoint string when a feature is enabled and an empty string when disabled; host patches replace the corresponding stock `const-string` instructions with these calls.
-- Startup also initializes ACRA and posts an asynchronous `dfinsta_start` event containing Android ID and app version to Amplitude. This is part of the 1.4.1 oracle delta but is analytically separate from distraction blocking and needs an explicit retain/remove decision later.
+- The historical oracle initializes ACRA and posts an asynchronous `dfinsta_start` event containing Android ID and app version to Amplitude. The user approved removing both from the maintained baseline and future 430 port.
+
+### 2026-07-25: Privacy hardening
+
+- Removed the two Amplitude sender classes and all 79 bundled ACRA classes.
+- Reduced the startup patch to `startapp.setContext()` only; removed the crash annotation and both reporting initializers.
+- Added hardened DEX verification that rejects Amplitude, any `Lcom/acra/` descriptor, and `ReportsCrashes` while leaving default oracle verification available.
+- Removed proven-safe dead residue: nonexistent `IconChoose`, two uninstantiated synthetic classes, unreachable follower/backup code, unused private members, dead comment helpers, suggested-post residue, and the newly orphaned crash-report string.
+- Added source-policy tests that prove removed residue remains absent and active settings/donation resources remain present. Reconstruction tests increased from five to 15; all pass, along with nine device-runner tests.
+- A clean build applied 30 endpoint and seven anchored operations, assembled all 11 DEX files, and passed the hardened contract.
+- Zip-aligned and debug-signed `work/1.4.1-reconstruction/dfinsta-1.4.1-hardened-final.apk`. APK Signature Scheme v3 verifies; SHA-256 is `61d7cf895c7f460faaf454f52ee2af3378e827a5f0cf20a886c3378a25ab1cd5`.
+- Installed the hardened APK in-place on the logged-in Pixel 9. Package/version preflight passed, cold startup stayed alive with no fatal trace, lazy profile settings entry succeeded on attempt two, and exactly five checked switches remained.

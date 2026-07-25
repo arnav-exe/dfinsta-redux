@@ -2,6 +2,10 @@
 
 This audit separates proven dead/broken oracle residue from resources that are merely statically unreferenced. Cleanup should happen only after the oracle-faithful baseline remains reproducible.
 
+## Status
+
+The user approved and the maintained baseline now applies the safe boundary below. Source-policy tests enforce the removals and retained settings graph. Broad resource pruning remains deferred pending runtime traversal.
+
 ## Safe Removal Boundary
 
 ### Nonexistent activity

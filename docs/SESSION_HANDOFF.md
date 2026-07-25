@@ -29,6 +29,8 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `bb7ff4d add device contract runner`
 - `806ec54 map first 430 hooks`
 - `bcccf53 drop startup tracking` (branch `harden-1.4.1`)
+- `8dcb161 refresh session handoff` (branch `harden-1.4.1`)
+- `2d024e1 trim dead app residue` (branch `harden-1.4.1`)
 
 Current branch: `harden-1.4.1`, created from `master` after `806ec54`.
 
@@ -151,7 +153,15 @@ Commit `bcccf53` implements the privacy portion:
 - Added hardened APK verification that rejects Amplitude, any `Lcom/acra/` descriptor, and `ReportsCrashes`; default oracle verification remains available.
 - Reconstruction unit suite now has ten passing tests.
 
-This commit has not yet completed the full clean apktool rebuild/device regression. That is the exact next checkpoint.
+The final clean build and safe live regression passed.
+
+- APK: `work/1.4.1-reconstruction/dfinsta-1.4.1-hardened-final.apk`
+- Signed SHA-256: `61d7cf895c7f460faaf454f52ee2af3378e827a5f0cf20a886c3378a25ab1cd5`
+- v3 signature verified.
+- In-place install preserved login and preferences.
+- Cold startup stayed alive with no fatal trace.
+- Settings route succeeded through the lazy-menu recovery sequence.
+- Exactly five switches remained checked.
 
 Full historical audit: `docs/PRIVACY_1.4.1.md`.
 
@@ -169,14 +179,13 @@ Proven safe-removal boundary:
 
 Large inherited resource groups are only statically unreferenced and require full settings traversal before pruning. Full conservative audit: `docs/CLEANUP_1.4.1.md`.
 
-Safe dead-code cleanup has not yet been applied. It follows the privacy build checkpoint as a separate commit.
+Commit `2d024e1` applies the safe dead-code boundary and adds source-policy tests. Broad resource pruning remains deferred.
 
 ## Immediate Next Actions
 
-1. Rebuild privacy-hardened 1.4.1 from clean stock and verify the hardened DEX contract.
-2. Apply proven-safe dead residue cleanup as a separate commit, then rebuild again.
-3. Sign/install the final hardened APK and rerun startup/settings plus Feed/Explore/Reels/Stories contracts.
-4. Extend the committed host-side runner from startup/settings primitives into safe feature-state evidence after policy hardening.
+1. Extend the committed host-side runner from startup/settings primitives into safe disabled-state feature evidence.
+2. Capture hardened Feed/Explore/Reels/Stories disabled-state regressions without changing preferences.
+3. Merge the validated `harden-1.4.1` branch back to `master`.
 5. Instrument lazy action-bar state before attempting a visibility fix.
 6. Continue the decoded Instagram 430 mapping in `docs/PORT_430_MAPPING.md`; do not patch generated string tables or copy old obfuscated classes.
 

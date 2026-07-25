@@ -15,12 +15,11 @@ Completion requires:
 
 ## Immediate Roadmap
 
-1. Commit the remaining behavior, privacy, cleanup, and lazy-menu findings.
-2. Decide whether the hardened baseline removes Amplitude, ACRA, and proven dead residue.
-3. Automate the confirmed 1.4.1 device contract.
-4. Rebuild and revalidate the hardened 1.4.1 baseline.
-5. Continue the first-pass 430 mapping in `docs/PORT_430_MAPPING.md`, build, and test.
-6. Wrap deterministic activities in the durable agentic workflow.
+1. Extend automated feature capture beyond startup/settings and rerun disabled-state regressions on the hardened APK.
+2. Continue the first-pass 430 mapping in `docs/PORT_430_MAPPING.md` and produce the minimal first build.
+3. Resolve Shopping/profile-ad/cache policy before claiming their 430 behavior.
+4. Instrument the lazy action bar before attempting a visibility fix.
+5. Wrap deterministic activities in the durable agentic workflow.
 
 ## Lazy Profile Options
 
@@ -67,10 +66,7 @@ Do not simply force `A1b=true` on every `LX/66Y.configureActionBar()` call: that
 
 ## Deferred Product Decisions
 
-- Remove unconditional Amplitude startup telemetry.
-- Remove or replace inherited ACRA email crash reporting.
-- Remove the nonexistent `IconChoose` activity and proven unreachable residue.
-- Apply the conservative safe-removal boundary in `docs/CLEANUP_1.4.1.md`; prune statically unreferenced resources only after runtime traversal.
+- Broad resource pruning remains deferred until full runtime settings traversal.
 - Decide whether hidden forced profile-ad blocking becomes a visible setting.
 - Fix or intentionally retire Shopping blocking; direct helpers currently test `minshop` against `minishops` identifiers.
 - Decide whether Hardcore Mode remains effectively irreversible through the UI.

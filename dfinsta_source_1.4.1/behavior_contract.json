@@ -1,8 +1,14 @@
 {
   "schema_version": 1,
+  "variant": "privacy_hardened",
   "package": "com.instagram.android",
   "base_version_name": "340.0.0.22.109",
   "base_version_code": 374010893,
+  "privacy": {
+    "amplitude_startup_telemetry": false,
+    "acra_crash_reporting": false,
+    "verification_forbidden_symbols": ["AmplitudeEventsSender", "Lcom/acra/", "ReportsCrashes"]
+  },
   "startup": {
     "component": "com.instagram.android/com.instagram.mainactivity.LauncherActivity",
     "logged_out_accepted_anchor_sets": [
@@ -83,8 +89,6 @@
     "Shopping enabled/disabled contrast",
     "Profile-ad behavior",
     "Feed-cache clearing isolated from process restart",
-    "Request-level Tigon attribution",
-    "ACRA network behavior",
-    "Amplitude network behavior"
+    "Request-level Tigon attribution"
   ]
 }
