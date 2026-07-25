@@ -33,8 +33,14 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `2d024e1 trim dead app residue` (branch `harden-1.4.1`)
 - `122baa8 document hardened baseline` (branch `harden-1.4.1`)
 - `f8cb5ff capture disabled feature state` (branch `harden-1.4.1`)
+- `93ddffd add minimal 430 port` (branch `port-430`; initial resource-based prototype)
+- `a128481 preserve stock 430 resources` (branch `port-430`; resource-free DEX-graft pivot)
+- `94523c8 read settings title from contract` (branch `port-430`; device runner uses the selected contract's settings title)
+- `44b9a26 attach 430 settings listener` (superseded 430 settings-host hypothesis)
+- `a75e60d launch configured app activity` (contract launcher intent and foreground assertion)
+- `cb63ded patch live 430 profile action` (current `ProfileActionBar` settings hook)
 
-Current branch: `master`. The validated `harden-1.4.1` branch was fast-forwarded into `master` through `fa90270`.
+Current branch: `port-430`. It is based on `master` commit `6f1efa7`; `HEAD` is `cb63ded`. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
 
 ## Golden Reconstruction State
 
@@ -85,16 +91,21 @@ Key APK:
 
 Device: Pixel 9 (`tokay`), authorized over ADB.
 
-The historical oracle APK was pulled and confirmed byte-identical to `apks/dfinsta_1_4_1.apk`, then uninstalled with explicit user approval because its signer differed. The reconstructed debug build is installed. The user manually logged in.
+The historical 340 oracle APK was pulled and confirmed byte-identical to `apks/dfinsta_1_4_1.apk`, then uninstalled with explicit user approval because its signer differed. The reconstructed 340 debug build was installed and the user manually logged in. The signed 430 graft was subsequently installed as an in-place update, so the existing 340 login and preferences data were preserved rather than cleared. That old data may be incompatible with Instagram 430 and is a leading stock-comparison variable, not proof of a patch defect.
 
-Current intended state:
+Current installed state:
 
-- All five disable switches checked.
-- App force-stopped/restarted after final restoration.
-- Last observed process was alive.
-- Do not enable Hardcore Mode on this logged-in installation; it is not reversible through the UI.
+- Installed APK: `work/430-graft-v3/dfinsta_430-graft-v3-test.apk`.
+- SHA-256: `95fab99680031aee8ffde3a5f9a202f47e6c4067626c94e9dffb948a9edb048e`.
+- Package/version preflight passes for `com.instagram.android` / `430.0.0.53.80` (`383611248`).
+- Cold MAIN/LAUNCHER alias launch reaches `com.instagram.mainactivity.InstagramMainActivity`; the runner requires that foreground activity and reports no AndroidRuntime fatal or resource crash.
+- Profile `Options` appears immediately in 430. Long-press opens the framework dialog on the first attempt without a swipe.
+- The dialog contains exactly Feed, Explore, Reels, Stories, and Shopping, all checked from inherited 1.4.1 preferences.
+- A normal Options tap still enters Instagram's stock options/settings surface.
+- Do not clear app data, uninstall, or otherwise destroy the preserved login/preferences state without explicit user approval.
+- Do not enable Hardcore Mode if returning to a 340 build on this data; it is not reversible through the 340 UI.
 
-## Confirmed Device Contract
+## Confirmed 340 Device Contract
 
 - Startup succeeds without filtered AndroidRuntime/ACRA fatal errors.
 - Current logged-out anchors are `Join Instagram` and `I already have a profile`; legacy `Password` assertion is stale.
@@ -132,7 +143,7 @@ Cache clearing runs only when a cached-feature switch changes to true. It is asy
 
 Defaults false. Once enabled, its listener blocks false changes for itself and the disable switches, so it is effectively irreversible through the UI. Recovery requires clearing/uninstalling app data. Test only on disposable state.
 
-### Lazy Options cause
+### 340 Lazy Options cause
 
 DFInsta only replaces Instagram's existing long-click listener. Instagram reads `UserDetailFragment.A1b` before a valid app-bar offset callback, applies `LX/2QV.A0W(false)`, and hides the bar. `RefreshableAppBarLayoutBehavior.DHe()` is the only discovered writer that later updates visibility after scroll.
 
@@ -186,15 +197,67 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 
 ## Immediate Next Actions
 
-1. Continue 430 candidate-manifest generation from `docs/PORT_430_MAPPING.md`.
-2. Build the minimal 430 context/Tigon/settings prototype before porting brittle cache internals.
-3. Keep `docs/SESSION_HANDOFF.md` current at each 430 build/device checkpoint.
-5. Instrument lazy action-bar state before attempting a visibility fix.
-6. Continue the decoded Instagram 430 mapping in `docs/PORT_430_MAPPING.md`; do not patch generated string tables or copy old obfuscated classes.
+1. Run restart-bounded Feed, Explore, Reels, Stories, and Shopping enabled/disabled contrasts on 430. Restore all five settings to checked afterward and do not claim feature validation before the contrasts.
+2. Verify preference mutation and persistence explicitly through the framework dialog, including a process restart.
+3. Verify an unrelated-user profile does not receive the DFInsta long-click action.
+4. Resolve retained-contract gaps separately: direct endpoint coverage, profile-ad policy, Shopping's non-URI Bloks identifiers, and redesigned cache invalidation.
+5. Add the proven 430 build/sign/install/device sequence to the durable orchestration layer without moving ambiguous mapping into deterministic scripts.
+6. Keep `docs/SESSION_HANDOFF.md` and `docs/PORT_430_MAPPING.md` current at every behavior checkpoint.
 
 ## Instagram 430 State
 
-Stock 430 decoded successfully into ignored `work/430-port/stock-430` in 28.36 seconds. It has 19 DEX trees and 179,190 descriptors. All old obfuscated hook descriptors are gone. Stable named Tigon/startup/profile types map cleanly; endpoint occurrences expanded and require method-role classification; mixed-media endpoint literals disappeared; the feed cache architecture changed completely.
+### Stock target
+
+- APK: `apks/com.instagram.android_430.0.0.53.80-383611248_minAPI28(arm64-v8a)(360,400,420,480dpi).apk`.
+- Version: `430.0.0.53.80`; version code `383611248`.
+- SHA-256: `38ae9861b9ca89f60f41767324e1c3d54a4e3a00ed5555b92660a08e6db14754`.
+- Decode: ignored `work/430-port/stock-430`, 28.36 seconds, 19 DEX trees, 179,190 descriptors.
+- All old obfuscated 340 hook descriptors are gone. Stable named Tigon/startup/profile types mapped cleanly; endpoint occurrences expanded, mixed-media endpoint literals disappeared, and the feed-cache architecture changed completely.
+
+### Build investigation and pivot
+
+The first `93ddffd` prototype used a custom settings Activity, custom manifest entry, and custom resources. A stock apktool/aapt1 rebuild initially failed because the local framework lacked an Android API 36 attribute referenced by Instagram 430. Pulling the isolated API 36 `framework-res.apk` from the device and installing it into a dedicated apktool framework directory fixed the static build.
+
+That successful build was not runtime-safe. Apktool's full resource decode/rebuild is lossy for this APK: the original string table contains IDs through `0x7f130231`, while the rebuilt table ends at `0x7f130220`. Existing stock code still requests IDs above that rebuilt range. The first signed, installed resource-rebuilt test was `work/430-build/dfinsta_430-test.apk`, SHA-256 `eb55f232cb6e59f4749f208b2a1123393090c42a61e0b10e9ae60fc7b80e6f5c`; it crashed during AndroidX Startup because resource `0x7f130227` was missing. The API 36 framework solved aapt1 compilation only, not the lossy resource round trip.
+
+Commit `a128481` therefore pivoted to a resource-free build. The maintained 430 patch surface is exactly four custom classes:
+
+- `com.dfinstagram.startapp`: stores the application context.
+- `com.dfinstagram.dfinstagram`: reads the existing `com.instagram` shared preferences and returns endpoint-blocking decisions.
+- `com.dfinstagram.hooks`: applies the five Tigon URI-path rules and throws `IOException` for blocked requests.
+- `com.dfinstagram.SettingsWrapper`: replaces the existing profile Options long-click listener and renders a framework `AlertDialog` with five checked-by-default choices.
+
+There is no custom Activity, manifest component, resource file, or application resource ID. Dialog text and choice labels are literals in custom DEX code. Preference changes are immediate but require an explicit process restart to evaluate behavior cleanly.
+
+The build still uses apktool 2.9.3/aapt1 plus the isolated API 36 framework to assemble changed DEX files in an intermediate APK. It then grafts exactly `classes.dex`, `classes3.dex`, `classes6.dex`, and new `classes20.dex` into the exact stock APK. Stock signing artifacts are removed; every other stock ZIP entry is copied. In particular, the binary `AndroidManifest.xml`, `resources.arsc`, and every `res/` entry come from stock unchanged. The four grafts correspond to the Tigon host hook, app-start context hook, profile settings hook, and four custom classes respectively.
+
+### Static result
+
+- Artifact: `work/430-graft-v3/dfinsta_430-graft-v3-test.apk`.
+- SHA-256: `95fab99680031aee8ffde3a5f9a202f47e6c4067626c94e9dffb948a9edb048e`.
+- The static verifier passed the exact 20-DEX set (`classes.dex` through `classes20.dex`).
+- It found exactly the four allowed custom descriptors and none of the forbidden legacy/privacy/resource-dependent symbols.
+- It found all three required host hooks: `TigonServiceLayer` request blocking in `classes.dex`, `InstagramAppShell` context capture in `classes3.dex`, and `SettingsWrapper` installation in `classes6.dex`.
+- Stock binary `AndroidManifest.xml` and `resources.arsc` are byte-identical.
+- The complete set of `res/` names and every `res/` entry's bytes are identical to stock.
+
+### Device result
+
+- The grafted APK installed successfully as an update, preserving the 340 login and preference data.
+- Package/version preflight passes.
+- Stock 430's launcher is alias `com.instagram.android.activity.MainTabActivity` with MAIN/LAUNCHER; deprecated `LauncherActivity` is only a trampoline and was the cause of the earlier false startup diagnosis.
+- The contract-driven alias launch reaches foreground `InstagramMainActivity` with no fatal or missing-resource crash.
+- The live 430 Options view is built by `LX/077K` from self-profile model `LX/077N`, not by the legacy `LX/06X7` action builder.
+- The guarded listener patch makes Options long-clickable; the framework dialog opens on attempt one and shows all five inherited checked settings.
+- Normal Options click behavior is preserved. Feature on/off contrasts remain pending.
+
+### Current limitations
+
+- Implemented scope is application-context capture, five-family Tigon URI blocking, and the framework settings dialog only.
+- No direct endpoint substitutions, profile-ad rule, feed-cache clearing, welcome flow, custom resources, custom Activity, Amplitude, or ACRA are present. No lazy-profile repair is needed on 430 because Options renders immediately.
+- Shopping coverage is partial because Bloks identifiers transported outside URI paths are not covered.
+- Settings entry and checked-state rendering are validated; feature effects are not yet validated.
+- The resource-free architecture intentionally cannot add ordinary Android resources or manifest components. Any future feature that requires them needs a proven non-lossy resource strategy, not a return to the known-broken full apktool resource rebuild.
 
 Tracked first-pass mapping: `docs/PORT_430_MAPPING.md`.
 

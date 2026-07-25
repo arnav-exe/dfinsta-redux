@@ -15,13 +15,14 @@ Completion requires:
 
 ## Immediate Roadmap
 
-1. Continue the first-pass 430 mapping in `docs/PORT_430_MAPPING.md` and produce the minimal first build.
-2. Resolve Shopping/profile-ad/cache policy before claiming their 430 behavior.
-3. Instrument the lazy action bar before attempting a visibility fix.
-4. Extend device automation to controlled on/off contrasts without ever enabling Hardcore Mode.
-5. Wrap deterministic activities in the durable agentic workflow.
+1. Run controlled, restart-bounded Feed, Explore, Reels, Stories, and Shopping on/off contrasts on the settings-validated 430 graft; restore all settings afterward.
+2. Verify preference persistence and confirm other-user profiles do not receive the self-profile settings action.
+3. Resolve direct-site coverage, profile-ad policy, Shopping caller coverage, and redesigned cache invalidation before claiming broader parity.
+4. Wrap the proven deterministic build/sign/install/validation activities in the durable agentic workflow.
 
 ## Lazy Profile Options
+
+This section documents the 340 behavior only. On Instagram 430, Options appears immediately; the live action is a direct `ImageView` rendered by `LX/077K` from self-profile model `LX/077N`, so no lazy-action-bar fix is required there.
 
 ### Observed behavior
 
