@@ -70,6 +70,7 @@ Do not simply force `A1b=true` on every `LX/66Y.configureActionBar()` call: that
 - Remove unconditional Amplitude startup telemetry.
 - Remove or replace inherited ACRA email crash reporting.
 - Remove the nonexistent `IconChoose` activity and proven unreachable residue.
+- Apply the conservative safe-removal boundary in `docs/CLEANUP_1.4.1.md`; prune statically unreferenced resources only after runtime traversal.
 - Decide whether hidden forced profile-ad blocking becomes a visible setting.
 - Fix or intentionally retire Shopping blocking; direct helpers currently test `minshop` against `minishops` identifiers.
 - Decide whether Hardcore Mode remains effectively irreversible through the UI.
