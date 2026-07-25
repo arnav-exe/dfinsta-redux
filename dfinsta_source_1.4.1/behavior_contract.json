@@ -57,6 +57,7 @@
     "profile_ads": {"verified_contrast": false, "visible_switch": false}
   },
   "pending": [
+    "Make profile Options render immediately without breaking app-bar behavior",
     "Hardcore Mode behavior",
     "Stories enabled/disabled contrast",
     "Shopping enabled/disabled contrast",
