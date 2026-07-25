@@ -341,7 +341,7 @@ def enter_settings(
             steps.append("long_press_options")
             time.sleep(poll_interval)
             final_nodes = _fresh_nodes(adb, artifact_dir, "settings-entry-final.xml")
-            title_found = bool(find_nodes(final_nodes, text="Distraction Free settings"))
+            title_found = bool(find_nodes(final_nodes, text=contract["settings"]["title"]))
             return evidence(
                 "enter-settings",
                 contract_path,
@@ -456,7 +456,9 @@ def feature_state(
 
     settings_exit = {"requested": leave_settings, "pressed_back": False}
     if leave_settings and current_nodes is not None:
-        settings_selector = config["settings_screen_selector"]
+        settings_selector = config.get(
+            "settings_screen_selector", {"text": contract["settings"]["title"]}
+        )
         if find_selector_nodes(current_nodes, settings_selector):
             adb.run("shell", "input", "keyevent", "KEYCODE_BACK")
             settings_exit["pressed_back"] = True

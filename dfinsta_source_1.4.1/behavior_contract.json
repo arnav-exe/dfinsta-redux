@@ -101,6 +101,7 @@
   },
   "settings": {
     "activity": "com.dfinstagram.preference.Preference",
+    "title": "Distraction Free settings",
     "exported": false,
     "entry": [
       "select resource-id com.instagram.android:id/profile_tab",
