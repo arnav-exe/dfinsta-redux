@@ -55,7 +55,7 @@
     if-nez v2, :cond_block
 
     :cond_reels_home
-    const-string v1, "/api/v1/clips/home/"
+    const-string v1, "/api/v1/clips/homecoming/"
 
     invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
 

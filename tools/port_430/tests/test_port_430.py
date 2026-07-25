@@ -103,6 +103,14 @@ class SourcePolicyTests(unittest.TestCase):
             r"const/4 v1, 0x1\s+invoke-interface \{v0, p0, v1\}.*->getBoolean",
         )
 
+    def test_reels_hook_uses_live_430_homecoming_path(self) -> None:
+        hooks = (SOURCE / "newCode/com/dfinstagram/hooks.smali").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('const-string v1, "/api/v1/clips/homecoming/"', hooks)
+        self.assertNotIn('const-string v1, "/api/v1/clips/home/"', hooks)
+
 
 class PrepareAndPatchTests(unittest.TestCase):
     def test_prepare_only_adds_classes20(self) -> None:
