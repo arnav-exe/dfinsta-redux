@@ -10,7 +10,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
 
-from .contracts import ArtifactRef, canonical_sha256
+from .contracts import ArtifactRef, RunSpec, canonical_sha256
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -353,13 +353,18 @@ async def execute(
     request: ExecutionRequest,
     metadata: ExecutionMetadata,
     *,
+    admitted_spec: RunSpec,
     timeout_seconds: float,
     launcher: Launcher | None = None,
 ) -> ExecutionResult:
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
-    if request.executor_capability_sha256 != capability.canonical_identity:
-        raise ValueError("Request executor capability SHA-256 does not match grant")
+    admitted_capability_sha256 = admitted_spec.executor_capability_sha256
+    if (
+        request.executor_capability_sha256 != admitted_capability_sha256
+        or capability.canonical_identity != admitted_capability_sha256
+    ):
+        raise ValueError("Executor capability does not match admitted SHA-256")
     if request.capability_id != capability.capability_id:
         raise ValueError("Request capability does not match grant")
     if request.input_artifact.kind not in capability.input_kinds:

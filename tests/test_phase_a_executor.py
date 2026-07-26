@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from dfinsta_pipeline.contracts import ArtifactRef
+from dfinsta_pipeline.contracts import ArtifactRef, RunSpec
 from dfinsta_pipeline.executor import (
     ExecutionMetadata,
     ExecutionRequest,
+    ExecutionResult,
     ExecutorCapability,
     execute,
 )
@@ -89,6 +90,38 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         values.update(changes)
         return ExecutionMetadata(**values)
 
+    async def admitted_execute(
+        self,
+        capability: ExecutorCapability,
+        request: ExecutionRequest,
+        metadata: ExecutionMetadata,
+        *,
+        admitted_capability_sha256: str | None = None,
+        timeout_seconds: float,
+        launcher: Any = None,
+    ) -> ExecutionResult:
+        admitted_hash = admitted_capability_sha256 or capability.canonical_identity
+        admitted_spec = RunSpec(
+            1,
+            "executor-test",
+            "a" * 64,
+            "b" * 64,
+            "c" * 64,
+            admitted_hash,
+            "policy-1",
+            "operator",
+            60,
+            "monolithic",
+        )
+        return await execute(
+            capability,
+            request,
+            metadata,
+            admitted_spec=admitted_spec,
+            timeout_seconds=timeout_seconds,
+            launcher=launcher,
+        )
+
     async def test_valid_admission_uses_exec_and_excludes_ambient_secret(self) -> None:
         captured: dict[str, Any] = {}
 
@@ -98,7 +131,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
 
         os.environ["PHASE_A_SECRET"] = "must-not-leak"
         self.addCleanup(os.environ.pop, "PHASE_A_SECRET", None)
-        result = await execute(
+        result = await self.admitted_execute(
             self.capability(), self.request(), self.metadata(), timeout_seconds=1, launcher=launcher
         )
 
@@ -118,7 +151,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
 
         capability = self.capability(executable_sha256="0" * 64)
         with self.assertRaisesRegex(ValueError, "Executable SHA-256"):
-            await execute(
+            await self.admitted_execute(
                 capability,
                 self.request(executor_capability_sha256=capability.canonical_identity),
                 self.metadata(),
@@ -137,15 +170,16 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             launched = True
             return FakeProcess()
 
-        with self.assertRaisesRegex(ValueError, "executor capability SHA-256"):
-            await execute(
+        with self.assertRaisesRegex(ValueError, "admitted SHA-256"):
+            await self.admitted_execute(
                 substituted,
-                self.request(executor_capability_sha256=approved.canonical_identity),
+                self.request(executor_capability_sha256=substituted.canonical_identity),
                 self.metadata(
                     executable_path=self.root / "missing-tool",
                     workspace_root=self.root / "missing-workspace",
                     cwd=self.root / "missing-cwd",
                 ),
+                admitted_capability_sha256=approved.canonical_identity,
                 timeout_seconds=1,
                 launcher=launcher,
             )
@@ -157,7 +191,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             (("extra", "value"), ("input", "input.apk"), ("output", "out")),
         ):
             with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, "exactly"):
-                await execute(
+                await self.admitted_execute(
                     self.capability(),
                     self.request(arguments=arguments),
                     self.metadata(),
@@ -169,7 +203,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         outside = self.root / "outside"
         outside.mkdir()
         with self.assertRaisesRegex(ValueError, "escapes"):
-            await execute(
+            await self.admitted_execute(
                 self.capability(),
                 self.request(),
                 self.metadata(cwd=outside),
@@ -182,7 +216,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         except OSError as error:
             self.skipTest(f"symlinks unavailable: {error}")
         with self.assertRaisesRegex(ValueError, "escapes"):
-            await execute(
+            await self.admitted_execute(
                 self.capability(),
                 self.request(arguments=(("input", "input.apk"), ("output", "link/out"))),
                 self.metadata(),
@@ -191,11 +225,11 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_artifact_and_output_kinds_are_enforced(self) -> None:
         with self.assertRaisesRegex(ValueError, "Input artifact kind"):
-            await execute(
+            await self.admitted_execute(
                 self.capability(), self.request(input_artifact=artifact("report")), self.metadata(), timeout_seconds=1
             )
         with self.assertRaisesRegex(ValueError, "Output artifact kind"):
-            await execute(
+            await self.admitted_execute(
                 self.capability(), self.request(output_kind="report"), self.metadata(), timeout_seconds=1
             )
 
@@ -205,7 +239,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             return FakeProcess()
 
         with self.assertRaisesRegex(PermissionError, "unexpected.txt"):
-            await execute(
+            await self.admitted_execute(
                 self.capability(), self.request(), self.metadata(), timeout_seconds=1, launcher=launcher
             )
 
@@ -215,7 +249,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             (output / "result.txt").write_text("allowed", encoding="utf-8")
             return FakeProcess()
 
-        result = await execute(
+        result = await self.admitted_execute(
             self.capability(), self.request(), self.metadata(), timeout_seconds=1, launcher=allowed_launcher
         )
         self.assertEqual(result.returncode, 0)
@@ -307,7 +341,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch("dfinsta_pipeline.executor.sys.platform", "win32"):
             with self.assertRaisesRegex(ValueError, "requires SystemRoot"):
-                await execute(
+                await self.admitted_execute(
                     self.capability(),
                     self.request(),
                     self.metadata(),
@@ -351,7 +385,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             return process
 
         with self.assertRaises(TimeoutError):
-            await execute(
+            await self.admitted_execute(
                 self.capability(),
                 self.request(),
                 self.metadata(),
@@ -380,7 +414,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             return process
 
         task = asyncio.create_task(
-            execute(
+            self.admitted_execute(
                 self.capability(),
                 self.request(),
                 self.metadata(),
@@ -411,7 +445,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("dfinsta_pipeline.executor._CLEANUP_TIMEOUT_SECONDS", 0.01):
             with self.assertRaises(TimeoutError):
                 await asyncio.wait_for(
-                    execute(
+                    self.admitted_execute(
                         self.capability(),
                         self.request(),
                         self.metadata(),
