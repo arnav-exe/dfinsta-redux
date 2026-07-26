@@ -15,9 +15,9 @@ Completion requires:
 
 ## Immediate Roadmap
 
-1. Resolve Shopping caller coverage or explicitly retire/label the feature partial; URI matching does not cover non-path Bloks identifiers.
-2. Decide profile-ad policy and redesign cache invalidation for 430's changed architecture.
-3. Confirm other-user profiles do not receive the self-profile settings action.
+1. Attempt profile-ad endpoint/UI contrast on eligible profile and contextual-feed surfaces; treat absent inventory as inconclusive.
+2. Confirm other-user profiles do not receive the self-profile settings action.
+3. Strengthen final-DEX verification and clean-stock decode provenance.
 4. Wrap the proven deterministic build/sign/install/validation activities in the durable agentic workflow.
 
 ## Lazy Profile Options
@@ -68,7 +68,7 @@ Do not simply force `A1b=true` on every `LX/66Y.configureActionBar()` call: that
 ## Deferred Product Decisions
 
 - Broad resource pruning remains deferred until full runtime settings traversal.
-- Decide whether hidden forced profile-ad blocking becomes a visible setting.
-- Fix or intentionally retire Shopping blocking; direct helpers currently test `minshop` against `minishops` identifiers.
-- Treat cache state as a first-class test boundary. On 430, Reels retained enough media to survive restart and ten swipes; the disabled endpoint result became visible only after cache exhaustion.
+- Shopping is retired on 430 because no standalone tab remains and distributed commerce cannot be safely represented by the old global label.
+- Profile-ad blocking is visible and exact in v7; eligible-account runtime contrast remains.
+- Treat cache state as a first-class test boundary. Current v7 Nothing contrasts record cache as unknown; separate v6 diagnostic Pixel evidence required cache exhaustion before disabled Reels became visible.
 - Decide whether Hardcore Mode remains effectively irreversible through the UI.

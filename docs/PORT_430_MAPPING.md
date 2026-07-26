@@ -1,8 +1,8 @@
 # Instagram 430 Port State and Mapping
 
-Status: production resource-free DEX graft built, statically verified, signed, installed, and behavior-validated for settings, Feed, Explore, Reels, and Stories. Shopping remains partial.
+Status: production v7 resource-free DEX graft built, statically verified, signed, startup-tested, settings-validated, and restart-bounded for Feed, Explore, Reels, and Stories on the Nothing Phone. Shopping is retired and visible profile-ad blocking awaits eligible-account validation.
 
-Current branch: `port-430`, with implementation commits through `47408db`.
+Current branch: `port-430`, with implementation and validation commits through `d019450`.
 
 Relevant commits:
 
@@ -13,6 +13,11 @@ Relevant commits:
 - `cb63ded patch live 430 profile action`: attached settings to the live self-profile `ProfileActionBar` model.
 - `e617551 block 430 reels homecoming`: corrected the stale 340 URI path for 430.
 - `47408db restore direct reels blocking`: ports direct central Reels endpoint replacement and adds `classes4.dex` to the verified graft.
+- `6eb2227 replace shopping with profile ads`: removes the misleading Shopping row/rule and adds visible exact profile-ad blocking.
+- `39668de support clean install startup`: accepts clean-install onboarding activity and package-launcher fallback.
+- `4d1e5c4 scope device validation evidence`: separates launch strategies and records explicit test state.
+- `6cc7b93 record validation harness identity`: hashes the runner and contract used for each evidence run.
+- `94dd015 support semantic boolean selectors`: supports the 430 Options `long_clickable` selector.
 
 ## Target
 
@@ -27,8 +32,8 @@ Apktool emitted resource string-chunk warnings but baksmaled all DEX files succe
 
 ## Exact Current Build
 
-- Artifact: `work/430-graft-v5/dfinsta_430-graft-v5-test.apk`
-- SHA-256: `6185edd97aa17542390fd104a9dba6ec38dae43febed7dd555e217eccf08bb62`
+- Artifact: `work/430-graft-v7/dfinsta_430-graft-v7-test.apk`
+- SHA-256: `0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4`
 - Installed successfully as an in-place update.
 - Package/version preflight: passed for `430.0.0.53.80` / `383611248`.
 - Static verification: passed.
@@ -67,23 +72,24 @@ Stock signature metadata is removed for re-signing. All other entries are copied
 
 - `startapp` captures the `Application` context after `Application.onCreate()`.
 - `dfinstagram` reads five checked-by-default flags from the existing `com.instagram` shared-preference file.
-- `hooks.throwIfBlocked(URI)` enforces Feed, Explore, Reels, Stories, and partial Shopping rules in Tigon's existing `IOException` failure path.
+- `hooks.throwIfBlocked(URI)` enforces Feed, Explore, Reels, Stories, and exact profile-ad rules in Tigon's existing `IOException` failure path.
 - `hooks.replaceReelsEndpoint(String)` returns the selected central Reels endpoint when enabled and `""` when disabled, matching the validated 340 behavior.
 - `SettingsWrapper` is attached to the current-profile Options `ImageView` guarded by self-profile action model `LX/077N`, and opens a framework multi-choice `AlertDialog` titled `Distraction-free settings - restart required`.
 - There is no custom manifest entry, custom Activity, XML preference screen, custom resource, or fixed `0x7f...` application resource reference.
 - Changes require a process restart for clean behavior evaluation.
 
-This design deliberately excludes direct endpoint replacements, profile-ad blocking, feed-cache clearing, welcome UI, telemetry, and crash-reporting code. Shopping remains partial because non-URI Bloks identifiers are outside the Tigon path rule. A lazy profile-menu repair is unnecessary on 430 because the action renders immediately.
+This design deliberately excludes feed-cache clearing, welcome UI, telemetry, and crash-reporting code. Shopping is retired because 430 has no standalone tab and distributed commerce cannot be truthfully controlled by one setting. A lazy profile-menu repair is unnecessary on 430 because the action renders immediately.
 
 ## Device State
 
-- MAIN/LAUNCHER alias `com.instagram.android.activity.MainTabActivity` reaches foreground `com.instagram.mainactivity.InstagramMainActivity`; deprecated `LauncherActivity` was the earlier self-finishing trampoline.
+- Package MAIN/LAUNCHER reaches foreground alias `com.instagram.android/.activity.MainTabActivity`; deprecated `LauncherActivity` was the earlier self-finishing trampoline.
 - Startup passes foreground, process-liveness, and fatal-log checks.
 - Profile Options is present immediately. It is long-clickable after the `LX/077K` patch, and the settings dialog opens on the first attempt without header swipes.
-- Exactly five choices render in order: Feed, Explore, Reels, Stories, Shopping. All inherited values are checked.
+- Production v7 renders five choices in order: Feed, Explore, Reels, Stories, Profile ads. All five were observed checked after login.
 - Normal Options click still enters Instagram's stock surface.
-- Feed, Explore, Stories, and Reels have enabled/disabled device contrasts. Reels retains a large media cache across process restarts; disabled validation required exhausting it before the empty-endpoint result became visible.
-- The in-place update preserved login and preferences created under the current 340 installation.
+- Feed, Explore, Stories, and Reels have same-device, restart-bounded v7 contrasts on the Nothing Phone with cache explicitly recorded as unknown. Historical v6 diagnostic Pixel evidence separately exhausted retained Reels media.
+- The Nothing Phone used a clean install followed by manual login; the historical Pixel update path separately preserved 340 login and preferences.
+- All five settings were restored checked and final startup passed.
 - Do not clear data or uninstall without explicit user approval.
 
 ## Mapping Rules
@@ -178,11 +184,11 @@ Clean one-to-one request mappings:
 - `LX/0kza;->A00(I)` in `smali_classes16/X/0kza.smali`
 - `LX/0kzj;->A00(List,I)` in `smali_classes16/X/0kzj.smali`
 
-These remain behaviorally significant because the Tigon blocker has no profile-ad rule.
+These remain useful mechanism evidence. Production v7 instead blocks the exact `/profile_ads/get_profile_ads/` suffix in Tigon, keyed by visible `disable_adds`, so no `classes16.dex` graft is required.
 
-## Shopping
+## Retired Shopping
 
-Do not port the broken 340 helper unchanged. It checks `minshop`, which does not match `minishops` identifiers.
+The user approved retiring Shopping from the 430 distraction contract. Do not port the broken 340 helper: it checks `minshop`, which does not match `minishops` identifiers, and 430 has no standalone Shopping tab.
 
 Relevant 430 control-flow sites:
 
@@ -190,7 +196,7 @@ Relevant 430 control-flow sites:
 - `LX/0fWm;->A00(Bundle)` direct storefront construction
 - `LX/0mbs;->invokeSuspend(Object)` coroutine storefront dispatch
 
-Generated `LX/0005` string entries must remain untouched. Decide the intended Shopping policy first, fix matching semantics, then gate these callers or wrap only proven direct construction sites.
+Generated `LX/0005` string entries remain untouched. Embedded commerce, seller tools, product tags, storefronts, and collections are outside the retained 430 distraction contract.
 
 ## Named and Anchored Hosts
 
@@ -231,10 +237,11 @@ The current-user 430 Options action appears immediately after Profile navigation
 
 ## Next Deterministic Work
 
-1. Resolve Shopping's non-URI Bloks coverage and decide whether the feature is retained or intentionally partial.
-2. Decide and implement profile-ad policy, then redesign cache invalidation against 430's new cache architecture.
-3. Confirm an unrelated-user profile does not receive the settings long-click action.
-4. Add the proven mechanical flow to the durable agentic orchestration layer.
-5. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
+1. Attempt eligible profile-ad observation without claiming success from ad absence.
+2. Confirm an unrelated-user profile does not receive the settings long-click action.
+3. Keep the restart/cached-content caveat; no safe full 430 cache invalidator was found.
+4. Strengthen final-DEX verification to assert structural invocation/count/location rather than disconnected tokens.
+5. Add clean-stock decode provenance and the proven mechanical flow to the durable agentic orchestration layer.
+6. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
 
 Generated detailed evidence remains under ignored `work/430-port/`.
