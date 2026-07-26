@@ -65,13 +65,13 @@ def payload_comparison(final_entries: dict[str, Any], stock_entries: dict[str, A
     return names_equal, names_equal and retained_final == retained_stock
 
 
-def method_body(smali: str, method_name: str) -> str:
+def method_body(smali: str, signature: str) -> str:
     match = re.search(
-        rf"(?ms)^\.method [^\n]*\b{re.escape(method_name)}\([^\n]*\n.*?^\.end method$",
+        rf"(?ms)^\.method [^\n]*\b{re.escape(signature)}\s*$.*?^\.end method$",
         smali,
     )
     if not match:
-        raise ValueError(f"Method not found: {method_name}")
+        raise ValueError(f"Method not found: {signature}")
     return match.group(0)
 
 
@@ -94,27 +94,48 @@ def verify_structural_hooks(smali_root: Path) -> dict[str, bool]:
         "settings": smali_root / "smali_classes6/X/077K.smali",
     }
     sources = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
-    on_create = method_body(sources["context"], "onCreate")
-    start_request = method_body(sources["tigon"], "startRequest")
-    reels_a07 = method_body(sources["reels"], "A07")
-    reels_a09 = method_body(sources["reels"], "A09")
-    settings_a00 = method_body(sources["settings"], "A00")
+    on_create = method_body(sources["context"], "onCreate()V")
+    start_request = method_body(
+        sources["tigon"], "startRequest(LX/05ez;LX/05fq;LX/05gu;)LX/0Fcm;"
+    )
+    reels_a07 = method_body(
+        sources["reels"],
+        "A07(Landroid/content/Context;LX/0HSu;LX/0Jin;LX/0Jej;Lcom/instagram/common/session/UserSession;LX/0Jae;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function0;ZZZZ)LX/017H;",
+    )
+    reels_a09 = method_body(
+        sources["reels"],
+        "A09(Landroid/content/Context;LX/0HSu;LX/0Jin;LX/0Jej;Lcom/instagram/common/session/UserSession;LX/0Jae;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function0;ZZZZZZZZZZZ)LX/03xp;",
+    )
+    settings_a00 = method_body(
+        sources["settings"],
+        "A00(Landroid/content/Context;Lcom/instagram/common/session/UserSession;LX/077F;LX/0JxZ;)Landroid/widget/ImageView;",
+    )
     reels_marker = "Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;"
+    context_pattern = re.compile(
+        r"invoke-super \{v0\}, Landroid/app/Application;->onCreate\(\)V\s+"
+        r"invoke-static \{v0\}, Lcom/dfinstagram/startapp;->setContext\(Landroid/app/Application;\)V"
+    )
+    tigon_pattern = re.compile(
+        r"iget-object ([vp]\d+), p1, LX/05ez;->A08:Ljava/net/URI;\s+"
+        r"invoke-static \{\1\}, Lcom/dfinstagram/hooks;->throwIfBlocked\(Ljava/net/URI;\)V"
+    )
     settings_pattern = re.compile(
-        r"invoke-static \{[^}]+\}, LX/00ZY;->A00\(Landroid/view/View\$OnClickListener;Landroid/view/View;\)V"
-        r".*?instance-of [^\n]+, LX/077N;"
-        r".*?if-eqz [^\n]+"
-        r".*?new-instance [^\n]+, Lcom/dfinstagram/SettingsWrapper;"
-        r".*?invoke-direct \{[^}]+\}, Lcom/dfinstagram/SettingsWrapper;-><init>\(\)V"
-        r".*?invoke-virtual \{[^}]+\}, Landroid/view/View;->setOnLongClickListener\(Landroid/view/View\$OnLongClickListener;\)V",
-        re.DOTALL,
+        r"invoke-static \{v0, v6\}, LX/00ZY;->A00\(Landroid/view/View\$OnClickListener;Landroid/view/View;\)V\s+"
+        r"instance-of v0, p3, LX/077N;\s+"
+        r"if-eqz v0, (:[A-Za-z0-9_]+)\s+"
+        r"new-instance v0, Lcom/dfinstagram/SettingsWrapper;\s+"
+        r"invoke-direct \{v0\}, Lcom/dfinstagram/SettingsWrapper;-><init>\(\)V\s+"
+        r"invoke-virtual \{v6, v0\}, Landroid/view/View;->setOnLongClickListener\(Landroid/view/View\$OnLongClickListener;\)V\s+"
+        r"\1"
     )
     return {
-        "context_on_create_call_once": on_create.count(
+        "context_on_create_sequence": context_pattern.search(on_create) is not None
+        and on_create.count(
             "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V"
         )
         == 1,
-        "tigon_start_request_call_once": start_request.count(
+        "tigon_start_request_sequence": tigon_pattern.search(start_request) is not None
+        and start_request.count(
             "Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V"
         )
         == 1,
@@ -162,7 +183,9 @@ def decode_sources(apk: Path, apktool_jar: Path, output: Path) -> None:
     )
 
 
-def signature_context(apk: Path, apksigner: Path) -> dict[str, Any]:
+def signature_context(
+    apk: Path, apksigner: Path, expected_certificate_sha256: str | None = None
+) -> dict[str, Any]:
     result = subprocess.run(
         [str(apksigner), "verify", "--verbose", "--print-certs", str(apk)],
         capture_output=True,
@@ -172,10 +195,19 @@ def signature_context(apk: Path, apksigner: Path) -> dict[str, Any]:
         check=False,
     )
     output = (result.stdout + result.stderr).strip().splitlines()
+    certificates = [
+        match.group(1).lower()
+        for line in output
+        if (match := re.fullmatch(r"Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})", line))
+    ]
+    expected = expected_certificate_sha256.lower() if expected_certificate_sha256 else None
     return {
         "tool": str(apksigner),
         "tool_sha256": file_sha256(apksigner),
         "verified": result.returncode == 0,
+        "certificate_sha256": certificates,
+        "expected_certificate_sha256": expected,
+        "approved_signer": expected is None or certificates == [expected],
         "output": output,
     }
 
@@ -266,10 +298,16 @@ def main() -> None:
     parser.add_argument("--apktool-jar", required=True, type=Path)
     parser.add_argument("--apksigner", type=Path)
     parser.add_argument("--require-signature", action="store_true")
+    parser.add_argument("--expected-certificate-sha256")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.require_signature and args.apksigner is None:
         parser.error("--require-signature requires --apksigner")
+    if args.expected_certificate_sha256:
+        if args.apksigner is None:
+            parser.error("--expected-certificate-sha256 requires --apksigner")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_certificate_sha256):
+            parser.error("--expected-certificate-sha256 must be 64 hexadecimal characters")
 
     relevant = lambda name: (
         name in {"AndroidManifest.xml", "resources.arsc"}
@@ -312,10 +350,16 @@ def main() -> None:
                 payload_bytes_equal,
             ),
         }
-        signature = signature_context(args.apk, args.apksigner) if args.apksigner else None
+        signature = (
+            signature_context(args.apk, args.apksigner, args.expected_certificate_sha256)
+            if args.apksigner
+            else None
+        )
         result["signature"] = signature
         if signature is not None:
-            result["passed"] = result["passed"] and signature["verified"]
+            result["passed"] = (
+                result["passed"] and signature["verified"] and signature["approved_signer"]
+            )
         elif args.require_signature:
             result["passed"] = False
     rendered = json.dumps(result, indent=2) + "\n"

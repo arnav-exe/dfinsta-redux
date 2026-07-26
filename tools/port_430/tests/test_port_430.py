@@ -345,22 +345,24 @@ class VerifierTests(unittest.TestCase):
             root = Path(directory)
             files = {
                 "smali/com/instagram/api/tigon/TigonServiceLayer.smali": """
-.method public startRequest()V
+.method public startRequest(LX/05ez;LX/05fq;LX/05gu;)LX/0Fcm;
+    iget-object v1, p1, LX/05ez;->A08:Ljava/net/URI;
     invoke-static {v1}, Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V
 .end method
 """,
                 "smali_classes3/com/instagram/app/InstagramAppShell.smali": """
 .method public onCreate()V
+    invoke-super {v0}, Landroid/app/Application;->onCreate()V
     invoke-static {v0}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V
 .end method
 """,
                 "smali_classes4/X/05t2.smali": """
-.method public A07()V
+.method public A07(Landroid/content/Context;LX/0HSu;LX/0Jin;LX/0Jej;Lcom/instagram/common/session/UserSession;LX/0Jae;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function0;ZZZZ)LX/017H;
     const-string v8, "clips/discover/"
     invoke-static {v8}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;
     move-result-object v8
 .end method
-.method public A09()V
+.method public A09(Landroid/content/Context;LX/0HSu;LX/0Jin;LX/0Jej;Lcom/instagram/common/session/UserSession;LX/0Jae;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function0;ZZZZZZZZZZZ)LX/03xp;
     const-string v9, "clips/homecoming/"
     invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;
     move-result-object v9
@@ -370,13 +372,14 @@ class VerifierTests(unittest.TestCase):
 .end method
 """,
                 "smali_classes6/X/077K.smali": """
-.method public A00()V
+.method public A00(Landroid/content/Context;Lcom/instagram/common/session/UserSession;LX/077F;LX/0JxZ;)Landroid/widget/ImageView;
     invoke-static {v0, v6}, LX/00ZY;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V
     instance-of v0, p3, LX/077N;
     if-eqz v0, :cond_0
     new-instance v0, Lcom/dfinstagram/SettingsWrapper;
     invoke-direct {v0}, Lcom/dfinstagram/SettingsWrapper;-><init>()V
     invoke-virtual {v6, v0}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V
+    :cond_0
 .end method
 """,
             }
@@ -392,6 +395,23 @@ class VerifierTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertFalse(verify_structural_hooks(root)["settings_guarded_after_stock_click"])
+            settings.write_text(files["smali_classes6/X/077K.smali"], encoding="utf-8")
+            tigon = root / "smali/com/instagram/api/tigon/TigonServiceLayer.smali"
+            tigon.write_text(
+                files["smali/com/instagram/api/tigon/TigonServiceLayer.smali"].replace(
+                    "invoke-static {v1}", "invoke-static {v2}"
+                ),
+                encoding="utf-8",
+            )
+            self.assertFalse(verify_structural_hooks(root)["tigon_start_request_sequence"])
+            tigon.write_text(
+                files["smali/com/instagram/api/tigon/TigonServiceLayer.smali"].replace(
+                    "startRequest(LX/05ez;LX/05fq;LX/05gu;)LX/0Fcm;", "startRequest()V"
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                verify_structural_hooks(root)
 
     @patch("verify_apk.subprocess.run")
     def test_records_signature_verification(self, run_mock) -> None:
@@ -407,6 +427,22 @@ class VerifierTests(unittest.TestCase):
             result = signature_context(apk, apksigner)
             self.assertTrue(result["verified"])
             self.assertEqual(result["output"], ["Signer #1 certificate SHA-256 digest: abc"])
+
+    @patch("verify_apk.subprocess.run")
+    def test_rejects_failed_or_unapproved_signature(self, run_mock) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            apk = root / "app.apk"
+            apksigner = root / "apksigner"
+            apk.write_bytes(b"apk")
+            apksigner.write_bytes(b"tool")
+            digest = "a" * 64
+            run_mock.return_value = subprocess.CompletedProcess(
+                [], 0, f"Signer #1 certificate SHA-256 digest: {digest}\n", ""
+            )
+            self.assertFalse(signature_context(apk, apksigner, "b" * 64)["approved_signer"])
+            run_mock.return_value = subprocess.CompletedProcess([], 1, "", "bad signature")
+            self.assertFalse(signature_context(apk, apksigner)["verified"])
 
 
 if __name__ == "__main__":

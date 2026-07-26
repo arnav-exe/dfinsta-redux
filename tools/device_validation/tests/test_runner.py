@@ -18,6 +18,7 @@ from runner import (
     fatal_log_lines,
     find_selector_nodes,
     foreground_state_valid,
+    installed_artifact_context,
     installed_base_apk_path,
     parse_ui_xml,
     parsed_sha256sum,
@@ -176,6 +177,28 @@ class CommandConstructionTests(unittest.TestCase):
             installed_base_apk_path("package:/one.apk\npackage:/two.apk\n")
         with self.assertRaises(ValueError):
             parsed_sha256sum("not-a-hash /data/app/example/base.apk\n")
+
+    def test_checks_device_side_installed_artifact_hash(self) -> None:
+        digest = "a" * 64
+
+        class FakeAdb:
+            def run(self, *args, **kwargs):
+                if args[:3] == ("shell", "pm", "path"):
+                    return subprocess.CompletedProcess([], 0, "package:/data/app/example/base.apk\n", "")
+                return subprocess.CompletedProcess(
+                    [], 0, f"{digest}  /data/app/example/base.apk\n", ""
+                )
+
+        self.assertTrue(
+            installed_artifact_context(FakeAdb(), "com.example", digest)[
+                "matches_declared_artifact"
+            ]
+        )
+        self.assertFalse(
+            installed_artifact_context(FakeAdb(), "com.example", "b" * 64)[
+                "matches_declared_artifact"
+            ]
+        )
 
     def test_builds_contract_launcher_intent(self) -> None:
         self.assertEqual(

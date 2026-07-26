@@ -127,6 +127,21 @@ def main() -> None:
             raise FileExistsError(f"Refusing to overwrite {path}")
 
     python = sys.executable
+    input_provenance = {
+        "stock_apk": str(args.stock_apk.resolve()),
+        "stock_apk_sha256": sha256_file(args.stock_apk),
+        "stock_decode": str(args.stock_decode.resolve()),
+        "stock_decode_mode": "fresh_apktool_decode",
+        "patch_source": str(args.patch_source.resolve()),
+        "patch_source_sha256": sha256_tree(args.patch_source),
+        "apktool_jar": str(args.apktool_jar.resolve()),
+        "apktool_jar_sha256": sha256_file(args.apktool_jar),
+        "framework_apk": str(args.framework_apk.resolve()),
+        "framework_apk_sha256": sha256_file(args.framework_apk),
+        "python": sys.version,
+        "java": command_output(["java", "-version"]),
+        "source_commit": command_output(["git", "-C", str(REPOSITORY), "rev-parse", "HEAD"]),
+    }
     run(
         [
             "java",
@@ -199,19 +214,7 @@ def main() -> None:
         ]
     )
     report = {
-        "stock_apk": str(args.stock_apk.resolve()),
-        "stock_apk_sha256": sha256_file(args.stock_apk),
-        "stock_decode": str(args.stock_decode.resolve()),
-        "stock_decode_mode": "fresh_apktool_decode",
-        "patch_source": str(args.patch_source.resolve()),
-        "patch_source_sha256": sha256_tree(args.patch_source),
-        "apktool_jar": str(args.apktool_jar.resolve()),
-        "apktool_jar_sha256": sha256_file(args.apktool_jar),
-        "framework_apk": str(args.framework_apk.resolve()),
-        "framework_apk_sha256": sha256_file(args.framework_apk),
-        "python": sys.version,
-        "java": command_output(["java", "-version"]),
-        "source_commit": command_output(["git", "rev-parse", "HEAD"]),
+        **input_provenance,
         "anchored_report": str(anchored_report.resolve()),
         "anchored_report_sha256": sha256_file(anchored_report),
         "verification_report": str(verification_report.resolve()),
