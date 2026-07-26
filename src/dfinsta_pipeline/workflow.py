@@ -125,7 +125,12 @@ class PortRunWorkflow:
             raise ValueError("Decision timestamp is invalid") from error
         if decision_time.tzinfo is None or gate_time.tzinfo is None or expiry_time.tzinfo is None:
             raise ValueError("Decision timestamp requires a UTC offset")
-        if decision_time < gate_time - timedelta(minutes=5) or decision_time > expiry_time:
+        current_time = workflow.now()
+        if current_time >= expiry_time:
+            raise ValueError("Gate has expired")
+        if decision_time < gate_time or decision_time > min(
+            expiry_time, current_time + timedelta(minutes=5)
+        ):
             raise ValueError("Decision timestamp is outside the gate validity period")
         if (
             decision.decision_id in self._decision_ids

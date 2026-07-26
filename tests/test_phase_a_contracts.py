@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -78,6 +79,53 @@ class ContractTests(unittest.TestCase):
             with self.subTest(contract=contract.__name__, condition="version"):
                 with self.assertRaises(ValueError):
                     contract.from_dict({**data, "schema_version": 2})
+
+    def test_contract_decoders_reject_ambiguous_json_types(self) -> None:
+        artifact_data = {
+            "schema_version": 1,
+            "kind": "test",
+            "sha256": "a" * 64,
+            "size": 1,
+            "uri": f"cas://sha256/{'a' * 64}",
+            "producer_operation_id": "operation-1",
+            "input_hashes": [],
+        }
+        with self.assertRaises((TypeError, ValueError)):
+            ArtifactRef.from_dict({**artifact_data, "schema_version": True})
+        with self.assertRaises((TypeError, ValueError)):
+            ArtifactRef.from_dict({**artifact_data, "size": False})
+        with self.assertRaises(TypeError):
+            ResolutionSpec.from_dict(
+                {"schema_version": 1, "target_sha256": "a" * 64, "operation_ids": "ab"}
+            )
+
+        run_data = {
+            "schema_version": 1,
+            "run_id": "run-1",
+            "subject_sha256": "a" * 64,
+            "intent_sha256": "b" * 64,
+            "resolution_sha256": "c" * 64,
+            "executor_capability_sha256": "d" * 64,
+            "policy_revision": "policy-1",
+            "allowed_actor": "operator",
+            "gate_timeout_seconds": 60,
+            "apk_composition": "monolithic",
+            "crash_after_effect": False,
+            "apply_delay_seconds": 0,
+        }
+        with self.assertRaises(TypeError):
+            RunSpec.from_dict({**run_data, "crash_after_effect": 1})
+        with self.assertRaises(ValueError):
+            RunResult.from_dict(
+                {
+                    "schema_version": 1,
+                    "run_id": "run-1",
+                    "state": "unknown",
+                    "prepared": None,
+                    "output": None,
+                    "decision_id": None,
+                }
+            )
 
     def test_artifact_rejects_unknown_fields(self) -> None:
         data = {
@@ -168,13 +216,17 @@ class StoreAndLedgerTests(unittest.TestCase):
             root = Path(directory)
             store = ContentStore(root / "cas")
             ledger = Ledger(root / "ledger.sqlite3")
-            self.assertIsNone(ledger.begin_operation("operation-1", "test", "a" * 64))
+            self.assertIsNone(
+                ledger.begin_operation("operation-1", "test", "a" * 64, "owner-1")
+            )
             output = store.put_bytes(
                 kind="test", data=b"value", producer_operation_id="operation-1", input_hashes=()
             )
-            ledger.record_effect("operation-1", output)
+            ledger.record_effect("operation-1", "owner-1", output)
             ledger.complete_operation("operation-1", output)
-            self.assertEqual(ledger.begin_operation("operation-1", "test", "a" * 64), output)
+            self.assertEqual(
+                ledger.begin_operation("operation-1", "test", "a" * 64, "owner-2"), output
+            )
 
             decision = GateDecision(
                 1,
@@ -207,6 +259,21 @@ class StoreAndLedgerTests(unittest.TestCase):
                         "UPDATE operation_events SET status = 'pending' WHERE operation_key = ?",
                         ("operation-1",),
                     )
+
+    def test_ledger_allows_only_one_pending_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory) / "ledger.sqlite3")
+
+            def claim(owner: str) -> str:
+                try:
+                    result = ledger.begin_operation("operation-1", "test", "a" * 64, owner)
+                    return "claimed" if result is None else "adopted"
+                except ValueError as error:
+                    return str(error)
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = set(executor.map(claim, ("owner-1", "owner-2")))
+            self.assertEqual(results, {"claimed", "Operation is already claimed"})
 
 
 if __name__ == "__main__":

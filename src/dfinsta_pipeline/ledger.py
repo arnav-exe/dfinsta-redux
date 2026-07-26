@@ -26,6 +26,14 @@ class Ledger:
                 );
                 CREATE INDEX IF NOT EXISTS operation_events_key
                     ON operation_events(operation_key, event_id);
+                CREATE TABLE IF NOT EXISTS operation_claims (
+                    operation_key TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    input_sha256 TEXT NOT NULL,
+                    owner_token TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('pending', 'effect', 'completed', 'quarantined')),
+                    output_json TEXT
+                );
                 CREATE TABLE IF NOT EXISTS decisions (
                     decision_id TEXT PRIMARY KEY,
                     idempotency_id TEXT NOT NULL UNIQUE,
@@ -65,14 +73,25 @@ class Ledger:
         finally:
             connection.close()
 
-    def begin_operation(self, operation_key: str, kind: str, input_sha256: str) -> ArtifactRef | None:
+    def begin_operation(
+        self,
+        operation_key: str,
+        kind: str,
+        input_sha256: str,
+        owner_token: str,
+    ) -> ArtifactRef | None:
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT kind, input_sha256, status, output_json FROM operation_events "
-                "WHERE operation_key = ? ORDER BY event_id DESC LIMIT 1",
+                "SELECT kind, input_sha256, owner_token, status, output_json "
+                "FROM operation_claims WHERE operation_key = ?",
                 (operation_key,),
             ).fetchone()
             if row is None:
+                connection.execute(
+                    "INSERT INTO operation_claims VALUES (?, ?, ?, ?, 'pending', NULL)",
+                    (operation_key, kind, input_sha256, owner_token),
+                )
                 connection.execute(
                     "INSERT INTO operation_events "
                     "(operation_key, kind, input_sha256, status, output_json) "
@@ -82,28 +101,40 @@ class Ledger:
                 return None
             if row[0] != kind or row[1] != input_sha256:
                 raise ValueError("Operation key collision")
-            if row[2] in {"effect", "completed"}:
-                return ArtifactRef.from_dict(json.loads(row[3]))
-            if row[2] == "quarantined":
+            if row[3] in {"effect", "completed"}:
+                return ArtifactRef.from_dict(json.loads(row[4]))
+            if row[3] == "quarantined":
                 raise ValueError("Operation is quarantined")
+            if row[2] != owner_token:
+                raise ValueError("Operation is already claimed")
             return None
 
-    def record_effect(self, operation_key: str, output: ArtifactRef) -> ArtifactRef:
+    def record_effect(
+        self, operation_key: str, owner_token: str, output: ArtifactRef
+    ) -> ArtifactRef:
         output_json = canonical_json(output)
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT kind, input_sha256, status, output_json FROM operation_events "
-                "WHERE operation_key = ? ORDER BY event_id DESC LIMIT 1",
+                "SELECT kind, input_sha256, owner_token, status, output_json "
+                "FROM operation_claims WHERE operation_key = ?",
                 (operation_key,),
             ).fetchone()
             if row is None:
                 raise ValueError("Operation was not started")
             if output.producer_operation_id != operation_key:
                 raise ValueError("Effect producer does not match operation")
-            if row[2] == "effect" and row[3] == output_json:
+            if row[3] == "effect" and row[4] == output_json:
                 return output
-            if row[2] != "pending":
+            if row[2] != owner_token:
+                raise ValueError("Operation effect owner does not match claim")
+            if row[3] != "pending":
                 raise ValueError("Operation cannot record effect")
+            connection.execute(
+                "UPDATE operation_claims SET status = 'effect', output_json = ? "
+                "WHERE operation_key = ?",
+                (output_json, operation_key),
+            )
             connection.execute(
                 "INSERT INTO operation_events "
                 "(operation_key, kind, input_sha256, status, output_json) "
@@ -115,15 +146,20 @@ class Ledger:
     def complete_operation(self, operation_key: str, output: ArtifactRef) -> ArtifactRef:
         output_json = canonical_json(output)
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT kind, input_sha256, status, output_json FROM operation_events "
-                "WHERE operation_key = ? ORDER BY event_id DESC LIMIT 1",
+                "SELECT kind, input_sha256, status, output_json FROM operation_claims "
+                "WHERE operation_key = ?",
                 (operation_key,),
             ).fetchone()
             if row and row[2] == "completed" and row[3] == output_json:
                 return output
             if not row or row[2] != "effect" or row[3] != output_json:
                 raise ValueError("Operation cannot be completed")
+            connection.execute(
+                "UPDATE operation_claims SET status = 'completed' WHERE operation_key = ?",
+                (operation_key,),
+            )
             connection.execute(
                 "INSERT INTO operation_events "
                 "(operation_key, kind, input_sha256, status, output_json) "
@@ -132,19 +168,24 @@ class Ledger:
             )
         return output
 
-    def quarantine_operation(self, operation_key: str) -> None:
+    def quarantine_operation(self, operation_key: str, owner_token: str) -> None:
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT kind, input_sha256, status, output_json FROM operation_events "
-                "WHERE operation_key = ? ORDER BY event_id DESC LIMIT 1",
+                "SELECT kind, input_sha256, owner_token, status, output_json "
+                "FROM operation_claims WHERE operation_key = ?",
                 (operation_key,),
             ).fetchone()
-            if row and row[2] in {"pending", "effect"}:
+            if row and row[2] == owner_token and row[3] in {"pending", "effect"}:
+                connection.execute(
+                    "UPDATE operation_claims SET status = 'quarantined' WHERE operation_key = ?",
+                    (operation_key,),
+                )
                 connection.execute(
                     "INSERT INTO operation_events "
                     "(operation_key, kind, input_sha256, status, output_json) "
                     "VALUES (?, ?, ?, 'quarantined', ?)",
-                    (operation_key, row[0], row[1], row[3]),
+                    (operation_key, row[0], row[1], row[4]),
                 )
 
     def record_decision(self, decision: GateDecision) -> None:

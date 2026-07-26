@@ -47,13 +47,21 @@ def _validate_sha256(value: str, label: str) -> None:
         raise ValueError(f"Invalid {label}")
 
 
-def _strict_keys(data: dict[str, Any], expected: set[str], label: str) -> None:
+def _strict_keys(data: object, expected: set[str], label: str) -> None:
+    if type(data) is not dict or any(type(key) is not str for key in data):
+        raise TypeError(f"{label} must be an object with string keys")
     unknown = set(data) - expected
     missing = expected - set(data)
     if unknown:
         raise ValueError(f"Unknown {label} field: {sorted(unknown)[0]}")
     if missing:
         raise ValueError(f"Missing {label} field: {sorted(missing)[0]}")
+
+
+def _decode_string_tuple(value: object, label: str) -> tuple[str, ...]:
+    if type(value) not in {list, tuple} or any(type(item) is not str for item in value):
+        raise TypeError(f"{label} must be an array of strings")
+    return tuple(value)
 
 
 @dataclass(frozen=True)
@@ -67,8 +75,10 @@ class ArtifactRef:
     input_hashes: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if type(self.schema_version) is not int or self.schema_version != 1:
             raise ValueError("Unsupported artifact reference schema")
+        if type(self.size) is not int or not isinstance(self.input_hashes, tuple):
+            raise TypeError("Invalid artifact reference types")
         _validate_id(self.kind, "artifact kind")
         _validate_sha256(self.sha256, "artifact SHA-256")
         _validate_id(self.producer_operation_id, "producer operation id")
@@ -81,7 +91,12 @@ class ArtifactRef:
     def from_dict(cls, data: dict[str, Any]) -> ArtifactRef:
         expected = {field.name for field in dataclasses.fields(cls)}
         _strict_keys(data, expected, "artifact reference")
-        return cls(**{**data, "input_hashes": tuple(data["input_hashes"])})
+        return cls(
+            **{
+                **data,
+                "input_hashes": _decode_string_tuple(data["input_hashes"], "artifact input hashes"),
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -104,7 +119,7 @@ class IntentSpec:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> IntentSpec:
         _strict_keys(data, {field.name for field in dataclasses.fields(cls)}, "intent")
-        return cls(**{**data, "intent_ids": tuple(data["intent_ids"])})
+        return cls(**{**data, "intent_ids": _decode_string_tuple(data["intent_ids"], "intent IDs")})
 
 
 @dataclass(frozen=True)
@@ -125,7 +140,12 @@ class ResolutionSpec:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ResolutionSpec:
         _strict_keys(data, {field.name for field in dataclasses.fields(cls)}, "resolution")
-        return cls(**{**data, "operation_ids": tuple(data["operation_ids"])})
+        return cls(
+            **{
+                **data,
+                "operation_ids": _decode_string_tuple(data["operation_ids"], "operation IDs"),
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -158,6 +178,8 @@ class RunSpec:
         _validate_id(self.allowed_actor, "allowed actor")
         if type(self.gate_timeout_seconds) is not int or type(self.apply_delay_seconds) is not int:
             raise TypeError("Run timeouts must be integers")
+        if type(self.crash_after_effect) is not bool:
+            raise TypeError("Run crash flag must be a boolean")
         if self.gate_timeout_seconds < 1 or self.apply_delay_seconds < 0:
             raise ValueError("Invalid run timeout")
         if self.apk_composition != "monolithic":
@@ -190,6 +212,8 @@ class GateRequest:
         _validate_sha256(self.admission_sha256, "gate admission SHA-256")
         _validate_sha256(self.prepared_sha256, "gate prepared SHA-256")
         _validate_id(self.policy_revision, "gate policy revision")
+        if type(self.issued_at) is not str or type(self.expires_at) is not str:
+            raise TypeError("Gate request timestamps must be strings")
         if not self.issued_at or not self.expires_at:
             raise ValueError("Gate request requires timestamps")
 
@@ -227,6 +251,8 @@ class GateDecision:
         _validate_sha256(self.prepared_sha256, "decision prepared SHA-256")
         if self.decision not in {"approve", "reject", "defer"}:
             raise ValueError("Invalid gate decision")
+        if type(self.rationale) is not str or type(self.issued_at) is not str:
+            raise TypeError("Gate decision rationale and timestamp must be strings")
         if not self.rationale.strip() or len(self.rationale) > 2048 or not self.issued_at.strip():
             raise ValueError("Gate decision requires rationale and timestamp")
 
@@ -250,6 +276,8 @@ class StageInput:
             raise TypeError("Invalid stage input")
         if any(not isinstance(reference, ArtifactRef) for reference in self.upstream):
             raise TypeError("Invalid stage input artifact")
+        if self.decision is not None and not isinstance(self.decision, GateDecision):
+            raise TypeError("Invalid stage decision")
 
     @property
     def input_hashes(self) -> tuple[str, ...]:
@@ -285,8 +313,16 @@ class RunResult:
         if type(self.schema_version) is not int or self.schema_version != 1:
             raise ValueError("Unsupported run result schema")
         _validate_id(self.run_id, "result run id")
+        if self.state not in {"completed", "rejected", "deferred", "blocked", "cancelled"}:
+            raise ValueError("Invalid run result state")
+        if self.prepared is not None and not isinstance(self.prepared, ArtifactRef):
+            raise TypeError("Invalid prepared result artifact")
+        if self.output is not None and not isinstance(self.output, ArtifactRef):
+            raise TypeError("Invalid output result artifact")
         if self.state == "completed" and (self.output is None or self.decision_id is None):
             raise ValueError("Completed result lacks output or decision")
+        if self.state != "completed" and self.output is not None:
+            raise ValueError("Non-completed result cannot contain output")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunResult:
