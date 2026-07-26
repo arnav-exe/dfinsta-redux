@@ -6,6 +6,7 @@ import unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from dfinsta_pipeline.contracts import ArtifactRef
 from dfinsta_pipeline.executor import (
@@ -69,6 +70,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         values: dict[str, Any] = {
             "schema_version": 1,
             "capability_id": "decode-apk",
+            "executor_capability_sha256": self.capability().canonical_identity,
             "input_artifact": artifact(),
             "output_kind": "decoded-tree",
             "arguments": (("input", "input.apk"), ("output", "out")),
@@ -114,11 +116,36 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             launched = True
             return FakeProcess()
 
-        with self.assertRaisesRegex(ValueError, "SHA-256"):
+        capability = self.capability(executable_sha256="0" * 64)
+        with self.assertRaisesRegex(ValueError, "Executable SHA-256"):
             await execute(
-                self.capability(executable_sha256="0" * 64),
-                self.request(),
+                capability,
+                self.request(executor_capability_sha256=capability.canonical_identity),
                 self.metadata(),
+                timeout_seconds=1,
+                launcher=launcher,
+            )
+        self.assertFalse(launched)
+
+    async def test_substituted_capability_hash_fails_before_filesystem_or_launcher(self) -> None:
+        approved = self.capability()
+        substituted = self.capability(allowed_mutation_paths=("other",))
+        launched = False
+
+        async def launcher(*argv: str, **kwargs: Any) -> FakeProcess:
+            nonlocal launched
+            launched = True
+            return FakeProcess()
+
+        with self.assertRaisesRegex(ValueError, "executor capability SHA-256"):
+            await execute(
+                substituted,
+                self.request(executor_capability_sha256=approved.canonical_identity),
+                self.metadata(
+                    executable_path=self.root / "missing-tool",
+                    workspace_root=self.root / "missing-workspace",
+                    cwd=self.root / "missing-cwd",
+                ),
                 timeout_seconds=1,
                 launcher=launcher,
             )
@@ -197,6 +224,98 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "Split APK"):
             self.request(apk_composition="split")
 
+    def test_from_dict_rejects_malformed_containers_scalars_and_artifact(self) -> None:
+        capability = self.capability()
+        capability_data: dict[str, Any] = {
+            "schema_version": capability.schema_version,
+            "capability_id": capability.capability_id,
+            "executable_sha256": capability.executable_sha256,
+            "argv_template": list(capability.argv_template),
+            "path_arguments": list(capability.path_arguments),
+            "input_kinds": list(capability.input_kinds),
+            "output_kind": capability.output_kind,
+            "allowed_environment": list(capability.allowed_environment),
+            "fixed_environment": [list(pair) for pair in capability.fixed_environment],
+            "allowed_mutation_paths": list(capability.allowed_mutation_paths),
+        }
+        input_artifact = artifact()
+        artifact_data: dict[str, Any] = {
+            "schema_version": input_artifact.schema_version,
+            "kind": input_artifact.kind,
+            "sha256": input_artifact.sha256,
+            "size": input_artifact.size,
+            "uri": input_artifact.uri,
+            "producer_operation_id": input_artifact.producer_operation_id,
+            "input_hashes": list(input_artifact.input_hashes),
+        }
+        request = self.request()
+        request_data: dict[str, Any] = {
+            "schema_version": request.schema_version,
+            "capability_id": request.capability_id,
+            "executor_capability_sha256": request.executor_capability_sha256,
+            "input_artifact": artifact_data,
+            "output_kind": request.output_kind,
+            "arguments": [list(pair) for pair in request.arguments],
+            "environment": [list(pair) for pair in request.environment],
+            "apk_composition": request.apk_composition,
+        }
+
+        self.assertEqual(ExecutorCapability.from_dict(capability_data), capability)
+        self.assertEqual(ExecutionRequest.from_dict(request_data), request)
+        malformed = (
+            (ExecutorCapability, {**capability_data, "argv_template": "decode"}),
+            (ExecutorCapability, {**capability_data, "fixed_environment": "MODE=strict"}),
+            (ExecutorCapability, {**capability_data, "schema_version": True}),
+            (ExecutionRequest, {**request_data, "arguments": "input=input.apk"}),
+            (ExecutionRequest, {**request_data, "apk_composition": ["monolithic"]}),
+            (
+                ExecutionRequest,
+                {**request_data, "input_artifact": {**artifact_data, "size": False}},
+            ),
+            (
+                ExecutionRequest,
+                {**request_data, "input_artifact": {**artifact_data, "input_hashes": "a" * 64}},
+            ),
+            (
+                ExecutionRequest,
+                {**request_data, "input_artifact": {key: value for key, value in artifact_data.items() if key != "uri"}},
+            ),
+        )
+        for contract, data in malformed:
+            with self.subTest(contract=contract.__name__, data=data), self.assertRaises(
+                (TypeError, ValueError)
+            ):
+                contract.from_dict(data)
+
+    def test_environment_names_reject_case_collisions(self) -> None:
+        with self.assertRaisesRegex(ValueError, "case-insensitively"):
+            self.capability(allowed_environment=("LANG", "lang"))
+        with self.assertRaisesRegex(ValueError, "case-insensitively"):
+            self.capability(fixed_environment=(("MODE", "strict"), ("mode", "other")))
+        with self.assertRaisesRegex(ValueError, "case-insensitively"):
+            self.request(environment=(("LANG", "C"), ("lang", "other")))
+
+    async def test_windows_replacement_environment_requires_systemroot(self) -> None:
+        os.environ["SystemRoot"] = "C:/ambient-secret-bearing-environment"
+        self.addCleanup(os.environ.pop, "SystemRoot", None)
+        launched = False
+
+        async def launcher(*argv: str, **kwargs: Any) -> FakeProcess:
+            nonlocal launched
+            launched = True
+            return FakeProcess()
+
+        with mock.patch("dfinsta_pipeline.executor.sys.platform", "win32"):
+            with self.assertRaisesRegex(ValueError, "requires SystemRoot"):
+                await execute(
+                    self.capability(),
+                    self.request(),
+                    self.metadata(),
+                    timeout_seconds=1,
+                    launcher=launcher,
+                )
+        self.assertFalse(launched)
+
     def test_canonical_identity_is_location_independent_and_contracts_are_frozen(self) -> None:
         capability = self.capability()
         request = self.request()
@@ -273,6 +392,34 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
+        self.assertTrue(process.killed)
+
+    async def test_cleanup_is_bounded_when_reap_hangs(self) -> None:
+        class UnreapableProcess(FakeProcess):
+            def __init__(self) -> None:
+                super().__init__()
+                self.returncode = None
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                await asyncio.Event().wait()
+
+        process = UnreapableProcess()
+
+        async def launcher(*argv: str, **kwargs: Any) -> FakeProcess:
+            return process
+
+        with mock.patch("dfinsta_pipeline.executor._CLEANUP_TIMEOUT_SECONDS", 0.01):
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(
+                    execute(
+                        self.capability(),
+                        self.request(),
+                        self.metadata(),
+                        timeout_seconds=0.01,
+                        launcher=launcher,
+                    ),
+                    timeout=0.2,
+                )
         self.assertTrue(process.killed)
 
 

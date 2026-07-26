@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import string
+import sys
 from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
@@ -14,6 +15,7 @@ from .contracts import ArtifactRef, canonical_sha256
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ENVIRONMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CLEANUP_TIMEOUT_SECONDS = 1.0
 Launcher = Callable[..., Awaitable[Any]]
 
 
@@ -29,7 +31,9 @@ def _require_sorted_unique(values: tuple[str, ...], label: str) -> None:
         raise ValueError(f"{label} must be sorted and unique")
 
 
-def _require_pairs(values: tuple[tuple[str, str], ...], label: str) -> None:
+def _require_pairs(
+    values: tuple[tuple[str, str], ...], label: str, *, case_insensitive_names: bool = False
+) -> None:
     _require_tuple(values, label)
     if any(
         not isinstance(pair, tuple)
@@ -42,6 +46,8 @@ def _require_pairs(values: tuple[tuple[str, str], ...], label: str) -> None:
     names = tuple(pair[0] for pair in values)
     if tuple(sorted(set(names))) != names:
         raise ValueError(f"{label} names must be sorted and unique")
+    if case_insensitive_names and len({name.casefold() for name in names}) != len(names):
+        raise ValueError(f"{label} names must be unique case-insensitively")
 
 
 def _relative_parts(value: str, label: str) -> tuple[str, ...]:
@@ -53,13 +59,55 @@ def _relative_parts(value: str, label: str) -> tuple[str, ...]:
     return path.parts
 
 
-def _strict_fields(data: dict[str, Any], contract: type[Any]) -> None:
+def _strict_fields(data: object, contract: type[Any]) -> None:
+    if type(data) is not dict:
+        raise TypeError(f"{contract.__name__} must be a dict")
+    if any(type(name) is not str for name in data):
+        raise TypeError(f"{contract.__name__} field names must be strings")
     expected = {field.name for field in fields(contract)}
     if set(data) != expected:
         unknown = sorted(set(data) - expected)
         missing = sorted(expected - set(data))
         detail = unknown[0] if unknown else missing[0]
         raise ValueError(f"Invalid {contract.__name__} field: {detail}")
+
+
+def _decode_string_sequence(value: object, label: str) -> tuple[str, ...]:
+    if type(value) not in (list, tuple):
+        raise TypeError(f"{label} must be a list or tuple")
+    if any(type(item) is not str for item in value):
+        raise TypeError(f"{label} must contain strings")
+    return tuple(value)
+
+
+def _decode_pairs(value: object, label: str) -> tuple[tuple[str, str], ...]:
+    if type(value) not in (list, tuple):
+        raise TypeError(f"{label} must be a list or tuple")
+    result: list[tuple[str, str]] = []
+    for pair in value:
+        if type(pair) not in (list, tuple) or len(pair) != 2:
+            raise TypeError(f"{label} must contain string pairs")
+        if type(pair[0]) is not str or type(pair[1]) is not str:
+            raise TypeError(f"{label} must contain string pairs")
+        result.append((pair[0], pair[1]))
+    return tuple(result)
+
+
+def _decode_artifact_ref(value: object) -> ArtifactRef:
+    if type(value) is not dict:
+        raise TypeError("input_artifact must be a dict")
+    expected = {field.name for field in fields(ArtifactRef)}
+    if any(type(name) is not str for name in value) or set(value) != expected:
+        raise ValueError("Invalid input_artifact fields")
+    if type(value["schema_version"]) is not int:
+        raise TypeError("input_artifact schema_version must be an integer")
+    if type(value["size"]) is not int:
+        raise TypeError("input_artifact size must be an integer")
+    for name in ("kind", "sha256", "uri", "producer_operation_id"):
+        if type(value[name]) is not str:
+            raise TypeError(f"input_artifact {name} must be a string")
+    input_hashes = _decode_string_sequence(value["input_hashes"], "input_artifact input_hashes")
+    return ArtifactRef.from_dict({**value, "input_hashes": input_hashes})
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +126,12 @@ class ExecutorCapability:
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != 1:
             raise ValueError("Unsupported executor capability schema")
-        if not self.capability_id or not _SHA256_RE.fullmatch(self.executable_sha256):
+        if (
+            not isinstance(self.capability_id, str)
+            or not self.capability_id
+            or not isinstance(self.executable_sha256, str)
+            or not _SHA256_RE.fullmatch(self.executable_sha256)
+        ):
             raise ValueError("Invalid executor capability identity")
         for value, label in (
             (self.argv_template, "argv template"),
@@ -94,14 +147,22 @@ class ExecutorCapability:
         _require_sorted_unique(self.path_arguments, "path arguments")
         _require_sorted_unique(self.input_kinds, "input kinds")
         _require_sorted_unique(self.allowed_environment, "allowed environment")
-        _require_pairs(self.fixed_environment, "fixed environment")
+        if len({name.casefold() for name in self.allowed_environment}) != len(self.allowed_environment):
+            raise ValueError("allowed environment names must be unique case-insensitively")
+        _require_pairs(self.fixed_environment, "fixed environment", case_insensitive_names=True)
         _require_sorted_unique(self.allowed_mutation_paths, "allowed mutation paths")
         if not isinstance(self.output_kind, str) or not self.output_kind:
             raise ValueError("Invalid output kind")
         if any(not _ENVIRONMENT_NAME_RE.fullmatch(name) for name in self.allowed_environment):
             raise ValueError("Invalid allowed environment name")
-        fixed_names = {name for name, value in self.fixed_environment if _ENVIRONMENT_NAME_RE.fullmatch(name) and "\x00" not in value}
-        if len(fixed_names) != len(self.fixed_environment) or fixed_names.intersection(self.allowed_environment):
+        fixed_names = {
+            name.casefold()
+            for name, value in self.fixed_environment
+            if _ENVIRONMENT_NAME_RE.fullmatch(name) and "\x00" not in value
+        }
+        if len(fixed_names) != len(self.fixed_environment) or fixed_names.intersection(
+            name.casefold() for name in self.allowed_environment
+        ):
             raise ValueError("Invalid fixed environment")
         for path in self.allowed_mutation_paths:
             _relative_parts(path, "allowed mutation path")
@@ -129,16 +190,25 @@ class ExecutorCapability:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExecutorCapability:
         _strict_fields(data, cls)
+        scalar_types = {
+            "schema_version": int,
+            "capability_id": str,
+            "executable_sha256": str,
+            "output_kind": str,
+        }
+        for name, expected_type in scalar_types.items():
+            if type(data[name]) is not expected_type:
+                raise TypeError(f"{name} must be a {expected_type.__name__}")
         converted = dict(data)
         for name in (
             "argv_template",
             "path_arguments",
             "input_kinds",
             "allowed_environment",
-            "fixed_environment",
             "allowed_mutation_paths",
         ):
-            converted[name] = tuple(tuple(item) if name == "fixed_environment" else item for item in data[name])
+            converted[name] = _decode_string_sequence(data[name], name)
+        converted["fixed_environment"] = _decode_pairs(data["fixed_environment"], "fixed_environment")
         return cls(**converted)
 
 
@@ -146,6 +216,7 @@ class ExecutorCapability:
 class ExecutionRequest:
     schema_version: int
     capability_id: str
+    executor_capability_sha256: str
     input_artifact: ArtifactRef
     output_kind: str
     arguments: tuple[tuple[str, str], ...]
@@ -157,12 +228,18 @@ class ExecutionRequest:
             raise ValueError("Unsupported execution request schema")
         if not isinstance(self.capability_id, str) or not self.capability_id:
             raise ValueError("Invalid capability id")
+        if not isinstance(self.executor_capability_sha256, str) or not _SHA256_RE.fullmatch(
+            self.executor_capability_sha256
+        ):
+            raise ValueError("Invalid executor capability SHA-256")
         if not isinstance(self.input_artifact, ArtifactRef):
             raise TypeError("input_artifact must be an ArtifactRef")
         if not isinstance(self.output_kind, str) or not self.output_kind:
             raise ValueError("Invalid output kind")
         _require_pairs(self.arguments, "arguments")
-        _require_pairs(self.environment, "environment")
+        _require_pairs(self.environment, "environment", case_insensitive_names=True)
+        if any("\x00" in name or "\x00" in value for name, value in self.arguments):
+            raise ValueError("Invalid arguments")
         if any("\x00" in name or "\x00" in value or "=" in name for name, value in self.environment):
             raise ValueError("Invalid environment")
         if self.apk_composition != "monolithic":
@@ -175,10 +252,20 @@ class ExecutionRequest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExecutionRequest:
         _strict_fields(data, cls)
+        scalar_types = {
+            "schema_version": int,
+            "capability_id": str,
+            "executor_capability_sha256": str,
+            "output_kind": str,
+            "apk_composition": str,
+        }
+        for name, expected_type in scalar_types.items():
+            if type(data[name]) is not expected_type:
+                raise TypeError(f"{name} must be a {expected_type.__name__}")
         converted = dict(data)
-        converted["input_artifact"] = ArtifactRef.from_dict(data["input_artifact"])
-        converted["arguments"] = tuple(tuple(pair) for pair in data["arguments"])
-        converted["environment"] = tuple(tuple(pair) for pair in data["environment"])
+        converted["input_artifact"] = _decode_artifact_ref(data["input_artifact"])
+        converted["arguments"] = _decode_pairs(data["arguments"], "arguments")
+        converted["environment"] = _decode_pairs(data["environment"], "environment")
         return cls(**converted)
 
 
@@ -238,9 +325,14 @@ def _snapshot(root: Path) -> dict[str, tuple[str, str]]:
 
 
 async def _clean_up(process: Any) -> None:
+    # The executor owns only its direct child; portable process-tree confinement is out of scope.
     if process.returncode is None:
         process.kill()
-    await process.communicate()
+    try:
+        async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+            await process.communicate()
+    except TimeoutError:
+        return
 
 
 def _unexpected_mutations(
@@ -266,6 +358,8 @@ async def execute(
 ) -> ExecutionResult:
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
+    if request.executor_capability_sha256 != capability.canonical_identity:
+        raise ValueError("Request executor capability SHA-256 does not match grant")
     if request.capability_id != capability.capability_id:
         raise ValueError("Request capability does not match grant")
     if request.input_artifact.kind not in capability.input_kinds:
@@ -299,12 +393,17 @@ async def execute(
     if not set(supplied_environment).issubset(capability.allowed_environment):
         raise ValueError("Environment contains a non-allowlisted name")
     environment = {**dict(capability.fixed_environment), **supplied_environment}
+    if sys.platform == "win32" and "systemroot" not in {
+        name.casefold() for name in environment
+    }:
+        raise ValueError("Windows replacement environment requires SystemRoot")
     argv = tuple(template.format_map(argument_values) for template in capability.argv_template)
     before = _snapshot(workspace_root)
 
     executable = metadata.executable_path.resolve(strict=True)
     if not executable.is_file():
         raise ValueError("Executable is not a regular file")
+    # Hash-then-exec admission relies on an immutable trusted tool store; it cannot close TOCTOU portably.
     if _file_sha256(executable) != capability.executable_sha256:
         raise ValueError("Executable SHA-256 does not match capability")
 
@@ -320,7 +419,8 @@ async def execute(
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_seconds)
     except (TimeoutError, asyncio.CancelledError):
-        await _clean_up(process)
+        cleanup = asyncio.create_task(_clean_up(process))
+        await asyncio.shield(cleanup)
         unexpected = _unexpected_mutations(
             before, _snapshot(workspace_root), capability.allowed_mutation_paths
         )
