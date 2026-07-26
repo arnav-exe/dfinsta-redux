@@ -242,7 +242,7 @@ class StoreAndLedgerTests(unittest.TestCase):
             ledger = Ledger(root / "ledger.sqlite3")
             self.assertIsNone(
                 ledger.begin_operation(
-                    "operation-1", "test", "a" * 64, "owner-1", 1, retry_safe=True
+                    "operation-1", "test", "a" * 64, "owner-1", retry_safe=True
                 )
             )
             output = store.put_bytes(
@@ -252,7 +252,7 @@ class StoreAndLedgerTests(unittest.TestCase):
             ledger.complete_operation("operation-1", output)
             self.assertEqual(
                 ledger.begin_operation(
-                    "operation-1", "test", "a" * 64, "owner-2", 2, retry_safe=True
+                    "operation-1", "test", "a" * 64, "owner-2", retry_safe=True
                 ),
                 output,
             )
@@ -296,7 +296,7 @@ class StoreAndLedgerTests(unittest.TestCase):
             def claim(owner: str) -> str:
                 try:
                     result = ledger.begin_operation(
-                        "operation-1", "test", "a" * 64, owner, 1, retry_safe=True
+                        "operation-1", "test", "a" * 64, owner, retry_safe=False
                     )
                     return "claimed" if result is None else "adopted"
                 except ValueError as error:
@@ -306,21 +306,21 @@ class StoreAndLedgerTests(unittest.TestCase):
                 results = set(executor.map(claim, ("owner-1", "owner-2")))
             self.assertEqual(results, {"claimed", "Operation is already claimed"})
 
-    def test_higher_retry_can_reclaim_only_retry_safe_pending_operation(self) -> None:
+    def test_retry_safe_claim_fences_superseded_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ledger = Ledger(Path(directory) / "ledger.sqlite3")
             self.assertIsNone(
                 ledger.begin_operation(
-                    "operation-1", "test", "a" * 64, "owner-1", 1, retry_safe=True
+                    "operation-1", "test", "a" * 64, "owner-1", retry_safe=True
                 )
             )
             with self.assertRaisesRegex(ValueError, "already claimed"):
                 ledger.begin_operation(
-                    "operation-1", "test", "a" * 64, "owner-2", 2, retry_safe=False
+                    "operation-1", "test", "a" * 64, "owner-2", retry_safe=False
                 )
             self.assertIsNone(
                 ledger.begin_operation(
-                    "operation-1", "test", "a" * 64, "owner-2", 2, retry_safe=True
+                    "operation-1", "test", "a" * 64, "new-run-owner", retry_safe=True
                 )
             )
             output = ArtifactRef(
@@ -334,6 +334,8 @@ class StoreAndLedgerTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "owner"):
                 ledger.record_effect("operation-1", "owner-1", output)
+            ledger.record_effect("operation-1", "new-run-owner", output)
+            self.assertEqual(ledger.operation_event_count("operation-1", "effect"), 1)
 
     def test_legacy_events_backfill_current_claims(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -361,10 +363,12 @@ class StoreAndLedgerTests(unittest.TestCase):
                     ("operation-1", "test", "a" * 64, canonical_json(output)),
                 )
 
-            ledger = Ledger(path)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                ledgers = list(executor.map(lambda _: Ledger(path), range(2)))
+            ledger = ledgers[0]
             self.assertEqual(
                 ledger.begin_operation(
-                    "operation-1", "test", "a" * 64, "owner-2", 1, retry_safe=True
+                    "operation-1", "test", "a" * 64, "owner-2", retry_safe=True
                 ),
                 output,
             )

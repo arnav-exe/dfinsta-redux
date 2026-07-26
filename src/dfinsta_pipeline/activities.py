@@ -39,9 +39,9 @@ def operation_key(kind: str, value: object) -> str:
     return canonical_sha256({"kind": kind, "input": value})
 
 
-def _activity_owner() -> tuple[str, int]:
+def _activity_owner() -> str:
     info = activity.info()
-    return f"{info.workflow_run_id}:{info.activity_id}:{info.attempt}", info.attempt
+    return f"{info.workflow_run_id}:{info.activity_id}:{info.attempt}"
 
 
 def _adopt_existing(
@@ -66,7 +66,7 @@ def _adopt_existing(
 @activity.defn
 async def admit_activity(spec: RunSpec) -> ArtifactRef:
     key = operation_key("phase_a_admit", spec)
-    owner, attempt = _activity_owner()
+    owner = _activity_owner()
     input_hashes = (
         spec.subject_sha256,
         spec.intent_sha256,
@@ -80,7 +80,6 @@ async def admit_activity(spec: RunSpec) -> ArtifactRef:
             "phase_a_admit",
             canonical_sha256(spec),
             owner,
-            attempt,
             retry_safe=True,
         ),
         expected_kind="phase-a-admission",
@@ -103,7 +102,7 @@ async def prepare_activity(stage: StageInput) -> ArtifactRef:
     if len(stage.upstream) != 1 or stage.upstream[0].kind != "phase-a-admission":
         raise ValueError("Prepare requires an admission artifact")
     key = operation_key("phase_a_prepare", stage)
-    owner, attempt = _activity_owner()
+    owner = _activity_owner()
     existing = _adopt_existing(
         key,
         runtime().ledger.begin_operation(
@@ -111,7 +110,6 @@ async def prepare_activity(stage: StageInput) -> ArtifactRef:
             "phase_a_prepare",
             canonical_sha256(stage),
             owner,
-            attempt,
             retry_safe=True,
         ),
         expected_kind="phase-a-prepared",
@@ -145,7 +143,7 @@ async def apply_activity(stage: StageInput) -> ArtifactRef:
     if not runtime().ledger.has_decision(stage.decision):
         raise ValueError("Apply decision is not recorded")
     key = operation_key("phase_a_apply", stage)
-    owner, attempt = _activity_owner()
+    owner = _activity_owner()
     existing = _adopt_existing(
         key,
         runtime().ledger.begin_operation(
@@ -153,7 +151,6 @@ async def apply_activity(stage: StageInput) -> ArtifactRef:
             "phase_a_apply",
             canonical_sha256(stage),
             owner,
-            attempt,
             retry_safe=True,
         ),
         expected_kind="phase-a-output",

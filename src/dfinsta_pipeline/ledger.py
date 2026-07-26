@@ -14,19 +14,19 @@ class Ledger:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS operation_events (
+            connection.execute("BEGIN IMMEDIATE")
+            statements = (
+                """CREATE TABLE IF NOT EXISTS operation_events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     operation_key TEXT NOT NULL,
                     kind TEXT NOT NULL,
                     input_sha256 TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('pending', 'effect', 'completed', 'quarantined')),
                     output_json TEXT
-                );
-                CREATE INDEX IF NOT EXISTS operation_events_key
-                    ON operation_events(operation_key, event_id);
-                CREATE TABLE IF NOT EXISTS operation_claims (
+                )""",
+                """CREATE INDEX IF NOT EXISTS operation_events_key
+                    ON operation_events(operation_key, event_id)""",
+                """CREATE TABLE IF NOT EXISTS operation_claims (
                     operation_key TEXT PRIMARY KEY,
                     kind TEXT NOT NULL,
                     input_sha256 TEXT NOT NULL,
@@ -34,8 +34,8 @@ class Ledger:
                     owner_attempt INTEGER NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('pending', 'effect', 'completed', 'quarantined')),
                     output_json TEXT
-                );
-                CREATE TABLE IF NOT EXISTS decisions (
+                )""",
+                """CREATE TABLE IF NOT EXISTS decisions (
                     decision_id TEXT PRIMARY KEY,
                     idempotency_id TEXT NOT NULL UNIQUE,
                     run_id TEXT NOT NULL,
@@ -48,17 +48,22 @@ class Ledger:
                     decision TEXT NOT NULL,
                     rationale TEXT NOT NULL,
                     issued_at TEXT NOT NULL
-                );
-                CREATE TRIGGER IF NOT EXISTS operation_events_no_update
-                    BEFORE UPDATE ON operation_events BEGIN SELECT RAISE(ABORT, 'operation events are append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS operation_events_no_delete
-                    BEFORE DELETE ON operation_events BEGIN SELECT RAISE(ABORT, 'operation events are append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS decisions_no_update
-                    BEFORE UPDATE ON decisions BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS decisions_no_delete
-                    BEFORE DELETE ON decisions BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
-                """
+                )""",
+                """CREATE TRIGGER IF NOT EXISTS operation_events_no_update
+                    BEFORE UPDATE ON operation_events BEGIN
+                    SELECT RAISE(ABORT, 'operation events are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS operation_events_no_delete
+                    BEFORE DELETE ON operation_events BEGIN
+                    SELECT RAISE(ABORT, 'operation events are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS decisions_no_update
+                    BEFORE UPDATE ON decisions BEGIN
+                    SELECT RAISE(ABORT, 'decisions are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS decisions_no_delete
+                    BEFORE DELETE ON decisions BEGIN
+                    SELECT RAISE(ABORT, 'decisions are append-only'); END""",
             )
+            for statement in statements:
+                connection.execute(statement)
             columns = {
                 row[1]
                 for row in connection.execute("PRAGMA table_info(operation_claims)").fetchall()
@@ -116,12 +121,9 @@ class Ledger:
         kind: str,
         input_sha256: str,
         owner_token: str,
-        owner_attempt: int,
         *,
         retry_safe: bool,
     ) -> ArtifactRef | None:
-        if type(owner_attempt) is not int or owner_attempt < 1:
-            raise ValueError("Operation owner attempt must be positive")
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -133,8 +135,8 @@ class Ledger:
                 connection.execute(
                     "INSERT INTO operation_claims "
                     "(operation_key, kind, input_sha256, owner_token, owner_attempt, status, output_json) "
-                    "VALUES (?, ?, ?, ?, ?, 'pending', NULL)",
-                    (operation_key, kind, input_sha256, owner_token, owner_attempt),
+                    "VALUES (?, ?, ?, ?, 1, 'pending', NULL)",
+                    (operation_key, kind, input_sha256, owner_token),
                 )
                 connection.execute(
                     "INSERT INTO operation_events "
@@ -150,13 +152,15 @@ class Ledger:
             if row[4] == "quarantined":
                 raise ValueError("Operation is quarantined")
             if row[2] != owner_token:
-                if not retry_safe or owner_attempt <= row[3]:
+                if not retry_safe:
                     raise ValueError("Operation is already claimed")
-                connection.execute(
-                    "UPDATE operation_claims SET owner_token = ?, owner_attempt = ? "
-                    "WHERE operation_key = ?",
-                    (owner_token, owner_attempt, operation_key),
+                updated = connection.execute(
+                    "UPDATE operation_claims SET owner_token = ?, owner_attempt = owner_attempt + 1 "
+                    "WHERE operation_key = ? AND owner_attempt = ? AND status = 'pending'",
+                    (owner_token, operation_key, row[3]),
                 )
+                if updated.rowcount != 1:
+                    raise ValueError("Operation claim changed during takeover")
                 connection.execute(
                     "INSERT INTO operation_events "
                     "(operation_key, kind, input_sha256, status, output_json) "
