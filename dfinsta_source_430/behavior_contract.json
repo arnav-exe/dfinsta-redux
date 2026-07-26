@@ -4,7 +4,7 @@
   "package": "com.instagram.android",
   "base_version_name": "430.0.0.53.80",
   "base_version_code": 383611248,
-  "implementation_status": "Production v5 DEX graft built, signed, installed, settings-validated, and behavior-validated for Feed, Explore, Reels, and Stories",
+  "implementation_status": "Production v7 DEX graft built, signed, installed, and clean-start smoke-tested; Feed, Explore, Reels, and Stories retain v5 behavior evidence; profile-ad UI and eligible-account contrast are pending",
   "privacy": {
     "amplitude_startup_telemetry": false,
     "acra_crash_reporting": false
@@ -14,6 +14,11 @@
     "action": "android.intent.action.MAIN",
     "categories": ["android.intent.category.LAUNCHER"],
     "foreground_activity": "com.instagram.android/com.instagram.mainactivity.InstagramMainActivity",
+    "foreground_activities": [
+      "com.instagram.android/com.instagram.mainactivity.InstagramMainActivity",
+      "com.instagram.android/com.instagram.modal.ModalActivity"
+    ],
+    "package_launcher_fallback": true,
     "logged_out_accepted_anchor_sets": [
       ["Join Instagram", "I already have a profile"],
       ["Password"]

@@ -239,6 +239,14 @@ def startup_intent_arguments(config: dict[str, Any]) -> list[str]:
     return arguments
 
 
+def resumed_activity(output: str) -> str | None:
+    match = re.search(
+        r"(?:topResumedActivity=|mResumedActivity:|ResumedActivity:).*?\su\d+\s+([^\s}]+)",
+        output,
+    )
+    return match.group(1) if match else None
+
+
 def preflight(adb: Adb, contract: dict[str, Any], contract_path: Path) -> dict[str, Any]:
     package = contract["package"]
     state = adb.run("get-state", check=False)
@@ -278,11 +286,35 @@ def startup(adb: Adb, contract: dict[str, Any], contract_path: Path, wait: float
         timeout=45,
     )
     time.sleep(wait)
+    startup_config = contract["startup"]
+    activities = adb.run("shell", "dumpsys", "activity", "activities", check=False).stdout
+    foreground = resumed_activity(activities)
+    expected_foreground = startup_config.get("foreground_activities")
+    if expected_foreground is None:
+        exact_foreground = startup_config.get("foreground_activity")
+        expected_foreground = [exact_foreground] if exact_foreground else []
+    package_launcher = None
+    if (
+        expected_foreground
+        and foreground not in expected_foreground
+        and startup_config.get("package_launcher_fallback", False)
+    ):
+        package_launcher = adb.run(
+            "shell",
+            "monkey",
+            "-p",
+            package,
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "1",
+            timeout=45,
+        )
+        time.sleep(wait)
+        activities = adb.run("shell", "dumpsys", "activity", "activities", check=False).stdout
+        foreground = resumed_activity(activities)
     pid = package_process(adb, package)
     logcat = adb.run("logcat", "-d", "-v", "threadtime", timeout=30).stdout
     fatal_lines = fatal_log_lines(logcat)
-    activities = adb.run("shell", "dumpsys", "activity", "activities", check=False).stdout
-    expected_foreground = contract["startup"].get("foreground_activity")
     ui_error = None
     matched_anchors = None
     try:
@@ -293,7 +325,7 @@ def startup(adb: Adb, contract: dict[str, Any], contract_path: Path, wait: float
     checks = {
         "process_alive": pid is not None,
         "no_android_runtime_fatal": not fatal_lines,
-        "foreground_activity": expected_foreground is None or expected_foreground in activities,
+        "foreground_activity": not expected_foreground or foreground in expected_foreground,
     }
     return evidence(
         "startup",
@@ -301,11 +333,13 @@ def startup(adb: Adb, contract: dict[str, Any], contract_path: Path, wait: float
         ok=all(checks[name] for name in contract["startup"]["required"]),
         checks=checks,
         process_id=pid,
-        expected_foreground_activity=expected_foreground,
+        foreground_activity=foreground,
+        expected_foreground_activities=expected_foreground,
         accepted_logged_out_anchor_set=matched_anchors,
         ui_capture_error=ui_error,
         fatal_logcat=fatal_lines,
         am_start=start.stdout.strip(),
+        package_launcher_fallback=package_launcher.stdout.strip() if package_launcher else None,
     )
 
 

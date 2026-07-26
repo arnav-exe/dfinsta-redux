@@ -17,6 +17,7 @@ from runner import (
     fatal_log_lines,
     find_selector_nodes,
     parse_ui_xml,
+    resumed_activity,
     selector_criteria,
     startup_intent_arguments,
 )
@@ -159,6 +160,15 @@ class CommandConstructionTests(unittest.TestCase):
                 "com.example/.Launcher",
             ],
         )
+
+    def test_parses_top_resumed_activity(self) -> None:
+        self.assertEqual(
+            resumed_activity(
+                "topResumedActivity=ActivityRecord{abc u0 com.example/.MainActivity t42}"
+            ),
+            "com.example/.MainActivity",
+        )
+        self.assertIsNone(resumed_activity("ResumedActivity: null"))
 
     def test_builds_serialized_adb_command(self) -> None:
         adb = Adb("C:/Android/platform-tools/adb.exe", "device-123")
