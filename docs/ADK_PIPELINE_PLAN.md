@@ -186,7 +186,7 @@ Temporal is the sole durable workflow engine. Phase A pins `temporalio==1.30.0`;
 
 ### Phase A Implementation Checkpoint
 
-The atomic commits from `3e91eb5` through `de73893` implement, review, and harden the first durable slice. The current suite has 34 Phase A tests and 96 tests overall.
+The atomic commits from `3e91eb5` through `b887136` implement, review, and harden the first durable slice. The current suite has 35 Phase A tests and 97 tests overall.
 
 Proven:
 
@@ -194,12 +194,12 @@ Proven:
 - Admission, prepare, decision-recording, and apply Activities with a validated Temporal Update between prepare and apply.
 - Gate decisions bind the canonical run, admission artifact, prepared artifact, actor, policy, timestamp, decision identity, and idempotency identity.
 - Every downstream operation key and output reference includes complete upstream artifact and decision hashes.
-- The SQLite ledger records append-only pending, effect, completion, and quarantine events; update/delete triggers prevent history rewriting. A transactional current-claim index allows only one owner to execute a pending operation. Higher Temporal attempts may reclaim only explicitly retry-safe CAS effects, and legacy event-only ledgers are transactionally backfilled before use.
+- The SQLite ledger records append-only pending, effect, completion, and quarantine events; update/delete triggers prevent history rewriting. A transactional current-claim index fences promotion to its latest owner. Any new Workflow/Activity owner may supersede an abandoned claim only for explicitly retry-safe deterministic CAS effects; non-retry-safe claims reject competitors. Schema creation, upgrade, and legacy event backfill serialize under one immediate transaction.
 - A synthetic post-effect retry validates and adopts one CAS effect before completion. Cooperative cancellation waits for cleanup and leaves the effect quarantined. Hard loss around a real subprocess remains unproven.
 - A Worker can be replaced while the Workflow waits at a gate. Tests disable sticky caching to force History reconstruction and use the documented pinned-version override for synthetic traffic.
 - Temporal CLI 1.8.1 / Server 1.31.2 has promoted `phase-a-v1` to Current, started a Workflow without an override, then stopped and restarted against the same SQLite file; fresh Worker and trusted-client connections recovered the pending gate and completed it.
 - A three-day logical gate boundary is covered with Temporal time skipping. Saved History replays with unchanged code and fails against a deliberately incompatible Workflow definition.
-- The executor binds each request and resolved capability to the `RunSpec.executor_capability_sha256` admitted in Workflow History, verifies an absolute executable against that capability before launch, renders only an exact argv template, passes only admitted environment values, constrains resolved workspace paths and audits declared mutations, validates artifact kinds, and rejects split APK sets. It uses `create_subprocess_exec`, never a shell, and bounds direct-child cleanup even when cancellation arrives during process creation.
+- The executor binds each request and resolved capability to the `RunSpec.executor_capability_sha256` admitted in Workflow History, verifies an absolute executable against that capability before launch, renders only an exact argv template, passes only admitted environment values, constrains resolved workspace paths and audits declared mutations, validates artifact kinds, and rejects split APK sets. It uses `create_subprocess_exec`, never a shell, bounds direct-child cleanup, and supervises a cancelled slow launch so a late process handle is killed/reaped while the event loop remains alive.
 
 Still pending before Phase A is considered production-ready:
 

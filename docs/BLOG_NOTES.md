@@ -57,9 +57,11 @@ The subprocess boundary is capability-based before any APK tool is connected. A 
 
 The persistence test first promotes `phase-a-v1` to the Current Worker Deployment Version and starts normally without a test override. It then gracefully stops the real dev-server process and restarts Temporal CLI 1.8.1 / Server 1.31.2 on the same SQLite file. Fresh Worker and trusted-client SDK connections find the Workflow at the same gate and complete it. That proves normal routing, graceful service persistence, and reconnection, but not yet abrupt process loss or authenticated authority from a separately launched client process.
 
-An independent review caught two more important distinctions. A higher Temporal retry may reclaim an abandoned pending claim only when the effect is deterministic CAS storage; a future external side effect needs destination-level idempotency or fencing. The executor now compares both the request and resolved capability with the capability hash stored in the admitted `RunSpec`, rather than trusting two self-consistent caller objects.
+An independent review caught two more important distinctions. Temporal attempt numbers reset across executions, so they cannot be recovery epochs. The ledger now owns a monotonically increasing fencing generation: a new owner can supersede an abandoned deterministic CAS claim across executions, while stale owners cannot promote. A future external side effect still needs destination-level idempotency or fencing. Schema creation and legacy backfill also run under one serialized transaction. The executor compares both the request and resolved capability with the capability hash stored in the admitted `RunSpec`, rather than trusting two self-consistent caller objects.
 
-The hardened Phase A checkpoint has 34 focused tests and 96 Python tests overall. Remaining durability work is intentionally explicit: authenticated submissions, abrupt process-loss testing, non-idempotent fencing, replay-corpus CI, immutable tool storage/OS confinement and process-tree cleanup, and later signing/device secret isolation.
+Cancellation during process creation had one final awkward branch: the launcher might return a child handle only after the bounded wait. The executor now reports unknown launch state immediately but retains a supervisor task; if the handle arrives while the Worker event loop remains alive, it kills and reaps that child. Abrupt Worker death still requires OS-level process supervision.
+
+The hardened Phase A checkpoint has 35 focused tests and 97 Python tests overall. Remaining durability work is intentionally explicit: authenticated submissions, abrupt process-loss testing, non-idempotent fencing, replay-corpus CI, immutable tool storage/OS confinement and process-tree cleanup, and later signing/device secret isolation.
 
 ## Facts Worth Capturing During Development
 
@@ -127,4 +129,5 @@ The hardened Phase A checkpoint has 34 focused tests and 96 Python tests overall
 - Added a fail-closed executor capability model before connecting any APK tool: admitted capability hash, executable digest, argv, environment, workspace, artifact kinds, mutation audit, timeout cleanup, and split-APK rejection.
 - Restarted Temporal CLI 1.8.1 / Server 1.31.2 on the same SQLite state and resumed the gate through fresh Worker/client connections.
 - Added retry-safe abandoned-claim recovery, legacy-ledger migration, admitted-`RunSpec` executor binding, strict terminal-result invariants, exclusive gate-expiry validation, and cancellation-safe process creation.
-- Replayed fetched History successfully, deliberately triggered nondeterminism with incompatible code, and reached 34 Phase A tests plus 96 passing Python tests overall.
+- Replaced attempt-number takeover with ledger-owned cross-execution fencing, serialized concurrent migrations, and supervised late subprocess handles.
+- Replayed fetched History successfully, deliberately triggered nondeterminism with incompatible code, and reached 35 Phase A tests plus 97 passing Python tests overall.
