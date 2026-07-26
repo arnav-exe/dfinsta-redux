@@ -16,7 +16,8 @@ from dfinsta_pipeline.port_contracts import (
     ArchiveEntryNamesAndBytesPreservedExcept,
     BytesAbsent,
     BytesPresent,
-    DexStringsAbsent,
+    DescriptorsPresent,
+    DexStringSubstringsAbsent,
     DexStringsPresent,
     IntentSpecV2,
     OperationPostcondition,
@@ -322,8 +323,17 @@ class PhaseBFixtureTests(unittest.TestCase):
                 any(isinstance(assertion, DexStringsPresent) for assertion in resolution.additional_assertions)
             )
             self.assertTrue(
-                any(isinstance(assertion, DexStringsAbsent) for assertion in resolution.additional_assertions)
+                any(
+                    isinstance(assertion, DexStringSubstringsAbsent)
+                    for assertion in resolution.additional_assertions
+                )
             )
+        self.assertTrue(
+            any(
+                isinstance(assertion, DescriptorsPresent)
+                for assertion in self.resolutions[340].additional_assertions
+            )
+        )
         absent = next(
             assertion
             for assertion in self.resolutions[430].additional_assertions
@@ -348,6 +358,16 @@ class PhaseBFixtureTests(unittest.TestCase):
         assertion["dex_entry"] = "classes99.dex"
         with self.assertRaisesRegex(ValueError, "outside backend topology"):
             compile_port(self.intent, ResolutionSpecV3.from_dict(data))
+
+        substring_data = copy.deepcopy(load(SPECS / "resolutions" / "instagram_430.json"))
+        assertion = next(
+            item
+            for item in substring_data["additional_assertions"]
+            if item["kind"] == "dex_string_substrings_absent"
+        )
+        assertion["dex_entry"] = "classes99.dex"
+        with self.assertRaisesRegex(ValueError, "outside backend topology"):
+            compile_port(self.intent, ResolutionSpecV3.from_dict(substring_data))
 
     def test_operation_ids_and_compiler_postconditions_are_exhaustive(self) -> None:
         for target, resolution in self.resolutions.items():

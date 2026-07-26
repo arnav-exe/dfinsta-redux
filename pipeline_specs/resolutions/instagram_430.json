@@ -26,8 +26,8 @@
     {
       "assertion_id": "430.bytes.absent",
       "dex_entry": "classes20.dex",
-      "kind": "dex_strings_absent",
-      "strings": [
+      "kind": "dex_string_substrings_absent",
+      "substrings": [
         "Amplitude",
         "DistractionFree",
         "FeedCache",

@@ -246,6 +246,33 @@ class PhaseBCompilerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlay producers"):
             self.compile(orphan)
 
+    def test_rejects_substring_assertion_outside_topology_and_reserved_backend_id(self) -> None:
+        outside = resolution_340()
+        outside["additional_assertions"].append(
+            {
+                "assertion_id": "forbidden-substrings",
+                "kind": "dex_string_substrings_absent",
+                "dex_entry": "classes99.dex",
+                "substrings": ["legacy"],
+            }
+        )
+        outside["additional_assertions"].sort(key=lambda item: item["assertion_id"])
+        with self.assertRaisesRegex(ValueError, "outside backend topology"):
+            self.compile(outside)
+
+        reserved = resolution_340()
+        reserved["additional_assertions"].append(
+            {
+                "assertion_id": "backend.signature-policy",
+                "kind": "dex_strings_absent",
+                "dex_entry": "classes.dex",
+                "strings": ["legacy"],
+            }
+        )
+        reserved["additional_assertions"].sort(key=lambda item: item["assertion_id"])
+        with self.assertRaisesRegex(ValueError, "verifier-owned"):
+            self.compile(reserved)
+
     def test_rejects_fixture_supplied_operation_postcondition(self) -> None:
         data = resolution_340()
         data["additional_assertions"].append(

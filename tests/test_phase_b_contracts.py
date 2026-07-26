@@ -5,6 +5,8 @@ from dataclasses import asdict
 from dfinsta_pipeline.contracts import canonical_sha256
 from dfinsta_pipeline.port_contracts import (
     ArchiveEntryNamesAndBytesPreservedExcept,
+    DescriptorsPresent,
+    DexStringSubstringsAbsent,
     IntentResolution,
     IntentSpecV2,
     ResolutionSpecV2,
@@ -261,6 +263,36 @@ def resolution_v3_430() -> dict[str, object]:
 
 
 class PhaseBContractTests(unittest.TestCase):
+    def test_closed_presence_and_dex_substring_assertions_are_strict(self) -> None:
+        descriptors = DescriptorsPresent.from_dict(
+            {
+                "assertion_id": "required-descriptors",
+                "kind": "descriptors_present",
+                "dex_entry": "classes2.dex",
+                "descriptors": ["Lsample/Required;"],
+            }
+        )
+        self.assertEqual(descriptors.descriptors, ("Lsample/Required;",))
+        substrings = DexStringSubstringsAbsent.from_dict(
+            {
+                "assertion_id": "forbidden-substrings",
+                "kind": "dex_string_substrings_absent",
+                "dex_entry": "classes2.dex",
+                "substrings": ["forbidden", "legacy"],
+            }
+        )
+        self.assertEqual(substrings.substrings, ("forbidden", "legacy"))
+
+        for values in ([], ["legacy", "legacy"], ["legacy", "forbidden"]):
+            data = {
+                "assertion_id": "forbidden-substrings",
+                "kind": "dex_string_substrings_absent",
+                "dex_entry": "classes2.dex",
+                "substrings": values,
+            }
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                DexStringSubstringsAbsent.from_dict(data)
+
     def test_v3_status_round_trip_and_target_fixtures(self) -> None:
         for data in (resolution_v3_340(), resolution_v3_430()):
             resolution = ResolutionSpecV3.from_dict(data)

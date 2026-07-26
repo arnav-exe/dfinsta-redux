@@ -682,6 +682,34 @@ class DescriptorSetEquality:
 
 
 @dataclass(frozen=True, slots=True)
+class DescriptorsPresent:
+    assertion_id: str
+    kind: Literal["descriptors_present"]
+    dex_entry: str
+    descriptors: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _id(self.assertion_id, "assertion id")
+        if self.kind != "descriptors_present":
+            raise ValueError("Invalid assertion kind")
+        _dex_entries((self.dex_entry,), "descriptor DEX entry", nonempty=True)
+        if not isinstance(self.descriptors, tuple) or any(
+            type(item) is not str for item in self.descriptors
+        ):
+            raise TypeError("Descriptors must be a tuple of strings")
+        _sorted_unique(self.descriptors, "descriptors")
+        if not self.descriptors:
+            raise ValueError("Descriptors must not be empty")
+        for descriptor in self.descriptors:
+            _descriptor(descriptor, "descriptor")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DescriptorsPresent:
+        data = _keys(data, cls, "descriptors-present assertion")
+        return cls(**{**data, "descriptors": _strings(data["descriptors"], "descriptors")})
+
+
+@dataclass(frozen=True, slots=True)
 class BytesPresent:
     assertion_id: str
     kind: Literal["bytes_present"]
@@ -806,6 +834,30 @@ class DexStringsAbsent:
         return cls(**{**data, "strings": _strings(data["strings"], "DEX strings")})
 
 
+@dataclass(frozen=True, slots=True)
+class DexStringSubstringsAbsent:
+    assertion_id: str
+    kind: Literal["dex_string_substrings_absent"]
+    dex_entry: str
+    substrings: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _dex_strings_assertion(
+            self.assertion_id,
+            self.kind,
+            "dex_string_substrings_absent",
+            self.dex_entry,
+            self.substrings,
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DexStringSubstringsAbsent:
+        data = _keys(data, cls, "DEX string substrings absent assertion")
+        return cls(
+            **{**data, "substrings": _strings(data["substrings"], "DEX string substrings")}
+        )
+
+
 def _dex_strings_assertion(
     assertion_id: object,
     kind: object,
@@ -833,24 +885,28 @@ StaticAssertion = (
     | ExactSmaliSequenceCount
     | DexEntrySetEquality
     | DescriptorSetEquality
+    | DescriptorsPresent
     | BytesPresent
     | BytesAbsent
     | ArchiveEntryNamesAndBytesPreservedExcept
     | ArchiveEntriesAbsent
     | DexStringsPresent
     | DexStringsAbsent
+    | DexStringSubstringsAbsent
 )
 ASSERTION_TYPES = {
     "operation_postcondition": OperationPostcondition,
     "exact_smali_sequence_count": ExactSmaliSequenceCount,
     "dex_entry_set_equality": DexEntrySetEquality,
     "descriptor_set_equality": DescriptorSetEquality,
+    "descriptors_present": DescriptorsPresent,
     "bytes_present": BytesPresent,
     "bytes_absent": BytesAbsent,
     "archive_preservation_except": ArchiveEntryNamesAndBytesPreservedExcept,
     "archive_entries_absent": ArchiveEntriesAbsent,
     "dex_strings_present": DexStringsPresent,
     "dex_strings_absent": DexStringsAbsent,
+    "dex_string_substrings_absent": DexStringSubstringsAbsent,
 }
 
 

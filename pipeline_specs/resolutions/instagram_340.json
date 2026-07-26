@@ -3,8 +3,8 @@
     {
       "assertion_id": "340.bytes.absent",
       "dex_entry": "classes11.dex",
-      "kind": "dex_strings_absent",
-      "strings": [
+      "kind": "dex_string_substrings_absent",
+      "substrings": [
         "AmplitudeEventsSender",
         "Lcom/acra/",
         "ReportsCrashes",
@@ -49,7 +49,7 @@
         "Lcom/dfinstagram/startapp;"
       ],
       "dex_entry": "classes11.dex",
-      "kind": "descriptor_set_equality"
+      "kind": "descriptors_present"
     },
     {
       "assertion_id": "340.dex-topology",

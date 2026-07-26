@@ -549,8 +549,8 @@ def dex_string_assertions(
         {
             "assertion_id": f"{prefix}.absent",
             "dex_entry": dex_entry,
-            "kind": "dex_strings_absent",
-            "strings": sorted(forbidden),
+            "kind": "dex_string_substrings_absent",
+            "substrings": sorted(forbidden),
         },
         {
             "assertion_id": f"{prefix}.present",
@@ -779,7 +779,7 @@ def resolution_340(
             "assertion_id": "340.custom-descriptors",
             "descriptors": descriptors_340,
             "dex_entry": "classes11.dex",
-            "kind": "descriptor_set_equality",
+            "kind": "descriptors_present",
         },
         {
             "assertion_id": "340.dex-topology",

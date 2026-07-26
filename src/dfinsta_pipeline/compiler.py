@@ -13,7 +13,9 @@ from .port_contracts import (
     BytesPresent,
     DeletePath,
     DescriptorSetEquality,
+    DescriptorsPresent,
     DexEntrySetEquality,
+    DexStringSubstringsAbsent,
     DexStringsAbsent,
     DexStringsPresent,
     IntentResolution,
@@ -157,6 +159,8 @@ def compile_port(
     _validate_backend_compatibility(resolution)
     _validate_destination_collisions(resolution.operations)
     for assertion in resolution.additional_assertions:
+        if assertion.assertion_id == "backend.signature-policy":
+            raise ValueError("Backend signature policy assertion is verifier-owned")
         if isinstance(assertion, OperationPostcondition):
             raise ValueError("Operation postconditions are compiler-owned")
         if (
@@ -164,7 +168,7 @@ def compile_port(
             and assertion.entries != resolution.backend.final_dex_entries
         ):
             raise ValueError("DEX entry assertion disagrees with backend topology")
-        if isinstance(assertion, DescriptorSetEquality) and (
+        if isinstance(assertion, (DescriptorSetEquality, DescriptorsPresent)) and (
             assertion.dex_entry not in resolution.backend.final_dex_entries
         ):
             raise ValueError("Descriptor assertion references a DEX outside backend topology")
@@ -172,7 +176,9 @@ def compile_port(
             assertion.archive_path
         ) and assertion.archive_path not in resolution.backend.final_dex_entries:
             raise ValueError("Byte assertion references a DEX outside backend topology")
-        if isinstance(assertion, (DexStringsPresent, DexStringsAbsent)) and (
+        if isinstance(
+            assertion, (DexStringsPresent, DexStringsAbsent, DexStringSubstringsAbsent)
+        ) and (
             assertion.dex_entry not in resolution.backend.final_dex_entries
         ):
             raise ValueError("DEX string assertion references a DEX outside backend topology")
