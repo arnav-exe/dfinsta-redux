@@ -201,11 +201,12 @@ class TemporalPhaseATests(unittest.IsolatedAsyncioTestCase):
                 decision(spec, gate, decision_id="wrong-prepared", prepared="e" * 64),
                 decision(spec, gate, decision_id="wrong-actor"),
                 decision(spec, gate, decision_id="stale-time", issued_at="2000-01-01T00:00:00+00:00"),
+                decision(spec, gate, decision_id="expiry-time", issued_at=gate.expires_at),
             )
             invalid_decisions = (
                 *invalid_decisions[:3],
                 replace(invalid_decisions[3], actor="intruder"),
-                invalid_decisions[4],
+                *invalid_decisions[4:],
             )
             for invalid in invalid_decisions:
                 with self.subTest(decision_id=invalid.decision_id), self.assertRaises(

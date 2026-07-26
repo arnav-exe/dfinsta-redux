@@ -128,8 +128,10 @@ class PortRunWorkflow:
         current_time = workflow.now()
         if current_time >= expiry_time:
             raise ValueError("Gate has expired")
-        if decision_time < gate_time or decision_time > min(
-            expiry_time, current_time + timedelta(minutes=5)
+        if (
+            decision_time < gate_time
+            or decision_time >= expiry_time
+            or decision_time > current_time + timedelta(minutes=5)
         ):
             raise ValueError("Decision timestamp is outside the gate validity period")
         if (
