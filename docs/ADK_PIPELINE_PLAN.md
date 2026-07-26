@@ -186,7 +186,7 @@ Temporal is the sole durable workflow engine. Phase A pins `temporalio==1.30.0`;
 
 ### Phase A Implementation Checkpoint
 
-Commits `3e91eb5`, `ac4da5b`, `a92ae6d`, and `ce97a9e` implement and harden the first durable slice. The current suite has 30 Phase A tests and 92 tests overall.
+Commits `3e91eb5`, `ac4da5b`, `a92ae6d`, `ce97a9e`, and `618aca1` implement and harden the first durable slice. The current suite has 31 Phase A tests and 93 tests overall.
 
 Proven:
 
@@ -197,12 +197,13 @@ Proven:
 - The SQLite ledger records append-only pending, effect, completion, and quarantine events; update/delete triggers prevent history rewriting. A transactional current-claim index allows only one owner to execute a pending operation.
 - A synthetic post-effect retry validates and adopts one CAS effect before completion. Cooperative cancellation waits for cleanup and leaves the effect quarantined. Hard loss around a real subprocess remains unproven.
 - A Worker can be replaced while the Workflow waits at a gate. Tests disable sticky caching to force History reconstruction and use the documented pinned-version override for synthetic traffic.
+- Temporal CLI 1.8.1 / Server 1.31.2 has been stopped and restarted against the same SQLite file; fresh Worker and trusted-client connections recovered the pending gate and completed the Workflow.
 - A three-day logical gate boundary is covered with Temporal time skipping. Saved History replays with unchanged code and fails against a deliberately incompatible Workflow definition.
 - The executor binds each request to the admitted capability's canonical SHA-256, verifies an absolute executable against that capability before launch, renders only an exact argv template, passes only admitted environment values, constrains resolved workspace paths and audits declared mutations, validates artifact kinds, and rejects split APK sets. It uses `create_subprocess_exec`, never a shell.
 
 Still pending before Phase A is considered production-ready:
 
-- Restart a separately connected trusted client and a persistent local Temporal server, not only a Worker inside one retained test environment.
+- Launch the trusted client as a separate authenticated OS process. Fresh SDK connections after a persistent server-process restart are proven, but identity is still a test string rather than authenticated authority.
 - Persist a sanitized representative History corpus and replay open and closed histories in deployment CI.
 - Replace synthetic actor equality with authentication in a trusted submission client.
 - Exercise hard Worker/process loss during a real child process. Current evidence covers injected failure and cooperative cancellation.

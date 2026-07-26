@@ -55,7 +55,9 @@ History replay became a deployment test rather than a slogan. The test fetches a
 
 The subprocess boundary is capability-based before any APK tool is connected. A request binds the canonical capability hash, immutable executable digest, exact argv template, permitted environment values, workspace paths, artifact kinds, mutation paths, and monolithic APK composition. Capability or executable mismatch fails before the launcher is called. This is a strong policy boundary around a trusted immutable binary, not an OS sandbox around a hostile one; portable pathname verification still has a replacement race unless the worker owns a non-writable tool store.
 
-The hardened Phase A checkpoint has 30 focused tests and 92 Python tests overall. Remaining durability work is intentionally explicit: persistent Temporal-server and trusted-client restart, authenticated submissions, hard process-loss testing, replay-corpus CI, immutable tool storage/OS confinement, and later signing/device secret isolation.
+The persistence test then kills a real Temporal dev-server process and restarts Temporal CLI 1.8.1 / Server 1.31.2 on the same SQLite file. Fresh Worker and trusted-client SDK connections find the Workflow at the same gate and complete it. That proves service persistence and reconnection, but not yet authenticated authority from a separately launched client process.
+
+The hardened Phase A checkpoint has 31 focused tests and 93 Python tests overall. Remaining durability work is intentionally explicit: authenticated submissions, hard process-loss testing, replay-corpus CI, immutable tool storage/OS confinement, and later signing/device secret isolation.
 
 ## Facts Worth Capturing During Development
 
@@ -121,4 +123,5 @@ The hardened Phase A checkpoint has 30 focused tests and 92 Python tests overall
 - Diagnosed pinned candidate routing and sticky-cache behavior, then proved Worker replacement at a waiting approval gate through explicit deployment override and forced History reconstruction.
 - Replaced mutable operation history with append-only pending/effect/completion/quarantine events, then added atomic owner claims after review exposed a concurrent-attempt hole.
 - Added a fail-closed executor capability model before connecting any APK tool: admitted capability hash, executable digest, argv, environment, workspace, artifact kinds, mutation audit, timeout cleanup, and split-APK rejection.
-- Replayed fetched History successfully, deliberately triggered nondeterminism with incompatible code, and reached 30 Phase A tests plus 92 passing Python tests overall.
+- Restarted Temporal CLI 1.8.1 / Server 1.31.2 on the same SQLite state and resumed the gate through fresh Worker/client connections.
+- Replayed fetched History successfully, deliberately triggered nondeterminism with incompatible code, and reached 31 Phase A tests plus 93 passing Python tests overall.
