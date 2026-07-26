@@ -331,8 +331,23 @@ async def _clean_up(process: Any) -> None:
     try:
         async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
             await process.communicate()
-    except TimeoutError:
-        return
+    except TimeoutError as error:
+        raise RuntimeError("Subprocess did not exit after kill") from error
+
+
+async def _launch_with_cancellation_cleanup(launch: Awaitable[Any]) -> Any:
+    task = asyncio.ensure_future(launch)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                process = await asyncio.shield(task)
+        except TimeoutError:
+            task.cancel()
+            raise RuntimeError("Subprocess launch did not return a process handle") from None
+        await asyncio.shield(_clean_up(process))
+        raise
 
 
 def _unexpected_mutations(
@@ -413,13 +428,15 @@ async def execute(
         raise ValueError("Executable SHA-256 does not match capability")
 
     launch = launcher if launcher is not None else asyncio.create_subprocess_exec
-    process = await launch(
-        str(executable),
-        *argv,
-        cwd=str(cwd),
-        env=environment,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    process = await _launch_with_cancellation_cleanup(
+        launch(
+            str(executable),
+            *argv,
+            cwd=str(cwd),
+            env=environment,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_seconds)

@@ -428,6 +428,33 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertTrue(process.killed)
 
+    async def test_cancellation_during_launch_cleans_up_returned_process(self) -> None:
+        launch_started = asyncio.Event()
+        return_process = asyncio.Event()
+        process = FakeProcess()
+        process.returncode = None
+
+        async def launcher(*argv: str, **kwargs: Any) -> FakeProcess:
+            launch_started.set()
+            await return_process.wait()
+            return process
+
+        task = asyncio.create_task(
+            self.admitted_execute(
+                self.capability(),
+                self.request(),
+                self.metadata(),
+                timeout_seconds=60,
+                launcher=launcher,
+            )
+        )
+        await launch_started.wait()
+        task.cancel()
+        return_process.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(process.killed)
+
     async def test_cleanup_is_bounded_when_reap_hangs(self) -> None:
         class UnreapableProcess(FakeProcess):
             def __init__(self) -> None:
@@ -443,7 +470,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             return process
 
         with mock.patch("dfinsta_pipeline.executor._CLEANUP_TIMEOUT_SECONDS", 0.01):
-            with self.assertRaises(TimeoutError):
+            with self.assertRaisesRegex(RuntimeError, "did not exit"):
                 await asyncio.wait_for(
                     self.admitted_execute(
                         self.capability(),
