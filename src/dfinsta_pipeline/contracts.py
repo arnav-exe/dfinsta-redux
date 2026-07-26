@@ -319,10 +319,16 @@ class RunResult:
             raise TypeError("Invalid prepared result artifact")
         if self.output is not None and not isinstance(self.output, ArtifactRef):
             raise TypeError("Invalid output result artifact")
-        if self.state == "completed" and (self.output is None or self.decision_id is None):
-            raise ValueError("Completed result lacks output or decision")
-        if self.state != "completed" and self.output is not None:
-            raise ValueError("Non-completed result cannot contain output")
+        if self.decision_id is not None:
+            _validate_id(self.decision_id, "result decision id")
+        if self.state == "completed":
+            if self.prepared is None or self.output is None or self.decision_id is None:
+                raise ValueError("Completed result lacks prepared artifact, output, or decision")
+        elif self.state in {"rejected", "deferred"}:
+            if self.prepared is None or self.output is not None or self.decision_id is None:
+                raise ValueError("Decided result has invalid artifacts or decision")
+        elif self.output is not None or self.decision_id is not None:
+            raise ValueError("Blocked or cancelled result cannot contain output or decision")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunResult:

@@ -127,6 +127,28 @@ class ContractTests(unittest.TestCase):
                     "decision_id": None,
                 }
             )
+        with self.assertRaises((TypeError, ValueError)):
+            RunResult.from_dict(
+                {
+                    "schema_version": 1,
+                    "run_id": "run-1",
+                    "state": "blocked",
+                    "prepared": None,
+                    "output": None,
+                    "decision_id": 7,
+                }
+            )
+        with self.assertRaises(ValueError):
+            RunResult.from_dict(
+                {
+                    "schema_version": 1,
+                    "run_id": "run-1",
+                    "state": "rejected",
+                    "prepared": None,
+                    "output": None,
+                    "decision_id": None,
+                }
+            )
 
     def test_artifact_rejects_unknown_fields(self) -> None:
         data = {
