@@ -5,8 +5,10 @@ from dataclasses import asdict
 from dfinsta_pipeline.contracts import canonical_sha256
 from dfinsta_pipeline.port_contracts import (
     ArchiveEntryNamesAndBytesPreservedExcept,
+    IntentResolution,
     IntentSpecV2,
     ResolutionSpecV2,
+    ResolutionSpecV3,
     SourceFile,
 )
 
@@ -192,7 +194,116 @@ def resolution_430() -> dict[str, object]:
     return data
 
 
+def target_intent_data() -> dict[str, object]:
+    data = intent_data()
+    data["hooks"].append(
+        {
+            "hook_id": "settings-ui",
+            "feature_id": "settings",
+            "disposition": "retain",
+            "description": "Expose target settings controls",
+            "allowed_strategies": [
+                "append_manifest_components",
+                "append_resource_entries",
+                "overlay_tree",
+                "smali_edit",
+            ],
+            "semantic_dependencies": [],
+            "forbidden_fallbacks": [],
+        },
+    )
+    return data
+
+
+def resolution_v3_340() -> dict[str, object]:
+    data = resolution_340()
+    data["schema_version"] = 3
+    data["intent_sha256"] = IntentSpecV2.from_dict(target_intent_data()).sha256
+    data["intent_statuses"] = [
+        {"intent_id": "block-feed", "status": "implemented", "rationale": None},
+        {
+            "intent_id": "retire-legacy",
+            "status": "omitted",
+            "rationale": "Globally retired intent",
+        },
+        {"intent_id": "settings-ui", "status": "implemented", "rationale": None},
+    ]
+    for operation in data["operations"][1:]:
+        operation["intent_ids"] = ["settings-ui"]
+    return data
+
+
+def resolution_v3_430() -> dict[str, object]:
+    data = resolution_430()
+    data["schema_version"] = 3
+    data["intent_sha256"] = IntentSpecV2.from_dict(target_intent_data()).sha256
+    data["intent_statuses"] = [
+        {
+            "intent_id": "block-feed",
+            "status": "omitted",
+            "rationale": "The 430 target does not implement feed blocking yet",
+        },
+        {
+            "intent_id": "retire-legacy",
+            "status": "omitted",
+            "rationale": "Globally retired intent",
+        },
+        {"intent_id": "settings-ui", "status": "implemented", "rationale": None},
+    ]
+    for operation in data["operations"]:
+        operation["intent_ids"] = ["settings-ui"]
+    return data
+
+
 class PhaseBContractTests(unittest.TestCase):
+    def test_v3_status_round_trip_and_target_fixtures(self) -> None:
+        for data in (resolution_v3_340(), resolution_v3_430()):
+            resolution = ResolutionSpecV3.from_dict(data)
+            self.assertEqual(ResolutionSpecV3.from_dict(asdict(resolution)), resolution)
+            self.assertEqual(resolution.sha256, canonical_sha256(asdict(resolution)))
+            self.assertEqual(
+                tuple(status.intent_id for status in resolution.intent_statuses),
+                tuple(sorted(status.intent_id for status in resolution.intent_statuses)),
+            )
+        self.assertEqual(
+            ResolutionSpecV3.from_dict(resolution_v3_430()).intent_statuses[0].status,
+            "omitted",
+        )
+
+    def test_v3_status_rationale_and_order_are_strict(self) -> None:
+        invalid_statuses = [
+            {"intent_id": "block-feed", "status": "unknown", "rationale": None},
+            {"intent_id": "block-feed", "status": "implemented", "rationale": "because"},
+            {"intent_id": "block-feed", "status": "omitted", "rationale": None},
+            {"intent_id": "block-feed", "status": "omitted", "rationale": "   "},
+            {"intent_id": "block-feed", "status": "omitted", "rationale": "x" * 2049},
+        ]
+        for status in invalid_statuses:
+            with self.subTest(status=status["status"], rationale=status["rationale"]), self.assertRaises(
+                (TypeError, ValueError)
+            ):
+                IntentResolution.from_dict(status)
+
+        unordered = resolution_v3_340()
+        unordered["intent_statuses"] = list(reversed(unordered["intent_statuses"]))
+        duplicate = resolution_v3_340()
+        duplicate["intent_statuses"].insert(1, dict(duplicate["intent_statuses"][0]))
+        for data in (unordered, duplicate):
+            with self.assertRaises(ValueError):
+                ResolutionSpecV3.from_dict(data)
+
+        accepted = IntentResolution.from_dict(
+            {"intent_id": "block-feed", "status": "omitted", "rationale": "x" * 2048}
+        )
+        self.assertEqual(len(accepted.rationale), 2048)
+
+    def test_v3_status_changes_resolution_hash(self) -> None:
+        first = ResolutionSpecV3.from_dict(resolution_v3_430())
+        changed = resolution_v3_430()
+        changed["intent_statuses"][0]["rationale"] = "Deferred on this target"
+        second = ResolutionSpecV3.from_dict(changed)
+        self.assertNotEqual(first.sha256, second.sha256)
+
     def test_representative_340_full_rebuild(self) -> None:
         resolution = ResolutionSpecV2.from_dict(resolution_340())
         edit = resolution.operations[0]

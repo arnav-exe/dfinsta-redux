@@ -13,12 +13,14 @@ from .port_contracts import (
     DeletePath,
     DescriptorSetEquality,
     DexEntrySetEquality,
+    IntentResolution,
     IntentSpecV2,
     Operation,
     OperationPostcondition,
     OverlayTree,
     ReplaceResourceEntry,
     ResolutionSpecV2,
+    ResolutionSpecV3,
     SmaliEdit,
     StaticAssertion,
     StockDexGraftBackend,
@@ -39,17 +41,75 @@ class TargetPortSpec:
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != 1:
             raise ValueError("Unsupported target port specification schema")
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class TargetPortSpecV2:
+    schema_version: int
+    intent_sha256: str
+    resolution_sha256: str
+    target: TargetIdentity
+    backend: Backend
+    intent_statuses: tuple[IntentResolution, ...]
+    operations: tuple[Operation, ...]
+    assertions: tuple[StaticAssertion, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise ValueError("Unsupported target port specification schema")
+        if not isinstance(self.intent_statuses, tuple) or any(
+            not isinstance(item, IntentResolution) for item in self.intent_statuses
+        ):
+            raise TypeError("Intent statuses must be a tuple of IntentResolution objects")
+        intent_ids = tuple(status.intent_id for status in self.intent_statuses)
+        if intent_ids != tuple(sorted(intent_ids)):
+            raise ValueError("Intent statuses must be sorted")
+        if len(intent_ids) != len(set(intent_ids)):
+            raise ValueError("Duplicate intent statuses")
 
     @property
     def sha256(self) -> str:
         return canonical_sha256(self)
 
 
-def compile_port(intent: IntentSpecV2, resolution: ResolutionSpecV2) -> TargetPortSpec:
+def compile_port(
+    intent: IntentSpecV2, resolution: ResolutionSpecV2 | ResolutionSpecV3
+) -> TargetPortSpec | TargetPortSpecV2:
     if resolution.intent_sha256 != intent.sha256:
         raise ValueError("Resolution is not bound to the supplied intent")
 
     hooks = {hook.hook_id: hook for hook in intent.hooks}
+    if isinstance(resolution, ResolutionSpecV3):
+        intent_statuses = resolution.intent_statuses
+        status_ids = {status.intent_id for status in intent_statuses}
+        unknown = sorted(status_ids - set(hooks))
+        if unknown:
+            raise ValueError(f"Intent status references unknown intent: {unknown[0]}")
+        missing = sorted(set(hooks) - status_ids)
+        if missing:
+            raise ValueError(f"Intent status is missing: {missing[0]}")
+        status_by_id = {status.intent_id: status for status in intent_statuses}
+        retired_implemented = sorted(
+            hook.hook_id
+            for hook in intent.hooks
+            if hook.disposition == "retire" and status_by_id[hook.hook_id].status == "implemented"
+        )
+        if retired_implemented:
+            raise ValueError(f"Globally retired intent cannot be implemented: {retired_implemented[0]}")
+    else:
+        intent_statuses = tuple(
+            IntentResolution(
+                intent_id=hook.hook_id,
+                status="implemented" if hook.disposition == "retain" else "omitted",
+                rationale=None if hook.disposition == "retain" else "Globally retired intent",
+            )
+            for hook in intent.hooks
+        )
+        status_by_id = {status.intent_id: status for status in intent_statuses}
+
     covered: set[str] = set()
     generated: list[StaticAssertion] = []
     for operation in resolution.operations:
@@ -57,8 +117,10 @@ def compile_port(intent: IntentSpecV2, resolution: ResolutionSpecV2) -> TargetPo
             hook = hooks.get(intent_id)
             if hook is None:
                 raise ValueError(f"Operation references unknown intent: {intent_id}")
-            if hook.disposition != "retain":
+            if isinstance(resolution, ResolutionSpecV2) and hook.disposition != "retain":
                 raise ValueError(f"Operation references retired intent: {intent_id}")
+            if status_by_id[intent_id].status != "implemented":
+                raise ValueError(f"Operation references omitted intent: {intent_id}")
             if operation.kind not in hook.allowed_strategies:
                 raise ValueError(
                     f"Operation strategy {operation.kind} is not allowed for intent: {intent_id}"
@@ -73,10 +135,13 @@ def compile_port(intent: IntentSpecV2, resolution: ResolutionSpecV2) -> TargetPo
             )
         )
 
-    retained = {hook.hook_id for hook in intent.hooks if hook.disposition == "retain"}
-    missing = sorted(retained - covered)
+    implemented = {
+        status.intent_id for status in intent_statuses if status.status == "implemented"
+    }
+    missing = sorted(implemented - covered)
     if missing:
-        raise ValueError(f"Retained intent has no operation: {missing[0]}")
+        label = "Retained" if isinstance(resolution, ResolutionSpecV2) else "Implemented"
+        raise ValueError(f"{label} intent has no operation: {missing[0]}")
 
     generated.append(
         DexEntrySetEquality(
@@ -126,15 +191,21 @@ def compile_port(intent: IntentSpecV2, resolution: ResolutionSpecV2) -> TargetPo
     ]
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("Generated assertion identity collision")
-    return TargetPortSpec(
-        schema_version=1,
-        intent_sha256=intent.sha256,
-        resolution_sha256=resolution.sha256,
-        target=resolution.target,
-        backend=resolution.backend,
-        operations=resolution.operations,
-        assertions=assertions,
-    )
+    common = {
+        "intent_sha256": intent.sha256,
+        "resolution_sha256": resolution.sha256,
+        "target": resolution.target,
+        "backend": resolution.backend,
+        "operations": resolution.operations,
+        "assertions": assertions,
+    }
+    if isinstance(resolution, ResolutionSpecV3):
+        return TargetPortSpecV2(
+            schema_version=2,
+            intent_statuses=intent_statuses,
+            **common,
+        )
+    return TargetPortSpec(schema_version=1, **common)
 
 
 def _is_dex_entry(value: str) -> bool:
@@ -153,7 +224,7 @@ def _smali_target_dex(target_prefix: str) -> str | None:
     return None
 
 
-def _validate_backend_compatibility(resolution: ResolutionSpecV2) -> None:
+def _validate_backend_compatibility(resolution: ResolutionSpecV2 | ResolutionSpecV3) -> None:
     if not isinstance(resolution.backend, StockDexGraftBackend):
         return
     overlay_dex_entries: set[str] = set()

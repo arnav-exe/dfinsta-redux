@@ -231,6 +231,32 @@ class IntentSpecV2:
 
 
 @dataclass(frozen=True, slots=True)
+class IntentResolution:
+    intent_id: str
+    status: Literal["implemented", "omitted"]
+    rationale: str | None
+
+    def __post_init__(self) -> None:
+        _id(self.intent_id, "intent id")
+        if self.status not in {"implemented", "omitted"}:
+            raise ValueError("Invalid intent status")
+        if self.status == "implemented":
+            if self.rationale is not None:
+                raise ValueError("Implemented intent must have a null rationale")
+            return
+        if type(self.rationale) is not str:
+            raise TypeError("Omitted intent rationale must be a string")
+        if not self.rationale.strip():
+            raise ValueError("Omitted intent rationale must not be empty")
+        if len(self.rationale) > 2048:
+            raise ValueError("Omitted intent rationale is too long")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> IntentResolution:
+        return cls(**_keys(data, cls, "intent resolution"))
+
+
+@dataclass(frozen=True, slots=True)
 class TargetIdentity:
     package_name: str
     version_name: str
@@ -861,6 +887,79 @@ class ResolutionSpecV2:
             TargetIdentity.from_dict(data["target"]),
             data["source_bundle_sha256"],
             _backend(data["backend"]),
+            tuple(_operation(item) for item in _array(data["operations"], "operations")),
+            tuple(
+                _assertion(item)
+                for item in _array(data["additional_assertions"], "additional assertions")
+            ),
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionSpecV3:
+    schema_version: int
+    intent_sha256: str
+    target: TargetIdentity
+    source_bundle_sha256: str
+    backend: Backend
+    intent_statuses: tuple[IntentResolution, ...]
+    operations: tuple[Operation, ...]
+    additional_assertions: tuple[StaticAssertion, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 3:
+            raise ValueError("Unsupported resolution schema")
+        _sha(self.intent_sha256, "intent SHA-256")
+        _sha(self.source_bundle_sha256, "source bundle SHA-256")
+        if not isinstance(self.target, TargetIdentity):
+            raise TypeError("Target must be a TargetIdentity")
+        if not isinstance(self.backend, (ApktoolFullRebuildBackend, StockDexGraftBackend)):
+            raise TypeError("Invalid backend")
+        if not isinstance(self.intent_statuses, tuple) or any(
+            not isinstance(item, IntentResolution) for item in self.intent_statuses
+        ):
+            raise TypeError("Intent statuses must be a tuple of IntentResolution objects")
+        _sorted_unique(
+            self.intent_statuses,
+            "intent statuses",
+            key=lambda status: status.intent_id,
+        )
+        if not isinstance(self.operations, tuple) or any(
+            not isinstance(item, tuple(OPERATION_TYPES.values())) for item in self.operations
+        ):
+            raise TypeError("Operations must be a tuple of closed operation variants")
+        if not isinstance(self.additional_assertions, tuple) or any(
+            not isinstance(item, tuple(ASSERTION_TYPES.values())) for item in self.additional_assertions
+        ):
+            raise TypeError("Assertions must be a tuple of closed assertion variants")
+        _sorted_unique(
+            self.additional_assertions,
+            "additional assertions",
+            key=lambda assertion: assertion.assertion_id,
+        )
+        identifiers = tuple(item.operation_id for item in self.operations) + tuple(
+            item.assertion_id for item in self.additional_assertions
+        )
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Duplicate operation or assertion id")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ResolutionSpecV3:
+        data = _keys(data, cls, "resolution v3")
+        return cls(
+            data["schema_version"],
+            data["intent_sha256"],
+            TargetIdentity.from_dict(data["target"]),
+            data["source_bundle_sha256"],
+            _backend(data["backend"]),
+            tuple(
+                IntentResolution.from_dict(item)
+                for item in _array(data["intent_statuses"], "intent statuses")
+            ),
             tuple(_operation(item) for item in _array(data["operations"], "operations")),
             tuple(
                 _assertion(item)

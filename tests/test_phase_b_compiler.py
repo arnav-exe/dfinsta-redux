@@ -2,15 +2,23 @@ import dataclasses
 import inspect
 import unittest
 
-from dfinsta_pipeline.compiler import TargetPortSpec, compile_port
+from dfinsta_pipeline.compiler import TargetPortSpec, TargetPortSpecV2, compile_port
 from dfinsta_pipeline.contracts import canonical_sha256
 from dfinsta_pipeline.port_contracts import (
     DexEntrySetEquality,
     IntentSpecV2,
     OperationPostcondition,
     ResolutionSpecV2,
+    ResolutionSpecV3,
 )
-from tests.test_phase_b_contracts import intent_data, resolution_340, resolution_430
+from tests.test_phase_b_contracts import (
+    intent_data,
+    resolution_340,
+    resolution_430,
+    resolution_v3_340,
+    resolution_v3_430,
+    target_intent_data,
+)
 
 
 class PhaseBCompilerTests(unittest.TestCase):
@@ -19,6 +27,98 @@ class PhaseBCompilerTests(unittest.TestCase):
             IntentSpecV2.from_dict(intent_data()),
             ResolutionSpecV2.from_dict(resolution_data),
         )
+
+    def compile_v3(self, resolution_data: dict[str, object]) -> TargetPortSpecV2:
+        return compile_port(
+            IntentSpecV2.from_dict(target_intent_data()),
+            ResolutionSpecV3.from_dict(resolution_data),
+        )
+
+    def test_same_intent_compiles_target_specific_implemented_and_omitted_statuses(self) -> None:
+        full = self.compile_v3(resolution_v3_340())
+        graft = self.compile_v3(resolution_v3_430())
+        self.assertEqual(full.intent_sha256, graft.intent_sha256)
+        self.assertEqual(full.intent_statuses[0].status, "implemented")
+        self.assertEqual(graft.intent_statuses[0].status, "omitted")
+        self.assertEqual(
+            {intent_id for operation in graft.operations for intent_id in operation.intent_ids},
+            {"settings-ui"},
+        )
+
+    def test_target_port_preserves_v3_without_changing_v2_shape(self) -> None:
+        v3_resolution = ResolutionSpecV3.from_dict(resolution_v3_430())
+        compiled_v3 = compile_port(IntentSpecV2.from_dict(target_intent_data()), v3_resolution)
+        self.assertEqual(compiled_v3.intent_statuses, v3_resolution.intent_statuses)
+
+        compiled_v2 = self.compile(resolution_340())
+        self.assertIsInstance(compiled_v2, TargetPortSpec)
+        self.assertFalse(hasattr(compiled_v2, "intent_statuses"))
+        self.assertEqual(compiled_v2.schema_version, 1)
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(compiled_v2)),
+            (
+                "schema_version",
+                "intent_sha256",
+                "resolution_sha256",
+                "target",
+                "backend",
+                "operations",
+                "assertions",
+            ),
+        )
+        self.assertEqual(
+            compiled_v2.sha256,
+            "1c25d37f85d9ea353f8b0c853b8912a3fd4660a884b3fa9c562720e5e5fdb856",
+        )
+        self.assertIsInstance(compiled_v3, TargetPortSpecV2)
+        self.assertEqual(compiled_v3.schema_version, 2)
+
+    def test_v3_rejects_missing_unknown_and_globally_retired_statuses(self) -> None:
+        missing = resolution_v3_340()
+        missing["intent_statuses"] = missing["intent_statuses"][:-1]
+        unknown = resolution_v3_340()
+        unknown["intent_statuses"].append(
+            {"intent_id": "unknown", "status": "omitted", "rationale": "Not applicable"}
+        )
+        retired = resolution_v3_340()
+        retired["intent_statuses"][1] = {
+            "intent_id": "retire-legacy",
+            "status": "implemented",
+            "rationale": None,
+        }
+
+        with self.assertRaisesRegex(ValueError, "missing"):
+            self.compile_v3(missing)
+        with self.assertRaisesRegex(ValueError, "unknown intent"):
+            self.compile_v3(unknown)
+        with self.assertRaisesRegex(ValueError, "Globally retired"):
+            self.compile_v3(retired)
+
+    def test_v3_rejects_operation_for_omitted_and_uncovered_implemented(self) -> None:
+        omitted = resolution_v3_430()
+        omitted["operations"][0]["intent_ids"] = ["block-feed"]
+        with self.assertRaisesRegex(ValueError, "omitted intent"):
+            self.compile_v3(omitted)
+
+        uncovered = resolution_v3_340()
+        uncovered["operations"] = uncovered["operations"][:1]
+        with self.assertRaisesRegex(ValueError, "Implemented intent has no operation"):
+            self.compile_v3(uncovered)
+
+    def test_v3_allows_an_exhaustive_all_omitted_target(self) -> None:
+        data = resolution_v3_340()
+        data["intent_statuses"] = [
+            {
+                "intent_id": status["intent_id"],
+                "status": "omitted",
+                "rationale": "Not implemented for this target",
+            }
+            for status in data["intent_statuses"]
+        ]
+        data["operations"] = []
+        compiled = self.compile_v3(data)
+        self.assertEqual(compiled.operations, ())
+        self.assertTrue(all(status.status == "omitted" for status in compiled.intent_statuses))
 
     def test_compiles_full_rebuild_and_graft_without_target_branches(self) -> None:
         full = self.compile(resolution_340())
