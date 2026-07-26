@@ -130,6 +130,16 @@ def _lines(value: tuple[str, ...], label: str, *, empty: bool = False) -> None:
         raise ValueError(f"{label} contains an empty or multiline line")
 
 
+def _has_significant_line(value: tuple[str, ...]) -> bool:
+    return any(
+        stripped
+        and not stripped.startswith("#")
+        and stripped != ".line"
+        and not stripped.startswith(".line ")
+        for stripped in (line.strip() for line in value)
+    )
+
+
 def _intent_ids(value: tuple[str, ...]) -> None:
     if not isinstance(value, tuple) or any(type(item) is not str for item in value):
         raise TypeError("Intent IDs must be a tuple of strings")
@@ -365,6 +375,10 @@ class SmaliEdit:
         _lines(self.precondition_sequence, "precondition sequence")
         _lines(self.payload, "smali payload", empty=True)
         _lines(self.final_sequence, "final proof sequence")
+        if not _has_significant_line(self.precondition_sequence):
+            raise ValueError("Precondition sequence has no significant lines")
+        if not _has_significant_line(self.final_sequence):
+            raise ValueError("Final proof sequence has no significant lines")
         _count(self.expected_precondition_count, "precondition count", positive=True)
         _count(self.expected_final_count, "final count")
 

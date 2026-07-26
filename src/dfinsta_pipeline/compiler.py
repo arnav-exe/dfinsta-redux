@@ -153,6 +153,7 @@ def compile_port(
             entries=resolution.backend.final_dex_entries,
         )
     )
+    _validate_operation_order(resolution.operations)
     _validate_backend_compatibility(resolution)
     _validate_destination_collisions(resolution.operations)
     for assertion in resolution.additional_assertions:
@@ -274,30 +275,45 @@ def _validate_destination_collisions(operations: tuple[Operation, ...]) -> None:
         current: list[tuple[str, ...]] = []
         if isinstance(operation, OverlayTree):
             current.extend(
-                ("path", f"{operation.target_prefix}/{source.relative_path}")
+                ("path", f"{operation.target_prefix}/{source.relative_path}".casefold())
                 for source in operation.source_files
             )
             written_paths.update(
-                f"{operation.target_prefix}/{source.relative_path}"
+                f"{operation.target_prefix}/{source.relative_path}".casefold()
                 for source in operation.source_files
             )
         elif isinstance(operation, AppendResourceEntries):
             current.extend(
-                ("resource", operation.archive_path, *entry.identity) for entry in operation.entries
+                (
+                    "resource",
+                    operation.archive_path.casefold(),
+                    *entry.identity,
+                )
+                for entry in operation.entries
             )
-            written_paths.add(operation.archive_path)
+            written_paths.add(operation.archive_path.casefold())
         elif isinstance(operation, ReplaceResourceEntry):
-            current.append(("resource", operation.archive_path, *operation.after.identity))
-            written_paths.add(operation.archive_path)
+            current.append(
+                (
+                    "resource",
+                    operation.archive_path.casefold(),
+                    *operation.after.identity,
+                )
+            )
+            written_paths.add(operation.archive_path.casefold())
         elif isinstance(operation, AppendManifestComponents):
             current.extend(
-                ("manifest", operation.archive_path, *component.identity)
+                (
+                    "manifest",
+                    operation.archive_path.casefold(),
+                    *component.identity,
+                )
                 for component in operation.components
             )
-            written_paths.add(operation.archive_path)
+            written_paths.add(operation.archive_path.casefold())
         elif isinstance(operation, DeletePath):
-            current.append(("path", operation.archive_path))
-            deleted_paths.add(operation.archive_path)
+            current.append(("path", operation.archive_path.casefold()))
+            deleted_paths.add(operation.archive_path.casefold())
         for destination in current:
             if destination in destinations:
                 raise ValueError("Operations write the same destination identity")
@@ -310,3 +326,12 @@ def _validate_destination_collisions(operations: tuple[Operation, ...]) -> None:
             for written in written_paths
         ):
             raise ValueError("Delete operation conflicts with a written path")
+
+
+def _validate_operation_order(operations: tuple[Operation, ...]) -> None:
+    overlay_seen = False
+    for operation in operations:
+        if isinstance(operation, OverlayTree):
+            overlay_seen = True
+        elif overlay_seen and isinstance(operation, SmaliEdit):
+            raise ValueError("Smali edits must precede all overlay operations")
