@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -103,8 +104,20 @@ class Ledger:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+        try:
+            connection.execute("PRAGMA busy_timeout=30000")
+            for attempt in range(300):
+                try:
+                    connection.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as error:
+                    if "locked" not in str(error).lower() or attempt == 299:
+                        raise
+                    time.sleep(0.01)
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
