@@ -834,6 +834,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     result["schema_version"] = 2
     result["run_id"] = args.run_id
     result["artifact"] = artifact
+    runner_path = Path(__file__).resolve()
+    result["validation"] = {
+        "runner_path": str(runner_path),
+        "runner_sha256": sha256_file(runner_path),
+        "contract_sha256": sha256_file(contract_path),
+    }
     result["device"] = collect_device_context(adb)
     result["declared_state"] = {
         "install": args.install_state,

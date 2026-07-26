@@ -48,6 +48,7 @@
     "categories": ["android.intent.category.LAUNCHER"],
     "launch_strategy": "package_launcher",
     "foreground_states": [
+      {"activity": "com.instagram.android/.activity.MainTabActivity"},
       {"activity": "com.instagram.android/com.instagram.mainactivity.InstagramMainActivity"},
       {
         "activity": "com.instagram.android/com.instagram.modal.ModalActivity",
