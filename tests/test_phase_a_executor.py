@@ -463,11 +463,8 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
 
         async def launcher(*argv: str, **kwargs: Any) -> FakeProcess:
             launch_started.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                await return_process.wait()
-                return process
+            await return_process.wait()
+            return process
 
         with mock.patch("dfinsta_pipeline.executor._CLEANUP_TIMEOUT_SECONDS", 0.01):
             task = asyncio.create_task(

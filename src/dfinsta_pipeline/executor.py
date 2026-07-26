@@ -373,7 +373,6 @@ async def _launch_with_cancellation_cleanup(launch: Awaitable[Any]) -> Any:
             async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
                 process = await asyncio.shield(task)
         except TimeoutError:
-            task.cancel()
             _supervise_late_launch(task)
             raise RuntimeError("Subprocess launch did not return a process handle") from None
         await asyncio.shield(_clean_up(process))
