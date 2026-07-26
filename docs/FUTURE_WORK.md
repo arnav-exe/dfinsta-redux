@@ -2,7 +2,7 @@
 
 ## End Goal
 
-Build a reproducible, privacy-respecting, multi-agent Google ADK pipeline that accepts a clean stock Instagram APK, resolves and applies small version-native DFInsta patches, builds and signs it after human authorization, and produces structured device evidence. Instagram 340 / DFInsta 1.4.1 is the golden reference; Instagram 430 is the first fully traced replay fixture and future baseline candidate.
+Build a reproducible, privacy-respecting pipeline with Temporal as the durable outer orchestrator and Google ADK as the multi-agent reasoning layer. It accepts a clean stock Instagram APK, resolves and applies small version-native DFInsta patches, builds and signs after human authorization, and produces structured device evidence. Instagram 340 / DFInsta 1.4.1 is the golden reference; Instagram 430 is the first fully traced replay fixture and future baseline candidate.
 
 Completion requires:
 
@@ -15,12 +15,15 @@ Completion requires:
 
 ## Immediate Roadmap
 
-1. Review and approve `docs/ADK_PIPELINE_PLAN.md`; do not implement the full topology before the ADK 2.5 restart/resume spike passes.
-2. Extract 340 and 430 into version-independent intent plus version-scoped resolutions, then prove one target-neutral apply/build/verifier engine and mutation fixtures before adding ADK.
-3. Run the isolated ADK 2.5 restart/resume spike, then wrap the proven deterministic engine and 430 replay in the minimal workflow.
-4. Repeat core contrasts with installed-APK identity, measured preferences, required state-specific assertions, successful restarts, and a declared cache protocol before promoting 430 as the accepted behavioral baseline.
-5. Add one bounded mapping/assessment agent only after deterministic candidate generation and generalization are benchmarked.
-6. Attempt profile-ad endpoint/UI contrast only when eligible inventory is available; treat absent inventory as inconclusive and do not let it block pipeline development.
+1. Treat the synthetic Temporal durability/contracts/ledger/executor slice as implemented in `3e91eb5` and `ac4da5b`; keep APK, signing, device, and ADK actions out of Phase A.
+2. Finish Phase A persistence evidence: persistent Temporal-server restart, a newly connected trusted client, authenticated Update submission, hard process-loss recovery, and a saved replay corpus.
+3. Extract 340 and 430 into version-independent intent plus version-scoped resolutions, then prove one target-neutral apply/build/verifier engine and mutation fixtures.
+4. Add Google ADK later as bounded read-only Temporal Activities, then replay the proven engine and 430 through the durable workflow.
+5. Repeat core contrasts with installed-APK identity, measured preferences, required state-specific assertions, successful restarts, and a declared cache protocol before promoting 430 as the accepted behavioral baseline.
+6. Add one bounded mapping/assessment agent only after deterministic candidate generation and generalization are benchmarked.
+7. Attempt profile-ad endpoint/UI contrast only when eligible inventory is available; treat absent inventory as inconclusive and do not let it block pipeline development.
+
+Phase A durability evidence is not execution authority. The current executor admits exact tool digests, argv templates, environment values, workspace paths, artifact kinds, and mutation paths, but those checks are not an OS sandbox. No APK tool has been admitted and no signing/device/ADK worker exists yet.
 
 ## Lazy Profile Options
 

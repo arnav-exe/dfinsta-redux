@@ -4,7 +4,7 @@
 
 Build a reusable multi-agent pipeline that ports DFInsta to new Instagram releases. Instagram 430 is the first fully traced replay fixture and future baseline candidate, not the final destination.
 
-The pipeline uses Google ADK for orchestration, specialist reasoning, human review, and durable run history. Deterministic programs remain responsible for decoding, indexing, patching, building, signing, verification, and device evidence collection.
+Temporal is the durable outer orchestrator for stage order, multi-day human waits, retries, cancellation, and workflow history. Google ADK owns bounded multi-agent reasoning for mapping, assessment, diagnosis, and drift review. Deterministic programs remain responsible for decoding, indexing, patching, building, signing, verification, and device evidence collection.
 
 This plan incorporates the dry-run evidence in `docs/FINDINGS.md`, the current implementation records, `docs/adk_pipeline_design.md`, and `pipeline_flowchart.md`. The latter two describe the original concept but contain pre-ADK-2.x assumptions and unsafe authority boundaries corrected below.
 
@@ -112,7 +112,7 @@ Deterministically compile approved decisions and resolutions into one immutable 
 
 ### Gate 1. Port Plan Approval
 
-The human reviews one combined plan containing feature/privacy dispositions, unresolved alternatives, target resolutions, payload changes, packaging choice, proof obligations, and proposed device tests. The human may approve, correct, redesign, retire, waive, or defer each item. This gate is mandatory when policy, mechanism, packaging, privacy, resources, permissions, or mappings changed.
+The human submits a validated Temporal Update for one combined plan containing feature/privacy dispositions, unresolved alternatives, target resolutions, payload changes, packaging choice, proof obligations, and proposed device tests. The human may approve, correct, redesign, retire, waive, or defer each item. This gate is mandatory when policy, mechanism, packaging, privacy, resources, permissions, or mappings changed.
 
 ### 6. Clean Apply, Build, And Static Verification
 
@@ -129,7 +129,7 @@ Failure routing:
 
 ### Gate 2. Signing Authorization
 
-The human approves use of the stable release signing policy. Signing is deterministic; key access is not delegated to an LLM. Distribution is a separate later decision.
+The human submits a hash-bound Temporal Update approving use of the stable release signing policy. Signing is deterministic; key access is not delegated to an LLM. Distribution is a separate later decision.
 
 ### 7. Release-Candidate Finalization
 
@@ -137,7 +137,7 @@ Align, sign, enforce package/min-SDK/signer/scheme policy, run final structural 
 
 ### Gate 3. Device And Data Authorization
 
-Approve one hash-bound device plan listing every allowed install/update, signer migration, uninstall, clear-data operation, account use, preference mutation, tracing action, and cache operation. Credentials remain human-entered.
+Approve through a Temporal Update one hash-bound device plan listing every allowed install/update, signer migration, uninstall, clear-data operation, account use, preference mutation, tracing action, and cache operation. Credentials remain human-entered.
 
 ### 8. Device Smoke And Behavior Validation
 
@@ -149,7 +149,7 @@ The initial deterministic device executor supports installed-artifact binding, a
 
 ### Gate 4. Distribution And Promotion Authorization
 
-The human reviews failures, inconclusive claims, and proposed waivers, then authorizes or rejects distribution of the exact tested APK hash and promotion of its baseline bundle. Mandatory claims must pass or receive an explicit scoped waiver with rationale. The pipeline never distributes or commits automatically.
+The human reviews failures, inconclusive claims, and proposed waivers, then submits a Temporal Update authorizing or rejecting distribution of the exact tested APK hash and promotion of its baseline bundle. Mandatory claims must pass or receive an explicit scoped waiver with rationale. The pipeline never distributes or commits automatically.
 
 ### 9. Baseline Promotion
 
@@ -166,28 +166,60 @@ An independent read-only `DriftAuditAgent` runs at four checkpoints:
 
 The drift auditor cannot edit, approve, or block by itself. Deterministic policy checks convert severe findings into a required human review.
 
-## Google ADK 2.5 Architecture
+## Temporal And Google ADK Architecture
 
-Target `google-adk[db]==2.5.0` after an isolated capability spike.
+Temporal is the sole durable workflow engine. Phase A pins `temporalio==1.30.0`; Google ADK remains deferred until deterministic generalization, when `google-adk[db]==2.5.0` will be evaluated for bounded reasoning Activities.
 
-- Use `google.adk.workflow.Workflow`, routed edges, and typed function nodes rather than one large `SequentialAgent`/`LoopAgent`.
-- Use `LlmAgent` only for bounded assessment, mapping, diagnosis, and optional narrative.
-- Use workflow-native `RequestInput` plus application-level response validation for every gate. Do not use tool confirmation with `DatabaseSessionService` unless a future isolated compatibility test proves it safe.
-- Use `DatabaseSessionService` with an async SQLite URL locally; PostgreSQL is deferred until concurrent workers are needed.
-- Use session state only for small IDs, hashes, status, and artifact references.
-- Keep decode/work trees and large indexes in a content-addressed filesystem. ADK artifact services hold compact reports and references, not directory trees.
-- Validate every LLM output deterministically before routing it downstream.
-- Expose only read-only index/excerpt tools to LLM agents.
+- One Temporal `PortRunWorkflow` owns compact stage state, budgets, current gate, accepted decision IDs, and immutable artifact references.
+- All file, database, subprocess, network, secret, ADK, signing, and device I/O runs in Activities. Workflow code remains deterministic and sandboxed.
+- Authoritative human gates use validated Temporal Updates, not Signals, ADK `RequestInput`, or unrestricted Temporal UI/CLI submissions.
+- Updates bind actor, run/gate IDs, exact subject hashes, policy revision, decision, rationale, timestamp, and idempotency ID. Authentication occurs in a trusted client before submission.
+- Long-running Activities heartbeat, handle cancellation, use attempt-scoped outputs, and return compact references only.
+- Temporal Activities are at-least-once. The external ledger and canonical operation key provide adoption, quarantine, and duplicate-effect protection.
+- Temporal History is operational history; the external ledger remains authority for artifacts, decisions, evidence, and release lineage.
+- APKs, decode trees, indexes, screenshots, and full reports stay in external content-addressed storage and never enter Temporal payloads or ADK prompts.
+- Signing and device Activities use separate restricted task queues. Secrets remain only in their workers and never enter History, search attributes, ledger records, or ADK state.
+- Workflow executions are pinned to a worker deployment version. Saved histories are replay-tested before workflow-code deployment.
+- ADK agents run as bounded read-only Activities. Their structured outputs are stored externally and deterministically validated before workflow routing.
+- Do not initially use the experimental deep Temporal-ADK plugin. Evaluate it only if per-model-turn durability becomes necessary.
+- Do not use child workflows until a subprocess needs an independent lifecycle, gate, cancellation policy, or event-history boundary.
 
-ADK 2.5 resumability is experimental and at-least-once. The database is not a serialized Python stack. Correctness therefore comes from the external append-only stage ledger and idempotent stage transactions, not from assuming exactly-once node execution.
+### Phase A Implementation Checkpoint
+
+Commits `3e91eb5` and `ac4da5b` implement the first durable slice. The current suite has 23 Phase A tests and 85 tests overall.
+
+Proven:
+
+- Strict versioned decoding for the four initial envelopes, canonical recursive JSON hashing, and immutable compact references.
+- Admission, prepare, decision-recording, and apply Activities with a validated Temporal Update between prepare and apply.
+- Gate decisions bind the canonical run, admission artifact, prepared artifact, actor, policy, timestamp, decision identity, and idempotency identity.
+- Every downstream operation key and output reference includes complete upstream artifact and decision hashes.
+- The SQLite ledger records append-only pending, effect, completion, and quarantine events; update/delete triggers prevent history rewriting.
+- A post-effect retry adopts one validated CAS effect instead of executing it twice. Cooperative cancellation waits for cleanup and leaves the effect quarantined.
+- A Worker can be replaced while the Workflow waits at a gate. Tests disable sticky caching to force History reconstruction and use the documented pinned-version override for synthetic traffic.
+- A three-day logical gate boundary is covered with Temporal time skipping. Saved History replays with unchanged code and fails against a deliberately incompatible Workflow definition.
+- The executor verifies an absolute executable against an admitted SHA-256 before launch, renders only an exact argv template, passes only admitted environment values, constrains resolved workspace paths and declared mutations, validates artifact kinds, and rejects split APK sets. It uses `create_subprocess_exec`, never a shell.
+
+Still pending before Phase A is considered production-ready:
+
+- Restart a separately connected trusted client and a persistent local Temporal server, not only a Worker inside one retained test environment.
+- Persist a sanitized representative History corpus and replay open and closed histories in deployment CI.
+- Replace synthetic actor equality with authentication in a trusted submission client.
+- Exercise hard Worker/process loss during a real child process. Current evidence covers injected failure and cooperative cancellation.
+- Add OS-level confinement before treating an admitted tool as hostile. Workspace path and mutation checks are policy enforcement around a trusted digest, not a filesystem sandbox.
+- Prove future signing/device worker secret isolation when those restricted task queues are introduced.
 
 ## Implementation Phases
 
-### Phase A. Minimal Contracts And Capability Model
+### Phase A. Temporal Durability, Minimal Contracts, And Capability Model
 
-Implement the four initial envelopes, strict unknown-field rejection, canonical serialization, hash-bound gate decisions, and an append-only local stage ledger. A gate response binds actor, run ID, gate ID, subject hashes, policy revision, decision, rationale, and timestamp.
+Implement the four initial envelopes, strict unknown-field rejection, canonical serialization, hash-bound gate decisions, a local content-addressed store, and an append-only local stage ledger. A gate response binds actor, run ID, gate ID, subject hashes, policy revision, decision, rationale, timestamp, and idempotency ID.
 
 Define a deterministic executor capability model before subprocess execution: approved tool digests, fixed command templates, workspace-root containment, artifact-kind checks, environment allowlist, and allowed mutation paths. Initial APK-composition support is a single monolithic APK; split sets fail at admission until explicitly implemented.
+
+Pin the Temporal Python SDK and build one synthetic `PortRunWorkflow`: admission Activity, prepare Activity, approval Update, apply Activity, and final result. This phase contains no APK build, ADK agent, child workflow, signing, or device action.
+
+Status: the synthetic durability, contract, ledger, and executor-capability slices are implemented. The production persistence/authentication items listed in the checkpoint above remain open; no APK, ADK, signing, or device operation has entered the Workflow.
 
 Acceptance:
 
@@ -197,6 +229,13 @@ Acceptance:
 - Unknown schema versions and unknown fields fail closed.
 - Stale or hash-unbound approvals cannot authorize a transition.
 - An executable outside the admitted digest allowlist cannot run.
+- Worker and trusted client processes can stop while a gate waits and resume from persistent Temporal state.
+- Invalid, stale, duplicate, and hash-mismatched Updates are rejected.
+- An accepted decision is written to the external ledger before apply begins.
+- Killing or cancelling an Activity after its synthetic side effect cannot duplicate or promote partial output.
+- Time-skipping tests cover multi-day waits and gate timeout behavior.
+- Saved History replays with unchanged Workflow code and rejects deliberate nondeterminism.
+- No large bytes, secrets, private paths, or credentials appear in Temporal History.
 
 ### Phase B. Generic Intent And Resolution Engine
 
@@ -238,29 +277,30 @@ Acceptance:
 - False automatic mapping acceptance is zero.
 - No fixture requires a generic engine code change.
 
-### Phase D. ADK 2.5 Capability Spike
+### Phase D. Google ADK Activity Capability Spike
 
-Only after the deterministic generalization gate passes, pin `google-adk[db]==2.5.0` and build a synthetic four-node workflow: deterministic prepare, typed `RequestInput`, deterministic apply, and final report. Persist it with SQLite, terminate at the gate, reconstruct services, and resume with the same identifiers. Force termination during apply and prove ledger-based recovery.
+Only after the deterministic generalization gate passes, pin `google-adk[db]==2.5.0` and invoke one bounded read-only mapping agent from a Temporal Activity. The Activity resolves bounded evidence references, runs ADK, stores complete structured output externally, validates it, and returns an `ArtifactRef`.
 
 Acceptance:
 
-- The exact ADK version and graph shape resume across process restart.
-- Request and response correlation is documented and tested.
-- At-least-once replay cannot duplicate a side effect.
-- If native resume is unreliable, Google ADK remains the agent/gate layer while the stage ledger restarts from validated boundaries.
+- Temporal retry/adoption cannot silently select two different model outputs for one generation ID.
+- Invalid agent output is non-retryable; another generation consumes an explicit workflow budget.
+- ADK sessions and artifacts remain non-authoritative reasoning trace.
+- No write-capable repository tool is exposed to the agent.
+- Google ADK remains responsible for specialist composition and reasoning; Temporal only schedules the bounded invocation.
 
-### Phase E. Golden Workflow Replay And Device Executor
+### Phase E. Temporal Golden Replay And Device Executor
 
-Wrap the proven generic stages in the minimal ADK workflow and replay 340 and 430 without LLM mutation. Extend the gated device executor only with the controlled operations listed in Stage 8.
+Wrap the proven generic stages in `PortRunWorkflow` Activities and replay 340 and 430 without LLM mutation. Extend the gated device executor only with the controlled operations listed in Stage 8.
 
 430 fixture assertions remain fixture data: six operations, four custom descriptors, 20 DEX files, unsafe full-resource rebuild, stock payload preservation, approved signer, installed-byte identity, startup, settings defaults, and same-key update.
 
 Acceptance:
 
-- Workflow code contains no 340/430 conditionals or constants.
+- Temporal Workflow and generic Activity code contain no 340/430 conditionals or constants.
 - Both fixtures route from admitted input to their expected deterministic results.
 - 430 preserves `observed`, `verified`, and `inconclusive` distinctions.
-- Signing and device plans pause and resume through `RequestInput`.
+- Signing and device plans pause and resume through validated Temporal Updates.
 - Unauthorized install, toggle, data clear, or credential action cannot execute.
 
 ### Phase F. Bounded Mapping Agent
@@ -312,5 +352,6 @@ It becomes the accepted behavioral baseline only after strict core contrasts are
 - Automatic git commits.
 - Broad resource pruning or cache invalidation.
 - Profile-ad inventory hunting as a prerequisite for orchestration.
-- Full LLM topology before the generic engine, generalization fixtures, and ADK restart spike pass.
+- Full LLM topology before the Temporal durability spike, generic engine, and generalization fixtures pass.
+- The experimental deep Temporal-ADK plugin.
 - PostgreSQL/object storage until local single-worker replay is proven.

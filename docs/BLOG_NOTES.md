@@ -41,6 +41,22 @@ This distinction is likely the central architecture point of the eventual post. 
 
 The project pins apktool 2.9.3 because these Instagram resources require the older aapt1 path. Android Studio supplied `adb`, `zipalign`, and `apksigner`, but did not put them on the shell `PATH`. The first reproducibility task was therefore simply locating every tool and recording its exact version/path.
 
+### Temporal: durability without broader authority
+
+Temporal replaced the earlier idea that an ADK session database should own multi-day pauses. The first Workflow is deliberately synthetic: admit a tiny run, prepare a tiny artifact, wait for a validated human Update, record the decision externally, apply one tiny effect, and return compact references. No APK or model call was needed to test the dangerous orchestration semantics.
+
+The first restart test hung for a useful reason. Marking a Workflow `PINNED` does not make an isolated candidate deployment Current, and cached sticky execution can hide whether state really reconstructs. The final test uses Temporal's documented `PinnedVersioningOverride` to target the candidate build and disables Workflow caching so every task must replay History. It stops the Worker at the gate, starts a replacement, and resumes the same approval state.
+
+Temporal Update identity and business identity are separate. Retrying the same Update ID returns its original accepted result; sending a new Update that reuses the decision's business idempotency key is rejected. The gate also binds the canonical run, admission artifact, prepared artifact, actor, policy, and validity interval, so a stale approval cannot authorize changed bytes.
+
+At-least-once Activities required an explicit effect protocol. The ledger no longer overwrites a status row. It appends pending, effect, completion, or quarantine events and forbids update/delete in SQLite. If an injected failure occurs after the effect, retry validates and adopts that one CAS object before appending completion. If cancellation arrives after the effect, the Workflow waits for Activity cleanup and the ledger appends quarantine instead of promotion.
+
+History replay became a deployment test rather than a slogan. The test fetches and serializes a real History, reloads it, and replays it offline with unchanged code. Replaying the same History against an incompatible implementation of the same Workflow type produces Temporal's `TMPRL1100` nondeterminism error. A committed representative replay corpus is still future work.
+
+The subprocess boundary is capability-based before any APK tool is connected. A request names an immutable executable digest, exact argv template, permitted environment values, workspace paths, artifact kinds, mutation paths, and monolithic APK composition. Digest mismatch fails before the launcher is called. This is a strong policy boundary around a trusted binary, not an OS sandbox around a hostile one.
+
+The Phase A checkpoint has 23 focused tests and 85 Python tests overall. Remaining durability work is intentionally explicit: persistent Temporal-server and trusted-client restart, authenticated submissions, hard process-loss testing, replay-corpus CI, and later signing/device secret isolation.
+
 ## Facts Worth Capturing During Development
 
 - Decode and index timings, output sizes, and class counts.
@@ -98,3 +114,11 @@ The project pins apktool 2.9.3 because these Instagram resources require the old
 - Stories produced the expected restart-bounded contrast without opening anything: enabling showed three other users' unseen entries; disabling left only the current user's own story.
 - Shopping exposed the kind of bug a UI checkbox cannot reveal. Its helper checks for `minshop`, while all three patched identifiers contain `minishops`; the direct substitutions therefore preserve every string regardless of the toggle.
 - Hardcore Mode really is hardcore: once enabled, the same listener blocks turning Hardcore itself back off. That test belongs on disposable app data, not a logged-in reference installation.
+
+### 2026-07-26
+
+- Adopted Temporal `1.30.0` as the durable outer orchestrator while keeping Google ADK deferred to bounded read-only Activities after deterministic generalization.
+- Diagnosed pinned candidate routing and sticky-cache behavior, then proved Worker replacement at a waiting approval gate through explicit deployment override and forced History reconstruction.
+- Replaced mutable operation status with an append-only pending/effect/completion/quarantine protocol and proved one-effect retry adoption plus cancellation quarantine.
+- Added a fail-closed executor capability model before connecting any APK tool: exact executable digest, argv, environment, workspace, artifact kinds, mutations, timeout cleanup, and split-APK rejection.
+- Replayed fetched History successfully, deliberately triggered nondeterminism with incompatible code, and reached 23 Phase A tests plus 85 passing Python tests overall.

@@ -4,7 +4,7 @@ Last updated: 2026-07-26
 
 ## End Goal
 
-Create a reproducible, privacy-respecting, multi-agent Google ADK pipeline that takes a clean stock Instagram APK, resolves and applies small target-native DFInsta patches, builds/signs it after human authorization, and proves retained behavior with structured device evidence. Instagram 340 / DFInsta 1.4.1 is the golden reference; Instagram 430 is the first fully traced replay fixture and future baseline candidate.
+Create a reproducible, privacy-respecting pipeline with Temporal as the durable outer orchestrator and Google ADK as the multi-agent reasoning layer. It takes a clean stock Instagram APK, resolves and applies small target-native DFInsta patches, builds/signs after human authorization, and proves retained behavior with structured device evidence. Instagram 340 / DFInsta 1.4.1 is the golden reference; Instagram 430 is the first fully traced replay fixture and future baseline candidate.
 
 Mechanical extraction, indexing, patching, building, and verification must remain deterministic. Agents should handle ambiguous class mapping, diagnosis, and explicit human gates rather than directly improvising the whole port.
 
@@ -224,14 +224,27 @@ Large inherited resource groups are only statically unreferenced and require ful
 
 Commit `2d024e1` applies the safe dead-code boundary and adds source-policy tests. Broad resource pruning remains deferred.
 
+## Phase A Pipeline State
+
+Commits `3e91eb5` and `ac4da5b` add the initial Python package and pin `temporalio==1.30.0`. `PortRunWorkflow` is explicitly `PINNED`; each production Worker requires an immutable `--build-id`, while synthetic pre-deployment tests target `phase-a-v1` with `PinnedVersioningOverride`.
+
+The current Workflow runs admission, prepare, validated approval Update, decision recording, apply, and final result. Compact artifacts live in a filesystem CAS. SQLite stores decisions plus append-only operation events for pending, effect, completed, and quarantined states. Apply identity includes the canonical run, admission artifact, prepared artifact, and accepted decision hash.
+
+The executor capability layer verifies executable SHA-256 before launch, exact argv placeholders, resolved workspace/cwd containment, input/output artifact kinds, a replacement environment built from admitted keys, declared mutation paths, timeout/cancellation cleanup, and monolithic APK composition. It uses `asyncio.create_subprocess_exec` with no shell. These checks do not constitute an OS sandbox; future tool digests must identify trusted immutable binaries.
+
+Phase A has 23 tests. They prove Worker replacement at a waiting gate, forced History reconstruction, explicit pinned-version routing, stale/hash-mismatched/unauthorized Update rejection, same-ID Temporal Update retry, business idempotency rejection, decision persistence before apply, one-effect retry adoption, cancellation quarantine, a three-day logical timeout boundary, compact synthetic History, successful replay, deliberate nondeterminism rejection, strict envelope decoding, complete hash invalidation, append-only ledger enforcement, and executor denial paths. All repository Python suites total 85 passing tests.
+
+Not yet proven: persistent Temporal-server restart, a separately restarted trusted-client process, authenticated actor submission, hard Worker/process death around a real subprocess, a checked-in replay corpus, OS-level tool confinement, and later signing/device secret boundaries. No APK, Google ADK, signing, or device operation is part of Phase A.
+
 ## Immediate Next Actions
 
-1. Review `docs/ADK_PIPELINE_PLAN.md`, which reconciles the original flowchart with proven 430 behavior and current Google ADK 2.5 APIs.
+1. Complete Phase A persistence evidence with a persistent local Temporal server, a newly connected trusted client, and a saved replay corpus.
 2. Extract 340 and 430 into version-independent intent plus version-scoped resolutions, then prove one target-neutral apply/build/verifier engine and mutation fixtures.
-3. Run the isolated ADK 2.5 restart/resume capability spike only after that deterministic generalization gate passes.
-4. Wrap the proven engine and 430 replay in the minimal workflow before adding mapping or feature-assessment agents.
-5. Repeat strict core contrasts before promoting 430 as the accepted behavioral baseline; keep restart/cache caveats explicit.
-6. Treat profile-ad runtime validation as inventory-dependent and non-blocking for pipeline implementation.
+3. Run those deterministic tools only through admitted immutable capability profiles; add stronger confinement before any untrusted executable is considered.
+4. Add Google ADK as bounded read-only Temporal Activities only after deterministic generalization passes.
+5. Replay the proven engine and 430 through the durable workflow before adding specialist agent topology.
+6. Repeat strict core contrasts before promoting 430 as the accepted behavioral baseline; keep restart/cache caveats explicit.
+7. Treat profile-ad runtime validation as inventory-dependent and non-blocking for pipeline implementation.
 
 ## Instagram 430 State
 
@@ -306,4 +319,4 @@ Tracked first-pass mapping: `docs/PORT_430_MAPPING.md`.
 
 The repository contains many unrelated modified files under `dfinsta_source_1.3/` and untracked playground/pipeline artifacts. They predate or are unrelated to this reconstruction sequence. Do not stage, revert, normalize, or clean them without explicit user direction. Always stage explicit paths.
 
-Known untracked unrelated paths include `TESTING-PLAYGROUND/`, pipeline diagrams, and older docs such as `docs/FINDINGS.md`/`docs/adk_pipeline_design.md`.
+Known untracked unrelated paths include `TESTING-PLAYGROUND/`, pipeline diagrams, and older docs such as `docs/FINDINGS.md`/`docs/adk_pipeline_design.md`. The Phase A package and tests are tracked from commits `3e91eb5` and `ac4da5b`; do not confuse them with those unrelated artifacts.
