@@ -1,8 +1,8 @@
 # Instagram 430 Port State and Mapping
 
-Status: v7 resource-free test DEX graft built, statically checked, signed, startup-tested, settings-validated, and observed with restart-bounded Feed, Explore, Reels, and Stories differences on the Nothing Phone. Controlled feature verification, installed-artifact identity, and eligible profile-ad validation remain pending.
+Status: v7 resource-free test DEX graft built, structurally verified as a signed artifact, matched byte-for-byte to the installed base APK, startup-tested, settings-validated, and observed with restart-bounded Feed, Explore, Reels, and Stories differences on the Nothing Phone. Controlled feature verification, release signing, and eligible profile-ad validation remain pending.
 
-Current branch: `port-430`, with implementation and validation commits through `d019450`.
+Current branch: `port-430`, with implementation and validation commits through `3f6f2f9`.
 
 Relevant commits:
 
@@ -18,6 +18,9 @@ Relevant commits:
 - `4d1e5c4 scope device validation evidence`: separates launch strategies and records explicit test state.
 - `6cc7b93 record validation harness identity`: hashes the runner and contract used for each evidence run.
 - `94dd015 support semantic boolean selectors`: supports the 430 Options `long_clickable` selector.
+- `99faab2 verify installed apk identity`: binds evidence to device-side `base.apk` bytes.
+- `2249342 verify final dex structure`: verifies exact final-DEX host sequences and retained payload bytes.
+- `3f6f2f9 verify signed apk certificate`: verifies and records signed-artifact certificate identity.
 
 ## Target
 
@@ -37,15 +40,19 @@ Apktool emitted resource string-chunk warnings but baksmaled all DEX files succe
 - Installed successfully as an in-place update.
 - Package/version preflight: passed for `430.0.0.53.80` / `383611248`.
 - Static verification: passed.
+- Signed final report: `work/430-graft-v7/dfinsta_430-graft-v7-test.signed-verification.json`, SHA-256 `2de452411414e251e60857f2243d429508ea11bfc7ecc5608e3b12696256b9ba`.
+- Signature: v3 with Android Debug certificate SHA-256 `d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1`; release signing remains pending.
 
-The verifier proves:
+The signed-artifact verifier proves:
 
 - Exactly 20 DEX files, `classes.dex` through `classes20.dex`.
 - Exactly four custom descriptors: `startapp`, `dfinstagram`, `hooks`, and `SettingsWrapper`.
-- Exactly the four expected host-hook markers in the expected DEX files.
+- Exact calls in `InstagramAppShell.onCreate` and Tigon `startRequest`, all three Reels replacement sequences in `LX/05t2.A07/A09`, and the guarded settings listener after the stock click listener in `LX/077K.A00`.
 - No forbidden legacy, Activity, resource-dependent, ACRA, or Amplitude symbols in custom DEX.
 - Byte-identical stock binary `AndroidManifest.xml` and `resources.arsc`.
 - Identical stock `res/` entry names and byte-identical contents for every entry.
+- Every retained non-signature, non-grafted ZIP payload entry is byte-identical to stock.
+- APK Signature Scheme v3 and signer certificate identity.
 
 ## Resource Failure and Architecture Decision
 
@@ -84,6 +91,7 @@ This design deliberately excludes feed-cache clearing, welcome UI, telemetry, an
 
 - Package MAIN/LAUNCHER reaches foreground alias `com.instagram.android/.activity.MainTabActivity`; deprecated `LauncherActivity` was the earlier self-finishing trampoline.
 - Startup passes foreground, process-liveness, and fatal-log checks.
+- Device-side `base.apk` SHA-256 exactly matches the declared signed artifact.
 - Profile Options is present immediately. It is long-clickable after the `LX/077K` patch, and the settings dialog opens on the first attempt without header swipes.
 - Production v7 renders five choices in order: Feed, Explore, Reels, Stories, Profile ads. All five were observed checked after login.
 - Normal Options click still enters Instagram's stock surface.
@@ -241,8 +249,9 @@ The current-user 430 Options action appears immediately after Profile navigation
 2. Confirm an unrelated-user profile does not receive the settings long-click action.
 3. Keep the restart/cached-content caveat; no safe full 430 cache invalidator was found.
 4. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
-5. Strengthen final-DEX verification to assert structural invocation/count/location rather than disconnected tokens.
-6. Add clean-stock decode provenance and the proven mechanical flow to the durable agentic orchestration layer.
-7. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
+5. Add clean-stock decode provenance and integrate zipalign/sign/final verification into one refuse-overwrite report.
+6. Establish an approved release-signing policy; the current artifact uses Android Debug.
+7. Add the proven mechanical flow to the durable agentic orchestration layer.
+8. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
 
 Generated detailed evidence remains under ignored `work/430-port/`.

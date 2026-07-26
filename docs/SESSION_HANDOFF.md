@@ -47,8 +47,11 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `6cc7b93 record validation harness identity` (hashes the exact runner and contract used for evidence)
 - `94dd015 support semantic boolean selectors` (allows contract-scoped `long_clickable` matching)
 - `d019450 remove ineffective profile retry` (keeps 430 recovery empty after proving the observed stall required restart)
+- `99faab2 verify installed apk identity` (fails evidence before interaction when installed `base.apk` differs from the declared artifact)
+- `2249342 verify final dex structure` (checks exact host methods/invocations and every retained stock payload entry)
+- `3f6f2f9 verify signed apk certificate` (supports fail-closed apksigner verification and records signer identity)
 
-Current branch: `port-430`. It is based on `master` commit `6f1efa7` and includes implementation commits through `d019450`. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
+Current branch: `port-430`. It is based on `master` commit `6f1efa7` and includes implementation/validation commits through `3f6f2f9`. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
 
 ## Golden Reconstruction State
 
@@ -105,6 +108,9 @@ Current installed state:
 
 - Installed APK on Nothing Phone: `work/430-graft-v7/dfinsta_430-graft-v7-test.apk`.
 - SHA-256: `0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4`.
+- Signed structural verification: `work/430-graft-v7/dfinsta_430-graft-v7-test.signed-verification.json`, SHA-256 `2de452411414e251e60857f2243d429508ea11bfc7ecc5608e3b12696256b9ba`.
+- Signature: APK Signature Scheme v3, Android Debug certificate SHA-256 `d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1`; this remains a test artifact, not a release build.
+- Device-side `base.apk` SHA-256 exactly matches the declared signed artifact in `work/device-runner/nothing-v7-signed-installed-preflight/`.
 - Package/version preflight passes for `com.instagram.android` / `430.0.0.53.80` (`383611248`).
 - Package MAIN/LAUNCHER reaches foreground alias `com.instagram.android/.activity.MainTabActivity`; the runner requires a contract-approved foreground state and reports no AndroidRuntime fatal or resource crash.
 - Profile `Options` appears immediately in 430. Long-press opens the framework dialog on the first attempt without a swipe.
@@ -215,8 +221,9 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 2. Verify an unrelated-user profile does not receive the DFInsta long-click action.
 3. Keep restart-required behavior and the cached-content caveat; no safe full 430 cache invalidator exists.
 4. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
-5. Strengthen final-DEX verification from disconnected token checks to structural invocation/count/location checks.
-6. Add clean-stock decode provenance and the proven build/sign/install/device sequence to the durable orchestration layer.
+5. Add clean-stock decode provenance and integrate zipalign/sign/final verification into one refuse-overwrite build report.
+6. Replace the debug key with an approved release-signing policy before release distribution.
+7. Add the proven build/sign/install/device sequence to the durable orchestration layer.
 
 ## Instagram 430 State
 
@@ -251,14 +258,17 @@ The build still uses apktool 2.9.3/aapt1 plus the isolated API 36 framework to a
 - SHA-256: `0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4`.
 - The static verifier passed the exact 20-DEX set (`classes.dex` through `classes20.dex`).
 - It found exactly the four allowed custom descriptors and none of the forbidden legacy/privacy/resource-dependent symbols.
-- It found all four required host-hook markers: Tigon request blocking in `classes.dex`, context capture in `classes3.dex`, direct Reels endpoint replacement in `classes4.dex`, and settings installation in `classes6.dex`.
+- It found the required host-hook structures: Tigon request blocking in `classes.dex`, context capture in `classes3.dex`, three direct Reels endpoint replacements in `classes4.dex`, and guarded settings installation in `classes6.dex`.
 - Stock binary `AndroidManifest.xml` and `resources.arsc` are byte-identical.
 - The complete set of `res/` names and every `res/` entry's bytes are identical to stock.
+- Final signed verification disassembles the candidate and checks exact containing methods, invocation counts, all three Reels endpoint sequences, the guarded settings-listener sequence, and every retained non-signature stock payload entry.
+- APK Signature Scheme v3 verifies; the signer is the Android Debug certificate, so release signing remains pending.
 
 ### Device result
 
 - The grafted APK installed successfully on both the historical Pixel update path and the separate clean Nothing Phone validation path.
 - Package/version preflight passes.
+- Fail-closed installed identity passes: device `base.apk` SHA-256 equals the declared signed v7 APK.
 - Stock 430's launcher is alias `com.instagram.android.activity.MainTabActivity` with MAIN/LAUNCHER; deprecated `LauncherActivity` is only a trampoline and was the cause of the earlier false startup diagnosis.
 - The committed package-launch run reaches foreground alias `com.instagram.android/.activity.MainTabActivity` with a live process and no fatal or missing-resource crash.
 - The live 430 Options view is built by `LX/077K` from self-profile model `LX/077N`, not by the legacy `LX/06X7` action builder.

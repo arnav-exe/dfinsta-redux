@@ -8,7 +8,11 @@
   "current_artifact": {
     "label": "430-graft-v7",
     "sha256": "0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4",
-    "source_commit": "6eb2227"
+    "source_commit": "6eb2227",
+    "signed_verification": "work/430-graft-v7/dfinsta_430-graft-v7-test.signed-verification.json",
+    "signed_verification_sha256": "2de452411414e251e60857f2243d429508ea11bfc7ecc5608e3b12696256b9ba",
+    "signer_certificate_sha256": "d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1",
+    "signer": "Android Debug"
   },
   "related_evidence": {
     "v7_nothing_core_contrasts": {
@@ -26,6 +30,7 @@
       "enabled_evidence": "work/device-runner/nothing-v7-core-enabled",
       "restored_settings_evidence": "work/device-runner/nothing-v7-restored-settings-rows",
       "restored_startup_evidence": "work/device-runner/nothing-v7-restored-startup",
+      "signed_installed_preflight": "work/device-runner/nothing-v7-signed-installed-preflight",
       "warning": "The contrast is same-device and restart-bounded, but cache state was not independently cleared or measured."
     },
     "v3_pixel_core_contrasts": {
