@@ -1,11 +1,13 @@
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
 import warnings
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -20,6 +22,7 @@ from verify_apk import (
     REQUIRED_CUSTOM_SYMBOLS,
     expected_dex_names,
     payload_comparison,
+    signature_context,
     verify,
     verify_structural_hooks,
 )
@@ -378,6 +381,21 @@ class VerifierTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertFalse(verify_structural_hooks(root)["settings_guarded_after_stock_click"])
+
+    @patch("verify_apk.subprocess.run")
+    def test_records_signature_verification(self, run_mock) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            apk = root / "app.apk"
+            apksigner = root / "apksigner"
+            apk.write_bytes(b"apk")
+            apksigner.write_bytes(b"tool")
+            run_mock.return_value = subprocess.CompletedProcess(
+                [], 0, "Signer #1 certificate SHA-256 digest: abc\n", ""
+            )
+            result = signature_context(apk, apksigner)
+            self.assertTrue(result["verified"])
+            self.assertEqual(result["output"], ["Signer #1 certificate SHA-256 digest: abc"])
 
 
 if __name__ == "__main__":

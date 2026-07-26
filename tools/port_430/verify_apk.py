@@ -162,6 +162,24 @@ def decode_sources(apk: Path, apktool_jar: Path, output: Path) -> None:
     )
 
 
+def signature_context(apk: Path, apksigner: Path) -> dict[str, Any]:
+    result = subprocess.run(
+        [str(apksigner), "verify", "--verbose", "--print-certs", str(apk)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    output = (result.stdout + result.stderr).strip().splitlines()
+    return {
+        "tool": str(apksigner),
+        "tool_sha256": file_sha256(apksigner),
+        "verified": result.returncode == 0,
+        "output": output,
+    }
+
+
 def verify(
     dex_names: list[str],
     dex_content: dict[str, bytes],
@@ -246,8 +264,12 @@ def main() -> None:
     parser.add_argument("apk", type=Path)
     parser.add_argument("stock_apk", type=Path)
     parser.add_argument("--apktool-jar", required=True, type=Path)
+    parser.add_argument("--apksigner", type=Path)
+    parser.add_argument("--require-signature", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.require_signature and args.apksigner is None:
+        parser.error("--require-signature requires --apksigner")
 
     relevant = lambda name: (
         name in {"AndroidManifest.xml", "resources.arsc"}
@@ -290,6 +312,12 @@ def main() -> None:
                 payload_bytes_equal,
             ),
         }
+        signature = signature_context(args.apk, args.apksigner) if args.apksigner else None
+        result["signature"] = signature
+        if signature is not None:
+            result["passed"] = result["passed"] and signature["verified"]
+        elif args.require_signature:
+            result["passed"] = False
     rendered = json.dumps(result, indent=2) + "\n"
     if args.output:
         if args.output.exists():
