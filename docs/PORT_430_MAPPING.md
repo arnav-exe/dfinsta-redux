@@ -1,6 +1,6 @@
 # Instagram 430 Port State and Mapping
 
-Status: production v7 resource-free DEX graft built, statically verified, signed, startup-tested, settings-validated, and restart-bounded for Feed, Explore, Reels, and Stories on the Nothing Phone. Shopping is retired and visible profile-ad blocking awaits eligible-account validation.
+Status: v7 resource-free test DEX graft built, statically checked, signed, startup-tested, settings-validated, and observed with restart-bounded Feed, Explore, Reels, and Stories differences on the Nothing Phone. Controlled feature verification, installed-artifact identity, and eligible profile-ad validation remain pending.
 
 Current branch: `port-430`, with implementation and validation commits through `d019450`.
 
@@ -87,7 +87,7 @@ This design deliberately excludes feed-cache clearing, welcome UI, telemetry, an
 - Profile Options is present immediately. It is long-clickable after the `LX/077K` patch, and the settings dialog opens on the first attempt without header swipes.
 - Production v7 renders five choices in order: Feed, Explore, Reels, Stories, Profile ads. All five were observed checked after login.
 - Normal Options click still enters Instagram's stock surface.
-- Feed, Explore, Stories, and Reels have same-device, restart-bounded v7 contrasts on the Nothing Phone with cache explicitly recorded as unknown. Historical v6 diagnostic Pixel evidence separately exhausted retained Reels media.
+- Feed, Explore, Stories, and Reels have same-device, restart-bounded v7 observations on the Nothing Phone with cache explicitly recorded as unknown. Strict verification remains pending because preference state was not machine-read, assertions were evidence-only, and only the enabled side has a dedicated successful restart record. Historical v6 diagnostic Pixel evidence separately exhausted retained Reels media.
 - The Nothing Phone used a clean install followed by manual login; the historical Pixel update path separately preserved 340 login and preferences.
 - All five settings were restored checked and final startup passed.
 - Do not clear data or uninstall without explicit user approval.
@@ -240,8 +240,9 @@ The current-user 430 Options action appears immediately after Profile navigation
 1. Attempt eligible profile-ad observation without claiming success from ad absence.
 2. Confirm an unrelated-user profile does not receive the settings long-click action.
 3. Keep the restart/cached-content caveat; no safe full 430 cache invalidator was found.
-4. Strengthen final-DEX verification to assert structural invocation/count/location rather than disconnected tokens.
-5. Add clean-stock decode provenance and the proven mechanical flow to the durable agentic orchestration layer.
-6. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
+4. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
+5. Strengthen final-DEX verification to assert structural invocation/count/location rather than disconnected tokens.
+6. Add clean-stock decode provenance and the proven mechanical flow to the durable agentic orchestration layer.
+7. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
 
 Generated detailed evidence remains under ignored `work/430-port/`.

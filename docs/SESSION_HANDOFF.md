@@ -110,7 +110,7 @@ Current installed state:
 - Profile `Options` appears immediately in 430. Long-press opens the framework dialog on the first attempt without a swipe.
 - Production v7 shows Feed, Explore, Reels, Stories, and Profile ads in that order; all five defaults were observed checked after login.
 - A normal Options tap still enters Instagram's stock options/settings surface.
-- Feed, Explore, Stories, and Reels have same-device, restart-bounded v7 contrasts on the Nothing Phone. Cache state was explicitly recorded as unknown; separate v6 diagnostic Pixel evidence exhausted retained Reels media.
+- Feed, Explore, Stories, and Reels have same-device, restart-bounded v7 observations on the Nothing Phone. These are not yet strict verified contrasts: cache was unknown, feature state was declared rather than read from preferences, and only the enabled side has a dedicated successful restart record.
 - All five privacy settings were restored checked and a final package-launch startup passed.
 - Do not clear app data, uninstall, or otherwise destroy the preserved login/preferences state without explicit user approval.
 - Do not enable Hardcore Mode if returning to a 340 build on this data; it is not reversible through the 340 UI.
@@ -214,8 +214,9 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 1. Attempt profile-ad builder/endpoint observation on eligible profile/contextual-feed surfaces; report inconclusive if no inventory is served.
 2. Verify an unrelated-user profile does not receive the DFInsta long-click action.
 3. Keep restart-required behavior and the cached-content caveat; no safe full 430 cache invalidator exists.
-4. Strengthen final-DEX verification from disconnected token checks to structural invocation/count/location checks.
-5. Add clean-stock decode provenance and the proven build/sign/install/device sequence to the durable orchestration layer.
+4. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
+5. Strengthen final-DEX verification from disconnected token checks to structural invocation/count/location checks.
+6. Add clean-stock decode provenance and the proven build/sign/install/device sequence to the durable orchestration layer.
 
 ## Instagram 430 State
 
@@ -263,10 +264,10 @@ The build still uses apktool 2.9.3/aapt1 plus the isolated API 36 framework to a
 - The live 430 Options view is built by `LX/077K` from self-profile model `LX/077N`, not by the legacy `LX/06X7` action builder.
 - The guarded listener patch makes Options long-clickable; v7 opens the framework dialog on attempt one and shows all five current checked settings, including Profile ads.
 - Normal Options click behavior is preserved.
-- Current v7 Nothing evidence: disabled Feed shows only own Story and no feed content; enabled shows other Stories and feed content.
-- Current v7 Nothing evidence: disabled Explore shows an empty search shell and refresh failure; enabled shows a populated grid.
-- Current v7 Nothing evidence: disabled Stories leaves only own Story; enabled shows other users' Stories.
-- Current v7 Nothing evidence: disabled Reels shows a handled error; enabled shows playable content with `Follow`. Cache was recorded as unknown.
+- Current v7 Nothing observations: disabled Feed shows only own Story and no feed content; enabled shows other Stories and feed content.
+- Current v7 Nothing observations: disabled Explore shows an empty search shell and refresh failure; enabled shows a populated grid.
+- Current v7 Nothing observations: disabled Stories leaves only own Story; enabled shows other users' Stories.
+- Current v7 Nothing observations: disabled Reels shows a handled error; enabled shows playable content with `Follow`. Cache was recorded as unknown.
 - Historical v6 diagnostic Pixel evidence separately proved the live `clips/discover/stream/` path and exhausted retained Reels media after 50 swipes; do not attribute that cache-exhaustion procedure to v7.
 - All five v7 settings were restored checked and final package-launch startup passed on the Nothing Phone.
 - On the clean Nothing Phone, both stock 430 and v7 explicit aliases initially self-finished to Launcher; Android's package-launcher path opened logged-out `ModalActivity`. The runner now accepts that contract-approved activity and captured `Join Instagram` / `I already have a profile`.
@@ -275,7 +276,7 @@ The build still uses apktool 2.9.3/aapt1 plus the isolated API 36 framework to a
 
 - Implemented scope is application-context capture, exact Feed/Explore/Reels/Stories/profile-ad Tigon rules, direct central Reels endpoint blocking, and the framework settings dialog.
 - Shopping is intentionally retired. No feed-cache clearing, welcome flow, custom resources, custom Activity, Amplitude, or ACRA are present. No lazy-profile repair is needed on 430 because Options renders immediately.
-- Feed, Explore, Reels, and Stories are behavior-validated on current v7/Nothing evidence with an explicit unknown-cache caveat; prior Pixel evidence remains separately scoped. Profile-ad transmission is statically covered but runtime inventory contrast remains pending.
+- Feed, Explore, Reels, and Stories have persuasive current v7/Nothing observations, but strict controlled verification remains pending; prior Pixel evidence remains separately scoped. Profile-ad transmission is statically covered but runtime inventory contrast remains pending.
 - Full cache invalidation is intentionally not implemented because no safe cross-surface 430 API exists; cached content may remain temporarily after restart.
 - The resource-free architecture intentionally cannot add ordinary Android resources or manifest components. Any future feature that requires them needs a proven non-lossy resource strategy, not a return to the known-broken full apktool resource rebuild.
 
