@@ -1,5 +1,7 @@
 import argparse
 import copy
+import hashlib
+import json
 import shlex
 import subprocess
 import sys
@@ -62,6 +64,38 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_tree(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def command_output(command: list[str]) -> str:
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+    )
+    return (result.stdout + result.stderr).strip()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("stock_decode", type=Path)
@@ -77,19 +111,46 @@ def main() -> None:
     anchored_report = args.work_tree.parent / f"{args.work_tree.name}-anchored-report.json"
     intermediate_apk = args.output_apk.with_name(f"{args.output_apk.stem}-intermediate.apk")
     verification_report = args.output_apk.with_suffix(".verification.json")
+    build_report = args.output_apk.with_suffix(".build.json")
     refused_paths = [
         args.framework_path,
+        args.stock_decode,
         args.work_tree,
         args.output_apk,
         intermediate_apk,
         anchored_report,
         verification_report,
+        build_report,
     ]
     for path in refused_paths:
         if path.exists():
             raise FileExistsError(f"Refusing to overwrite {path}")
 
     python = sys.executable
+    run(
+        [
+            "java",
+            "-jar",
+            str(args.apktool_jar),
+            "if",
+            str(args.framework_apk),
+            "-p",
+            str(args.framework_path),
+        ]
+    )
+    run(
+        [
+            "java",
+            "-jar",
+            str(args.apktool_jar),
+            "decode",
+            "-p",
+            str(args.framework_path),
+            "-o",
+            str(args.stock_decode),
+            str(args.stock_apk),
+        ]
+    )
     run(
         [
             python,
@@ -108,17 +169,6 @@ def main() -> None:
             str(args.patch_source / "patches" / "anchored_patches.json"),
             "--output",
             str(anchored_report),
-        ]
-    )
-    run(
-        [
-            "java",
-            "-jar",
-            str(args.apktool_jar),
-            "if",
-            str(args.framework_apk),
-            "-p",
-            str(args.framework_path),
         ]
     )
     run(
@@ -148,6 +198,28 @@ def main() -> None:
             str(verification_report),
         ]
     )
+    report = {
+        "stock_apk": str(args.stock_apk.resolve()),
+        "stock_apk_sha256": sha256_file(args.stock_apk),
+        "stock_decode": str(args.stock_decode.resolve()),
+        "stock_decode_mode": "fresh_apktool_decode",
+        "patch_source": str(args.patch_source.resolve()),
+        "patch_source_sha256": sha256_tree(args.patch_source),
+        "apktool_jar": str(args.apktool_jar.resolve()),
+        "apktool_jar_sha256": sha256_file(args.apktool_jar),
+        "framework_apk": str(args.framework_apk.resolve()),
+        "framework_apk_sha256": sha256_file(args.framework_apk),
+        "python": sys.version,
+        "java": command_output(["java", "-version"]),
+        "source_commit": command_output(["git", "rev-parse", "HEAD"]),
+        "anchored_report": str(anchored_report.resolve()),
+        "anchored_report_sha256": sha256_file(anchored_report),
+        "verification_report": str(verification_report.resolve()),
+        "verification_report_sha256": sha256_file(verification_report),
+        "unsigned_apk": str(args.output_apk.resolve()),
+        "unsigned_apk_sha256": sha256_file(args.output_apk),
+    }
+    build_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

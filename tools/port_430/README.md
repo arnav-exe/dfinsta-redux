@@ -1,6 +1,6 @@
 # Instagram 430 Minimal Port
 
-This tooling creates a fresh work tree from the clean Instagram 430 apktool decode, overlays four custom classes into `smali_classes20`, applies six anchored host operations, and uses apktool 2.9.3/aapt1 only to assemble the changed DEX files. It then grafts `classes.dex`, `classes3.dex`, `classes4.dex`, `classes6.dex`, and `classes20.dex` into the exact supplied stock APK, removing signing artifacts while preserving every other stock ZIP entry.
+This tooling decodes the supplied stock Instagram 430 APK into a fresh refuse-overwrite tree, overlays four custom classes into `smali_classes20`, applies six anchored host operations, and uses apktool 2.9.3/aapt1 only to assemble the changed DEX files. It then grafts `classes.dex`, `classes3.dex`, `classes4.dex`, `classes6.dex`, and `classes20.dex` into the exact supplied stock APK, removing signing artifacts while preserving every other stock ZIP entry.
 
 The architecture is resource-free because apktool loses data while decoding/rebuilding Instagram 430's resource table. The grafted APK therefore retains the stock `resources.arsc`, binary `AndroidManifest.xml`, and every `res/` entry byte-for-byte. Settings are a framework `AlertDialog` opened by long-pressing the existing profile Options view; no Activity, manifest component, custom resource, or fixed application resource ID is used.
 
@@ -8,7 +8,7 @@ Run from the repository root with paths that do not already exist:
 
 ```bash
 python3 tools/port_430/build.py \
-  work/430-port/stock-430 \
+  work/430-build/stock-430-clean \
   'apks/com.instagram.android_430.0.0.53.80-383611248_minAPI28(arm64-v8a)(360,400,420,480dpi).apk' \
   dfinsta_source_430 \
   apktool_2.9.3.jar \
@@ -18,7 +18,7 @@ python3 tools/port_430/build.py \
   --output-apk work/430-build/dfinsta_430-unsigned.apk
 ```
 
-Every generated destination is refuse-overwrite, including the adjacent `*-intermediate.apk` and verification JSON. Choose new generated paths before another run; do not reuse a partially built tree.
+The first positional path is a new stock-decode destination, not an existing decode. Every generated destination is refuse-overwrite, including that decode, the adjacent `*-intermediate.apk`, verification JSON, and build-provenance JSON. Choose new generated paths before another run; do not reuse a partially built tree.
 
 ## Limitations
 

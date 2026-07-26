@@ -15,7 +15,7 @@ REPOSITORY = TOOLS.parents[1]
 SOURCE = REPOSITORY / "dfinsta_source_430"
 sys.path.insert(0, str(TOOLS))
 
-from build import GRAFT_NAMES, graft_apk
+from build import GRAFT_NAMES, graft_apk, sha256_tree
 from prepare_tree import prepare
 from verify_apk import (
     FORBIDDEN_CUSTOM_SYMBOLS,
@@ -277,6 +277,17 @@ class GraftTests(unittest.TestCase):
                     archive.writestr("classes.dex", b"duplicate")
             with self.assertRaises(ValueError):
                 graft_apk(stock, intermediate, output)
+
+    def test_tree_hash_includes_relative_paths_and_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a").mkdir()
+            (root / "a/file").write_bytes(b"one")
+            first = sha256_tree(root)
+            (root / "a/file").write_bytes(b"two")
+            self.assertNotEqual(first, sha256_tree(root))
+            (root / "a/file").rename(root / "renamed")
+            self.assertNotEqual(first, sha256_tree(root))
 
 
 class VerifierTests(unittest.TestCase):

@@ -249,7 +249,7 @@ The current-user 430 Options action appears immediately after Profile navigation
 2. Confirm an unrelated-user profile does not receive the settings long-click action.
 3. Keep the restart/cached-content caveat; no safe full 430 cache invalidator was found.
 4. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
-5. Add clean-stock decode provenance and integrate zipalign/sign/final verification into one refuse-overwrite report.
+5. Run and validate the new clean-stock decode/build provenance path, then integrate zipalign/sign/final verification into one refuse-overwrite report.
 6. Establish an approved release-signing policy; the current artifact uses Android Debug.
 7. Add the proven mechanical flow to the durable agentic orchestration layer.
 8. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
