@@ -845,7 +845,9 @@ def resolution_340(
 def is_signature_artifact(name: str) -> bool:
     parts = name.upper().split("/")
     return len(parts) == 2 and parts[0] == "META-INF" and (
-        parts[1] == "MANIFEST.MF" or parts[1].endswith((".SF", ".RSA", ".DSA", ".EC"))
+        parts[1] == "MANIFEST.MF"
+        or parts[1].startswith("SIG-")
+        or parts[1].endswith((".SF", ".RSA", ".DSA", ".EC"))
     )
 
 

@@ -237,7 +237,9 @@ def _is_dex_entry(value: str) -> bool:
 def _is_signature_artifact(value: str) -> bool:
     parts = value.upper().split("/")
     return len(parts) == 2 and parts[0] == "META-INF" and (
-        parts[1] == "MANIFEST.MF" or parts[1].endswith((".SF", ".RSA", ".DSA", ".EC"))
+        parts[1] == "MANIFEST.MF"
+        or parts[1].startswith("SIG-")
+        or parts[1].endswith((".SF", ".RSA", ".DSA", ".EC"))
     )
 
 
