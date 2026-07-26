@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -346,7 +347,7 @@ class StoreAndLedgerTests(unittest.TestCase):
                 "operation-1",
                 (),
             )
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute(
                     "CREATE TABLE operation_events ("
                     "event_id INTEGER PRIMARY KEY AUTOINCREMENT, operation_key TEXT NOT NULL, "
