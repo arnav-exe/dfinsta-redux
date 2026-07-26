@@ -142,6 +142,8 @@ def main() -> None:
             str(TOOLS / "verify_apk.py"),
             str(args.output_apk),
             str(args.stock_apk),
+            "--apktool-jar",
+            str(args.apktool_jar),
             "--output",
             str(verification_report),
         ]

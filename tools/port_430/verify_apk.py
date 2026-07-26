@@ -1,9 +1,12 @@
 import argparse
+import hashlib
 import json
 import re
+import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 
 REQUIRED_CUSTOM_SYMBOLS = [
@@ -13,12 +16,7 @@ REQUIRED_CUSTOM_SYMBOLS = [
     "Lcom/dfinstagram/SettingsWrapper;",
 ]
 
-HOST_HOOK_MARKERS = {
-    "classes.dex": "Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V",
-    "classes3.dex": "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
-    "classes4.dex": "Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
-    "classes6.dex": "Lcom/dfinstagram/SettingsWrapper;",
-}
+GRAFT_DEX_NAMES = {"classes.dex", "classes3.dex", "classes4.dex", "classes6.dex", "classes20.dex"}
 
 FORBIDDEN_CUSTOM_SYMBOLS = [
     "Lcom/instagram/",
@@ -45,12 +43,123 @@ def expected_dex_names() -> list[str]:
     return ["classes.dex"] + [f"classes{index}.dex" for index in range(2, 21)]
 
 
-def has_dex_marker(content: bytes, marker: str) -> bool:
-    if "->" not in marker:
-        return marker.encode("utf-8") in content
-    descriptor, member = marker.split("->", 1)
-    method_name = member.split("(", 1)[0]
-    return all(token.encode("utf-8") in content for token in (descriptor, method_name))
+def is_signature_artifact(name: str) -> bool:
+    parts = name.upper().split("/")
+    if len(parts) != 2 or parts[0] != "META-INF":
+        return False
+    return parts[1] == "MANIFEST.MF" or parts[1].endswith((".SF", ".RSA", ".DSA", ".EC"))
+
+
+def payload_comparison(final_entries: dict[str, Any], stock_entries: dict[str, Any]) -> tuple[bool, bool]:
+    retained_final = {
+        name: value
+        for name, value in final_entries.items()
+        if name not in GRAFT_DEX_NAMES and not is_signature_artifact(name)
+    }
+    retained_stock = {
+        name: value
+        for name, value in stock_entries.items()
+        if name not in GRAFT_DEX_NAMES and not is_signature_artifact(name)
+    }
+    names_equal = set(retained_final) == set(retained_stock)
+    return names_equal, names_equal and retained_final == retained_stock
+
+
+def method_body(smali: str, method_name: str) -> str:
+    match = re.search(
+        rf"(?ms)^\.method [^\n]*\b{re.escape(method_name)}\([^\n]*\n.*?^\.end method$",
+        smali,
+    )
+    if not match:
+        raise ValueError(f"Method not found: {method_name}")
+    return match.group(0)
+
+
+def endpoint_replacement_present(method: str, endpoint: str) -> bool:
+    marker = re.escape(
+        "Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;"
+    )
+    pattern = (
+        rf'const-string ([vp]\d+), "{re.escape(endpoint)}"\s+'
+        rf"invoke-static \{{\1\}}, {marker}\s+move-result-object \1"
+    )
+    return re.search(pattern, method) is not None
+
+
+def verify_structural_hooks(smali_root: Path) -> dict[str, bool]:
+    paths = {
+        "tigon": smali_root / "smali/com/instagram/api/tigon/TigonServiceLayer.smali",
+        "context": smali_root / "smali_classes3/com/instagram/app/InstagramAppShell.smali",
+        "reels": smali_root / "smali_classes4/X/05t2.smali",
+        "settings": smali_root / "smali_classes6/X/077K.smali",
+    }
+    sources = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    on_create = method_body(sources["context"], "onCreate")
+    start_request = method_body(sources["tigon"], "startRequest")
+    reels_a07 = method_body(sources["reels"], "A07")
+    reels_a09 = method_body(sources["reels"], "A09")
+    settings_a00 = method_body(sources["settings"], "A00")
+    reels_marker = "Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;"
+    settings_pattern = re.compile(
+        r"invoke-static \{[^}]+\}, LX/00ZY;->A00\(Landroid/view/View\$OnClickListener;Landroid/view/View;\)V"
+        r".*?instance-of [^\n]+, LX/077N;"
+        r".*?if-eqz [^\n]+"
+        r".*?new-instance [^\n]+, Lcom/dfinstagram/SettingsWrapper;"
+        r".*?invoke-direct \{[^}]+\}, Lcom/dfinstagram/SettingsWrapper;-><init>\(\)V"
+        r".*?invoke-virtual \{[^}]+\}, Landroid/view/View;->setOnLongClickListener\(Landroid/view/View\$OnLongClickListener;\)V",
+        re.DOTALL,
+    )
+    return {
+        "context_on_create_call_once": on_create.count(
+            "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V"
+        )
+        == 1,
+        "tigon_start_request_call_once": start_request.count(
+            "Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V"
+        )
+        == 1,
+        "reels_a07_discover": endpoint_replacement_present(reels_a07, "clips/discover/"),
+        "reels_a09_homecoming": endpoint_replacement_present(reels_a09, "clips/homecoming/"),
+        "reels_a09_stream": endpoint_replacement_present(reels_a09, "clips/discover/stream/"),
+        "reels_call_count_three": (reels_a07 + reels_a09).count(reels_marker) == 3,
+        "settings_guarded_after_stock_click": settings_pattern.search(settings_a00) is not None,
+        "settings_long_click_call_once": settings_a00.count(
+            "Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V"
+        )
+        == 1,
+    }
+
+
+def archive_hashes(path: Path) -> dict[str, str]:
+    with zipfile.ZipFile(path) as archive:
+        if archive.testzip() is not None:
+            raise ValueError(f"Corrupt APK: {path}")
+        names = archive.namelist()
+        if len(names) != len(set(names)):
+            raise ValueError(f"Duplicate ZIP entry in {path}")
+        hashes = {}
+        for name in names:
+            digest = hashlib.sha256()
+            with archive.open(name) as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            hashes[name] = digest.hexdigest()
+        return hashes
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def decode_sources(apk: Path, apktool_jar: Path, output: Path) -> None:
+    subprocess.run(
+        ["java", "-jar", str(apktool_jar), "decode", "-r", "-o", str(output), str(apk)],
+        check=True,
+    )
 
 
 def verify(
@@ -58,6 +167,9 @@ def verify(
     dex_content: dict[str, bytes],
     final_entries: dict[str, bytes],
     stock_entries: dict[str, bytes],
+    structural_hooks: dict[str, bool],
+    payload_names_equal: bool,
+    payload_bytes_equal: bool,
 ) -> dict:
     custom_dex = dex_content.get("classes20.dex", b"")
     custom_symbols = {
@@ -67,10 +179,6 @@ def verify(
     required = {symbol: symbol in custom_symbols for symbol in REQUIRED_CUSTOM_SYMBOLS}
     forbidden = {
         symbol: symbol.encode("utf-8") in custom_dex for symbol in FORBIDDEN_CUSTOM_SYMBOLS
-    }
-    host_hooks = {
-        marker: has_dex_marker(dex_content.get(dex_name, b""), marker)
-        for dex_name, marker in HOST_HOOK_MARKERS.items()
     }
     exact_dex_set = len(dex_names) == 20 and set(dex_names) == set(expected_dex_names())
     final_res = {name for name in final_entries if name.startswith("res/")}
@@ -96,22 +204,26 @@ def verify(
         "exact_dex_set": exact_dex_set,
         "exact_custom_symbols": exact_custom_symbols,
         "required_custom_symbols": required,
-        "host_hook_markers": host_hooks,
+        "structural_host_hooks": structural_hooks,
         "forbidden_custom_symbols_present": forbidden,
         "android_manifest_equal": manifest_equal,
         "resources_arsc_equal": resources_arsc_equal,
         "res_entry_names_equal": resource_names_equal,
         "res_entry_bytes_equal": resource_bytes_equal,
+        "retained_payload_entry_names_equal": payload_names_equal,
+        "retained_payload_entry_bytes_equal": payload_bytes_equal,
         "passed": all(
             [
                 exact_dex_set,
                 exact_custom_symbols,
                 all(required.values()),
-                all(host_hooks.values()),
+                all(structural_hooks.values()),
                 not any(forbidden.values()),
                 manifest_equal,
                 resources_arsc_equal,
                 resource_bytes_equal,
+                payload_names_equal,
+                payload_bytes_equal,
             ]
         ),
     }
@@ -133,6 +245,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("apk", type=Path)
     parser.add_argument("stock_apk", type=Path)
+    parser.add_argument("--apktool-jar", required=True, type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -146,17 +259,37 @@ def main() -> None:
     )
     final_names, final_entries = read_apk(args.apk, relevant)
     _, stock_entries = read_apk(args.stock_apk, resources)
+    final_hashes = archive_hashes(args.apk)
+    stock_hashes = archive_hashes(args.stock_apk)
+    payload_names_equal, payload_bytes_equal = payload_comparison(final_hashes, stock_hashes)
     dex_names = [
         name
         for name in final_names
         if name.startswith("classes") and name.endswith(".dex") and "/" not in name
     ]
     dex_content = {name: final_entries[name] for name in dex_names}
-    result = {
-        "apk": str(args.apk),
-        "stock_apk": str(args.stock_apk),
-        **verify(dex_names, dex_content, final_entries, stock_entries),
-    }
+    with tempfile.TemporaryDirectory(prefix="dfinsta-verify-") as directory:
+        decoded = Path(directory) / "decoded"
+        decode_sources(args.apk, args.apktool_jar, decoded)
+        structural_hooks = verify_structural_hooks(decoded)
+        result = {
+            "apk": str(args.apk),
+            "apk_sha256": file_sha256(args.apk),
+            "stock_apk": str(args.stock_apk),
+            "stock_apk_sha256": file_sha256(args.stock_apk),
+            "apktool_jar": str(args.apktool_jar),
+            "apktool_jar_sha256": file_sha256(args.apktool_jar),
+            "verifier_sha256": file_sha256(Path(__file__).resolve()),
+            **verify(
+                dex_names,
+                dex_content,
+                final_entries,
+                stock_entries,
+                structural_hooks,
+                payload_names_equal,
+                payload_bytes_equal,
+            ),
+        }
     rendered = json.dumps(result, indent=2) + "\n"
     if args.output:
         if args.output.exists():

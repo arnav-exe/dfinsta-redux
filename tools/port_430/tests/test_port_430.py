@@ -17,10 +17,11 @@ from build import GRAFT_NAMES, graft_apk
 from prepare_tree import prepare
 from verify_apk import (
     FORBIDDEN_CUSTOM_SYMBOLS,
-    HOST_HOOK_MARKERS,
     REQUIRED_CUSTOM_SYMBOLS,
     expected_dex_names,
+    payload_comparison,
     verify,
+    verify_structural_hooks,
 )
 
 
@@ -172,9 +173,9 @@ class PrepareAndPatchTests(unittest.TestCase):
                 )
             },
             {
-                marker
-                for dex_name, marker in HOST_HOOK_MARKERS.items()
-                if dex_name != "classes4.dex"
+                "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
+                "Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V",
+                "Lcom/dfinstagram/SettingsWrapper;",
             },
         )
         self.assertEqual(
@@ -280,16 +281,12 @@ class VerifierTests(unittest.TestCase):
         self.dex_names = expected_dex_names()
         self.dex_content = {name: b"stock" for name in self.dex_names}
         self.dex_content["classes20.dex"] = " ".join(REQUIRED_CUSTOM_SYMBOLS).encode("utf-8")
-        for dex_name, marker in HOST_HOOK_MARKERS.items():
-            descriptor, separator, member = marker.partition("->")
-            tokens = [descriptor, member.split("(", 1)[0]] if separator else [descriptor]
-            self.dex_content[dex_name] = b"\0".join(
-                token.encode("utf-8") for token in tokens
-            )
+        self.structural_hooks = {"hook": True}
         self.stock_entries = {
             "AndroidManifest.xml": b"manifest",
             "resources.arsc": b"arsc",
             "res/a": b"resource",
+            "assets/a": b"asset",
         }
         self.final_entries = dict(self.stock_entries)
 
@@ -299,6 +296,8 @@ class VerifierTests(unittest.TestCase):
             self.dex_content,
             self.final_entries,
             self.stock_entries,
+            self.structural_hooks,
+            *payload_comparison(self.final_entries, self.stock_entries),
         )
 
     def test_accepts_exact_dex_symbols_hooks_and_resources(self) -> None:
@@ -312,14 +311,73 @@ class VerifierTests(unittest.TestCase):
         self.assertFalse(self.verify()["passed"])
 
     def test_rejects_missing_hook_activity_or_resource_change(self) -> None:
-        self.dex_content["classes6.dex"] = b"missing"
+        self.structural_hooks["hook"] = False
         self.assertFalse(self.verify()["passed"])
-        self.dex_content["classes6.dex"] = HOST_HOOK_MARKERS["classes6.dex"].encode("utf-8")
+        self.structural_hooks["hook"] = True
         self.dex_content["classes20.dex"] += b" Landroid/app/Activity;"
         self.assertFalse(self.verify()["passed"])
         self.dex_content["classes20.dex"] = " ".join(REQUIRED_CUSTOM_SYMBOLS).encode("utf-8")
         self.final_entries["res/a"] = b"changed"
         self.assertFalse(self.verify()["passed"])
+
+    def test_rejects_changed_retained_payload(self) -> None:
+        self.final_entries["assets/a"] = b"changed"
+        result = self.verify()
+        self.assertFalse(result["retained_payload_entry_bytes_equal"])
+        self.assertFalse(result["passed"])
+
+    def test_structural_hooks_require_exact_methods_and_sequences(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {
+                "smali/com/instagram/api/tigon/TigonServiceLayer.smali": """
+.method public startRequest()V
+    invoke-static {v1}, Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V
+.end method
+""",
+                "smali_classes3/com/instagram/app/InstagramAppShell.smali": """
+.method public onCreate()V
+    invoke-static {v0}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V
+.end method
+""",
+                "smali_classes4/X/05t2.smali": """
+.method public A07()V
+    const-string v8, "clips/discover/"
+    invoke-static {v8}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v8
+.end method
+.method public A09()V
+    const-string v9, "clips/homecoming/"
+    invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v9
+    const-string v9, "clips/discover/stream/"
+    invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v9
+.end method
+""",
+                "smali_classes6/X/077K.smali": """
+.method public A00()V
+    invoke-static {v0, v6}, LX/00ZY;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V
+    instance-of v0, p3, LX/077N;
+    if-eqz v0, :cond_0
+    new-instance v0, Lcom/dfinstagram/SettingsWrapper;
+    invoke-direct {v0}, Lcom/dfinstagram/SettingsWrapper;-><init>()V
+    invoke-virtual {v6, v0}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V
+.end method
+""",
+            }
+            for relative, content in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            checks = verify_structural_hooks(root)
+            self.assertTrue(all(checks.values()))
+            settings = root / "smali_classes6/X/077K.smali"
+            settings.write_text(
+                files["smali_classes6/X/077K.smali"].replace("LX/077N;", "LX/077e;"),
+                encoding="utf-8",
+            )
+            self.assertFalse(verify_structural_hooks(root)["settings_guarded_after_stock_click"])
 
 
 if __name__ == "__main__":
