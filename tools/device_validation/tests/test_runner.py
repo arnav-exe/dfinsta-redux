@@ -105,9 +105,13 @@ class SelectorTests(unittest.TestCase):
         }
         self.assertEqual(find_selector_nodes(nodes, selector), [nodes[1]])
         self.assertEqual(find_selector_nodes(nodes, {**selector, "content_desc": "Home"}), [])
+        self.assertEqual(
+            find_selector_nodes(nodes, {"resource_id": selector["resource_id"], "long_clickable": True}),
+            [nodes[1]],
+        )
 
     def test_rejects_empty_or_unsupported_selectors(self) -> None:
-        for selector in ({}, {"class_name": "android.view.View"}, {"resource_id": ""}):
+        for selector in ({}, {"unknown": "android.view.View"}, {"resource_id": ""}):
             with self.subTest(selector=selector), self.assertRaises(ValueError):
                 selector_criteria(selector)
 

@@ -138,14 +138,21 @@ def find_nodes(nodes: Iterable[UiNode], **criteria: Any) -> list[UiNode]:
     return matches
 
 
-def selector_criteria(selector: dict[str, Any]) -> dict[str, str]:
-    allowed = {"text", "resource_id", "content_desc"}
+def selector_criteria(selector: dict[str, Any]) -> dict[str, Any]:
+    string_keys = {"text", "resource_id", "content_desc", "class_name"}
+    boolean_keys = {"clickable", "long_clickable", "checked", "selected"}
+    allowed = string_keys | boolean_keys
     unsupported = set(selector) - allowed
     if unsupported:
         raise ValueError(f"Unsupported selector keys: {', '.join(sorted(unsupported))}")
-    criteria = {key: value for key, value in selector.items() if key in allowed and isinstance(value, str) and value}
+    criteria = {
+        key: value
+        for key, value in selector.items()
+        if (key in string_keys and isinstance(value, str) and value)
+        or (key in boolean_keys and isinstance(value, bool))
+    }
     if not criteria:
-        raise ValueError("Selector requires non-empty text, resource_id, or content_desc")
+        raise ValueError("Selector requires at least one valid criterion")
     return criteria
 
 
