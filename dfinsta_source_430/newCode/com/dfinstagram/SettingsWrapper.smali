@@ -61,7 +61,7 @@
 
     aput-object v5, v4, p1
 
-    const-string v5, "Disable Shopping"
+    const-string v5, "Disable profile ads"
 
     const/4 p1, 0x4
 
@@ -103,7 +103,7 @@
 
     aput-boolean v5, v3, v7
 
-    const-string v5, "disable_shopping"
+    const-string v5, "disable_adds"
 
     invoke-interface {v1, v5, v6}, Landroid/content/SharedPreferences;->getBoolean(Ljava/lang/String;Z)Z
 
@@ -167,18 +167,18 @@
     :cond_stories
     const/4 v0, 0x3
 
-    if-ne p2, v0, :cond_shopping
+    if-ne p2, v0, :cond_profile_ads
 
     const-string v0, "disable_stories"
 
     goto :goto_save
 
-    :cond_shopping
+    :cond_profile_ads
     const/4 v0, 0x4
 
     if-ne p2, v0, :cond_return
 
-    const-string v0, "disable_shopping"
+    const-string v0, "disable_adds"
 
     :goto_save
     iget-object v1, p0, Lcom/dfinstagram/SettingsWrapper;->prefs:Landroid/content/SharedPreferences;

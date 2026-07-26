@@ -69,7 +69,7 @@ class SourcePolicyTests(unittest.TestCase):
                 "Disable Explore",
                 "Disable Reels",
                 "Disable Stories",
-                "Disable Shopping",
+                "Disable profile ads",
             ],
         )
         self.assertEqual(
@@ -79,7 +79,7 @@ class SourcePolicyTests(unittest.TestCase):
                 "disable_explore",
                 "disable_reels",
                 "disable_stories",
-                "disable_shopping",
+                "disable_adds",
             },
         )
         self.assertEqual(wrapper.count("->getBoolean(Ljava/lang/String;Z)Z"), 5)
@@ -114,6 +114,16 @@ class SourcePolicyTests(unittest.TestCase):
             "replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;", hooks
         )
         self.assertIn('const-string p0, ""', hooks)
+
+    def test_profile_ads_replaces_retired_shopping_rule(self) -> None:
+        hooks = (SOURCE / "newCode/com/dfinstagram/hooks.smali").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('const-string v1, "/profile_ads/get_profile_ads/"', hooks)
+        self.assertIn('const-string v1, "disable_adds"', hooks)
+        self.assertNotIn("minishop", hooks)
+        self.assertNotIn("disable_shopping", hooks)
 
 
 class PrepareAndPatchTests(unittest.TestCase):

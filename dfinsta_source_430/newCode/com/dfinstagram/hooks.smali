@@ -104,7 +104,7 @@
 
     move-result v2
 
-    if-eqz v2, :cond_shopping
+    if-eqz v2, :cond_profile_ads
 
     const-string v1, "disable_stories"
 
@@ -114,16 +114,16 @@
 
     if-nez v2, :cond_block
 
-    :cond_shopping
-    const-string v1, "minishop"
+    :cond_profile_ads
+    const-string v1, "/profile_ads/get_profile_ads/"
 
-    invoke-virtual {v0, v1}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
 
     move-result v2
 
     if-eqz v2, :cond_return
 
-    const-string v1, "disable_shopping"
+    const-string v1, "disable_adds"
 
     invoke-static {v1}, Lcom/dfinstagram/dfinstagram;->getBoolTrueEz(Ljava/lang/String;)Z
 

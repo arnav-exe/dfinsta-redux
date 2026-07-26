@@ -73,22 +73,21 @@
       {"order": 2, "label": "Disable Explore", "key": "disable_explore", "default_checked": true},
       {"order": 3, "label": "Disable Reels", "key": "disable_reels", "default_checked": true},
       {"order": 4, "label": "Disable Stories", "key": "disable_stories", "default_checked": true},
-      {"order": 5, "label": "Disable Shopping", "key": "disable_shopping", "default_checked": true}
+      {"order": 5, "label": "Disable profile ads", "key": "disable_adds", "default_checked": true}
     ],
-    "process_restart_required_after_change": true
+    "process_restart_required_after_change": true,
+    "cached_content_warning": "Previously cached content may remain visible temporarily after restart"
   },
   "features": {
     "feed": {"implementation": "Tigon URI blocking", "verified_contrast": true},
     "explore": {"implementation": "Tigon URI blocking", "verified_contrast": true},
     "reels": {"implementation": "Tigon URI blocking plus direct central endpoint replacement", "verified_contrast": true, "warning": "cached Reels can survive process restart; disabled validation requires cache exhaustion"},
     "stories": {"implementation": "Tigon URI blocking", "verified_contrast": true},
-    "shopping": {"implementation": "partial Tigon URI blocking", "verified_contrast": false, "warning": "Bloks identifiers outside URI paths are not covered"},
-    "profile_ads": {"implementation": "not ported", "verified_contrast": false}
+    "shopping": {"implementation": "retired from the 430 distraction contract because the standalone Shopping tab is gone", "verified_contrast": false},
+    "profile_ads": {"implementation": "exact Tigon URI blocking", "key": "disable_adds", "default_checked": true, "visible_switch": true, "verified_contrast": false, "warning": "runtime contrast depends on account and ad-inventory eligibility"}
   },
   "pending": [
-    "Shopping caller-level blocking",
-    "Profile-ad blocking",
-    "Redesigned cache invalidation",
+    "Profile-ad eligible-account runtime contrast",
     "Other-user profile long-click exclusion",
     "Durable agentic orchestration"
   ]
