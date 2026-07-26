@@ -249,6 +249,8 @@ Commits `1a30252` through `a4b7867` implement the reviewed deterministic core wi
 
 The standalone replay CLI prototype was rejected and deleted before commit or execution. Caller-supplied tool hashes are not admission, and a self-issued decoder receipt is not capability provenance. Real replay must run as ledger-owned attempt Activities through admitted executor capabilities, verify source manifests, keep output attempt-local through final verification, then complete/adopt or quarantine before exclusive publication.
 
+The initial secure source-staging primitive is deliberately restricted to Linux workers with descriptor-relative no-follow opens, symlink-safe removal, and working `renameat2(RENAME_NOREPLACE)` on the attempt filesystem. Native Windows staging remains a separate required backend; unsafe pathname fallbacks are rejected.
+
 Focused Phase B coverage currently includes contract, compiler, fixture, apply, backend, and verifier suites. No real generic 340/430 apktool replay has run yet. The legacy target-specific rebuilds remain the exercised artifact evidence.
 
 ## Immediate Next Actions
