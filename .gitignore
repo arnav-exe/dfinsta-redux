@@ -4,6 +4,7 @@ instagram_source/
 /apktool_2.9.3.jar
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
 .pipeline-state/
 
