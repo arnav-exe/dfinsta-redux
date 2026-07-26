@@ -28,6 +28,19 @@
       "passed": true,
       "warning": "The clean-stock pipeline currently stops at a verified unsigned graft; release signing policy and integrated finalization remain pending."
     },
+    "v7_nothing_other_user_exclusion": {
+      "relationship": "current_artifact",
+      "artifact_sha256": "0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4",
+      "device": "Nothing Phone 1 A063",
+      "account_state": "logged_in",
+      "profile_username": "cookwithhenry",
+      "profile_identity_evidence": "work/device-runner/nothing-v7-other-user-profile-username",
+      "profile_actions_evidence": "work/device-runner/nothing-v7-other-user-profile-actions",
+      "options_present": true,
+      "options_clickable": true,
+      "options_long_clickable": false,
+      "verified": true
+    },
     "v7_nothing_core_contrasts": {
       "relationship": "current_artifact",
       "artifact_sha256": "0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4",
@@ -158,7 +171,8 @@
       {"order": 5, "label": "Disable profile ads", "key": "disable_adds", "default_checked": true}
     ],
     "process_restart_required_after_change": true,
-    "cached_content_warning": "Previously cached content may remain visible temporarily after restart"
+    "cached_content_warning": "Previously cached content may remain visible temporarily after restart",
+    "other_user_long_click_exclusion_verified": true
   },
   "features": {
     "feed": {"implementation": "Tigon URI blocking", "observed_contrast": true, "verified_contrast": false, "related_evidence": ["v7_nothing_core_contrasts", "v3_pixel_core_contrasts"]},
@@ -171,7 +185,6 @@
   "pending": [
     "Controlled core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol",
     "Profile-ad eligible-account runtime contrast",
-    "Other-user profile long-click exclusion",
     "Durable agentic orchestration"
   ]
 }

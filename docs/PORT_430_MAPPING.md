@@ -100,6 +100,7 @@ This design deliberately excludes feed-cache clearing, welcome UI, telemetry, an
 - Feed, Explore, Stories, and Reels have same-device, restart-bounded v7 observations on the Nothing Phone with cache explicitly recorded as unknown. Strict verification remains pending because preference state was not machine-read, assertions were evidence-only, and only the enabled side has a dedicated successful restart record. Historical v6 diagnostic Pixel evidence separately exhausted retained Reels media.
 - The Nothing Phone used a clean install followed by manual login; the historical Pixel update path separately preserved 340 login and preferences.
 - All five settings were restored checked and final startup passed.
+- Public other-user profile `cookwithhenry` retains stock clickable `Options` with `long_clickable=false`; only current-user Options receives the DFInsta long-click action.
 - Do not clear data or uninstall without explicit user approval.
 
 ## Mapping Rules
@@ -248,12 +249,11 @@ The current-user 430 Options action appears immediately after Profile navigation
 ## Next Deterministic Work
 
 1. Attempt eligible profile-ad observation without claiming success from ad absence.
-2. Confirm an unrelated-user profile does not receive the settings long-click action.
-3. Keep the restart/cached-content caveat; no safe full 430 cache invalidator was found.
-4. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
-5. Integrate zipalign/sign/final verification into the clean-stock refuse-overwrite report.
-6. Establish an approved release-signing policy; the current artifact uses Android Debug.
-7. Add the proven mechanical flow to the durable agentic orchestration layer.
-8. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
+2. Keep the restart/cached-content caveat; no safe full 430 cache invalidator was found.
+3. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
+4. Integrate zipalign/sign/final verification into the clean-stock refuse-overwrite report.
+5. Establish an approved release-signing policy; the current artifact uses Android Debug.
+6. Add the proven mechanical flow to the durable agentic orchestration layer.
+7. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
 
 Generated detailed evidence remains under ignored `work/430-port/`.

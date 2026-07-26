@@ -119,6 +119,7 @@ Current installed state:
 - A normal Options tap still enters Instagram's stock options/settings surface.
 - Feed, Explore, Stories, and Reels have same-device, restart-bounded v7 observations on the Nothing Phone. These are not yet strict verified contrasts: cache was unknown, feature state was declared rather than read from preferences, and only the enabled side has a dedicated successful restart record.
 - All five privacy settings were restored checked and a final package-launch startup passed.
+- Public other-user profile `cookwithhenry` exposes stock clickable `Options` with `long_clickable=false`; the DFInsta long-click action remains scoped to the current-user `LX/077N` model.
 - Do not clear app data, uninstall, or otherwise destroy the preserved login/preferences state without explicit user approval.
 - Do not enable Hardcore Mode if returning to a 340 build on this data; it is not reversible through the 340 UI.
 
@@ -219,12 +220,11 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 ## Immediate Next Actions
 
 1. Attempt profile-ad builder/endpoint observation on eligible profile/contextual-feed surfaces; report inconclusive if no inventory is served.
-2. Verify an unrelated-user profile does not receive the DFInsta long-click action.
-3. Keep restart-required behavior and the cached-content caveat; no safe full 430 cache invalidator exists.
-4. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
-5. Integrate zipalign/sign/final verification into the clean-stock refuse-overwrite build report.
-6. Replace the debug key with an approved release-signing policy before release distribution.
-7. Add the proven build/sign/install/device sequence to the durable orchestration layer.
+2. Keep restart-required behavior and the cached-content caveat; no safe full 430 cache invalidator exists.
+3. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
+4. Integrate zipalign/sign/final verification into the clean-stock refuse-overwrite build report.
+5. Replace the debug key with an approved release-signing policy before release distribution.
+6. Add the proven build/sign/install/device sequence to the durable orchestration layer.
 
 ## Instagram 430 State
 
@@ -282,6 +282,7 @@ The build still uses apktool 2.9.3/aapt1 plus the isolated API 36 framework to a
 - Current v7 Nothing observations: disabled Reels shows a handled error; enabled shows playable content with `Follow`. Cache was recorded as unknown.
 - Historical v6 diagnostic Pixel evidence separately proved the live `clips/discover/stream/` path and exhausted retained Reels media after 50 swipes; do not attribute that cache-exhaustion procedure to v7.
 - All five v7 settings were restored checked and final package-launch startup passed on the Nothing Phone.
+- Other-user exclusion passed on public profile `cookwithhenry`: the exact action-bar identity was captured and its stock `Options` node was clickable but not long-clickable.
 - On the clean Nothing Phone, both stock 430 and v7 explicit aliases initially self-finished to Launcher; Android's package-launcher path opened logged-out `ModalActivity`. The runner now accepts that contract-approved activity and captured `Join Instagram` / `I already have a profile`.
 
 ### Current limitations

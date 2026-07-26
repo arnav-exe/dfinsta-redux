@@ -16,11 +16,10 @@ Completion requires:
 ## Immediate Roadmap
 
 1. Attempt profile-ad endpoint/UI contrast on eligible profile and contextual-feed surfaces; treat absent inventory as inconclusive.
-2. Confirm other-user profiles do not receive the self-profile settings action.
-3. Integrate zipalign/sign/final verification into the validated clean-stock refuse-overwrite report.
-4. Repeat core contrasts with installed-APK identity, verified preferences, required state-specific assertions, successful restarts, and a declared cache protocol.
-5. Wrap the proven deterministic build/sign/install/validation activities in the durable agentic workflow.
-6. Establish an approved release-signing policy; the current v7 test artifact uses Android Debug.
+2. Integrate zipalign/sign/final verification into the validated clean-stock refuse-overwrite report.
+3. Repeat core contrasts with installed-APK identity, verified preferences, required state-specific assertions, successful restarts, and a declared cache protocol.
+4. Wrap the proven deterministic build/sign/install/validation activities in the durable agentic workflow.
+5. Establish an approved release-signing policy; the current v7 test artifact uses Android Debug.
 
 ## Lazy Profile Options
 
