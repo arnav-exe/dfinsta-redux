@@ -285,6 +285,39 @@ def artifact_context(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def installed_base_apk_path(output: str) -> str:
+    paths = [line.removeprefix("package:").strip() for line in output.splitlines() if line.startswith("package:")]
+    if not paths:
+        raise ValueError("Installed package has no APK path")
+    base_paths = [path for path in paths if path.endswith("/base.apk")]
+    if len(base_paths) == 1:
+        return base_paths[0]
+    if len(paths) == 1:
+        return paths[0]
+    raise ValueError("Unable to identify one installed base APK")
+
+
+def parsed_sha256sum(output: str) -> str:
+    match = re.fullmatch(r"\s*([0-9a-fA-F]{64})\s+\S+\s*", output)
+    if not match:
+        raise ValueError("Unable to parse installed APK SHA-256")
+    return match.group(1).lower()
+
+
+def installed_artifact_context(adb: Adb, package: str, expected_sha256: str) -> dict[str, Any]:
+    path_result = adb.run("shell", "pm", "path", package, check=False)
+    if path_result.returncode:
+        raise ValueError(f"Unable to resolve installed APK for {package}")
+    path = installed_base_apk_path(path_result.stdout)
+    observed_sha256 = parsed_sha256sum(adb.run("shell", "sha256sum", path).stdout)
+    return {
+        "path": path,
+        "sha256": observed_sha256,
+        "expected_sha256": expected_sha256,
+        "matches_declared_artifact": observed_sha256 == expected_sha256,
+    }
+
+
 def package_process(adb: Adb, package: str) -> str | None:
     result = adb.run("shell", "pidof", package, check=False)
     return result.stdout.strip() or None
@@ -813,9 +846,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     adb = Adb(args.adb, args.serial)
     artifact = artifact_context(args)
+    installed_artifact = None
     try:
         contract = load_contract(contract_path)
-        if args.action == "preflight":
+        installed_artifact = installed_artifact_context(adb, contract["package"], artifact["sha256"])
+        if not installed_artifact["matches_declared_artifact"]:
+            result = evidence(
+                args.action,
+                contract_path,
+                ok=False,
+                error="Installed base APK does not match --artifact-apk",
+            )
+        elif args.action == "preflight":
             result = preflight(adb, contract, contract_path)
         elif args.action == "startup":
             result = startup(
@@ -841,6 +883,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     result["schema_version"] = 2
     result["run_id"] = args.run_id
     result["artifact"] = artifact
+    result["installed_artifact"] = installed_artifact
     runner_path = Path(__file__).resolve()
     result["validation"] = {
         "runner_path": str(runner_path),

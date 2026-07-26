@@ -18,7 +18,9 @@ from runner import (
     fatal_log_lines,
     find_selector_nodes,
     foreground_state_valid,
+    installed_base_apk_path,
     parse_ui_xml,
+    parsed_sha256sum,
     physical_display_size,
     resumed_activity,
     selector_criteria,
@@ -158,6 +160,22 @@ class CommandConstructionTests(unittest.TestCase):
                 sha256_file(path),
                 "c7c5c1d70c5dec4416ab6158afd0b223ef40c29b1dc1f97ed9428b94d4cadb1c",
             )
+
+    def test_parses_installed_base_apk_identity(self) -> None:
+        self.assertEqual(
+            installed_base_apk_path(
+                "package:/data/app/example/base.apk\npackage:/data/app/example/split_config.arm64_v8a.apk\n"
+            ),
+            "/data/app/example/base.apk",
+        )
+        digest = "a" * 64
+        self.assertEqual(parsed_sha256sum(f"{digest}  /data/app/example/base.apk\n"), digest)
+
+    def test_rejects_ambiguous_or_invalid_installed_identity(self) -> None:
+        with self.assertRaises(ValueError):
+            installed_base_apk_path("package:/one.apk\npackage:/two.apk\n")
+        with self.assertRaises(ValueError):
+            parsed_sha256sum("not-a-hash /data/app/example/base.apk\n")
 
     def test_builds_contract_launcher_intent(self) -> None:
         self.assertEqual(
