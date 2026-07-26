@@ -50,8 +50,9 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `99faab2 verify installed apk identity` (fails evidence before interaction when installed `base.apk` differs from the declared artifact)
 - `2249342 verify final dex structure` (checks exact host methods/invocations and every retained stock payload entry)
 - `3f6f2f9 verify signed apk certificate` (supports fail-closed apksigner verification and records signer identity)
+- `309d08c decode stock in 430 build` (fresh stock decode and complete unsigned-build provenance)
 
-Current branch: `port-430`. It is based on `master` commit `6f1efa7` and includes implementation/validation commits through `3f6f2f9`. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
+Current branch: `port-430`. It is based on `master` commit `6f1efa7` and includes implementation/validation commits through `309d08c`. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
 
 ## Golden Reconstruction State
 
@@ -221,7 +222,7 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 2. Verify an unrelated-user profile does not receive the DFInsta long-click action.
 3. Keep restart-required behavior and the cached-content caveat; no safe full 430 cache invalidator exists.
 4. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
-5. Add clean-stock decode provenance and integrate zipalign/sign/final verification into one refuse-overwrite build report.
+5. Integrate zipalign/sign/final verification into the clean-stock refuse-overwrite build report.
 6. Replace the debug key with an approved release-signing policy before release distribution.
 7. Add the proven build/sign/install/device sequence to the durable orchestration layer.
 
@@ -263,6 +264,7 @@ The build still uses apktool 2.9.3/aapt1 plus the isolated API 36 framework to a
 - The complete set of `res/` names and every `res/` entry's bytes are identical to stock.
 - Final signed verification disassembles the candidate and checks exact containing methods, invocation counts, all three Reels endpoint sequences, the guarded settings-listener sequence, and every retained non-signature stock payload entry.
 - APK Signature Scheme v3 verifies; the signer is the Android Debug certificate, so release signing remains pending.
+- Commit `309d08c` was exercised end to end from the stock APK into a fresh decode and unsigned graft. `work/430-clean-build/dfinsta_430-clean-unsigned.build.json` records all input/output hashes, six newly applied operations, and source commit; its SHA-256 is `8e458bee210995389a1fcab69ed6bf9ab404c643d9608459ce5d4dbba1204078`.
 
 ### Device result
 

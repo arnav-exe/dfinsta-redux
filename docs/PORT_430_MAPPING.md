@@ -2,7 +2,7 @@
 
 Status: v7 resource-free test DEX graft built, structurally verified as a signed artifact, matched byte-for-byte to the installed base APK, startup-tested, settings-validated, and observed with restart-bounded Feed, Explore, Reels, and Stories differences on the Nothing Phone. Controlled feature verification, release signing, and eligible profile-ad validation remain pending.
 
-Current branch: `port-430`, with implementation and validation commits through `3f6f2f9`.
+Current branch: `port-430`, with implementation and validation commits through `309d08c`.
 
 Relevant commits:
 
@@ -21,6 +21,7 @@ Relevant commits:
 - `99faab2 verify installed apk identity`: binds evidence to device-side `base.apk` bytes.
 - `2249342 verify final dex structure`: verifies exact final-DEX host sequences and retained payload bytes.
 - `3f6f2f9 verify signed apk certificate`: verifies and records signed-artifact certificate identity.
+- `309d08c decode stock in 430 build`: decodes directly from stock and emits complete unsigned-build provenance.
 
 ## Target
 
@@ -42,6 +43,7 @@ Apktool emitted resource string-chunk warnings but baksmaled all DEX files succe
 - Static verification: passed.
 - Signed final report: `work/430-graft-v7/dfinsta_430-graft-v7-test.signed-verification.json`, SHA-256 `2de452411414e251e60857f2243d429508ea11bfc7ecc5608e3b12696256b9ba`.
 - Signature: v3 with Android Debug certificate SHA-256 `d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1`; release signing remains pending.
+- Clean-stock reproducibility: `work/430-clean-build/dfinsta_430-clean-unsigned.build.json`, SHA-256 `8e458bee210995389a1fcab69ed6bf9ab404c643d9608459ce5d4dbba1204078`, passed from source commit `309d08c` with six applied operations and zero pre-existing operations.
 
 The signed-artifact verifier proves:
 
@@ -249,7 +251,7 @@ The current-user 430 Options action appears immediately after Profile navigation
 2. Confirm an unrelated-user profile does not receive the settings long-click action.
 3. Keep the restart/cached-content caveat; no safe full 430 cache invalidator was found.
 4. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
-5. Run and validate the new clean-stock decode/build provenance path, then integrate zipalign/sign/final verification into one refuse-overwrite report.
+5. Integrate zipalign/sign/final verification into the clean-stock refuse-overwrite report.
 6. Establish an approved release-signing policy; the current artifact uses Android Debug.
 7. Add the proven mechanical flow to the durable agentic orchestration layer.
 8. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.

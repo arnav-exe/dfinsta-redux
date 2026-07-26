@@ -15,6 +15,19 @@
     "signer": "Android Debug"
   },
   "related_evidence": {
+    "clean_stock_build_309d08c": {
+      "relationship": "reproducibility_build",
+      "source_commit": "309d08cf426c1d3f0d91b1a90e1b82a4cdd96d2e",
+      "build_report": "work/430-clean-build/dfinsta_430-clean-unsigned.build.json",
+      "build_report_sha256": "8e458bee210995389a1fcab69ed6bf9ab404c643d9608459ce5d4dbba1204078",
+      "verification_report": "work/430-clean-build/dfinsta_430-clean-unsigned.verification.json",
+      "verification_report_sha256": "7d9470eee631d474c9d5c405754df7c742814d2b34bf00cf1661af435649af9e",
+      "unsigned_apk_sha256": "4164213c624d8463264b2d1d1a245d3484fe5601e2fbcd1cc886dac0533ba7e4",
+      "operations_applied": 6,
+      "operations_already_applied": 0,
+      "passed": true,
+      "warning": "The clean-stock pipeline currently stops at a verified unsigned graft; release signing policy and integrated finalization remain pending."
+    },
     "v7_nothing_core_contrasts": {
       "relationship": "current_artifact",
       "artifact_sha256": "0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4",
