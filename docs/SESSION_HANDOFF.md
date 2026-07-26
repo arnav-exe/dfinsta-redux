@@ -226,7 +226,7 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 
 ## Phase A Pipeline State
 
-Atomic commits from `3e91eb5` through `b887136` add, review, harden, and persistence-test the initial Python package and pin `temporalio==1.30.0`. `PortRunWorkflow` is explicitly `PINNED`; each production Worker requires an immutable `--build-id`, while synthetic pre-deployment tests target `phase-a-v1` with `PinnedVersioningOverride`.
+Atomic commits from `3e91eb5` through `7498dfd` add, review, harden, and persistence-test the initial Python package and pin `temporalio==1.30.0`. `PortRunWorkflow` is explicitly `PINNED`; each production Worker requires an immutable `--build-id`, while synthetic pre-deployment tests target `phase-a-v1` with `PinnedVersioningOverride`.
 
 The current Workflow runs admission, prepare, validated approval Update, decision recording, apply, and final result. Compact artifacts live in a filesystem CAS. SQLite stores decisions plus append-only operation events for pending, effect, completed, and quarantined states. Apply identity includes the canonical run, admission artifact, prepared artifact, and accepted decision hash.
 

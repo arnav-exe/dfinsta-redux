@@ -186,7 +186,7 @@ Temporal is the sole durable workflow engine. Phase A pins `temporalio==1.30.0`;
 
 ### Phase A Implementation Checkpoint
 
-The atomic commits from `3e91eb5` through `b887136` implement, review, and harden the first durable slice. The current suite has 35 Phase A tests and 97 tests overall.
+The atomic commits from `3e91eb5` through `7498dfd` implement, review, and harden the first durable slice. The current suite has 35 Phase A tests and 97 tests overall.
 
 Proven:
 
