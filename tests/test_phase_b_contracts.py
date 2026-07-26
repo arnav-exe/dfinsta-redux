@@ -21,7 +21,12 @@ def intent_data() -> dict[str, object]:
                 "feature_id": "feed",
                 "disposition": "retain",
                 "description": "Block feed requests before dispatch",
-                "allowed_strategies": ["append_manifest_components", "append_resource_entries", "smali_edit"],
+                "allowed_strategies": [
+                    "append_manifest_components",
+                    "append_resource_entries",
+                    "overlay_tree",
+                    "smali_edit",
+                ],
                 "semantic_dependencies": ["request-uri"],
                 "forbidden_fallbacks": ["response-rewrite"],
             },

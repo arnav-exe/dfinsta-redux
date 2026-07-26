@@ -557,6 +557,25 @@ def _operation(data: object) -> Operation:
 
 
 @dataclass(frozen=True, slots=True)
+class OperationPostcondition:
+    assertion_id: str
+    kind: Literal["operation_postcondition"]
+    operation_id: str
+    operation_sha256: str
+
+    def __post_init__(self) -> None:
+        _id(self.assertion_id, "assertion id")
+        if self.kind != "operation_postcondition":
+            raise ValueError("Invalid assertion kind")
+        _id(self.operation_id, "postcondition operation id")
+        _sha(self.operation_sha256, "postcondition operation SHA-256")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> OperationPostcondition:
+        return cls(**_keys(data, cls, "operation postcondition assertion"))
+
+
+@dataclass(frozen=True, slots=True)
 class ExactSmaliSequenceCount:
     assertion_id: str
     kind: Literal["exact_smali_sequence_count"]
@@ -688,7 +707,8 @@ class ArchiveEntryNamesAndBytesPreservedExcept:
 
 
 StaticAssertion = (
-    ExactSmaliSequenceCount
+    OperationPostcondition
+    | ExactSmaliSequenceCount
     | DexEntrySetEquality
     | DescriptorSetEquality
     | BytesPresent
@@ -696,6 +716,7 @@ StaticAssertion = (
     | ArchiveEntryNamesAndBytesPreservedExcept
 )
 ASSERTION_TYPES = {
+    "operation_postcondition": OperationPostcondition,
     "exact_smali_sequence_count": ExactSmaliSequenceCount,
     "dex_entry_set_equality": DexEntrySetEquality,
     "descriptor_set_equality": DescriptorSetEquality,
