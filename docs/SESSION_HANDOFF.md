@@ -4,7 +4,7 @@ Last updated: 2026-07-26
 
 ## End Goal
 
-Create a reproducible, privacy-respecting DFInsta porting system that takes a clean stock Instagram APK, applies small target-native patches, builds/signs it, and proves retained behavior with structured device evidence. Instagram 340 / DFInsta 1.4.1 is the golden reference; Instagram 430 is the first target.
+Create a reproducible, privacy-respecting, multi-agent Google ADK pipeline that takes a clean stock Instagram APK, resolves and applies small target-native DFInsta patches, builds/signs it after human authorization, and proves retained behavior with structured device evidence. Instagram 340 / DFInsta 1.4.1 is the golden reference; Instagram 430 is the first fully traced replay fixture and future baseline candidate.
 
 Mechanical extraction, indexing, patching, building, and verification must remain deterministic. Agents should handle ambiguous class mapping, diagnosis, and explicit human gates rather than directly improvising the whole port.
 
@@ -54,6 +54,9 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `7d51098 record clean 430 build` (records the exercised clean-stock build and report hashes)
 - `efed004 verify other profile exclusion` (proves other-user Options remains non-long-clickable)
 - `b5a1a85 tighten artifact verification` (binds exact overloads/registers and enforces an expected signer digest)
+- `5440f73 record tightened verification` (records the final v7 verification evidence)
+- `ca71c63 add reusable apk release finalizer` (adds public signing policy and generic release finalization)
+- `1237de8 bind apk release provenance` (binds versioned prerequisite reports and hardens no-clobber publication)
 
 Current branch: `port-430`. It is based on `master` commit `6f1efa7` and contains the implementation/validation commits listed above. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
 
@@ -110,11 +113,12 @@ On the Pixel, the historical 340 oracle APK was pulled and confirmed byte-identi
 
 Current installed state:
 
-- Installed APK on Nothing Phone: `work/430-graft-v7/dfinsta_430-graft-v7-test.apk`.
-- SHA-256: `0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4`.
-- Signed structural verification: `work/430-graft-v7/dfinsta_430-graft-v7-test.approved-verification.json`, SHA-256 `f8a94b9a3b16a9f4efb559978de2f39426e248ef8dec091ceba5737f284fcd8c`.
-- Signature: APK Signature Scheme v3, Android Debug certificate SHA-256 `d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1`; this remains a test artifact, not a release build.
-- Device-side `base.apk` SHA-256 exactly matches the declared signed artifact in `work/device-runner/nothing-v7-signed-installed-preflight/`.
+- Installed APK on Nothing Phone: `work/430-release-v2/dfinsta_430.0.0.53.80-release-candidate.apk`.
+- SHA-256: `8006a9079eee1a127ef150cef05e3b5591bb8690448650543af532c89b7c0f19`.
+- Release lineage: `work/430-release-v2/dfinsta_430.0.0.53.80-release-candidate.release.json`, SHA-256 `df680eb7a7bdd6adb4778f559aee61b8a2ea525b7b63886743f4fcc7429d4809`.
+- Signed structural verification: `work/430-release-v2/dfinsta_430.0.0.53.80-release-candidate.verification.json`, SHA-256 `6a6f3fc738adee4b195e54717f3d83625e5d66ab8f827623984f0f33ff709afa`.
+- Signature: APK Signature Scheme v3, DFInsta Release certificate SHA-256 `798cda9135bed36ff7d0e3ba8eaf021e883c7dfe55559186c9fdce480345e877`.
+- Clean install, device-side `base.apk` identity, logged-out and logged-in startup, settings entry, five checked defaults, and same-key `adb install -r` update all pass.
 - Package/version preflight passes for `com.instagram.android` / `430.0.0.53.80` (`383611248`).
 - Package MAIN/LAUNCHER reaches foreground alias `com.instagram.android/.activity.MainTabActivity`; the runner requires a contract-approved foreground state and reports no AndroidRuntime fatal or resource crash.
 - Profile `Options` appears immediately in 430. Long-press opens the framework dialog on the first attempt without a swipe.
@@ -222,12 +226,12 @@ Commit `2d024e1` applies the safe dead-code boundary and adds source-policy test
 
 ## Immediate Next Actions
 
-1. Attempt profile-ad builder/endpoint observation on eligible profile/contextual-feed surfaces; report inconclusive if no inventory is served.
-2. Keep restart-required behavior and the cached-content caveat; no safe full 430 cache invalidator exists.
-3. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
-4. Integrate zipalign/sign/final verification into the clean-stock refuse-overwrite build report.
-5. Replace the debug key with an approved release-signing policy before release distribution.
-6. Add the proven build/sign/install/device sequence to the durable orchestration layer.
+1. Review `docs/ADK_PIPELINE_PLAN.md`, which reconciles the original flowchart with proven 430 behavior and current Google ADK 2.5 APIs.
+2. Extract 340 and 430 into version-independent intent plus version-scoped resolutions, then prove one target-neutral apply/build/verifier engine and mutation fixtures.
+3. Run the isolated ADK 2.5 restart/resume capability spike only after that deterministic generalization gate passes.
+4. Wrap the proven engine and 430 replay in the minimal workflow before adding mapping or feature-assessment agents.
+5. Repeat strict core contrasts before promoting 430 as the accepted behavioral baseline; keep restart/cache caveats explicit.
+6. Treat profile-ad runtime validation as inventory-dependent and non-blocking for pipeline implementation.
 
 ## Instagram 430 State
 

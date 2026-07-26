@@ -2,7 +2,7 @@
 
 ## End Goal
 
-Build a reproducible, privacy-respecting DFInsta porting system that accepts a clean stock Instagram APK, applies small version-native patches, builds and signs it, and produces structured device evidence for retained behavior. Instagram 340 / DFInsta 1.4.1 is the golden reference; Instagram 430 is the first target.
+Build a reproducible, privacy-respecting, multi-agent Google ADK pipeline that accepts a clean stock Instagram APK, resolves and applies small version-native DFInsta patches, builds and signs it after human authorization, and produces structured device evidence. Instagram 340 / DFInsta 1.4.1 is the golden reference; Instagram 430 is the first fully traced replay fixture and future baseline candidate.
 
 Completion requires:
 
@@ -15,11 +15,12 @@ Completion requires:
 
 ## Immediate Roadmap
 
-1. Attempt profile-ad endpoint/UI contrast on eligible profile and contextual-feed surfaces; treat absent inventory as inconclusive.
-2. Integrate zipalign/sign/final verification into the validated clean-stock refuse-overwrite report.
-3. Repeat core contrasts with installed-APK identity, verified preferences, required state-specific assertions, successful restarts, and a declared cache protocol.
-4. Wrap the proven deterministic build/sign/install/validation activities in the durable agentic workflow.
-5. Establish an approved release-signing policy; the current v7 test artifact uses Android Debug.
+1. Review and approve `docs/ADK_PIPELINE_PLAN.md`; do not implement the full topology before the ADK 2.5 restart/resume spike passes.
+2. Extract 340 and 430 into version-independent intent plus version-scoped resolutions, then prove one target-neutral apply/build/verifier engine and mutation fixtures before adding ADK.
+3. Run the isolated ADK 2.5 restart/resume spike, then wrap the proven deterministic engine and 430 replay in the minimal workflow.
+4. Repeat core contrasts with installed-APK identity, measured preferences, required state-specific assertions, successful restarts, and a declared cache protocol before promoting 430 as the accepted behavioral baseline.
+5. Add one bounded mapping/assessment agent only after deterministic candidate generation and generalization are benchmarked.
+6. Attempt profile-ad endpoint/UI contrast only when eligible inventory is available; treat absent inventory as inconclusive and do not let it block pipeline development.
 
 ## Lazy Profile Options
 

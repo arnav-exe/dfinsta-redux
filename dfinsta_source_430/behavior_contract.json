@@ -4,17 +4,45 @@
   "package": "com.instagram.android",
   "base_version_name": "430.0.0.53.80",
   "base_version_code": 383611248,
-  "implementation_status": "v7 test DEX graft built, signed, installed, logged in, startup-tested, settings-validated, and observed with restart-bounded core feature contrasts on the Nothing Phone; controlled verification and profile-ad inventory validation remain pending",
+  "implementation_status": "release-key candidate clean-built, provenance-bound, signed, clean-installed, logged in, startup-tested, settings-validated, and same-key-update tested on the Nothing Phone; controlled core verification and profile-ad inventory validation remain pending",
   "current_artifact": {
-    "label": "430-graft-v7",
-    "sha256": "0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4",
-    "source_commit": "6eb2227",
-    "signed_verification": "work/430-graft-v7/dfinsta_430-graft-v7-test.approved-verification.json",
-    "signed_verification_sha256": "f8a94b9a3b16a9f4efb559978de2f39426e248ef8dec091ceba5737f284fcd8c",
-    "signer_certificate_sha256": "d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1",
-    "signer": "Android Debug"
+    "label": "430-release-candidate",
+    "sha256": "8006a9079eee1a127ef150cef05e3b5591bb8690448650543af532c89b7c0f19",
+    "source_commit": "1237de8",
+    "release_report": "work/430-release-v2/dfinsta_430.0.0.53.80-release-candidate.release.json",
+    "release_report_sha256": "df680eb7a7bdd6adb4778f559aee61b8a2ea525b7b63886743f4fcc7429d4809",
+    "signed_verification": "work/430-release-v2/dfinsta_430.0.0.53.80-release-candidate.verification.json",
+    "signed_verification_sha256": "6a6f3fc738adee4b195e54717f3d83625e5d66ab8f827623984f0f33ff709afa",
+    "signer_certificate_sha256": "798cda9135bed36ff7d0e3ba8eaf021e883c7dfe55559186c9fdce480345e877",
+    "signer": "DFInsta Release"
   },
   "related_evidence": {
+    "release_candidate_nothing_smoke": {
+      "relationship": "current_artifact",
+      "artifact_sha256": "8006a9079eee1a127ef150cef05e3b5591bb8690448650543af532c89b7c0f19",
+      "device": "Nothing Phone 1 A063",
+      "clean_install_preflight": "work/device-runner/nothing-430-release-preflight",
+      "logged_out_startup": "work/device-runner/nothing-430-release-startup-repeat",
+      "logged_in_startup": "work/device-runner/nothing-430-release-startup-logged-in",
+      "settings_entry": "work/device-runner/nothing-430-release-settings",
+      "settings_rows": "work/device-runner/nothing-430-release-settings-rows",
+      "same_key_update": "work/device-runner/nothing-430-release-same-key-update",
+      "installed_artifact_matches": true,
+      "five_defaults_checked": true,
+      "passed": true
+    },
+    "clean_stock_build_1237de8": {
+      "relationship": "current_artifact",
+      "source_commit": "1237de8407c8f9055fc305542cb94da510a021d2",
+      "build_report": "work/430-clean-build-v2/dfinsta_430-clean-unsigned.build.json",
+      "build_report_sha256": "dbebfe6cf8dd4a88816edb2e201addd30081b4ff750e770d20b55c5e62084d96",
+      "verification_report": "work/430-clean-build-v2/dfinsta_430-clean-unsigned.verification.json",
+      "verification_report_sha256": "7a8638d232b7ca51b0519a1e62f9c7b8ff78c543cb7a6468f510403a03b80b09",
+      "unsigned_apk_sha256": "a24bb8fc33d58ebd44a506afa39313d435c7d14be06eff50597ac3209378590c",
+      "operations_applied": 6,
+      "operations_already_applied": 0,
+      "passed": true
+    },
     "clean_stock_build_309d08c": {
       "relationship": "reproducibility_build",
       "source_commit": "309d08cf426c1d3f0d91b1a90e1b82a4cdd96d2e",
@@ -29,7 +57,7 @@
       "warning": "The clean-stock pipeline currently stops at a verified unsigned graft; release signing policy and integrated finalization remain pending."
     },
     "v7_nothing_other_user_exclusion": {
-      "relationship": "current_artifact",
+      "relationship": "predecessor_artifact",
       "artifact_sha256": "0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4",
       "device": "Nothing Phone 1 A063",
       "account_state": "logged_in",
@@ -42,7 +70,7 @@
       "verified": true
     },
     "v7_nothing_core_contrasts": {
-      "relationship": "current_artifact",
+      "relationship": "predecessor_artifact",
       "artifact_sha256": "0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4",
       "source_commit": "6eb2227",
       "device": "Nothing Phone 1 A063",
