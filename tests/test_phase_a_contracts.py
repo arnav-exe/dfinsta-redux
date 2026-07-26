@@ -13,6 +13,7 @@ from dfinsta_pipeline.contracts import (
     RunResult,
     RunSpec,
     StageInput,
+    canonical_json,
     canonical_sha256,
 )
 from dfinsta_pipeline.ledger import Ledger
@@ -217,7 +218,9 @@ class StoreAndLedgerTests(unittest.TestCase):
             store = ContentStore(root / "cas")
             ledger = Ledger(root / "ledger.sqlite3")
             self.assertIsNone(
-                ledger.begin_operation("operation-1", "test", "a" * 64, "owner-1")
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "owner-1", 1, retry_safe=True
+                )
             )
             output = store.put_bytes(
                 kind="test", data=b"value", producer_operation_id="operation-1", input_hashes=()
@@ -225,7 +228,10 @@ class StoreAndLedgerTests(unittest.TestCase):
             ledger.record_effect("operation-1", "owner-1", output)
             ledger.complete_operation("operation-1", output)
             self.assertEqual(
-                ledger.begin_operation("operation-1", "test", "a" * 64, "owner-2"), output
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "owner-2", 2, retry_safe=True
+                ),
+                output,
             )
 
             decision = GateDecision(
@@ -266,7 +272,9 @@ class StoreAndLedgerTests(unittest.TestCase):
 
             def claim(owner: str) -> str:
                 try:
-                    result = ledger.begin_operation("operation-1", "test", "a" * 64, owner)
+                    result = ledger.begin_operation(
+                        "operation-1", "test", "a" * 64, owner, 1, retry_safe=True
+                    )
                     return "claimed" if result is None else "adopted"
                 except ValueError as error:
                     return str(error)
@@ -274,6 +282,70 @@ class StoreAndLedgerTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=2) as executor:
                 results = set(executor.map(claim, ("owner-1", "owner-2")))
             self.assertEqual(results, {"claimed", "Operation is already claimed"})
+
+    def test_higher_retry_can_reclaim_only_retry_safe_pending_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory) / "ledger.sqlite3")
+            self.assertIsNone(
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "owner-1", 1, retry_safe=True
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "already claimed"):
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "owner-2", 2, retry_safe=False
+                )
+            self.assertIsNone(
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "owner-2", 2, retry_safe=True
+                )
+            )
+            output = ArtifactRef(
+                1,
+                "test",
+                "b" * 64,
+                1,
+                f"cas://sha256/{'b' * 64}",
+                "operation-1",
+                (),
+            )
+            with self.assertRaisesRegex(ValueError, "owner"):
+                ledger.record_effect("operation-1", "owner-1", output)
+
+    def test_legacy_events_backfill_current_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ledger.sqlite3"
+            output = ArtifactRef(
+                1,
+                "test",
+                "b" * 64,
+                1,
+                f"cas://sha256/{'b' * 64}",
+                "operation-1",
+                (),
+            )
+            with sqlite3.connect(path) as connection:
+                connection.execute(
+                    "CREATE TABLE operation_events ("
+                    "event_id INTEGER PRIMARY KEY AUTOINCREMENT, operation_key TEXT NOT NULL, "
+                    "kind TEXT NOT NULL, input_sha256 TEXT NOT NULL, status TEXT NOT NULL, "
+                    "output_json TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO operation_events "
+                    "(operation_key, kind, input_sha256, status, output_json) "
+                    "VALUES (?, ?, ?, 'completed', ?)",
+                    ("operation-1", "test", "a" * 64, canonical_json(output)),
+                )
+
+            ledger = Ledger(path)
+            self.assertEqual(
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "owner-2", 1, retry_safe=True
+                ),
+                output,
+            )
+            self.assertEqual(ledger.operation_event_count("operation-1"), 1)
 
 
 if __name__ == "__main__":

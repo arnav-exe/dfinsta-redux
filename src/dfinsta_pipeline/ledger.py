@@ -31,6 +31,7 @@ class Ledger:
                     kind TEXT NOT NULL,
                     input_sha256 TEXT NOT NULL,
                     owner_token TEXT NOT NULL,
+                    owner_attempt INTEGER NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('pending', 'effect', 'completed', 'quarantined')),
                     output_json TEXT
                 );
@@ -58,6 +59,42 @@ class Ledger:
                     BEFORE DELETE ON decisions BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
                 """
             )
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(operation_claims)").fetchall()
+            }
+            if "owner_attempt" not in columns:
+                connection.execute(
+                    "ALTER TABLE operation_claims ADD COLUMN owner_attempt INTEGER NOT NULL DEFAULT 0"
+                )
+            self._backfill_claims(connection)
+
+    @staticmethod
+    def _backfill_claims(connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            "SELECT events.operation_key, events.kind, events.input_sha256, events.status, "
+            "events.output_json FROM operation_events AS events "
+            "JOIN (SELECT operation_key, MAX(event_id) AS event_id FROM operation_events "
+            "GROUP BY operation_key) AS latest ON latest.event_id = events.event_id "
+            "LEFT JOIN operation_claims AS claims ON claims.operation_key = events.operation_key "
+            "WHERE claims.operation_key IS NULL"
+        ).fetchall()
+        for operation_key, kind, input_sha256, status, output_json in rows:
+            if status in {"effect", "completed"}:
+                if output_json is None:
+                    raise ValueError("Legacy operation output is missing")
+                output = ArtifactRef.from_dict(json.loads(output_json))
+                if output.producer_operation_id != operation_key:
+                    raise ValueError("Legacy operation producer does not match operation")
+                output_json = canonical_json(output)
+            elif output_json is not None:
+                raise ValueError("Legacy operation has unexpected output")
+            connection.execute(
+                "INSERT INTO operation_claims "
+                "(operation_key, kind, input_sha256, owner_token, owner_attempt, status, output_json) "
+                "VALUES (?, ?, ?, 'legacy-migration', 0, ?, ?)",
+                (operation_key, kind, input_sha256, status, output_json),
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
@@ -79,18 +116,25 @@ class Ledger:
         kind: str,
         input_sha256: str,
         owner_token: str,
+        owner_attempt: int,
+        *,
+        retry_safe: bool,
     ) -> ArtifactRef | None:
+        if type(owner_attempt) is not int or owner_attempt < 1:
+            raise ValueError("Operation owner attempt must be positive")
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT kind, input_sha256, owner_token, status, output_json "
+                "SELECT kind, input_sha256, owner_token, owner_attempt, status, output_json "
                 "FROM operation_claims WHERE operation_key = ?",
                 (operation_key,),
             ).fetchone()
             if row is None:
                 connection.execute(
-                    "INSERT INTO operation_claims VALUES (?, ?, ?, ?, 'pending', NULL)",
-                    (operation_key, kind, input_sha256, owner_token),
+                    "INSERT INTO operation_claims "
+                    "(operation_key, kind, input_sha256, owner_token, owner_attempt, status, output_json) "
+                    "VALUES (?, ?, ?, ?, ?, 'pending', NULL)",
+                    (operation_key, kind, input_sha256, owner_token, owner_attempt),
                 )
                 connection.execute(
                     "INSERT INTO operation_events "
@@ -101,12 +145,24 @@ class Ledger:
                 return None
             if row[0] != kind or row[1] != input_sha256:
                 raise ValueError("Operation key collision")
-            if row[3] in {"effect", "completed"}:
-                return ArtifactRef.from_dict(json.loads(row[4]))
-            if row[3] == "quarantined":
+            if row[4] in {"effect", "completed"}:
+                return ArtifactRef.from_dict(json.loads(row[5]))
+            if row[4] == "quarantined":
                 raise ValueError("Operation is quarantined")
             if row[2] != owner_token:
-                raise ValueError("Operation is already claimed")
+                if not retry_safe or owner_attempt <= row[3]:
+                    raise ValueError("Operation is already claimed")
+                connection.execute(
+                    "UPDATE operation_claims SET owner_token = ?, owner_attempt = ? "
+                    "WHERE operation_key = ?",
+                    (owner_token, owner_attempt, operation_key),
+                )
+                connection.execute(
+                    "INSERT INTO operation_events "
+                    "(operation_key, kind, input_sha256, status, output_json) "
+                    "VALUES (?, ?, ?, 'pending', NULL)",
+                    (operation_key, kind, input_sha256),
+                )
             return None
 
     def record_effect(
