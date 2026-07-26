@@ -227,14 +227,14 @@ class PhaseBCompilerTests(unittest.TestCase):
 
     def test_rejects_fixture_topology_disagreement(self) -> None:
         data = resolution_430()
-        data["additional_assertions"][2]["entries"] = data["additional_assertions"][2][
+        data["additional_assertions"][3]["entries"] = data["additional_assertions"][3][
             "entries"
         ][:-1]
         with self.assertRaisesRegex(ValueError, "topology"):
             self.compile(data)
 
         descriptor = resolution_430()
-        descriptor["additional_assertions"][1]["dex_entry"] = "classes99.dex"
+        descriptor["additional_assertions"][2]["dex_entry"] = "classes99.dex"
         with self.assertRaisesRegex(ValueError, "outside"):
             self.compile(descriptor)
 
@@ -242,7 +242,7 @@ class PhaseBCompilerTests(unittest.TestCase):
         orphan["backend"]["add_dex_entries"].append("classes21.dex")
         orphan["additional_assertions"][0]["exclusions"].append("classes21.dex")
         orphan["additional_assertions"][0]["exclusions"].sort()
-        orphan["additional_assertions"][2]["entries"].append("classes21.dex")
+        orphan["additional_assertions"][3]["entries"].append("classes21.dex")
         with self.assertRaisesRegex(ValueError, "overlay producers"):
             self.compile(orphan)
 

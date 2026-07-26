@@ -180,6 +180,11 @@ def resolution_430() -> dict[str, object]:
             ],
         },
         {
+            "assertion_id": "archive-signatures-absent",
+            "kind": "archive_entries_absent",
+            "entries": ["META-INF/MANIFEST.MF"],
+        },
+        {
             "assertion_id": "descriptor-set",
             "kind": "descriptor_set_equality",
             "dex_entry": "classes20.dex",
@@ -324,7 +329,7 @@ class PhaseBContractTests(unittest.TestCase):
         )
         self.assertEqual(len(resolution.backend.final_dex_entries), 20)
         self.assertEqual(resolution.backend.final_dex_entries[-1], "classes20.dex")
-        self.assertEqual(resolution.backend.final_dex_entries, resolution.additional_assertions[2].entries)
+        self.assertEqual(resolution.backend.final_dex_entries, resolution.additional_assertions[3].entries)
         edit = resolution.operations[0]
         self.assertEqual((edit.match_policy, edit.occurrence), ("occurrence", 0))
         overlay = resolution.operations[1]
@@ -397,8 +402,8 @@ class PhaseBContractTests(unittest.TestCase):
         )
         mutations.append((ResolutionSpecV2, exclusions))
         descriptors = resolution_430()
-        descriptors["additional_assertions"][1]["descriptors"] = list(
-            reversed(descriptors["additional_assertions"][1]["descriptors"])
+        descriptors["additional_assertions"][2]["descriptors"] = list(
+            reversed(descriptors["additional_assertions"][2]["descriptors"])
         )
         mutations.append((ResolutionSpecV2, descriptors))
         for decoder, data in mutations:

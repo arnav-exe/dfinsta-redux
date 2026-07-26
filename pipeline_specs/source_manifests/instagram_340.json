@@ -1,0 +1,450 @@
+[
+  {
+    "relative_path": "dfinsta_source_1.4.1/appendRes/values-night/colors.xml",
+    "sha256": "b58dc21fb5faa72618a195619a3e16d0706fe6baec98cae06917561ec03a50ac"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/appendRes/values-night/styles.xml",
+    "sha256": "f93f9b98205b0b8e62f94826bd632ff607476cb37eb0d30930c2f771c2e9ab77"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/appendRes/values/arrays.xml",
+    "sha256": "2ca7265152b4ad35c506879d22cc7897f8c457e1e7257afaef8b99a08649fcbd"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/appendRes/values/colors.xml",
+    "sha256": "e38c560127d3829863bcf73932d1eb726a9ec5e9aab9584ca1283c6c94b60448"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/appendRes/values/dimens.xml",
+    "sha256": "5a853e8c2d9ef8174fe9a1486dd743fd0c9fefde600841f2d1e00bcbda7b268d"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/appendRes/values/ids.xml",
+    "sha256": "1c5a65bfa08194add08d3f9072f64c0ac66384ea5e8d2c3ef0a80c95a19c8bd5"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/appendRes/values/public.xml",
+    "sha256": "917de839a8925c6a04013fb82f1fbccede4196e289c23d499cfc41c9a8ed27e8"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/appendRes/values/styles.xml",
+    "sha256": "1309588fa99a20828196cc7389c348e97ec2b19ed9f1e0434c10759a6f3e2c69"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/manifest/added_components.xml",
+    "sha256": "a0836291802337874f2316c7685f53eeb5a624359f4ac858019b9e50cc8140bf"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newCode/com/dfinstagram/DistractionFree.smali",
+    "sha256": "2cf9805bb6fcc62f1c4b60b3e55325c31d7166f35d44896a0d1b353d82d11ce4"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newCode/com/dfinstagram/SettingsWrapper.smali",
+    "sha256": "3f659f310e6f6cd86328ca1b3cc09f81fa7f71653c8ca8752397ae55c63f0bbb"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newCode/com/dfinstagram/dfinstagram.smali",
+    "sha256": "e2a3854ae83892d23104855969b381f1a6d8928958776ebc4e80ba33f89ad66f"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newCode/com/dfinstagram/dialog_maker.smali",
+    "sha256": "cee3c9781ed97f633602a0cee8a67cf5f9f64e94c298059df504ca55253a0677"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newCode/com/dfinstagram/hooks.smali",
+    "sha256": "e11999b8eb22ad9b04d6032826fb1c76ac6895ff370b92dc6b06bbefe5131747"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newCode/com/dfinstagram/preference/Preference.smali",
+    "sha256": "11d0cc8e39d2722dd85e9b2391798ca9ce8fdebdc9515d9cc0e973aad574fbd2"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newCode/com/dfinstagram/preference/PreferenceFragment$$ExternalSyntheticLambda0.smali",
+    "sha256": "91587802a02c4defe99298dda6149a6085201ba2fe782ae600227bc8596a0a6b"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newCode/com/dfinstagram/preference/PreferenceFragment.smali",
+    "sha256": "90b4a40a1986822b2f6918a6bf4584cf97c1afccf8fb40b10a18966cf427f6e3"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newCode/com/dfinstagram/startapp.smali",
+    "sha256": "79973a08edc76444d4e2e0a3f42dc7f299946e71fad1e6a0cf789113aed3e617"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/color/textswitch_color.xml",
+    "sha256": "ce7a039e5ed1334bc9813f5d795aa74f1b28c54887c38dfedabbd1d8a1c79715"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/color/textswitch_secondary_color.xml",
+    "sha256": "21a29de1e964ec99f74064aea61fa9e506494fe57e1922a6ebb22018e1cac804"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_2_tap.xml",
+    "sha256": "e9d3a168b405d9dda753042d8cdfaf3cf05155092b4db35c63321b5307a1b723"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_ads.xml",
+    "sha256": "acba09c4443c9c05d267ae7fa0b60d0288f64380b6e8912192c1151afab7758b"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_anal.xml",
+    "sha256": "aad465107c679d4d74a6796a311b1f32d3f677d024ca7832b4a5106a03ebb415"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_auto_ota.xml",
+    "sha256": "446407aca73d65fe52276c2c6890cd66b728271d8a6d6902d7e946aa85b426cc"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_autoplay.xml",
+    "sha256": "de29ae50e93eb7d58fd9f3065a74953f2c187eb9f91ab9f82082f7bad90cf955"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_autosound.xml",
+    "sha256": "896e76fd8057a7cc69eeb402ae02e5c6703739e4fefdbf39636ec36cc4e5c595"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_backup.xml",
+    "sha256": "9e8715631eeb0c1fe00875b6faf5ed9c0d3dbd7083ec7bb6aefab00689da52a1"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_baseline_check_24.xml",
+    "sha256": "1604c871853c65340534b8e79df600e348089b2b46f13e9287e9586a627d2c2d"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_bitcoin.xml",
+    "sha256": "09c46c8d4ed18e745db2f345df7f0421efd400ddf497d941a4c6c5265bf47296"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_blank.xml",
+    "sha256": "9425fe2f067fa9b8045f637da836ae0a3aab0f7da18c210d75449457c7096b1d"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_comment_copy.xml",
+    "sha256": "3aaeb8724ed059172b241aa3f0268346b67292c657a8d81de1fdeed860ad0491"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_copy.xml",
+    "sha256": "6ddfa3431701f7e20ae68b70c4edffae6f62c73fc7ccf6ef7c2dacd4ff16c98f"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_crop.xml",
+    "sha256": "c6f8cbc9e5ca06fa3256838fc4b3f446cc380fade10bf20d0f4fc114e6fbd5cc"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_dev.xml",
+    "sha256": "46535738758bb881c5a913e46dc00afe844b473933f0de40257474a3fc2b93be"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_donate.xml",
+    "sha256": "b1e0162f36e4925e513b1ba55c2a32dac5a8f3c94fdb6893b172eafaa3869a0b"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_download.xml",
+    "sha256": "13327281f9fc34c49b2b243b989f94f39c176096ac92e6b80100b23d64d8187c"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_eth.xml",
+    "sha256": "95605dac5c742d175f3f57ecec9d66a2dc7b03177e2d7587ce41c76276fc76e5"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_faq.xml",
+    "sha256": "0e28d7e79e859fa4517909a89d04450567ef7c369a4eb18ef7ccd0e2d7154a75"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_feed.xml",
+    "sha256": "95e65bb19ae4c29156fb087c5f8248a2394eb664da9675b311a5f70f871ac808"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_folder.xml",
+    "sha256": "521276a8225b0956a8c08e8009792e1e177463d15d63286c6f8d424a12f99d8c"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_follow.xml",
+    "sha256": "6482657bc8950aedcd31fcf52b7c068961991cf1a2ae53dcba105d3e074708f6"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_friends.xml",
+    "sha256": "4f22d80872dcbcb9f173c47edb02ee972fd043a3635254b59dc4f6b5faf8863a"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_full.xml",
+    "sha256": "2988c443c3409f555bc56d8292ba81b6f89f0f9aadd1f89dcbf46885a3c1cd3f"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_gestures.xml",
+    "sha256": "8dfa97b30a347235248e3bcb8ab0457b891d46095ca3f2895b50bbc5c702defc"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_ghost.xml",
+    "sha256": "c47329262049a51ad0c8ee00a4119f7d292ac1b7820b90594c7bd4b9881094f7"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_github.xml",
+    "sha256": "50991c3902b84aa474684fc27b0b61f7d59a731fdc0ccb70d70bfd5183021441"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_hardcore.xml",
+    "sha256": "74c3bb5d728dcff99d9dc64d22f935267eb410d6a4a5b3deb4a7f5290a7545d2"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_hide.xml",
+    "sha256": "dc745654f6c8fb0754c5568bbdd8b75a81211a55fd141671ee8cbf56aa662c01"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_hide_like.xml",
+    "sha256": "16581c3849c429aa37d92b1e43f438f232d1b13842a33fc0cbd940441c0fee79"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_hide_live.xml",
+    "sha256": "de9fb89a94498208e48b59af8cb3a10a176640480182f3b188e4eb80e6664d22"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_igtv.xml",
+    "sha256": "c745d67d344f37008f1520707cbea9b217c05acfadaf361e8cdca426ff138a33"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_image.xml",
+    "sha256": "f1219a36ee7470eba07a78c45029f00563de27bbd335c106e0626d30e881410e"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_info.xml",
+    "sha256": "29eeea4c77a8a5f0c4f1b394cebd405aa2ea0d2ad97ed7ca9d4ebcb7d2321aa5"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_insta.xml",
+    "sha256": "e3bfa0a90a5c0c3ff69eeb06518d654b24a5b0e44c7a359b1b093eb0b3e08dac"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_mail.xml",
+    "sha256": "aacc92ed1e0521187895c3b741068a8fab008814763251de7848a7414551df8f"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_max.xml",
+    "sha256": "e56fbf06426dc58a03e8de456dfadfbaf0d8b9927cd8b60cb11a873b2f313ffc"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_mono.xml",
+    "sha256": "1fa766a9fb41eaeb08cba78d43119033b600d37418d86680dc34c3180ef20ac5"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_notify.xml",
+    "sha256": "28c157bb3ad3b384e774d4915fa57ad39ad7502abf5bf679e70c592fca5277b5"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_ota.xml",
+    "sha256": "d2058a26216d9287ede787c74a7ca27dd33417b6965947f4870f49ad0614f2db"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_others.xml",
+    "sha256": "19218caa38f1c5de918d69c589437cd8732e863b569cda2bcc4a80752468ec63"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_paypal.xml",
+    "sha256": "a5de8d3b23af4cf036d759b8129129403f26eb3b999a3919c2ad2c226d719b17"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_privacy.xml",
+    "sha256": "55bb50e44779e086501e247629741243fa55d6e620bef8d8f10f19a3bff73583"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_privat.xml",
+    "sha256": "fe7b6222e3aba86db1a4c6f0c46be0348fe8cfc5c23f8d7c75b22ee42aaa944e"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_qiwi.xml",
+    "sha256": "12ac3aca0914365f34da8539be6d2cbda22e3477dd03a49ee74ab91beda75a1f"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_quality.xml",
+    "sha256": "c38622cffc1f13dff0e15d86ac128d2ae175f0d2606c8361f4c6b2a43cd47608"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_reddit.xml",
+    "sha256": "9ead94c5251e5da30d59b1243e961f58b627e4af96b1c9c4c9832599e20f34c6"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_reels.xml",
+    "sha256": "7d50376519410a90ac9708e443efecb04e290253ed37cbd0fdaf662fb4397d65"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_reports.xml",
+    "sha256": "d4407a57e9e32103c4eea215475ad364f6861af530ca6334927bc27b10df8584"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_restore.xml",
+    "sha256": "3cb4e54fa0c54f146741c19df858e2f52fbbf7edde3a94ebb6051ffdff276a98"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_scrubber.xml",
+    "sha256": "88af8d91b251e91691df2f806a3369224bed490bc6b431cbe3a834429f395e8b"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_settings.xml",
+    "sha256": "0f1a2a3e2764e1f57ca605d4806b07d34d17807ac2b9f6cb9e3482b6ae499cbe"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_social.xml",
+    "sha256": "d04ba35216472f59fcde1e157cffb7d224cb9c4563f008e7f42227864ed25144"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_split.xml",
+    "sha256": "177c835d6e147cd972d95b813c89e4002e077fb36d8d8e609276ed322bd73d26"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_stories.xml",
+    "sha256": "3f4857c02adeb6b03b2bedc3ba8c9113ac68878227a3c1c488f4b3df1a0efcd6"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_swipe.xml",
+    "sha256": "d92094c1dff5e005966d2a7b7bb7ac5f53444ba4271f54981d7f1e7b0d297e20"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_telegram.xml",
+    "sha256": "ee49a9da964cc9eff81c04acb6afac921ca157431585ec446cf1277c92c23fa9"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_test.xml",
+    "sha256": "9024642866851f6c1932c07a5a6e5f70a47268cd368dcbeebd317a99d86fbbe8"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_thanks.xml",
+    "sha256": "7b30170e4e47c1d74a6bcd4b35deb705a868f25b684e389d37188b9c005c8139"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_tinkoff.xml",
+    "sha256": "6913956a1859ec5f4eb22d5c337f833c4f6700b19e3a8be9315beb52ddeb319e"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_trans.xml",
+    "sha256": "665c47eb68e6bda38fad22090598480f7bf0449090ec8cef2d963cb587c051c5"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_translate.xml",
+    "sha256": "59e607beff79654229b9a8f1fb9996a5f66e39517139a65eb8208761fc1b78cf"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_type.xml",
+    "sha256": "32b01d31569aad0ae53f7a86b45dc6c67f82a60397c3bac4151725a3b8f1ac56"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_unfollower.xml",
+    "sha256": "30da2809eb4c78203cc57fa944f958560813bf85a7343e7e067731eba7b70650"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_update_24.xml",
+    "sha256": "0b936c5d2412299e9bf788b27bedbd2cb9d3ea2d3ec34609ab311ca3fc423baa"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_verify.xml",
+    "sha256": "3bc30746b653d7c83a903325758d02326ea7c7c661fe4055a151a4ec9574f73d"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_video.xml",
+    "sha256": "90436d7f3d8cc44b0ee0a276b4a96501286bb1a0bf6f07be1b69ad7fbab9b0f2"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_web.xml",
+    "sha256": "7f6bdcb724ff525fbd69d8857c872c648b05d2e823aac92395a93fb612e3363d"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/ic_yoomoney.xml",
+    "sha256": "48dfc9713db8c6ee59514b54a7cf76a3fc545ec9ac2ca4a69b947716052336c1"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/instander_logo.xml",
+    "sha256": "498d3260b91a6ee6cd8eb48324264a3b70529f5c756eb3eed811e484d36fb936"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/instander_pin.xml",
+    "sha256": "bda8e4e359e99dde5d819cf8bcb54b6761c0042cb70fe67f8052534f8f3365ab"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/instander_unfollow_button.xml",
+    "sha256": "5d46f34d1ad7cb707c26cf6f196e3ecf72eabad1aa45f29badc1c106db8b8286"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable-anydpi-v21/nav_logo_panorama_ce.xml",
+    "sha256": "c189509604602eaed9a7996cde399debddd34c46f2c0de28a277a092ae3a9152"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable/instagram_search_selector.xml",
+    "sha256": "17336d8c875522f4bc9882016c595c1559bca224115c7b1f05c75ffb74df7b06"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/drawable/tab_shopping_drawable.xml",
+    "sha256": "ddea7f8b49aee9766a7ae3e8368ffa93ad0b40e75b743b7ce97ccf5b20baddf8"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/font/google_sans.xml",
+    "sha256": "27e28939cadd99885de65bc38abdb25d587bca4c4bfe9f8e66a74f7a97429d35"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/font/google_sans_display.xml",
+    "sha256": "f1af98f68d3562048df1505fd083416f2c6789ca16748d6e440a4cfd2b291fa2"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/font/google_sans_medium.xml",
+    "sha256": "9f041b04a3448abb4ca1190d9a28ace68dda85784685c92662328c80d70cf437"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_about.xml",
+    "sha256": "f63842d6f39caa9b93d6d3b2c13e56dae971b9f10bdb9fe14ed13641fde6de7d"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_about_info.xml",
+    "sha256": "4cb9eba860608078def2711e67afed549961fb28eead9e9b0b9b41627f8fb487"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_action_bar.xml",
+    "sha256": "ce90885c0d71e7dcd1b77c3463746d29c0317e95a0695e2b2077e4cc895ea43c"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_item.xml",
+    "sha256": "7055594b3958cf27e07552cf888b6d7722ec9a0877241fbd7d2cb99772e82609"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_item_beta.xml",
+    "sha256": "7055594b3958cf27e07552cf888b6d7722ec9a0877241fbd7d2cb99772e82609"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_item_dependent.xml",
+    "sha256": "5e939954be3ce035199644a678bd01e4fbab26ece8c6c8c000f90a3ebe661518"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_item_disable.xml",
+    "sha256": "f1953638be98aba70e32de8d119dbf1f80f0f3dd201548213d8174f9bcba80c2"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_item_no_title.xml",
+    "sha256": "adb033d597fbcad8291810569fd693d946687038b1a0a5a571218a0cd126a0c4"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_layout_action_bar.xml",
+    "sha256": "47b0747686545fc22bae21de9f92c302e24ef68756b8051bf938175b72a35eaa"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/layout/instander_layout_item.xml",
+    "sha256": "d1a7aeb9296b6462e5b4dc6feeac828a632ce4726e1d7aff9647fe0acde3674c"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/values/istrings.xml",
+    "sha256": "cf53b03409246d15c81d3429079dda63fdbff7a28d4334372cd0a0525ea1e066"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/newRes/xml/instander_settings.xml",
+    "sha256": "fc06db3595fc8cb2d24402df8fd0cd74f2c089d449d3396139f5565879205e97"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/patches/anchored_patches.json",
+    "sha256": "eaa471fe19f60538a7c311fe6022ddd5ab39d3abfa44dd142917b35bf12371ce"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/patches/endpoint_replacements.json",
+    "sha256": "d4732e35433939ed285eb94658b7cce603a957760d3ff2a4ae127e62eca45d66"
+  },
+  {
+    "relative_path": "dfinsta_source_1.4.1/resourcePatches/changed_values.json",
+    "sha256": "64166b1cbd88c26474fe7a16c098ec1638044946a0ff2bbd3fc6706357664b95"
+  }
+]

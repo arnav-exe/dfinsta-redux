@@ -1,0 +1,172 @@
+{
+  "hooks": [
+    {
+      "allowed_strategies": [
+        "smali_edit"
+      ],
+      "description": "Capture the application context during process startup",
+      "disposition": "retain",
+      "feature_id": "app-context",
+      "forbidden_fallbacks": [],
+      "hook_id": "app-context",
+      "semantic_dependencies": [
+        "application-onCreate"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "smali_edit"
+      ],
+      "description": "Block Explore network requests when selected",
+      "disposition": "retain",
+      "feature_id": "block-explore",
+      "forbidden_fallbacks": [
+        "response-rewrite"
+      ],
+      "hook_id": "block-explore",
+      "semantic_dependencies": [
+        "request-uri"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "smali_edit"
+      ],
+      "description": "Block home-feed network requests when selected",
+      "disposition": "retain",
+      "feature_id": "block-feed",
+      "forbidden_fallbacks": [
+        "response-rewrite"
+      ],
+      "hook_id": "block-feed",
+      "semantic_dependencies": [
+        "request-uri"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "smali_edit"
+      ],
+      "description": "Block exact profile-ad network requests when selected",
+      "disposition": "retain",
+      "feature_id": "block-profile-ads",
+      "forbidden_fallbacks": [
+        "substring-profile-ad-match"
+      ],
+      "hook_id": "block-profile-ads",
+      "semantic_dependencies": [
+        "request-uri"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "smali_edit"
+      ],
+      "description": "Block Reels request paths and selected central endpoints",
+      "disposition": "retain",
+      "feature_id": "block-reels",
+      "forbidden_fallbacks": [
+        "global-string-pool-edit"
+      ],
+      "hook_id": "block-reels",
+      "semantic_dependencies": [
+        "request-uri"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "smali_edit"
+      ],
+      "description": "Block supported Shopping request paths when selected",
+      "disposition": "retain",
+      "feature_id": "block-shopping",
+      "forbidden_fallbacks": [
+        "unverified-bloks-substitution"
+      ],
+      "hook_id": "block-shopping",
+      "semantic_dependencies": [
+        "request-uri"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "smali_edit"
+      ],
+      "description": "Block Stories tray network requests when selected",
+      "disposition": "retain",
+      "feature_id": "block-stories",
+      "forbidden_fallbacks": [
+        "hide-own-story"
+      ],
+      "hook_id": "block-stories",
+      "semantic_dependencies": [
+        "request-uri"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "smali_edit"
+      ],
+      "description": "Capture and release the feed cache coordinator lifecycle",
+      "disposition": "retain",
+      "feature_id": "cache-lifecycle",
+      "forbidden_fallbacks": [],
+      "hook_id": "cache-lifecycle",
+      "semantic_dependencies": [
+        "feed-cache-coordinator"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "delete_path",
+        "overlay_tree",
+        "replace_resource_entry"
+      ],
+      "description": "Exclude inherited telemetry and crash-reporting behavior",
+      "disposition": "retain",
+      "feature_id": "privacy-hardening",
+      "forbidden_fallbacks": [
+        "startup-telemetry",
+        "third-party-crash-reporting"
+      ],
+      "hook_id": "privacy-hardening",
+      "semantic_dependencies": [
+        "custom-code-bundle"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "append_manifest_components",
+        "append_resource_entries",
+        "overlay_tree",
+        "smali_edit"
+      ],
+      "description": "Expose distraction-free controls from the profile options surface",
+      "disposition": "retain",
+      "feature_id": "settings-entry",
+      "forbidden_fallbacks": [],
+      "hook_id": "settings-entry",
+      "semantic_dependencies": [
+        "current-profile-options"
+      ]
+    },
+    {
+      "allowed_strategies": [
+        "append_manifest_components",
+        "append_resource_entries",
+        "overlay_tree",
+        "smali_edit"
+      ],
+      "description": "Show the retained first-run DFInsta welcome flow",
+      "disposition": "retain",
+      "feature_id": "welcome-flow",
+      "forbidden_fallbacks": [],
+      "hook_id": "welcome-flow",
+      "semantic_dependencies": [
+        "root-activity"
+      ]
+    }
+  ],
+  "policy_revision": "dfinsta-phase-b-1",
+  "schema_version": 2
+}

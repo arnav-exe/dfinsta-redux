@@ -1,0 +1,410 @@
+{
+  "additional_assertions": [
+    {
+      "assertion_id": "430.archive-preservation",
+      "exclusions": [
+        "META-INF/IMPORTED.RSA",
+        "META-INF/IMPORTED.SF",
+        "META-INF/MANIFEST.MF",
+        "classes.dex",
+        "classes20.dex",
+        "classes3.dex",
+        "classes4.dex",
+        "classes6.dex"
+      ],
+      "kind": "archive_preservation_except"
+    },
+    {
+      "assertion_id": "430.archive-signatures-absent",
+      "entries": [
+        "META-INF/IMPORTED.RSA",
+        "META-INF/IMPORTED.SF",
+        "META-INF/MANIFEST.MF"
+      ],
+      "kind": "archive_entries_absent"
+    },
+    {
+      "assertion_id": "430.bytes.absent",
+      "dex_entry": "classes20.dex",
+      "kind": "dex_strings_absent",
+      "strings": [
+        "Amplitude",
+        "DistractionFree",
+        "FeedCache",
+        "Hardcore",
+        "Landroid/app/Activity;",
+        "Landroid/preference/PreferenceActivity;",
+        "Lcom/acra/",
+        "Lcom/dfinstagram/preference/Preference;",
+        "Lcom/dfinstagram/preference/PreferenceFragment;",
+        "Lcom/instagram/",
+        "UniFile",
+        "donate_",
+        "improveRemove",
+        "istring",
+        "modifyFeedResponse",
+        "nativeReadBuffer",
+        "welcome"
+      ]
+    },
+    {
+      "assertion_id": "430.bytes.present",
+      "dex_entry": "classes20.dex",
+      "kind": "dex_strings_present",
+      "strings": [
+        "Lcom/dfinstagram/SettingsWrapper;",
+        "Lcom/dfinstagram/dfinstagram;",
+        "Lcom/dfinstagram/hooks;",
+        "Lcom/dfinstagram/startapp;"
+      ]
+    },
+    {
+      "assertion_id": "430.custom-descriptors",
+      "descriptors": [
+        "Lcom/dfinstagram/SettingsWrapper;",
+        "Lcom/dfinstagram/dfinstagram;",
+        "Lcom/dfinstagram/hooks;",
+        "Lcom/dfinstagram/startapp;"
+      ],
+      "dex_entry": "classes20.dex",
+      "kind": "descriptor_set_equality"
+    },
+    {
+      "assertion_id": "430.dex-topology",
+      "entries": [
+        "classes.dex",
+        "classes2.dex",
+        "classes3.dex",
+        "classes4.dex",
+        "classes5.dex",
+        "classes6.dex",
+        "classes7.dex",
+        "classes8.dex",
+        "classes9.dex",
+        "classes10.dex",
+        "classes11.dex",
+        "classes12.dex",
+        "classes13.dex",
+        "classes14.dex",
+        "classes15.dex",
+        "classes16.dex",
+        "classes17.dex",
+        "classes18.dex",
+        "classes19.dex",
+        "classes20.dex"
+      ],
+      "kind": "dex_entry_set_equality"
+    }
+  ],
+  "backend": {
+    "add_dex_entries": [
+      "classes20.dex"
+    ],
+    "kind": "stock_dex_graft",
+    "profile_id": "apktool-2.9.3-aapt1-api36",
+    "replace_dex_entries": [
+      "classes.dex",
+      "classes3.dex",
+      "classes4.dex",
+      "classes6.dex"
+    ],
+    "stock_dex_entries": [
+      "classes.dex",
+      "classes2.dex",
+      "classes3.dex",
+      "classes4.dex",
+      "classes5.dex",
+      "classes6.dex",
+      "classes7.dex",
+      "classes8.dex",
+      "classes9.dex",
+      "classes10.dex",
+      "classes11.dex",
+      "classes12.dex",
+      "classes13.dex",
+      "classes14.dex",
+      "classes15.dex",
+      "classes16.dex",
+      "classes17.dex",
+      "classes18.dex",
+      "classes19.dex"
+    ]
+  },
+  "intent_sha256": "051e097d57a0ddf58bd8df7d4eb764037509629ae7dd575bb1257f0eb084ed6b",
+  "intent_statuses": [
+    {
+      "intent_id": "app-context",
+      "rationale": null,
+      "status": "implemented"
+    },
+    {
+      "intent_id": "block-explore",
+      "rationale": null,
+      "status": "implemented"
+    },
+    {
+      "intent_id": "block-feed",
+      "rationale": null,
+      "status": "implemented"
+    },
+    {
+      "intent_id": "block-profile-ads",
+      "rationale": null,
+      "status": "implemented"
+    },
+    {
+      "intent_id": "block-reels",
+      "rationale": null,
+      "status": "implemented"
+    },
+    {
+      "intent_id": "block-shopping",
+      "rationale": "Instagram 430 has no standalone Shopping tab; the documented minimal contract retires unverified distributed commerce blocking.",
+      "status": "omitted"
+    },
+    {
+      "intent_id": "block-stories",
+      "rationale": null,
+      "status": "implemented"
+    },
+    {
+      "intent_id": "cache-lifecycle",
+      "rationale": "The resource-free 430 graft deliberately excludes the 340-specific feed-cache coordinator and its obfuscated field dependencies.",
+      "status": "omitted"
+    },
+    {
+      "intent_id": "privacy-hardening",
+      "rationale": null,
+      "status": "implemented"
+    },
+    {
+      "intent_id": "settings-entry",
+      "rationale": null,
+      "status": "implemented"
+    },
+    {
+      "intent_id": "welcome-flow",
+      "rationale": "The resource-free 430 graft deliberately excludes the custom Activity, resources, and first-run welcome UI.",
+      "status": "omitted"
+    }
+  ],
+  "operations": [
+    {
+      "descriptor": "Lcom/instagram/app/InstagramAppShell;",
+      "expected_final_count": 1,
+      "expected_precondition_count": 1,
+      "final_sequence": [
+        "invoke-super {v0}, Landroid/app/Application;->onCreate()V",
+        "invoke-static {v0}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V"
+      ],
+      "intent_ids": [
+        "app-context"
+      ],
+      "kind": "smali_edit",
+      "match_policy": "all",
+      "method_signature": "onCreate()V",
+      "mode": "insert_after",
+      "occurrence": null,
+      "operation_id": "430.anchor.set_app_context",
+      "payload": [
+        "invoke-static {v0}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V"
+      ],
+      "precondition_sequence": [
+        "invoke-super {v0}, Landroid/app/Application;->onCreate()V"
+      ]
+    },
+    {
+      "descriptor": "Lcom/instagram/api/tigon/TigonServiceLayer;",
+      "expected_final_count": 1,
+      "expected_precondition_count": 1,
+      "final_sequence": [
+        ":try_start_0",
+        "iget-object v1, p1, LX/05ez;->A08:Ljava/net/URI;",
+        "invoke-static {v1}, Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V"
+      ],
+      "intent_ids": [
+        "block-explore",
+        "block-feed",
+        "block-profile-ads",
+        "block-reels",
+        "block-stories"
+      ],
+      "kind": "smali_edit",
+      "match_policy": "all",
+      "method_signature": "startRequest(LX/05ez;LX/05fq;LX/05gu;)LX/0Fcm;",
+      "mode": "insert_after",
+      "occurrence": null,
+      "operation_id": "430.anchor.tigon_url_block",
+      "payload": [
+        "invoke-static {v1}, Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V"
+      ],
+      "precondition_sequence": [
+        ":try_start_0",
+        "iget-object v1, p1, LX/05ez;->A08:Ljava/net/URI;"
+      ]
+    },
+    {
+      "descriptor": "LX/077K;",
+      "expected_final_count": 1,
+      "expected_precondition_count": 1,
+      "final_sequence": [
+        "new-instance v0, LX/0417;",
+        "invoke-direct {v0, v3, p2, v6, p3}, LX/0417;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V",
+        "invoke-static {v0, v6}, LX/00ZY;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V",
+        "instance-of v0, p3, LX/077N;",
+        "if-eqz v0, :dfinsta_skip_settings_long_click",
+        "new-instance v0, Lcom/dfinstagram/SettingsWrapper;",
+        "invoke-direct {v0}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
+        "invoke-virtual {v6, v0}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V",
+        ":dfinsta_skip_settings_long_click"
+      ],
+      "intent_ids": [
+        "settings-entry"
+      ],
+      "kind": "smali_edit",
+      "match_policy": "all",
+      "method_signature": "A00(Landroid/content/Context;Lcom/instagram/common/session/UserSession;LX/077F;LX/0JxZ;)Landroid/widget/ImageView;",
+      "mode": "insert_after",
+      "occurrence": null,
+      "operation_id": "430.anchor.install_settings_long_click",
+      "payload": [
+        "instance-of v0, p3, LX/077N;",
+        "if-eqz v0, :dfinsta_skip_settings_long_click",
+        "new-instance v0, Lcom/dfinstagram/SettingsWrapper;",
+        "invoke-direct {v0}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
+        "invoke-virtual {v6, v0}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V",
+        ":dfinsta_skip_settings_long_click"
+      ],
+      "precondition_sequence": [
+        "new-instance v0, LX/0417;",
+        "invoke-direct {v0, v3, p2, v6, p3}, LX/0417;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V",
+        "invoke-static {v0, v6}, LX/00ZY;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V"
+      ]
+    },
+    {
+      "descriptor": "LX/05t2;",
+      "expected_final_count": 1,
+      "expected_precondition_count": 1,
+      "final_sequence": [
+        ":dfinsta_reels_discover_endpoint",
+        "const-string v8, \"clips/discover/\"",
+        "invoke-static {v8}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "move-result-object v8"
+      ],
+      "intent_ids": [
+        "block-reels"
+      ],
+      "kind": "smali_edit",
+      "match_policy": "all",
+      "method_signature": "A07(Landroid/content/Context;LX/0HSu;LX/0Jin;LX/0Jej;Lcom/instagram/common/session/UserSession;LX/0Jae;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function0;ZZZZ)LX/017H;",
+      "mode": "replace",
+      "occurrence": null,
+      "operation_id": "430.anchor.replace_reels_discover_endpoint",
+      "payload": [
+        ":dfinsta_reels_discover_endpoint",
+        "const-string v8, \"clips/discover/\"",
+        "invoke-static {v8}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "move-result-object v8"
+      ],
+      "precondition_sequence": [
+        "const-string v8, \"clips/discover/\""
+      ]
+    },
+    {
+      "descriptor": "LX/05t2;",
+      "expected_final_count": 1,
+      "expected_precondition_count": 1,
+      "final_sequence": [
+        ":dfinsta_reels_homecoming_endpoint",
+        "const-string v9, \"clips/homecoming/\"",
+        "invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "move-result-object v9"
+      ],
+      "intent_ids": [
+        "block-reels"
+      ],
+      "kind": "smali_edit",
+      "match_policy": "all",
+      "method_signature": "A09(Landroid/content/Context;LX/0HSu;LX/0Jin;LX/0Jej;Lcom/instagram/common/session/UserSession;LX/0Jae;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function0;ZZZZZZZZZZZ)LX/03xp;",
+      "mode": "replace",
+      "occurrence": null,
+      "operation_id": "430.anchor.replace_reels_homecoming_endpoint",
+      "payload": [
+        ":dfinsta_reels_homecoming_endpoint",
+        "const-string v9, \"clips/homecoming/\"",
+        "invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "move-result-object v9"
+      ],
+      "precondition_sequence": [
+        "const-string v9, \"clips/homecoming/\""
+      ]
+    },
+    {
+      "descriptor": "LX/05t2;",
+      "expected_final_count": 1,
+      "expected_precondition_count": 1,
+      "final_sequence": [
+        ":dfinsta_reels_stream_endpoint",
+        "const-string v9, \"clips/discover/stream/\"",
+        "invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "move-result-object v9"
+      ],
+      "intent_ids": [
+        "block-reels"
+      ],
+      "kind": "smali_edit",
+      "match_policy": "all",
+      "method_signature": "A09(Landroid/content/Context;LX/0HSu;LX/0Jin;LX/0Jej;Lcom/instagram/common/session/UserSession;LX/0Jae;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function0;ZZZZZZZZZZZ)LX/03xp;",
+      "mode": "replace",
+      "occurrence": null,
+      "operation_id": "430.anchor.replace_reels_stream_endpoint",
+      "payload": [
+        ":dfinsta_reels_stream_endpoint",
+        "const-string v9, \"clips/discover/stream/\"",
+        "invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "move-result-object v9"
+      ],
+      "precondition_sequence": [
+        "const-string v9, \"clips/discover/stream/\""
+      ]
+    },
+    {
+      "collision_policy": "forbid",
+      "intent_ids": [
+        "privacy-hardening"
+      ],
+      "kind": "overlay_tree",
+      "operation_id": "430.overlay.custom-code",
+      "source_files": [
+        {
+          "relative_path": "com/dfinstagram/SettingsWrapper.smali",
+          "sha256": "59fbff086950685e0edf35dd9f3cb7860b1da456da2ac914106bb4568093e4db"
+        },
+        {
+          "relative_path": "com/dfinstagram/dfinstagram.smali",
+          "sha256": "b2292aa0299d68205540f93c65e27fd452cb6bd3b0e21dbff01d3c56cbf88c32"
+        },
+        {
+          "relative_path": "com/dfinstagram/hooks.smali",
+          "sha256": "f505afe5721d9da39c3c89f6d6235b6c90a75134e778a0f220ce7abd00a5138a"
+        },
+        {
+          "relative_path": "com/dfinstagram/startapp.smali",
+          "sha256": "ee7a9bd8a34a150d8808e2fa712dae255be1230594377fff88922cb94e51d000"
+        }
+      ],
+      "source_manifest_sha256": "aca27f2b473c4ebed8e5a388af0360126c24fa4494932906352d52cd10275f77",
+      "source_prefix": "dfinsta_source_430/newCode",
+      "target_prefix": "smali_classes20"
+    }
+  ],
+  "schema_version": 3,
+  "source_bundle_sha256": "26981cb8441f023866bd2fdd5530e751e04282c3f508198a45f666cec48af8d3",
+  "target": {
+    "apk_sha256": "38ae9861b9ca89f60f41767324e1c3d54a4e3a00ed5555b92660a08e6db14754",
+    "composition": "monolithic",
+    "package_name": "com.instagram.android",
+    "version_code": 383611248,
+    "version_name": "430.0.0.53.80"
+  }
+}

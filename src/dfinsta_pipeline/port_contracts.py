@@ -732,6 +732,88 @@ class ArchiveEntryNamesAndBytesPreservedExcept:
         return cls(**{**data, "exclusions": _strings(data["exclusions"], "archive exclusions")})
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveEntriesAbsent:
+    assertion_id: str
+    kind: Literal["archive_entries_absent"]
+    entries: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _id(self.assertion_id, "assertion id")
+        if self.kind != "archive_entries_absent":
+            raise ValueError("Invalid assertion kind")
+        if not isinstance(self.entries, tuple) or any(type(item) is not str for item in self.entries):
+            raise TypeError("Absent archive entries must be a tuple of strings")
+        if not self.entries:
+            raise ValueError("Absent archive entries must not be empty")
+        _sorted_unique(self.entries, "absent archive entries")
+        for entry in self.entries:
+            _archive_path(entry, "absent archive entry")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ArchiveEntriesAbsent:
+        data = _keys(data, cls, "archive entries absent assertion")
+        return cls(**{**data, "entries": _strings(data["entries"], "absent archive entries")})
+
+
+@dataclass(frozen=True, slots=True)
+class DexStringsPresent:
+    assertion_id: str
+    kind: Literal["dex_strings_present"]
+    dex_entry: str
+    strings: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _dex_strings_assertion(
+            self.assertion_id, self.kind, "dex_strings_present", self.dex_entry, self.strings
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DexStringsPresent:
+        data = _keys(data, cls, "DEX strings present assertion")
+        return cls(**{**data, "strings": _strings(data["strings"], "DEX strings")})
+
+
+@dataclass(frozen=True, slots=True)
+class DexStringsAbsent:
+    assertion_id: str
+    kind: Literal["dex_strings_absent"]
+    dex_entry: str
+    strings: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _dex_strings_assertion(
+            self.assertion_id, self.kind, "dex_strings_absent", self.dex_entry, self.strings
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DexStringsAbsent:
+        data = _keys(data, cls, "DEX strings absent assertion")
+        return cls(**{**data, "strings": _strings(data["strings"], "DEX strings")})
+
+
+def _dex_strings_assertion(
+    assertion_id: object,
+    kind: object,
+    expected: str,
+    dex_entry: object,
+    strings: tuple[str, ...],
+) -> None:
+    _id(assertion_id, "assertion id")
+    if kind != expected:
+        raise ValueError("Invalid assertion kind")
+    if type(dex_entry) is not str:
+        raise TypeError("DEX string assertion entry must be a string")
+    _dex_entries((dex_entry,), "DEX string assertion entry", nonempty=True)
+    if not isinstance(strings, tuple) or any(type(item) is not str for item in strings):
+        raise TypeError("DEX strings must be a tuple of strings")
+    if not strings:
+        raise ValueError("DEX strings must not be empty")
+    _sorted_unique(strings, "DEX strings")
+    for value in strings:
+        _string(value, "DEX string")
+
+
 StaticAssertion = (
     OperationPostcondition
     | ExactSmaliSequenceCount
@@ -740,6 +822,9 @@ StaticAssertion = (
     | BytesPresent
     | BytesAbsent
     | ArchiveEntryNamesAndBytesPreservedExcept
+    | ArchiveEntriesAbsent
+    | DexStringsPresent
+    | DexStringsAbsent
 )
 ASSERTION_TYPES = {
     "operation_postcondition": OperationPostcondition,
@@ -749,6 +834,9 @@ ASSERTION_TYPES = {
     "bytes_present": BytesPresent,
     "bytes_absent": BytesAbsent,
     "archive_preservation_except": ArchiveEntryNamesAndBytesPreservedExcept,
+    "archive_entries_absent": ArchiveEntriesAbsent,
+    "dex_strings_present": DexStringsPresent,
+    "dex_strings_absent": DexStringsAbsent,
 }
 
 

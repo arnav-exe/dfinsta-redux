@@ -6,6 +6,7 @@ from .contracts import canonical_sha256
 from .port_contracts import (
     AppendManifestComponents,
     AppendResourceEntries,
+    ArchiveEntriesAbsent,
     ArchiveEntryNamesAndBytesPreservedExcept,
     Backend,
     BytesAbsent,
@@ -13,6 +14,8 @@ from .port_contracts import (
     DeletePath,
     DescriptorSetEquality,
     DexEntrySetEquality,
+    DexStringsAbsent,
+    DexStringsPresent,
     IntentResolution,
     IntentSpecV2,
     Operation,
@@ -168,6 +171,10 @@ def compile_port(
             assertion.archive_path
         ) and assertion.archive_path not in resolution.backend.final_dex_entries:
             raise ValueError("Byte assertion references a DEX outside backend topology")
+        if isinstance(assertion, (DexStringsPresent, DexStringsAbsent)) and (
+            assertion.dex_entry not in resolution.backend.final_dex_entries
+        ):
+            raise ValueError("DEX string assertion references a DEX outside backend topology")
     if isinstance(resolution.backend, StockDexGraftBackend):
         preservation = tuple(
             assertion
@@ -182,6 +189,18 @@ def compile_port(
         dex_exclusions = {entry for entry in preservation[0].exclusions if _is_dex_entry(entry)}
         if dex_exclusions != required_exclusions:
             raise ValueError("Archive preservation DEX exclusions do not match grafted entries")
+        signature_exclusions = {
+            entry for entry in preservation[0].exclusions if _is_signature_artifact(entry)
+        }
+        absent_signatures = {
+            entry
+            for assertion in resolution.additional_assertions
+            if isinstance(assertion, ArchiveEntriesAbsent)
+            for entry in assertion.entries
+            if _is_signature_artifact(entry)
+        }
+        if signature_exclusions != absent_signatures:
+            raise ValueError("Signature exclusions require exact archive-absence coverage")
 
     assertions = tuple(
         sorted((*generated, *resolution.additional_assertions), key=lambda item: item.assertion_id)
@@ -211,6 +230,13 @@ def compile_port(
 def _is_dex_entry(value: str) -> bool:
     return value == "classes.dex" or (
         value.startswith("classes") and value.endswith(".dex") and value[7:-4].isdigit()
+    )
+
+
+def _is_signature_artifact(value: str) -> bool:
+    parts = value.upper().split("/")
+    return len(parts) == 2 and parts[0] == "META-INF" and (
+        parts[1] == "MANIFEST.MF" or parts[1].endswith((".SF", ".RSA", ".DSA", ".EC"))
     )
 
 
