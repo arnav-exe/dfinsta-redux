@@ -1,0 +1,642 @@
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from typing import Any, Callable, Literal
+
+from .contracts import ArtifactRef, GateDecision, canonical_sha256
+from .port_contracts import IntentSpecV2, ResolutionSpecV3, SourceFile
+
+
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+LOWER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+CapabilityRole = Literal["install_framework", "decode", "build"]
+BackendKind = Literal["apktool_full_rebuild", "stock_dex_graft"]
+
+
+def _keys(data: object, cls: type[object], label: str) -> dict[str, Any]:
+    if type(data) is not dict or any(type(key) is not str for key in data):
+        raise TypeError(f"{label} must be an object with string keys")
+    expected = {field.name for field in dataclasses.fields(cls)}
+    unknown = set(data) - expected
+    missing = expected - set(data)
+    if unknown:
+        raise ValueError(f"Unknown {label} field: {sorted(unknown)[0]}")
+    if missing:
+        raise ValueError(f"Missing {label} field: {sorted(missing)[0]}")
+    return data
+
+
+def _array(value: object, label: str) -> tuple[object, ...]:
+    if type(value) not in {list, tuple}:
+        raise TypeError(f"{label} must be an array")
+    return tuple(value)
+
+
+def _sha256(value: object, label: str) -> None:
+    if type(value) is not str:
+        raise TypeError(f"{label} must be a string")
+    if not SHA256_PATTERN.fullmatch(value):
+        raise ValueError(f"Invalid {label}")
+
+
+def _identifier(value: object, label: str, *, lowercase: bool = False) -> None:
+    if type(value) is not str:
+        raise TypeError(f"{label} must be a string")
+    pattern = LOWER_ID_PATTERN if lowercase else ID_PATTERN
+    if not pattern.fullmatch(value):
+        raise ValueError(f"Invalid {label}")
+
+
+def _artifact(value: object, kind: str, label: str) -> None:
+    if not isinstance(value, ArtifactRef):
+        raise TypeError(f"{label} must be an ArtifactRef")
+    if value.kind != kind:
+        raise ValueError(f"Invalid {label} kind")
+
+
+def _sorted_unique(values: tuple[Any, ...], label: str, *, key=lambda value: value) -> None:
+    keys = tuple(key(value) for value in values)
+    if keys != tuple(sorted(keys)):
+        raise ValueError(f"{label} must be sorted")
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"Duplicate {label}")
+
+
+def _json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def _decode_json(data: bytes, label: str) -> Any:
+    try:
+        text = data.decode("utf-8")
+        return json.loads(
+            text,
+            object_pairs_hook=_json_object_pairs,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"Invalid {label} JSON") from error
+
+
+def _resolve_artifact(
+    artifact_resolver: Callable[[ArtifactRef], bytes], artifact: ArtifactRef
+) -> bytes:
+    try:
+        data = artifact_resolver(artifact)
+    except Exception as error:
+        raise ValueError(f"Unable to resolve {artifact.kind} artifact") from error
+    if type(data) is not bytes:
+        raise TypeError("Artifact resolver must return bytes")
+    if len(data) != artifact.size:
+        raise ValueError(f"{artifact.kind} artifact size mismatch")
+    if hashlib.sha256(data).hexdigest() != artifact.sha256:
+        raise ValueError(f"{artifact.kind} artifact SHA-256 mismatch")
+    return data
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayRunSpecV1:
+    schema_version: int
+    run_id: str
+    subject_sha256: str
+    intent_sha256: str
+    resolution_sha256: str
+    source_manifest_sha256: str
+    toolchain_profile_sha256: str
+    executor_capability_sha256s: tuple[str, ...]
+    gate_id: str
+    gate_admission_sha256: str
+    gate_prepared_sha256: str
+    allowed_actor: str
+    policy_revision: str
+    apk_composition: Literal["monolithic"]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay run schema")
+        _identifier(self.run_id, "replay run id")
+        for value, label in (
+            (self.subject_sha256, "run subject SHA-256"),
+            (self.intent_sha256, "intent SHA-256"),
+            (self.resolution_sha256, "resolution SHA-256"),
+            (self.source_manifest_sha256, "source manifest SHA-256"),
+            (self.toolchain_profile_sha256, "toolchain profile SHA-256"),
+            (self.gate_admission_sha256, "gate admission SHA-256"),
+            (self.gate_prepared_sha256, "gate prepared SHA-256"),
+        ):
+            _sha256(value, label)
+        if not isinstance(self.executor_capability_sha256s, tuple) or any(
+            type(value) is not str for value in self.executor_capability_sha256s
+        ):
+            raise TypeError("Executor capability SHA-256s must be a tuple of strings")
+        if not self.executor_capability_sha256s:
+            raise ValueError("Executor capability SHA-256s must not be empty")
+        for value in self.executor_capability_sha256s:
+            _sha256(value, "executor capability SHA-256")
+        _sorted_unique(self.executor_capability_sha256s, "executor capability SHA-256s")
+        _identifier(self.gate_id, "gate id")
+        _identifier(self.allowed_actor, "allowed actor")
+        if type(self.policy_revision) is not str:
+            raise TypeError("Policy revision must be a string")
+        if not self.policy_revision.strip() or len(self.policy_revision) > 128:
+            raise ValueError("Invalid policy revision")
+        if self.apk_composition != "monolithic":
+            raise ValueError("Split APK sets are not supported")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayRunSpecV1:
+        data = _keys(data, cls, "replay run")
+        return cls(
+            data["schema_version"],
+            data["run_id"],
+            data["subject_sha256"],
+            data["intent_sha256"],
+            data["resolution_sha256"],
+            data["source_manifest_sha256"],
+            data["toolchain_profile_sha256"],
+            tuple(_array(data["executor_capability_sha256s"], "executor capability SHA-256s")),
+            data["gate_id"],
+            data["gate_admission_sha256"],
+            data["gate_prepared_sha256"],
+            data["allowed_actor"],
+            data["policy_revision"],
+            data["apk_composition"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceManifestV1:
+    records: tuple[SourceFile, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.records, tuple) or any(
+            not isinstance(record, SourceFile) for record in self.records
+        ):
+            raise TypeError("Source manifest records must be a tuple of SourceFile objects")
+        _sorted_unique(self.records, "source manifest records", key=lambda item: item.relative_path)
+
+    @classmethod
+    def from_json_value(cls, value: object) -> SourceManifestV1:
+        return cls(
+            tuple(
+                SourceFile.from_dict(item)
+                for item in _array(value, "source manifest records")
+            )
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self.records)
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityBinding:
+    role: CapabilityRole
+    executor_capability_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.role not in {"install_framework", "decode", "build"}:
+            raise ValueError("Invalid capability role")
+        _sha256(self.executor_capability_sha256, "executor capability SHA-256")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CapabilityBinding:
+        return cls(**_keys(data, cls, "capability binding"))
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class FrameworkRequirement:
+    package_id: int
+    apk_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.package_id) is not int:
+            raise TypeError("Framework package id must be an integer")
+        if not 1 <= self.package_id <= 255:
+            raise ValueError("Framework package id must be between 1 and 255")
+        _sha256(self.apk_sha256, "framework APK SHA-256")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FrameworkRequirement:
+        return cls(**_keys(data, cls, "framework requirement"))
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolchainProfile:
+    schema_version: int
+    profile_id: str
+    backend_kind: BackendKind
+    capability_bindings: tuple[CapabilityBinding, ...]
+    frameworks: tuple[FrameworkRequirement, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported toolchain profile schema")
+        _identifier(self.profile_id, "profile id", lowercase=True)
+        if self.backend_kind not in {"apktool_full_rebuild", "stock_dex_graft"}:
+            raise ValueError("Invalid toolchain backend kind")
+        if not isinstance(self.capability_bindings, tuple) or any(
+            not isinstance(binding, CapabilityBinding) for binding in self.capability_bindings
+        ):
+            raise TypeError("Capability bindings must be a tuple of CapabilityBinding objects")
+        _sorted_unique(self.capability_bindings, "capability bindings", key=lambda item: item.role)
+        expected_roles = {"build", "decode"} | ({"install_framework"} if self.frameworks else set())
+        if {binding.role for binding in self.capability_bindings} != expected_roles:
+            raise ValueError("Toolchain capability roles do not match framework requirements")
+        digests = tuple(
+            binding.executor_capability_sha256 for binding in self.capability_bindings
+        )
+        if len(digests) != len(set(digests)):
+            raise ValueError("Executor capability SHA-256s must be unique across roles")
+        if not isinstance(self.frameworks, tuple) or any(
+            not isinstance(requirement, FrameworkRequirement) for requirement in self.frameworks
+        ):
+            raise TypeError("Frameworks must be a tuple of FrameworkRequirement objects")
+        _sorted_unique(
+            self.frameworks,
+            "framework requirements",
+            key=lambda item: (item.package_id, item.apk_sha256),
+        )
+        package_ids = tuple(requirement.package_id for requirement in self.frameworks)
+        apk_hashes = tuple(requirement.apk_sha256 for requirement in self.frameworks)
+        if len(package_ids) != len(set(package_ids)):
+            raise ValueError("Duplicate framework package id")
+        if len(apk_hashes) != len(set(apk_hashes)):
+            raise ValueError("Duplicate framework APK SHA-256")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ToolchainProfile:
+        data = _keys(data, cls, "toolchain profile")
+        return cls(
+            data["schema_version"],
+            data["profile_id"],
+            data["backend_kind"],
+            tuple(
+                CapabilityBinding.from_dict(item)
+                for item in _array(data["capability_bindings"], "capability bindings")
+            ),
+            tuple(
+                FrameworkRequirement.from_dict(item)
+                for item in _array(data["frameworks"], "framework requirements")
+            ),
+        )
+
+    def binding(self, role: CapabilityRole) -> str:
+        if role not in {"install_framework", "decode", "build"}:
+            raise ValueError("Invalid capability role")
+        for binding in self.capability_bindings:
+            if binding.role == role:
+                return binding.executor_capability_sha256
+        raise KeyError(role)
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class FrameworkArtifact:
+    package_id: int
+    artifact: ArtifactRef
+
+    def __post_init__(self) -> None:
+        if type(self.package_id) is not int:
+            raise TypeError("Framework package id must be an integer")
+        if not 1 <= self.package_id <= 255:
+            raise ValueError("Framework package id must be between 1 and 255")
+        _artifact(self.artifact, "framework-apk", "framework APK")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FrameworkArtifact:
+        data = _keys(data, cls, "framework artifact")
+        return cls(data["package_id"], ArtifactRef.from_dict(data["artifact"]))
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayRequest:
+    schema_version: int
+    run_spec_sha256: str
+    stock_apk: ArtifactRef
+    intent: ArtifactRef
+    resolution: ArtifactRef
+    source_manifest: ArtifactRef
+    toolchain_profile: ArtifactRef
+    frameworks: tuple[FrameworkArtifact, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay request schema")
+        _sha256(self.run_spec_sha256, "run specification SHA-256")
+        for value, kind, label in (
+            (self.stock_apk, "stock-apk", "stock APK"),
+            (self.intent, "intent-spec", "intent"),
+            (self.resolution, "resolution-spec", "resolution"),
+            (self.source_manifest, "source-manifest-v1", "source manifest"),
+            (self.toolchain_profile, "toolchain-profile", "toolchain profile"),
+        ):
+            _artifact(value, kind, label)
+        if not isinstance(self.frameworks, tuple) or any(
+            not isinstance(framework, FrameworkArtifact) for framework in self.frameworks
+        ):
+            raise TypeError("Frameworks must be a tuple of FrameworkArtifact objects")
+        _sorted_unique(self.frameworks, "framework artifacts", key=lambda item: item.package_id)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayRequest:
+        data = _keys(data, cls, "replay request")
+        return cls(
+            data["schema_version"],
+            data["run_spec_sha256"],
+            ArtifactRef.from_dict(data["stock_apk"]),
+            ArtifactRef.from_dict(data["intent"]),
+            ArtifactRef.from_dict(data["resolution"]),
+            ArtifactRef.from_dict(data["source_manifest"]),
+            ArtifactRef.from_dict(data["toolchain_profile"]),
+            tuple(
+                FrameworkArtifact.from_dict(item)
+                for item in _array(data["frameworks"], "framework artifacts")
+            ),
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+def _validate_admitted_relationships(
+    run_spec: ReplayRunSpecV1,
+    request: ReplayRequest,
+    decision: GateDecision,
+    intent: IntentSpecV2,
+    resolution: ResolutionSpecV3,
+    source_manifest: SourceManifestV1,
+    profile: ToolchainProfile,
+) -> None:
+    if not isinstance(run_spec, ReplayRunSpecV1):
+        raise TypeError("Run specification must be a ReplayRunSpecV1")
+    if not isinstance(request, ReplayRequest):
+        raise TypeError("Request must be a ReplayRequest")
+    if not isinstance(decision, GateDecision):
+        raise TypeError("Decision must be a GateDecision")
+    if not isinstance(intent, IntentSpecV2):
+        raise TypeError("Intent must be an IntentSpecV2")
+    if not isinstance(resolution, ResolutionSpecV3):
+        raise TypeError("Resolution must be a ResolutionSpecV3")
+    if not isinstance(source_manifest, SourceManifestV1):
+        raise TypeError("Source manifest must be a SourceManifestV1")
+    if not isinstance(profile, ToolchainProfile):
+        raise TypeError("Profile must be a ToolchainProfile")
+
+    if request.run_spec_sha256 != run_spec.sha256:
+        raise ValueError("Replay request does not bind the run specification")
+    _validate_decision(run_spec, decision)
+    _validate_admitted_content_relationships(
+        run_spec, request, intent, resolution, source_manifest, profile
+    )
+
+
+def _validate_decision(run_spec: ReplayRunSpecV1, decision: GateDecision) -> None:
+    if decision.decision != "approve":
+        raise ValueError("Replay requires an approval decision")
+    if decision.actor != run_spec.allowed_actor:
+        raise ValueError("Gate decision actor does not bind the replay run")
+    if decision.run_id != run_spec.run_id:
+        raise ValueError("Gate decision run id does not bind the replay run")
+    if decision.gate_id != run_spec.gate_id:
+        raise ValueError("Gate decision gate id does not bind the replay run")
+    if decision.subject_sha256 != run_spec.sha256:
+        raise ValueError("Gate decision subject does not bind the replay run")
+    if decision.admission_sha256 != run_spec.gate_admission_sha256:
+        raise ValueError("Gate decision admission does not bind the replay run")
+    if decision.prepared_sha256 != run_spec.gate_prepared_sha256:
+        raise ValueError("Gate decision prepared state does not bind the replay run")
+    if decision.policy_revision != run_spec.policy_revision:
+        raise ValueError("Gate decision policy does not bind the replay run")
+
+
+def _validate_admitted_content_relationships(
+    run_spec: ReplayRunSpecV1,
+    request: ReplayRequest,
+    intent: IntentSpecV2,
+    resolution: ResolutionSpecV3,
+    source_manifest: SourceManifestV1,
+    profile: ToolchainProfile,
+) -> None:
+    if not (
+        request.stock_apk.sha256
+        == run_spec.subject_sha256
+        == resolution.target.apk_sha256
+    ):
+        raise ValueError("Stock APK does not bind the admitted target")
+    if run_spec.intent_sha256 != intent.sha256 or resolution.intent_sha256 != intent.sha256:
+        raise ValueError("Intent does not bind the admitted run and resolution")
+    if run_spec.resolution_sha256 != resolution.sha256:
+        raise ValueError("Resolution does not bind the admitted run")
+    if not (
+        source_manifest.sha256
+        == run_spec.source_manifest_sha256
+        == resolution.source_bundle_sha256
+    ):
+        raise ValueError("Source manifest does not bind the admitted run and resolution")
+    if run_spec.toolchain_profile_sha256 != profile.sha256:
+        raise ValueError("Toolchain profile does not bind the admitted run")
+    if profile.profile_id != resolution.backend.profile_id:
+        raise ValueError("Toolchain profile id does not bind the resolution backend")
+    if profile.backend_kind != resolution.backend.kind:
+        raise ValueError("Toolchain backend kind does not bind the resolution backend")
+    if run_spec.policy_revision != intent.policy_revision:
+        raise ValueError("Policy revision does not bind the admitted intent")
+
+    profile_capabilities = tuple(
+        sorted(binding.executor_capability_sha256 for binding in profile.capability_bindings)
+    )
+    if run_spec.executor_capability_sha256s != profile_capabilities:
+        raise ValueError("Executor capabilities do not exactly match the toolchain profile")
+    requested_frameworks = tuple(
+        (framework.package_id, framework.artifact.sha256) for framework in request.frameworks
+    )
+    required_frameworks = tuple(
+        (requirement.package_id, requirement.apk_sha256) for requirement in profile.frameworks
+    )
+    if requested_frameworks != required_frameworks:
+        raise ValueError("Framework artifacts do not exactly match the toolchain profile")
+    has_installer = any(
+        binding.role == "install_framework" for binding in profile.capability_bindings
+    )
+    if has_installer != bool(request.frameworks):
+        raise ValueError("Framework artifacts do not match the installer capability")
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedReplay:
+    schema_version: int
+    run_spec: ReplayRunSpecV1
+    request: ReplayRequest
+    decision: GateDecision
+    intent: IntentSpecV2
+    resolution: ResolutionSpecV3
+    source_manifest: SourceManifestV1
+    profile: ToolchainProfile
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported admitted replay schema")
+        _validate_admitted_relationships(
+            self.run_spec,
+            self.request,
+            self.decision,
+            self.intent,
+            self.resolution,
+            self.source_manifest,
+            self.profile,
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AdmittedReplay:
+        data = _keys(data, cls, "admitted replay")
+        source_manifest_data = _keys(
+            data["source_manifest"], SourceManifestV1, "source manifest wrapper"
+        )
+        return cls(
+            data["schema_version"],
+            ReplayRunSpecV1.from_dict(data["run_spec"]),
+            ReplayRequest.from_dict(data["request"]),
+            GateDecision.from_dict(data["decision"]),
+            IntentSpecV2.from_dict(data["intent"]),
+            ResolutionSpecV3.from_dict(data["resolution"]),
+            SourceManifestV1.from_json_value(source_manifest_data["records"]),
+            ToolchainProfile.from_dict(data["profile"]),
+        )
+
+    @property
+    def run_spec_sha256(self) -> str:
+        return self.run_spec.sha256
+
+    @property
+    def replay_request_sha256(self) -> str:
+        return self.request.sha256
+
+    @property
+    def decision_sha256(self) -> str:
+        return canonical_sha256(self.decision)
+
+    @property
+    def intent_sha256(self) -> str:
+        return self.intent.sha256
+
+    @property
+    def resolution_sha256(self) -> str:
+        return self.resolution.sha256
+
+    @property
+    def source_manifest_sha256(self) -> str:
+        return self.source_manifest.sha256
+
+    @property
+    def toolchain_profile_sha256(self) -> str:
+        return self.profile.sha256
+
+    @property
+    def capability_bindings(self) -> tuple[CapabilityBinding, ...]:
+        return self.profile.capability_bindings
+
+    @property
+    def decode_executor_capability_sha256(self) -> str:
+        return self.profile.binding("decode")
+
+    @property
+    def build_executor_capability_sha256(self) -> str:
+        return self.profile.binding("build")
+
+    @property
+    def install_framework_executor_capability_sha256(self) -> str | None:
+        return self.profile.binding("install_framework") if self.profile.frameworks else None
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+def admit_replay(
+    run_spec: ReplayRunSpecV1,
+    request: ReplayRequest,
+    decision: GateDecision,
+    decision_is_recorded: Callable[[GateDecision], bool],
+    artifact_resolver: Callable[[ArtifactRef], bytes],
+) -> AdmittedReplay:
+    if not isinstance(run_spec, ReplayRunSpecV1) or not isinstance(request, ReplayRequest):
+        raise TypeError("Replay admission requires replay contracts")
+    if not isinstance(decision, GateDecision):
+        raise TypeError("Replay admission requires a gate decision")
+    if not callable(decision_is_recorded):
+        raise TypeError("Decision recording predicate must be callable")
+    if not callable(artifact_resolver):
+        raise TypeError("Artifact resolver must be callable")
+
+    if request.run_spec_sha256 != run_spec.sha256:
+        raise ValueError("Replay request does not bind the run specification")
+    _validate_decision(run_spec, decision)
+    try:
+        recorded = decision_is_recorded(decision)
+    except Exception as error:
+        raise ValueError("Unable to verify recorded gate decision") from error
+    if type(recorded) is not bool:
+        raise TypeError("Decision recording predicate must return a boolean")
+    if not recorded:
+        raise ValueError("Gate decision is not recorded")
+
+    _resolve_artifact(artifact_resolver, request.stock_apk)
+    intent_bytes = _resolve_artifact(artifact_resolver, request.intent)
+    resolution_bytes = _resolve_artifact(artifact_resolver, request.resolution)
+    source_manifest_bytes = _resolve_artifact(artifact_resolver, request.source_manifest)
+    profile_bytes = _resolve_artifact(artifact_resolver, request.toolchain_profile)
+    for framework in request.frameworks:
+        _resolve_artifact(artifact_resolver, framework.artifact)
+
+    intent = IntentSpecV2.from_dict(_decode_json(intent_bytes, "intent"))
+    resolution = ResolutionSpecV3.from_dict(_decode_json(resolution_bytes, "resolution"))
+    source_manifest = SourceManifestV1.from_json_value(
+        _decode_json(source_manifest_bytes, "source manifest")
+    )
+    profile = ToolchainProfile.from_dict(_decode_json(profile_bytes, "toolchain profile"))
+
+    return AdmittedReplay(
+        1,
+        run_spec,
+        request,
+        decision,
+        intent,
+        resolution,
+        source_manifest,
+        profile,
+    )
