@@ -63,6 +63,12 @@ Cancellation during process creation had one final awkward branch: the launcher 
 
 The hardened Phase A checkpoint has 35 focused tests and 97 Python tests overall. Remaining durability work is intentionally explicit: authenticated submissions, abrupt process-loss testing, non-idempotent fencing, replay-corpus CI, immutable tool storage/OS confinement and process-tree cleanup, and later signing/device secret isolation.
 
+### Turning two one-off builds into data
+
+Phase B forced the 340 reconstruction and 430 graft to describe themselves through one contract. Exact method ownership expanded 37 maintained 340 records into 45 method/register-scoped smali edits; with resources, manifest, overlays, and deletion, the fixture has 59 operations. The 430 fixture remains seven operations total: six host edits and one custom-DEX overlay. One compiler and applier now handle both without version branches, and tiny provisioned trees prove every operation applies once and adopts on the second pass.
+
+The reviews repeatedly found useful distinctions that self-consistent tests missed: a fixed payload cannot preserve two different registers, a replacement may intentionally retain its anchor, an existing DEX needs descriptor containment rather than exact equality, and a decoded proof is meaningless unless it is hash-bound to the exact APK and an admitted decoder receipt. The most important rejected design was a convenient replay CLI that accepted tool hashes from the same caller choosing the tools. Equality to a caller assertion is not admission. Real replay now waits for ledger-owned attempts, admitted executor profiles, quarantine, and verify-before-publish rather than weakening the Phase A boundary for convenience.
+
 ## Facts Worth Capturing During Development
 
 - Decode and index timings, output sizes, and class counts.

@@ -259,6 +259,8 @@ Acceptance:
 - Every operation has exact anchor cardinality, idempotence marker, and generated final-DEX proof.
 - 430-specific values occur only in its resolution fixture.
 
+Implementation checkpoint (`1a30252` through `a4b7867`): strict contracts, the target-neutral compiler, generated 340/430 fixtures, decoded-tree apply primitives, both archive backends, and receipt-bound verification are committed and independently reviewed. Provisioned mini-tree tests apply and reapply all 59 340 and seven 430 operations. The remaining Phase B blocker is orchestration: apktool/framework/decoder execution must use admitted `RunSpec` capabilities and ledger-owned attempts with source admission, verified-result adoption, quarantine, and verify-before-publish. A standalone caller-authorized replay CLI was rejected and deleted; no real generic replay has run.
+
 ### Phase C. Generalization And Index Layer
 
 Implement cached extraction plus the minimum demonstrated indexes: descriptor/DEX topology, method and field shape, stable strings/endpoints with occurrence context, and packaging inventory. Add bounded read-only candidate queries.
