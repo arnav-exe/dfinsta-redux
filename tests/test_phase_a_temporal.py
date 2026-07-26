@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from temporalio import workflow as temporal_workflow
+from temporalio.api.workflowservice.v1 import SetWorkerDeploymentCurrentVersionRequest
 from temporalio.client import Client, WorkflowFailureError, WorkflowHistory, WorkflowUpdateFailedError
 from temporalio.common import PinnedVersioningOverride, VersioningBehavior, WorkerDeploymentVersion
 from temporalio.exceptions import CancelledError
+from temporalio.service import RPCError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker, WorkerDeploymentConfig
 from temporalio.workflow import NondeterminismError
@@ -347,12 +349,29 @@ class TemporalPersistenceTests(unittest.IsolatedAsyncioTestCase):
             try:
                 async with worker_for(first_environment.client, task_queue):
                     await asyncio.sleep(2)
+                    request = SetWorkerDeploymentCurrentVersionRequest(
+                        namespace="default",
+                        deployment_name=TEST_DEPLOYMENT_VERSION.deployment_name,
+                        build_id=TEST_DEPLOYMENT_VERSION.build_id,
+                        identity="phase-a-deployment-test",
+                    )
+                    last_error: RPCError | None = None
+                    for _ in range(100):
+                        try:
+                            await first_environment.client.workflow_service.set_worker_deployment_current_version(
+                                request
+                            )
+                            break
+                        except RPCError as error:
+                            last_error = error
+                            await asyncio.sleep(0.05)
+                    else:
+                        self.fail(f"Worker Deployment version did not become ready: {last_error}")
                     handle = await first_environment.client.start_workflow(
                         PortRunWorkflow.run,
                         spec,
                         id=spec.run_id,
                         task_queue=task_queue,
-                        versioning_override=PinnedVersioningOverride(TEST_DEPLOYMENT_VERSION),
                     )
                     for _ in range(100):
                         status = await handle.query(PortRunWorkflow.status)
