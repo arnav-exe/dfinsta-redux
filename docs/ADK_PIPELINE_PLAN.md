@@ -197,7 +197,7 @@ Proven:
 - The SQLite ledger records append-only pending, effect, completion, and quarantine events; update/delete triggers prevent history rewriting. A transactional current-claim index allows only one owner to execute a pending operation.
 - A synthetic post-effect retry validates and adopts one CAS effect before completion. Cooperative cancellation waits for cleanup and leaves the effect quarantined. Hard loss around a real subprocess remains unproven.
 - A Worker can be replaced while the Workflow waits at a gate. Tests disable sticky caching to force History reconstruction and use the documented pinned-version override for synthetic traffic.
-- Temporal CLI 1.8.1 / Server 1.31.2 has been stopped and restarted against the same SQLite file; fresh Worker and trusted-client connections recovered the pending gate and completed the Workflow.
+- Temporal CLI 1.8.1 / Server 1.31.2 has promoted `phase-a-v1` to Current, started a Workflow without an override, then stopped and restarted against the same SQLite file; fresh Worker and trusted-client connections recovered the pending gate and completed it.
 - A three-day logical gate boundary is covered with Temporal time skipping. Saved History replays with unchanged code and fails against a deliberately incompatible Workflow definition.
 - The executor binds each request to the admitted capability's canonical SHA-256, verifies an absolute executable against that capability before launch, renders only an exact argv template, passes only admitted environment values, constrains resolved workspace paths and audits declared mutations, validates artifact kinds, and rejects split APK sets. It uses `create_subprocess_exec`, never a shell.
 

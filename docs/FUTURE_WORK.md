@@ -16,7 +16,7 @@ Completion requires:
 ## Immediate Roadmap
 
 1. Treat the synthetic Temporal durability/contracts/ledger/executor slice as implemented in `3e91eb5` and `ac4da5b`; keep APK, signing, device, and ADK actions out of Phase A.
-2. Finish Phase A authority/deployment evidence: authenticated Update submission from a separate client process, normal Current-version rollout, hard process-loss recovery, and a saved replay corpus. Persistent Temporal-server restart with fresh SDK connections is already proven.
+2. Finish Phase A authority/deployment evidence: authenticated Update submission from a separate client process, hard process-loss recovery, and a saved replay corpus. Current-version rollout and persistent Temporal-server restart with fresh SDK connections are already proven.
 3. Extract 340 and 430 into version-independent intent plus version-scoped resolutions, then prove one target-neutral apply/build/verifier engine and mutation fixtures.
 4. Add Google ADK later as bounded read-only Temporal Activities, then replay the proven engine and 430 through the durable workflow.
 5. Repeat core contrasts with installed-APK identity, measured preferences, required state-specific assertions, successful restarts, and a declared cache protocol before promoting 430 as the accepted behavioral baseline.
