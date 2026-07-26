@@ -186,7 +186,7 @@ Temporal is the sole durable workflow engine. Phase A pins `temporalio==1.30.0`;
 
 ### Phase A Implementation Checkpoint
 
-Commits `3e91eb5`, `ac4da5b`, `a92ae6d`, `ce97a9e`, and `618aca1` implement and harden the first durable slice. The current suite has 31 Phase A tests and 93 tests overall.
+The atomic commits from `3e91eb5` through `de73893` implement, review, and harden the first durable slice. The current suite has 34 Phase A tests and 96 tests overall.
 
 Proven:
 
@@ -194,12 +194,12 @@ Proven:
 - Admission, prepare, decision-recording, and apply Activities with a validated Temporal Update between prepare and apply.
 - Gate decisions bind the canonical run, admission artifact, prepared artifact, actor, policy, timestamp, decision identity, and idempotency identity.
 - Every downstream operation key and output reference includes complete upstream artifact and decision hashes.
-- The SQLite ledger records append-only pending, effect, completion, and quarantine events; update/delete triggers prevent history rewriting. A transactional current-claim index allows only one owner to execute a pending operation.
+- The SQLite ledger records append-only pending, effect, completion, and quarantine events; update/delete triggers prevent history rewriting. A transactional current-claim index allows only one owner to execute a pending operation. Higher Temporal attempts may reclaim only explicitly retry-safe CAS effects, and legacy event-only ledgers are transactionally backfilled before use.
 - A synthetic post-effect retry validates and adopts one CAS effect before completion. Cooperative cancellation waits for cleanup and leaves the effect quarantined. Hard loss around a real subprocess remains unproven.
 - A Worker can be replaced while the Workflow waits at a gate. Tests disable sticky caching to force History reconstruction and use the documented pinned-version override for synthetic traffic.
 - Temporal CLI 1.8.1 / Server 1.31.2 has promoted `phase-a-v1` to Current, started a Workflow without an override, then stopped and restarted against the same SQLite file; fresh Worker and trusted-client connections recovered the pending gate and completed it.
 - A three-day logical gate boundary is covered with Temporal time skipping. Saved History replays with unchanged code and fails against a deliberately incompatible Workflow definition.
-- The executor binds each request to the admitted capability's canonical SHA-256, verifies an absolute executable against that capability before launch, renders only an exact argv template, passes only admitted environment values, constrains resolved workspace paths and audits declared mutations, validates artifact kinds, and rejects split APK sets. It uses `create_subprocess_exec`, never a shell.
+- The executor binds each request and resolved capability to the `RunSpec.executor_capability_sha256` admitted in Workflow History, verifies an absolute executable against that capability before launch, renders only an exact argv template, passes only admitted environment values, constrains resolved workspace paths and audits declared mutations, validates artifact kinds, and rejects split APK sets. It uses `create_subprocess_exec`, never a shell, and bounds direct-child cleanup even when cancellation arrives during process creation.
 
 Still pending before Phase A is considered production-ready:
 
@@ -209,6 +209,7 @@ Still pending before Phase A is considered production-ready:
 - Exercise hard Worker/process loss during a real child process. Current evidence covers injected failure and cooperative cancellation.
 - Add OS-level confinement before treating an admitted tool as hostile. Workspace path and mutation checks are policy enforcement around a trusted digest, not a filesystem sandbox.
 - Execute only immutable worker-owned tool copies. Portable Python cannot guarantee that a pathname hashed before launch still names the same bytes at process creation.
+- Require destination-level idempotency or an external fencing token before allowing abandoned-claim takeover for any non-CAS/non-idempotent effect.
 - Prove future signing/device worker secret isolation when those restricted task queues are introduced.
 
 ## Implementation Phases
