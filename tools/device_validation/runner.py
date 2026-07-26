@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -223,6 +223,61 @@ def evidence(command: str, contract_path: Path, **details: Any) -> dict[str, Any
     }
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def collect_device_context(adb: Adb) -> dict[str, Any]:
+    def shell_value(*args: str) -> str | None:
+        result = adb.run("shell", *args, check=False)
+        value = result.stdout.strip()
+        return value or None
+
+    size_output = shell_value("wm", "size")
+    density_output = shell_value("wm", "density")
+    display = None
+    if size_output:
+        try:
+            width, height = physical_display_size(size_output)
+            density_match = re.search(r"Physical density:\s*(\d+)", density_output or "")
+            display = {
+                "width_px": width,
+                "height_px": height,
+                "density_dpi": int(density_match.group(1)) if density_match else None,
+            }
+        except ValueError:
+            pass
+    locale = shell_value("getprop", "persist.sys.locale") or shell_value(
+        "getprop", "ro.product.locale"
+    )
+    api_level = shell_value("getprop", "ro.build.version.sdk")
+    return {
+        "serial": adb.serial,
+        "model": shell_value("getprop", "ro.product.model"),
+        "fingerprint": shell_value("getprop", "ro.build.fingerprint"),
+        "api_level": int(api_level) if api_level and api_level.isdigit() else None,
+        "locale": locale,
+        "display": display,
+    }
+
+
+def artifact_context(args: argparse.Namespace) -> dict[str, Any]:
+    apk = args.artifact_apk.resolve()
+    reports = [path.resolve() for path in args.build_report]
+    return {
+        "path": str(apk),
+        "sha256": sha256_file(apk),
+        "commit": args.artifact_commit,
+        "build_reports": [
+            {"path": str(path), "sha256": sha256_file(path)} for path in reports
+        ],
+    }
+
+
 def package_process(adb: Adb, package: str) -> str | None:
     result = adb.run("shell", "pidof", package, check=False)
     return result.stdout.strip() or None
@@ -245,6 +300,29 @@ def resumed_activity(output: str) -> str | None:
         output,
     )
     return match.group(1) if match else None
+
+
+def physical_display_size(output: str) -> tuple[int, int]:
+    match = re.search(r"Physical size:\s*(\d+)x(\d+)", output)
+    if not match:
+        raise ValueError("Unable to parse physical display size")
+    return int(match.group(1)), int(match.group(2))
+
+
+def foreground_state_valid(
+    config: dict[str, Any], foreground: str | None, matched_anchors: list[str] | None
+) -> bool:
+    states = config.get("foreground_states")
+    if states is None:
+        expected = config.get("foreground_activity")
+        return expected is None or foreground == expected
+    for state in states:
+        if foreground != state["activity"]:
+            continue
+        if state.get("requires_logged_out_anchor_set", False) and matched_anchors is None:
+            continue
+        return True
+    return False
 
 
 def preflight(adb: Adb, contract: dict[str, Any], contract_path: Path) -> dict[str, Any]:
@@ -273,33 +351,30 @@ def preflight(adb: Adb, contract: dict[str, Any], contract_path: Path) -> dict[s
     )
 
 
-def startup(adb: Adb, contract: dict[str, Any], contract_path: Path, wait: float, artifact_dir: Path) -> dict[str, Any]:
+def startup(
+    adb: Adb,
+    contract: dict[str, Any],
+    contract_path: Path,
+    wait: float,
+    artifact_dir: Path,
+    launch_strategy: str | None,
+) -> dict[str, Any]:
     package = contract["package"]
+    startup_config = contract["startup"]
+    strategy = launch_strategy or startup_config.get("launch_strategy", "explicit_component")
     adb.run("logcat", "-c")
     adb.run("shell", "am", "force-stop", package)
-    start = adb.run(
-        "shell",
-        "am",
-        "start",
-        "-W",
-        *startup_intent_arguments(contract["startup"]),
-        timeout=45,
-    )
-    time.sleep(wait)
-    startup_config = contract["startup"]
-    activities = adb.run("shell", "dumpsys", "activity", "activities", check=False).stdout
-    foreground = resumed_activity(activities)
-    expected_foreground = startup_config.get("foreground_activities")
-    if expected_foreground is None:
-        exact_foreground = startup_config.get("foreground_activity")
-        expected_foreground = [exact_foreground] if exact_foreground else []
-    package_launcher = None
-    if (
-        expected_foreground
-        and foreground not in expected_foreground
-        and startup_config.get("package_launcher_fallback", False)
-    ):
-        package_launcher = adb.run(
+    if strategy == "explicit_component":
+        start = adb.run(
+            "shell",
+            "am",
+            "start",
+            "-W",
+            *startup_intent_arguments(startup_config),
+            timeout=45,
+        )
+    elif strategy == "package_launcher":
+        start = adb.run(
             "shell",
             "monkey",
             "-p",
@@ -309,9 +384,11 @@ def startup(adb: Adb, contract: dict[str, Any], contract_path: Path, wait: float
             "1",
             timeout=45,
         )
-        time.sleep(wait)
-        activities = adb.run("shell", "dumpsys", "activity", "activities", check=False).stdout
-        foreground = resumed_activity(activities)
+    else:
+        raise ValueError(f"Unknown launch strategy: {strategy}")
+    time.sleep(wait)
+    activities = adb.run("shell", "dumpsys", "activity", "activities", check=False).stdout
+    foreground = resumed_activity(activities)
     pid = package_process(adb, package)
     logcat = adb.run("logcat", "-d", "-v", "threadtime", timeout=30).stdout
     fatal_lines = fatal_log_lines(logcat)
@@ -319,27 +396,29 @@ def startup(adb: Adb, contract: dict[str, Any], contract_path: Path, wait: float
     matched_anchors = None
     try:
         nodes = dump_ui(adb, artifact_dir / "startup.xml")
-        matched_anchors = accepted_startup_anchor_set(nodes, contract["startup"]["logged_out_accepted_anchor_sets"])
+        matched_anchors = accepted_startup_anchor_set(
+            nodes, startup_config["logged_out_accepted_anchor_sets"]
+        )
     except (AdbError, ET.ParseError, OSError, ValueError) as exc:
         ui_error = str(exc)
     checks = {
         "process_alive": pid is not None,
         "no_android_runtime_fatal": not fatal_lines,
-        "foreground_activity": not expected_foreground or foreground in expected_foreground,
+        "foreground_state": foreground_state_valid(startup_config, foreground, matched_anchors),
     }
     return evidence(
         "startup",
         contract_path,
-        ok=all(checks[name] for name in contract["startup"]["required"]),
+        ok=all(checks[name] for name in startup_config["required"]),
         checks=checks,
         process_id=pid,
         foreground_activity=foreground,
-        expected_foreground_activities=expected_foreground,
+        foreground_states=startup_config.get("foreground_states"),
+        launch_strategy=strategy,
         accepted_logged_out_anchor_set=matched_anchors,
         ui_capture_error=ui_error,
         fatal_logcat=fatal_lines,
-        am_start=start.stdout.strip(),
-        package_launcher_fallback=package_launcher.stdout.strip() if package_launcher else None,
+        launch_output=start.stdout.strip(),
     )
 
 
@@ -382,10 +461,11 @@ def enter_settings(
     attempts: int,
     poll_interval: float,
 ) -> dict[str, Any]:
-    package = contract["package"]
-    profile_id = f"{package}:id/profile_tab"
+    settings_config = contract["settings"]
+    selectors = settings_config["entry_selectors"]
+    recovery_actions = settings_config.get("recovery_actions", [])
     nodes = _fresh_nodes(adb, artifact_dir, "settings-entry-00.xml")
-    profiles = find_nodes(nodes, resource_id=profile_id)
+    profiles = find_selector_nodes(nodes, selectors["profile"])
     if not profiles:
         return evidence("enter-settings", contract_path, ok=False, error="Profile tab not found", steps=[])
     steps = ["tap_profile"]
@@ -394,7 +474,7 @@ def enter_settings(
 
     for attempt in range(1, attempts + 1):
         nodes = _fresh_nodes(adb, artifact_dir, f"settings-entry-{attempt:02d}.xml")
-        options = find_nodes(nodes, content_desc="Options", long_clickable=True)
+        options = find_selector_nodes(nodes, selectors["options"])
         if options:
             long_press(adb, options[0])
             steps.append("long_press_options")
@@ -410,26 +490,35 @@ def enter_settings(
                 steps=steps,
             )
 
-        if attempt == 1:
-            home = find_nodes(nodes, content_desc="Home") or find_nodes(nodes, text="Home")
+        if attempt == 1 and "home_then_profile" in recovery_actions:
+            home = find_selector_nodes(nodes, selectors["home"])
             if home:
                 tap(adb, home[0])
                 steps.append("tap_home")
                 time.sleep(poll_interval)
                 nodes = _fresh_nodes(adb, artifact_dir, "settings-entry-home.xml")
-                profiles = find_nodes(nodes, resource_id=profile_id)
+                profiles = find_selector_nodes(nodes, selectors["profile"])
                 if profiles:
                     tap(adb, profiles[0])
                     steps.append("tap_profile_after_home")
                     time.sleep(poll_interval)
 
-        valid_bounds = [bounds_center(node.bounds) for node in nodes if BOUNDS_RE.fullmatch(node.bounds)]
-        width = max((x for x, _ in valid_bounds), default=540) * 2
-        height = max((y for _, y in valid_bounds), default=1200) * 2
-        x = width // 2
-        adb.run("shell", "input", "swipe", str(x), str(height * 2 // 5), str(x), str(height * 3 // 5), "300")
-        steps.append("swipe_down_toward_header")
-        time.sleep(poll_interval)
+        if "swipe_down_toward_header" in recovery_actions:
+            display = adb.run("shell", "wm", "size").stdout
+            width, height = physical_display_size(display)
+            x = width // 2
+            adb.run(
+                "shell",
+                "input",
+                "swipe",
+                str(x),
+                str(height * 2 // 5),
+                str(x),
+                str(height * 3 // 5),
+                "300",
+            )
+            steps.append("swipe_down_toward_header")
+            time.sleep(poll_interval)
 
     return evidence(
         "enter-settings",
@@ -636,11 +725,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--adb", default="adb", help="ADB executable path")
     parser.add_argument("--serial", help="ADB device serial")
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
-    parser.add_argument("--artifact-dir", type=Path, help="directory for pulled evidence")
+    parser.add_argument("--artifact-dir", required=True, type=Path, help="fresh evidence directory")
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--artifact-apk", required=True, type=Path)
+    parser.add_argument("--artifact-commit", required=True)
+    parser.add_argument("--build-report", action="append", default=[], type=Path)
+    parser.add_argument(
+        "--install-state",
+        required=True,
+        choices=("clean_install", "in_place_update", "preexisting", "unknown"),
+    )
+    parser.add_argument(
+        "--data-state",
+        required=True,
+        choices=("fresh", "preserved", "cleared", "unknown"),
+    )
+    parser.add_argument(
+        "--account-state",
+        required=True,
+        choices=("logged_in", "logged_out", "unknown"),
+    )
+    parser.add_argument(
+        "--cache-state",
+        required=True,
+        choices=("cleared", "preserved", "exhausted", "unknown"),
+    )
+    parser.add_argument("--state-note")
     subparsers = parser.add_subparsers(dest="action", required=True)
     subparsers.add_parser("preflight")
     startup_parser = subparsers.add_parser("startup")
     startup_parser.add_argument("--wait", type=float, default=10)
+    startup_parser.add_argument(
+        "--launch-strategy",
+        choices=("explicit_component", "package_launcher"),
+        help="override the contract launch strategy for a separate diagnostic run",
+    )
     dump_parser = subparsers.add_parser("dump-ui")
     dump_parser.add_argument("--output", type=Path)
     find_parser = subparsers.add_parser("find-node")
@@ -657,6 +776,9 @@ def build_parser() -> argparse.ArgumentParser:
     settings_parser.add_argument("--poll-interval", type=float, default=1)
     subparsers.add_parser("reels-capture")
     feature_parser = subparsers.add_parser("feature-state")
+    feature_parser.add_argument(
+        "--feature-state", choices=("enabled", "disabled", "unknown"), default="unknown"
+    )
     feature_parser.add_argument("--target", action="append", dest="targets")
     feature_parser.add_argument(
         "--leave-settings",
@@ -669,14 +791,34 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     contract_path = args.contract.resolve()
-    artifact_dir = args.artifact_dir or Path(tempfile.mkdtemp(prefix="dfinsta-device-validation-"))
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.run_id):
+        raise SystemExit("Invalid --run-id")
+    if not re.fullmatch(r"[0-9a-fA-F]{7,64}", args.artifact_commit):
+        raise SystemExit("Invalid --artifact-commit")
+    input_paths = [args.artifact_apk, *args.build_report]
+    missing_paths = [path for path in input_paths if not path.is_file()]
+    if missing_paths:
+        raise SystemExit(f"Missing provenance input: {missing_paths[0]}")
+    artifact_dir = args.artifact_dir.resolve()
+    result_path = artifact_dir / "evidence.json"
+    if result_path.exists():
+        raise SystemExit(f"Refusing to overwrite {result_path}")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
     adb = Adb(args.adb, args.serial)
+    artifact = artifact_context(args)
     try:
         contract = load_contract(contract_path)
         if args.action == "preflight":
             result = preflight(adb, contract, contract_path)
         elif args.action == "startup":
-            result = startup(adb, contract, contract_path, args.wait, artifact_dir)
+            result = startup(
+                adb,
+                contract,
+                contract_path,
+                args.wait,
+                artifact_dir,
+                args.launch_strategy,
+            )
         elif args.action == "dump-ui":
             result = ui_dump_evidence(adb, contract_path, args.output or artifact_dir / "window.xml")
         elif args.action == "find-node":
@@ -689,7 +831,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = feature_state(adb, contract, contract_path, artifact_dir, args.targets, args.leave_settings)
     except (AdbError, ET.ParseError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         result = evidence(args.action, contract_path, ok=False, error=str(exc))
-    print(json.dumps(result, indent=2, sort_keys=True))
+    result["schema_version"] = 2
+    result["run_id"] = args.run_id
+    result["artifact"] = artifact
+    result["device"] = collect_device_context(adb)
+    result["declared_state"] = {
+        "install": args.install_state,
+        "app_data": args.data_state,
+        "account": args.account_state,
+        "cache": args.cache_state,
+        "feature": args.feature_state if args.action == "feature-state" else None,
+        "note": args.state_note,
+    }
+    rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    result_path.write_text(rendered, encoding="utf-8")
+    print(rendered, end="")
     return 0 if result.get("ok") else 1
 
 

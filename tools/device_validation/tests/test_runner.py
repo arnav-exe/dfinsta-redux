@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,9 +17,12 @@ from runner import (
     evaluate_text_assertions,
     fatal_log_lines,
     find_selector_nodes,
+    foreground_state_valid,
     parse_ui_xml,
+    physical_display_size,
     resumed_activity,
     selector_criteria,
+    sha256_file,
     startup_intent_arguments,
 )
 
@@ -142,6 +146,15 @@ class TextAssertionTests(unittest.TestCase):
 
 
 class CommandConstructionTests(unittest.TestCase):
+    def test_hashes_provenance_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.apk"
+            path.write_bytes(b"artifact")
+            self.assertEqual(
+                sha256_file(path),
+                "c7c5c1d70c5dec4416ab6158afd0b223ef40c29b1dc1f97ed9428b94d4cadb1c",
+            )
+
     def test_builds_contract_launcher_intent(self) -> None:
         self.assertEqual(
             startup_intent_arguments(
@@ -169,6 +182,28 @@ class CommandConstructionTests(unittest.TestCase):
             "com.example/.MainActivity",
         )
         self.assertIsNone(resumed_activity("ResumedActivity: null"))
+
+    def test_parses_physical_display_size(self) -> None:
+        self.assertEqual(physical_display_size("Physical size: 1080x2400\n"), (1080, 2400))
+        with self.assertRaises(ValueError):
+            physical_display_size("Override size: 720x1600\n")
+
+    def test_modal_foreground_requires_onboarding_anchors(self) -> None:
+        config = {
+            "foreground_states": [
+                {"activity": "com.example/.Main"},
+                {
+                    "activity": "com.example/.Modal",
+                    "requires_logged_out_anchor_set": True,
+                },
+            ]
+        }
+        self.assertTrue(foreground_state_valid(config, "com.example/.Main", None))
+        self.assertFalse(foreground_state_valid(config, "com.example/.Modal", None))
+        self.assertTrue(
+            foreground_state_valid(config, "com.example/.Modal", ["Join", "Sign in"])
+        )
+        self.assertFalse(foreground_state_valid(config, "com.other/.Main", None))
 
     def test_builds_serialized_adb_command(self) -> None:
         adb = Adb("C:/Android/platform-tools/adb.exe", "device-123")

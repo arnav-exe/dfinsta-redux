@@ -103,6 +103,12 @@
     "activity": "com.dfinstagram.preference.Preference",
     "title": "Distraction Free settings",
     "exported": false,
+    "entry_selectors": {
+      "profile": {"resource_id": "com.instagram.android:id/profile_tab"},
+      "options": {"content_desc": "Options", "long_clickable": true},
+      "home": {"resource_id": "com.instagram.android:id/feed_tab"}
+    },
+    "recovery_actions": ["home_then_profile", "swipe_down_toward_header"],
     "entry": [
       "select resource-id com.instagram.android:id/profile_tab",
       "if Options is absent, navigate Home then Profile and swipe down toward the profile header",
