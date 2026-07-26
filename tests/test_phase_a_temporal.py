@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import tempfile
 import unittest
 from dataclasses import replace
@@ -6,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from temporalio import workflow as temporal_workflow
-from temporalio.client import WorkflowFailureError, WorkflowHistory, WorkflowUpdateFailedError
+from temporalio.client import Client, WorkflowFailureError, WorkflowHistory, WorkflowUpdateFailedError
 from temporalio.common import PinnedVersioningOverride, VersioningBehavior, WorkerDeploymentVersion
 from temporalio.exceptions import CancelledError
 from temporalio.testing import WorkflowEnvironment
@@ -33,6 +34,21 @@ class IncompatiblePortRunWorkflow:
     @temporal_workflow.run
     async def run(self, spec: RunSpec) -> str:
         return spec.run_id
+
+
+def worker_for(client: Client, task_queue: str) -> Worker:
+    return Worker(
+        client,
+        task_queue=task_queue,
+        workflows=[PortRunWorkflow],
+        activities=[admit_activity, prepare_activity, record_decision_activity, apply_activity],
+        max_cached_workflows=0,
+        deployment_config=WorkerDeploymentConfig(
+            version=TEST_DEPLOYMENT_VERSION,
+            use_worker_versioning=True,
+            default_versioning_behavior=VersioningBehavior.UNSPECIFIED,
+        ),
+    )
 
 
 def run_spec(
@@ -99,18 +115,7 @@ class TemporalPhaseATests(unittest.IsolatedAsyncioTestCase):
         self.directory.cleanup()
 
     def worker(self) -> Worker:
-        return Worker(
-            self.environment.client,
-            task_queue=self.task_queue,
-            workflows=[PortRunWorkflow],
-            activities=[admit_activity, prepare_activity, record_decision_activity, apply_activity],
-            max_cached_workflows=0,
-            deployment_config=WorkerDeploymentConfig(
-                version=TEST_DEPLOYMENT_VERSION,
-                use_worker_versioning=True,
-                default_versioning_behavior=VersioningBehavior.UNSPECIFIED,
-            ),
-        )
+        return worker_for(self.environment.client, self.task_queue)
 
     async def wait_for_gate(self, handle) -> GateRequest:
         for _ in range(100):
@@ -319,6 +324,74 @@ class TemporalPhaseATests(unittest.IsolatedAsyncioTestCase):
                 await self.environment.sleep(2)
                 result = await handle.result()
         self.assertEqual(result.state, "blocked")
+
+
+class TemporalPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_server_and_fresh_clients_resume_gate_from_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "temporal.sqlite3"
+            configure_runtime(root / "pipeline-state")
+            task_queue = "phase-a-persistence"
+            spec = run_spec("run-persistence", "9" * 64, gate_timeout_seconds=3600)
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                port = reservation.getsockname()[1]
+            target_host = f"127.0.0.1:{port}"
+
+            first_environment = await WorkflowEnvironment.start_local(
+                port=port,
+                dev_server_database_filename=str(database),
+                dev_server_log_level="error",
+            )
+            try:
+                async with worker_for(first_environment.client, task_queue):
+                    await asyncio.sleep(2)
+                    handle = await first_environment.client.start_workflow(
+                        PortRunWorkflow.run,
+                        spec,
+                        id=spec.run_id,
+                        task_queue=task_queue,
+                        versioning_override=PinnedVersioningOverride(TEST_DEPLOYMENT_VERSION),
+                    )
+                    for _ in range(100):
+                        status = await handle.query(PortRunWorkflow.status)
+                        if status.state == "awaiting-approval":
+                            break
+                        await asyncio.sleep(0.01)
+                    else:
+                        self.fail("Workflow did not reach approval gate before server restart")
+            finally:
+                await first_environment.shutdown()
+
+            second_environment = await WorkflowEnvironment.start_local(
+                port=port,
+                dev_server_database_filename=str(database),
+                dev_server_log_level="error",
+            )
+            try:
+                trusted_client = await Client.connect(target_host, identity="phase-a-trusted-client-2")
+                worker_client = await Client.connect(target_host, identity="phase-a-worker-2")
+                async with worker_for(worker_client, task_queue):
+                    await asyncio.sleep(2)
+                    handle = trusted_client.get_workflow_handle_for(PortRunWorkflow.run, spec.run_id)
+                    for _ in range(100):
+                        status = await handle.query(PortRunWorkflow.status)
+                        if status.state == "awaiting-approval":
+                            break
+                        await asyncio.sleep(0.01)
+                    else:
+                        self.fail("Workflow did not resume at approval gate")
+                    assert status.gate is not None
+                    await handle.execute_update(
+                        PortRunWorkflow.submit_decision,
+                        decision(spec, status.gate),
+                    )
+                    result = await handle.result()
+                self.assertEqual(result.state, "completed")
+                self.assertEqual(runtime().ledger.decision_count(), 1)
+            finally:
+                await second_environment.shutdown()
 
 
 if __name__ == "__main__":
