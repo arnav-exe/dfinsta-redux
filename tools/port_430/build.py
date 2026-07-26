@@ -214,6 +214,7 @@ def main() -> None:
         ]
     )
     report = {
+        "schema_version": 1,
         **input_provenance,
         "anchored_report": str(anchored_report.resolve()),
         "anchored_report_sha256": sha256_file(anchored_report),
@@ -221,6 +222,7 @@ def main() -> None:
         "verification_report_sha256": sha256_file(verification_report),
         "unsigned_apk": str(args.output_apk.resolve()),
         "unsigned_apk_sha256": sha256_file(args.output_apk),
+        "passed": True,
     }
     build_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 

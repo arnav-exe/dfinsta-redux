@@ -34,14 +34,26 @@ def sha256_file(path: Path) -> str:
 def load_policy(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as stream:
         policy = json.load(stream)
+    allowed_keys = {
+        "schema_version",
+        "policy_id",
+        "package",
+        "minimum_sdk_floor",
+        "expected_certificate_sha256",
+        "allowed_signer_count",
+        "required_signature_schemes",
+    }
+    unknown = set(policy) - allowed_keys
+    if unknown:
+        raise ValueError(f"Unsupported signing policy field: {sorted(unknown)[0]}")
     if policy.get("schema_version") != 1:
         raise ValueError("Unsupported signing policy schema")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", policy.get("policy_id", "")):
         raise ValueError("Invalid signing policy id")
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.]+", policy.get("package", "")):
         raise ValueError("Invalid signing package")
-    if not isinstance(policy.get("minimum_sdk"), int) or policy["minimum_sdk"] < 1:
-        raise ValueError("Invalid signing minimum SDK")
+    if not isinstance(policy.get("minimum_sdk_floor"), int) or policy["minimum_sdk_floor"] < 1:
+        raise ValueError("Invalid signing minimum SDK floor")
     certificate = policy.get("expected_certificate_sha256", "")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", certificate):
         raise ValueError("Invalid expected signing certificate SHA-256")
@@ -49,7 +61,7 @@ def load_policy(path: Path) -> dict[str, Any]:
         raise ValueError("Only one release signer is supported")
     schemes = policy.get("required_signature_schemes")
     if not isinstance(schemes, list) or not schemes or not all(
-        scheme in {"v2", "v3", "v3.1", "v4"} for scheme in schemes
+        scheme in {"v2", "v3", "v3.1"} for scheme in schemes
     ):
         raise ValueError("Invalid required signature schemes")
     policy["expected_certificate_sha256"] = certificate.lower()
@@ -125,6 +137,52 @@ def output_paths(output_apk: Path) -> tuple[Path, Path]:
     return output_apk.with_suffix(".verification.json"), output_apk.with_suffix(".release.json")
 
 
+def load_json_report(path: Path, label: str) -> dict[str, Any]:
+    with path.open(encoding="utf-8") as stream:
+        report = json.load(stream)
+    if report.get("schema_version") != 1:
+        raise ValueError(f"Unsupported {label} schema")
+    if report.get("passed") is not True:
+        raise ValueError(f"{label} did not pass")
+    return report
+
+
+def validate_prerequisites(
+    unsigned_apk: Path,
+    stock_apk: Path,
+    build_report_path: Path,
+    verification_report_path: Path,
+) -> dict[str, Any]:
+    unsigned_sha256 = sha256_file(unsigned_apk)
+    stock_sha256 = sha256_file(stock_apk)
+    verification_sha256 = sha256_file(verification_report_path)
+    build = load_json_report(build_report_path, "unsigned build report")
+    verification = load_json_report(verification_report_path, "unsigned verification report")
+    checks = {
+        "build_unsigned_apk": build.get("unsigned_apk_sha256") == unsigned_sha256,
+        "build_stock_apk": build.get("stock_apk_sha256") == stock_sha256,
+        "build_verification_report": build.get("verification_report_sha256")
+        == verification_sha256,
+        "verification_unsigned_apk": verification.get("apk_sha256") == unsigned_sha256,
+        "verification_stock_apk": verification.get("stock_apk_sha256") == stock_sha256,
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    if failed:
+        raise ValueError(f"Release prerequisite mismatch: {failed[0]}")
+    return {
+        "checks": checks,
+        "source_commit": build.get("source_commit"),
+        "unsigned_apk_sha256": unsigned_sha256,
+        "stock_apk_sha256": stock_sha256,
+        "build_report_sha256": sha256_file(build_report_path),
+        "verification_report_sha256": verification_sha256,
+    }
+
+
+def publish_no_clobber(source: Path, destination: Path) -> None:
+    os.link(source, destination)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("unsigned_apk", type=Path)
@@ -165,7 +223,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     policy = load_policy(args.policy)
     keystore, alias, child_env = required_secret_environment()
-    input_hashes = {str(path.resolve()): sha256_file(path) for path in inputs}
+    prerequisites = validate_prerequisites(
+        args.unsigned_apk,
+        args.stock_apk,
+        args.unsigned_build_report,
+        args.unsigned_verification_report,
+    )
+    input_hashes = {
+        "unsigned_apk": sha256_file(args.unsigned_apk),
+        "stock_apk": sha256_file(args.stock_apk),
+        "unsigned_build_report": sha256_file(args.unsigned_build_report),
+        "unsigned_verification_report": sha256_file(args.unsigned_verification_report),
+        "signing_policy": sha256_file(args.policy),
+    }
 
     with tempfile.TemporaryDirectory(prefix="dfinsta-release-", dir=output_apk.parent) as directory:
         temporary = Path(directory)
@@ -176,29 +246,40 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         run([str(args.zipalign), "-P", "16", "-f", "-v", "4", str(args.unsigned_apk), str(aligned)])
         run([str(args.zipalign), "-c", "-P", "16", "-v", "4", str(aligned)])
-        run(
-            [
-                str(args.apksigner),
-                "sign",
-                "--ks",
-                str(keystore),
-                "--ks-key-alias",
-                alias,
-                "--ks-pass",
-                f"env:{SECRET_ENV['password']}",
-                "--min-sdk-version",
-                str(policy["minimum_sdk"]),
-                "--out",
-                str(signed),
-                str(aligned),
-            ],
-            env=child_env,
+        unsigned_badging = parse_badging(
+            run([str(args.aapt), "dump", "badging", str(args.unsigned_apk)]).stdout
         )
+        if unsigned_badging["package"] != policy["package"]:
+            raise ValueError("Unsigned APK package does not match release policy")
+        if unsigned_badging["minimum_sdk"] < policy["minimum_sdk_floor"]:
+            raise ValueError("Unsigned APK minimum SDK is below release policy floor")
+        try:
+            run(
+                [
+                    str(args.apksigner),
+                    "sign",
+                    "--ks",
+                    str(keystore),
+                    "--ks-key-alias",
+                    alias,
+                    "--ks-pass",
+                    f"env:{SECRET_ENV['password']}",
+                    "--min-sdk-version",
+                    str(unsigned_badging["minimum_sdk"]),
+                    "--out",
+                    str(signed),
+                    str(aligned),
+                ],
+                env=child_env,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"APK signing failed with exit code {exc.returncode}") from None
+        run([str(args.zipalign), "-c", "-P", "16", "-v", "4", str(signed)])
         badging = parse_badging(run([str(args.aapt), "dump", "badging", str(signed)]).stdout)
+        if badging != unsigned_badging:
+            raise ValueError("Signed APK package metadata changed during finalization")
         if badging["package"] != policy["package"]:
             raise ValueError("Signed APK package does not match release policy")
-        if badging["minimum_sdk"] != policy["minimum_sdk"]:
-            raise ValueError("Signed APK minimum SDK does not match release policy")
 
         signature_result = run(
             [
@@ -207,7 +288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "--verbose",
                 "--print-certs",
                 "--min-sdk-version",
-                str(policy["minimum_sdk"]),
+                str(badging["minimum_sdk"]),
                 str(signed),
             ]
         )
@@ -238,6 +319,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             ]
         )
 
+        with staged_verification.open(encoding="utf-8") as stream:
+            final_verification = json.load(stream)
+        if final_verification.get("schema_version") != 1 or final_verification.get("passed") is not True:
+            raise ValueError("Final signed verification report did not pass")
+        final_verification["apk"] = str(output_apk)
+        staged_verification.write_text(
+            json.dumps(final_verification, indent=2) + "\n", encoding="utf-8"
+        )
+
         aligned_sha256 = sha256_file(aligned)
         signed_sha256 = sha256_file(signed)
         verification_sha256 = sha256_file(staged_verification)
@@ -250,6 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             "package": badging,
             "signature": signature,
+            "prerequisites": prerequisites,
             "inputs": input_hashes,
             "stages": {
                 "aligned_sha256": aligned_sha256,
@@ -276,9 +367,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         staged_release_report.write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        signed.replace(output_apk)
-        staged_verification.replace(verification_report)
-        staged_release_report.replace(release_report)
+        publish_no_clobber(staged_verification, verification_report)
+        publish_no_clobber(staged_release_report, release_report)
+        publish_no_clobber(signed, output_apk)
 
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

@@ -333,6 +333,7 @@ def main() -> None:
         decode_sources(args.apk, args.apktool_jar, decoded)
         structural_hooks = verify_structural_hooks(decoded)
         result = {
+            "schema_version": 1,
             "apk": str(args.apk),
             "apk_sha256": file_sha256(args.apk),
             "stock_apk": str(args.stock_apk),
