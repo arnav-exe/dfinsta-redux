@@ -455,6 +455,42 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertTrue(process.killed)
 
+    async def test_slow_cancelled_launch_is_supervised_until_handle_arrives(self) -> None:
+        launch_started = asyncio.Event()
+        return_process = asyncio.Event()
+        process = FakeProcess()
+        process.returncode = None
+
+        async def launcher(*argv: str, **kwargs: Any) -> FakeProcess:
+            launch_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await return_process.wait()
+                return process
+
+        with mock.patch("dfinsta_pipeline.executor._CLEANUP_TIMEOUT_SECONDS", 0.01):
+            task = asyncio.create_task(
+                self.admitted_execute(
+                    self.capability(),
+                    self.request(),
+                    self.metadata(),
+                    timeout_seconds=60,
+                    launcher=launcher,
+                )
+            )
+            await launch_started.wait()
+            task.cancel()
+            with self.assertRaisesRegex(RuntimeError, "process handle"):
+                await task
+            return_process.set()
+            for _ in range(100):
+                if process.killed:
+                    break
+                await asyncio.sleep(0.001)
+            else:
+                self.fail("Late process handle was not cleaned up")
+
     async def test_cleanup_is_bounded_when_reap_hangs(self) -> None:
         class UnreapableProcess(FakeProcess):
             def __init__(self) -> None:

@@ -16,6 +16,7 @@ from .contracts import ArtifactRef, RunSpec, canonical_sha256
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ENVIRONMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CLEANUP_TIMEOUT_SECONDS = 1.0
+_SUPERVISED_TASKS: set[asyncio.Future[Any]] = set()
 Launcher = Callable[..., Awaitable[Any]]
 
 
@@ -335,6 +336,34 @@ async def _clean_up(process: Any) -> None:
         raise RuntimeError("Subprocess did not exit after kill") from error
 
 
+def _consume_supervised_result(task: asyncio.Future[Any]) -> None:
+    _SUPERVISED_TASKS.discard(task)
+    if task.cancelled():
+        return
+    try:
+        task.result()
+    except BaseException:
+        return
+
+
+def _supervise_late_launch(task: asyncio.Future[Any]) -> None:
+    _SUPERVISED_TASKS.add(task)
+
+    def launch_done(completed: asyncio.Future[Any]) -> None:
+        _SUPERVISED_TASKS.discard(completed)
+        if completed.cancelled():
+            return
+        try:
+            process = completed.result()
+        except BaseException:
+            return
+        cleanup = asyncio.ensure_future(_clean_up(process))
+        _SUPERVISED_TASKS.add(cleanup)
+        cleanup.add_done_callback(_consume_supervised_result)
+
+    task.add_done_callback(launch_done)
+
+
 async def _launch_with_cancellation_cleanup(launch: Awaitable[Any]) -> Any:
     task = asyncio.ensure_future(launch)
     try:
@@ -345,6 +374,7 @@ async def _launch_with_cancellation_cleanup(launch: Awaitable[Any]) -> Any:
                 process = await asyncio.shield(task)
         except TimeoutError:
             task.cancel()
+            _supervise_late_launch(task)
             raise RuntimeError("Subprocess launch did not return a process handle") from None
         await asyncio.shield(_clean_up(process))
         raise
