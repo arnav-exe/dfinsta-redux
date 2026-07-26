@@ -186,7 +186,7 @@ Temporal is the sole durable workflow engine. Phase A pins `temporalio==1.30.0`;
 
 ### Phase A Implementation Checkpoint
 
-Commits `3e91eb5` and `ac4da5b` implement the first durable slice. The current suite has 23 Phase A tests and 85 tests overall.
+Commits `3e91eb5`, `ac4da5b`, `a92ae6d`, and `ce97a9e` implement and harden the first durable slice. The current suite has 30 Phase A tests and 92 tests overall.
 
 Proven:
 
@@ -194,11 +194,11 @@ Proven:
 - Admission, prepare, decision-recording, and apply Activities with a validated Temporal Update between prepare and apply.
 - Gate decisions bind the canonical run, admission artifact, prepared artifact, actor, policy, timestamp, decision identity, and idempotency identity.
 - Every downstream operation key and output reference includes complete upstream artifact and decision hashes.
-- The SQLite ledger records append-only pending, effect, completion, and quarantine events; update/delete triggers prevent history rewriting.
-- A post-effect retry adopts one validated CAS effect instead of executing it twice. Cooperative cancellation waits for cleanup and leaves the effect quarantined.
+- The SQLite ledger records append-only pending, effect, completion, and quarantine events; update/delete triggers prevent history rewriting. A transactional current-claim index allows only one owner to execute a pending operation.
+- A synthetic post-effect retry validates and adopts one CAS effect before completion. Cooperative cancellation waits for cleanup and leaves the effect quarantined. Hard loss around a real subprocess remains unproven.
 - A Worker can be replaced while the Workflow waits at a gate. Tests disable sticky caching to force History reconstruction and use the documented pinned-version override for synthetic traffic.
 - A three-day logical gate boundary is covered with Temporal time skipping. Saved History replays with unchanged code and fails against a deliberately incompatible Workflow definition.
-- The executor verifies an absolute executable against an admitted SHA-256 before launch, renders only an exact argv template, passes only admitted environment values, constrains resolved workspace paths and declared mutations, validates artifact kinds, and rejects split APK sets. It uses `create_subprocess_exec`, never a shell.
+- The executor binds each request to the admitted capability's canonical SHA-256, verifies an absolute executable against that capability before launch, renders only an exact argv template, passes only admitted environment values, constrains resolved workspace paths and audits declared mutations, validates artifact kinds, and rejects split APK sets. It uses `create_subprocess_exec`, never a shell.
 
 Still pending before Phase A is considered production-ready:
 
@@ -207,6 +207,7 @@ Still pending before Phase A is considered production-ready:
 - Replace synthetic actor equality with authentication in a trusted submission client.
 - Exercise hard Worker/process loss during a real child process. Current evidence covers injected failure and cooperative cancellation.
 - Add OS-level confinement before treating an admitted tool as hostile. Workspace path and mutation checks are policy enforcement around a trusted digest, not a filesystem sandbox.
+- Execute only immutable worker-owned tool copies. Portable Python cannot guarantee that a pathname hashed before launch still names the same bytes at process creation.
 - Prove future signing/device worker secret isolation when those restricted task queues are introduced.
 
 ## Implementation Phases

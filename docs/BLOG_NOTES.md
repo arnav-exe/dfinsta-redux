@@ -49,13 +49,13 @@ The first restart test hung for a useful reason. Marking a Workflow `PINNED` doe
 
 Temporal Update identity and business identity are separate. Retrying the same Update ID returns its original accepted result; sending a new Update that reuses the decision's business idempotency key is rejected. The gate also binds the canonical run, admission artifact, prepared artifact, actor, policy, and validity interval, so a stale approval cannot authorize changed bytes.
 
-At-least-once Activities required an explicit effect protocol. The ledger no longer overwrites a status row. It appends pending, effect, completion, or quarantine events and forbids update/delete in SQLite. If an injected failure occurs after the effect, retry validates and adopts that one CAS object before appending completion. If cancellation arrives after the effect, the Workflow waits for Activity cleanup and the ledger appends quarantine instead of promotion.
+At-least-once Activities required an explicit effect protocol. The ledger no longer overwrites a history row. It appends pending, effect, completion, or quarantine events and forbids update/delete in SQLite. An independent review then found that two attempts could both interpret the same pending event as permission to work. A transactional claim index now gives one attempt ownership; competitors cannot execute. If an injected failure occurs after the effect, retry validates and adopts that CAS object before appending completion. If cancellation arrives after the effect, the Workflow waits for Activity cleanup and appends quarantine instead of promotion.
 
 History replay became a deployment test rather than a slogan. The test fetches and serializes a real History, reloads it, and replays it offline with unchanged code. Replaying the same History against an incompatible implementation of the same Workflow type produces Temporal's `TMPRL1100` nondeterminism error. A committed representative replay corpus is still future work.
 
-The subprocess boundary is capability-based before any APK tool is connected. A request names an immutable executable digest, exact argv template, permitted environment values, workspace paths, artifact kinds, mutation paths, and monolithic APK composition. Digest mismatch fails before the launcher is called. This is a strong policy boundary around a trusted binary, not an OS sandbox around a hostile one.
+The subprocess boundary is capability-based before any APK tool is connected. A request binds the canonical capability hash, immutable executable digest, exact argv template, permitted environment values, workspace paths, artifact kinds, mutation paths, and monolithic APK composition. Capability or executable mismatch fails before the launcher is called. This is a strong policy boundary around a trusted immutable binary, not an OS sandbox around a hostile one; portable pathname verification still has a replacement race unless the worker owns a non-writable tool store.
 
-The Phase A checkpoint has 23 focused tests and 85 Python tests overall. Remaining durability work is intentionally explicit: persistent Temporal-server and trusted-client restart, authenticated submissions, hard process-loss testing, replay-corpus CI, and later signing/device secret isolation.
+The hardened Phase A checkpoint has 30 focused tests and 92 Python tests overall. Remaining durability work is intentionally explicit: persistent Temporal-server and trusted-client restart, authenticated submissions, hard process-loss testing, replay-corpus CI, immutable tool storage/OS confinement, and later signing/device secret isolation.
 
 ## Facts Worth Capturing During Development
 
@@ -119,6 +119,6 @@ The Phase A checkpoint has 23 focused tests and 85 Python tests overall. Remaini
 
 - Adopted Temporal `1.30.0` as the durable outer orchestrator while keeping Google ADK deferred to bounded read-only Activities after deterministic generalization.
 - Diagnosed pinned candidate routing and sticky-cache behavior, then proved Worker replacement at a waiting approval gate through explicit deployment override and forced History reconstruction.
-- Replaced mutable operation status with an append-only pending/effect/completion/quarantine protocol and proved one-effect retry adoption plus cancellation quarantine.
-- Added a fail-closed executor capability model before connecting any APK tool: exact executable digest, argv, environment, workspace, artifact kinds, mutations, timeout cleanup, and split-APK rejection.
-- Replayed fetched History successfully, deliberately triggered nondeterminism with incompatible code, and reached 23 Phase A tests plus 85 passing Python tests overall.
+- Replaced mutable operation history with append-only pending/effect/completion/quarantine events, then added atomic owner claims after review exposed a concurrent-attempt hole.
+- Added a fail-closed executor capability model before connecting any APK tool: admitted capability hash, executable digest, argv, environment, workspace, artifact kinds, mutation audit, timeout cleanup, and split-APK rejection.
+- Replayed fetched History successfully, deliberately triggered nondeterminism with incompatible code, and reached 30 Phase A tests plus 92 passing Python tests overall.
