@@ -51,8 +51,11 @@ Mechanical extraction, indexing, patching, building, and verification must remai
 - `2249342 verify final dex structure` (checks exact host methods/invocations and every retained stock payload entry)
 - `3f6f2f9 verify signed apk certificate` (supports fail-closed apksigner verification and records signer identity)
 - `309d08c decode stock in 430 build` (fresh stock decode and complete unsigned-build provenance)
+- `7d51098 record clean 430 build` (records the exercised clean-stock build and report hashes)
+- `efed004 verify other profile exclusion` (proves other-user Options remains non-long-clickable)
+- `b5a1a85 tighten artifact verification` (binds exact overloads/registers and enforces an expected signer digest)
 
-Current branch: `port-430`. It is based on `master` commit `6f1efa7` and includes implementation/validation commits through `309d08c`. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
+Current branch: `port-430`. It is based on `master` commit `6f1efa7` and contains the implementation/validation commits listed above. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
 
 ## Golden Reconstruction State
 
@@ -109,7 +112,7 @@ Current installed state:
 
 - Installed APK on Nothing Phone: `work/430-graft-v7/dfinsta_430-graft-v7-test.apk`.
 - SHA-256: `0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4`.
-- Signed structural verification: `work/430-graft-v7/dfinsta_430-graft-v7-test.signed-verification.json`, SHA-256 `2de452411414e251e60857f2243d429508ea11bfc7ecc5608e3b12696256b9ba`.
+- Signed structural verification: `work/430-graft-v7/dfinsta_430-graft-v7-test.approved-verification.json`, SHA-256 `f8a94b9a3b16a9f4efb559978de2f39426e248ef8dec091ceba5737f284fcd8c`.
 - Signature: APK Signature Scheme v3, Android Debug certificate SHA-256 `d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1`; this remains a test artifact, not a release build.
 - Device-side `base.apk` SHA-256 exactly matches the declared signed artifact in `work/device-runner/nothing-v7-signed-installed-preflight/`.
 - Package/version preflight passes for `com.instagram.android` / `430.0.0.53.80` (`383611248`).

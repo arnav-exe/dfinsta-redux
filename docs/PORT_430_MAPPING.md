@@ -2,7 +2,7 @@
 
 Status: v7 resource-free test DEX graft built, structurally verified as a signed artifact, matched byte-for-byte to the installed base APK, startup-tested, settings-validated, and observed with restart-bounded Feed, Explore, Reels, and Stories differences on the Nothing Phone. Controlled feature verification, release signing, and eligible profile-ad validation remain pending.
 
-Current branch: `port-430`, with implementation and validation commits through `309d08c`.
+Current branch: `port-430`; the relevant implementation and validation commits are listed below.
 
 Relevant commits:
 
@@ -22,6 +22,9 @@ Relevant commits:
 - `2249342 verify final dex structure`: verifies exact final-DEX host sequences and retained payload bytes.
 - `3f6f2f9 verify signed apk certificate`: verifies and records signed-artifact certificate identity.
 - `309d08c decode stock in 430 build`: decodes directly from stock and emits complete unsigned-build provenance.
+- `7d51098 record clean 430 build`: records the exercised clean-stock build and report hashes.
+- `efed004 verify other profile exclusion`: proves other-user Options remains non-long-clickable.
+- `b5a1a85 tighten artifact verification`: checks exact overloads/register flow and enforces an expected signer digest.
 
 ## Target
 
@@ -41,7 +44,7 @@ Apktool emitted resource string-chunk warnings but baksmaled all DEX files succe
 - Installed successfully as an in-place update.
 - Package/version preflight: passed for `430.0.0.53.80` / `383611248`.
 - Static verification: passed.
-- Signed final report: `work/430-graft-v7/dfinsta_430-graft-v7-test.signed-verification.json`, SHA-256 `2de452411414e251e60857f2243d429508ea11bfc7ecc5608e3b12696256b9ba`.
+- Signed final report: `work/430-graft-v7/dfinsta_430-graft-v7-test.approved-verification.json`, SHA-256 `f8a94b9a3b16a9f4efb559978de2f39426e248ef8dec091ceba5737f284fcd8c`.
 - Signature: v3 with Android Debug certificate SHA-256 `d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1`; release signing remains pending.
 - Clean-stock reproducibility: `work/430-clean-build/dfinsta_430-clean-unsigned.build.json`, SHA-256 `8e458bee210995389a1fcab69ed6bf9ab404c643d9608459ce5d4dbba1204078`, passed from source commit `309d08c` with six applied operations and zero pre-existing operations.
 
