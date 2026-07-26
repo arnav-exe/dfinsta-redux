@@ -108,9 +108,7 @@
       "options": {"content_desc": "Options", "long_clickable": true},
       "home": {"resource_id": "com.instagram.android:id/feed_tab"}
     },
-    "recovery_actions": [
-      "retry_profile"
-    ],
+    "recovery_actions": [],
     "entry": [
       "select resource-id com.instagram.android:id/profile_tab",
       "poll for content-desc Options with long-clickable=true",

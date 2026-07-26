@@ -497,13 +497,6 @@ def enter_settings(
                 steps=steps,
             )
 
-        if attempt == 1 and "retry_profile" in recovery_actions:
-            profiles = find_selector_nodes(nodes, selectors["profile"])
-            if profiles:
-                tap(adb, profiles[0])
-                steps.append("retry_profile")
-                time.sleep(poll_interval)
-
         if attempt == 1 and "home_then_profile" in recovery_actions:
             home = find_selector_nodes(nodes, selectors["home"])
             if home:
