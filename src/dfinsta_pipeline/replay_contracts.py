@@ -1653,6 +1653,42 @@ class AdmittedReplayV3:
         return canonical_sha256(self)
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayDecodeCheckpointResultV1:
+    schema_version: int
+    admitted_replay_sha256: str
+    role: Literal["decode"]
+    execution_plan_sha256: str
+    executor_capability_sha256: str
+    tool_artifact_sha256: str
+    execution_request_sha256: str
+    returncode: int
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay decode checkpoint result schema")
+        for value, label in (
+            (self.admitted_replay_sha256, "admitted replay SHA-256"),
+            (self.execution_plan_sha256, "execution plan SHA-256"),
+            (self.executor_capability_sha256, "executor capability SHA-256"),
+            (self.tool_artifact_sha256, "tool artifact SHA-256"),
+            (self.execution_request_sha256, "execution request SHA-256"),
+        ):
+            _sha256(value, label)
+        if self.role != "decode":
+            raise ValueError("Replay decode checkpoint role must be decode")
+        if type(self.returncode) is not int or self.returncode != 0:
+            raise ValueError("Replay decode checkpoint requires a successful execution")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayDecodeCheckpointResultV1:
+        return cls(**_keys(data, cls, "replay decode checkpoint result"))
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
 def admit_replay_v3(
     run_spec: ReplayRunSpecV2,
     request: ReplayRequestV2,
