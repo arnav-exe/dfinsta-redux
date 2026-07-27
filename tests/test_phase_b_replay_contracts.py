@@ -25,6 +25,7 @@ from dfinsta_pipeline.port_contracts import (
 from dfinsta_pipeline.replay_contracts import (
     AdmittedReplay,
     AdmittedReplayV2,
+    AdmittedReplayV3,
     CapabilityBinding,
     FrameworkArtifact,
     FrameworkRequirement,
@@ -42,6 +43,7 @@ from dfinsta_pipeline.replay_contracts import (
     ToolRequirement,
     admit_replay,
     admit_replay_v2,
+    admit_replay_v3,
 )
 
 
@@ -396,6 +398,131 @@ def profile_v3(with_framework: bool = False) -> ToolchainProfileV3:
     )
 
 
+def capability_for_plan(
+    profile: ToolchainProfileV3,
+    role: str,
+    *,
+    executable_sha256: str = "f" * 64,
+) -> ExecutorCapability:
+    plan = profile.plan(role)
+    names = tuple(name for name, _ in plan.arguments)
+    return ExecutorCapability(
+        1,
+        f"{role}-capability",
+        executable_sha256,
+        tuple(f"{{{name}}}" for name in names),
+        names,
+        ("stock-apk",),
+        "synthetic-output",
+        (),
+        (),
+        ("output",),
+    )
+
+
+@dataclass(frozen=True)
+class FixtureV3:
+    run_spec: ReplayRunSpecV2
+    request: ReplayRequestV2
+    decision: GateDecision
+    payloads: dict[str, bytes]
+    capabilities: tuple[ExecutorCapability, ...]
+
+    def resolve(self, artifact: ArtifactRef) -> bytes:
+        return self.payloads[canonical_sha256(artifact)]
+
+    def resolve_capability(self, capability_sha256: str) -> ExecutorCapability:
+        return {
+            capability.canonical_identity: capability
+            for capability in self.capabilities
+        }[capability_sha256]
+
+    def decision_is_recorded(self, decision: GateDecision) -> bool:
+        return canonical_sha256(decision) == canonical_sha256(self.decision)
+
+
+def bind_v3_fixture(
+    base: FixtureV2,
+    profile: ToolchainProfileV3,
+    capabilities: tuple[ExecutorCapability, ...],
+) -> FixtureV3:
+    profile_payload = json_bytes(profile)
+    profile_ref = artifact_ref("toolchain-profile", profile_payload)
+    gate_prepared = replace(
+        GatePreparedEnvelopeV2.from_dict(
+            _json_dict(base.resolve(base.request.gate_prepared))
+        ),
+        toolchain_profile=profile_ref,
+    )
+    gate_payload = json_bytes(gate_prepared)
+    gate_inputs = (
+        gate_prepared.stock_apk.sha256,
+        gate_prepared.intent.sha256,
+        gate_prepared.resolution.sha256,
+        gate_prepared.source_manifest.sha256,
+        gate_prepared.toolchain_profile.sha256,
+        *(framework.artifact.sha256 for framework in gate_prepared.frameworks),
+        *(tool.artifact.sha256 for tool in gate_prepared.tools),
+    )
+    gate_ref = artifact_ref(
+        "replay-gate-prepared-v2", gate_payload, inputs=gate_inputs
+    )
+    run_spec = replace(
+        base.run_spec,
+        toolchain_profile_sha256=profile.sha256,
+        executor_capability_sha256s=tuple(
+            sorted(capability.canonical_identity for capability in capabilities)
+        ),
+        gate_prepared_sha256=gate_ref.sha256,
+        gate_prepared_ref_sha256=canonical_sha256(gate_ref),
+    )
+    request = replace(
+        base.request,
+        run_spec_sha256=run_spec.sha256,
+        gate_prepared=gate_ref,
+        toolchain_profile=profile_ref,
+    )
+    decision = replace(
+        base.decision,
+        subject_sha256=run_spec.sha256,
+        prepared_sha256=gate_ref.sha256,
+    )
+    payloads = dict(base.payloads)
+    payloads.pop(canonical_sha256(base.request.toolchain_profile))
+    payloads.pop(canonical_sha256(base.request.gate_prepared))
+    payloads[canonical_sha256(profile_ref)] = profile_payload
+    payloads[canonical_sha256(gate_ref)] = gate_payload
+    return FixtureV3(run_spec, request, decision, payloads, capabilities)
+
+
+def _json_dict(payload: bytes) -> dict[str, Any]:
+    import json
+
+    value = json.loads(payload.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise TypeError("fixture payload must be a JSON object")
+    return value
+
+
+def fixture_v3(with_framework: bool = False) -> FixtureV3:
+    base = fixture_v2(with_framework)
+    profile = profile_v3(with_framework)
+    capabilities = tuple(
+        capability_for_plan(profile, binding.role)
+        for binding in profile.capability_bindings
+    )
+    profile = replace(
+        profile,
+        capability_bindings=tuple(
+            CapabilityBinding(binding.role, capability.canonical_identity)
+            for binding, capability in zip(
+                profile.capability_bindings, capabilities, strict=True
+            )
+        ),
+    )
+    return bind_v3_fixture(base, profile, capabilities)
+
+
 def resolve_from(payloads: dict[str, bytes]) -> Callable[[ArtifactRef], bytes]:
     return lambda artifact: payloads[canonical_sha256(artifact)]
 
@@ -433,6 +560,26 @@ def admit_v2(
         decision or case.decision,
         decision_is_recorded or case.decision_is_recorded,
         artifact_resolver or case.resolve,
+    )
+
+
+def admit_v3(
+    case: FixtureV3,
+    *,
+    run_spec: ReplayRunSpecV2 | None = None,
+    request: ReplayRequestV2 | None = None,
+    decision: GateDecision | None = None,
+    decision_is_recorded: Callable[[GateDecision], bool] | None = None,
+    artifact_resolver: Callable[[ArtifactRef], bytes] | None = None,
+    capability_resolver: Callable[[str], ExecutorCapability] | None = None,
+) -> AdmittedReplayV3:
+    return admit_replay_v3(
+        run_spec or case.run_spec,
+        request or case.request,
+        decision or case.decision,
+        decision_is_recorded or case.decision_is_recorded,
+        artifact_resolver or case.resolve,
+        capability_resolver or case.resolve_capability,
     )
 
 
@@ -477,6 +624,10 @@ class ReplayContractTests(unittest.TestCase):
         self.assertEqual(
             admit(fixture()).sha256,
             "bc8e7fa6c90a6a9998b74a035ef025dc4447ed2d75eddee52600e33726890a20",
+        )
+        self.assertEqual(
+            admit_v2(fixture_v2()).sha256,
+            "2811658b7a502ac2665f8048fed4c450b07d967ed7abd5369d07da22332384b3",
         )
 
     def test_replay_run_gate_fields_are_strict_and_phase_a_is_unchanged(self) -> None:
@@ -956,6 +1107,333 @@ class ReplayContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "Native tool"):
             mismatched_profile.validate_capability("decode", mismatched)
+
+    def test_v3_admits_framework_and_no_framework_replays(self) -> None:
+        for with_framework in (False, True):
+            case = fixture_v3(with_framework)
+            admitted = admit_v3(case)
+            with self.subTest(with_framework=with_framework):
+                self.assertEqual(admitted.schema_version, 3)
+                self.assertEqual(admitted.run_spec, case.run_spec)
+                self.assertEqual(admitted.request, case.request)
+                self.assertEqual(admitted.executor_capabilities, case.capabilities)
+                self.assertEqual(admitted.direct_artifacts, case.request.direct_artifacts)
+                self.assertEqual(admitted.run_spec_sha256, case.run_spec.sha256)
+                self.assertEqual(admitted.replay_request_sha256, case.request.sha256)
+                self.assertEqual(
+                    admitted.decision_sha256, canonical_sha256(case.decision)
+                )
+                self.assertEqual(admitted.intent_sha256, admitted.intent.sha256)
+                self.assertEqual(admitted.resolution_sha256, admitted.resolution.sha256)
+                self.assertEqual(
+                    admitted.source_manifest_sha256, admitted.source_manifest.sha256
+                )
+                self.assertEqual(
+                    admitted.toolchain_profile_sha256, admitted.profile.sha256
+                )
+                self.assertEqual(
+                    admitted.capability_bindings, admitted.profile.capability_bindings
+                )
+                self.assertEqual(
+                    admitted.capability("decode"),
+                    case.resolve_capability(
+                        admitted.decode_executor_capability_sha256
+                    ),
+                )
+                self.assertEqual(admitted.plan("build"), admitted.profile.plan("build"))
+                self.assertEqual(
+                    admitted.install_framework_executor_capability_sha256,
+                    admitted.profile.binding("install_framework")
+                    if with_framework
+                    else None,
+                )
+
+    def test_v3_roundtrip_hash_and_schema_separation(self) -> None:
+        admitted = admit_v3(fixture_v3())
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(AdmittedReplayV3)),
+            (
+                "schema_version",
+                "run_spec",
+                "request",
+                "decision",
+                "intent",
+                "resolution",
+                "source_manifest",
+                "profile",
+                "gate_prepared",
+                "executor_capabilities",
+            ),
+        )
+        self.assertEqual(AdmittedReplayV3.from_dict(asdict(admitted)), admitted)
+        self.assertEqual(admitted.sha256, canonical_sha256(admitted))
+        with self.assertRaises((TypeError, ValueError)):
+            AdmittedReplayV2.from_dict(asdict(admitted))
+        with self.assertRaises((TypeError, ValueError)):
+            AdmittedReplayV3.from_dict(asdict(admit_v2(fixture_v2())))
+
+        unknown = asdict(admitted)
+        unknown["unexpected"] = True
+        with self.assertRaises(ValueError):
+            AdmittedReplayV3.from_dict(unknown)
+
+    def test_v3_resolvers_run_in_authority_order_and_resolve_every_artifact_once(self) -> None:
+        case = fixture_v3(True)
+        events: list[tuple[str, object]] = []
+
+        def recorded(decision: GateDecision) -> bool:
+            events.append(("decision", decision))
+            return case.decision_is_recorded(decision)
+
+        def artifact_resolver(artifact: ArtifactRef) -> bytes:
+            events.append(("artifact", artifact))
+            return case.resolve(artifact)
+
+        def capability_resolver(capability_sha256: str) -> ExecutorCapability:
+            events.append(("capability", capability_sha256))
+            return case.resolve_capability(capability_sha256)
+
+        admit_v3(
+            case,
+            decision_is_recorded=recorded,
+            artifact_resolver=artifact_resolver,
+            capability_resolver=capability_resolver,
+        )
+        self.assertEqual(events[0], ("decision", case.decision))
+        self.assertEqual(
+            tuple(value for kind, value in events if kind == "artifact"),
+            case.request.direct_artifacts,
+        )
+        self.assertEqual(
+            tuple(value for kind, value in events if kind == "capability"),
+            tuple(
+                binding.executor_capability_sha256
+                for binding in admit_v3(case).profile.capability_bindings
+            ),
+        )
+        first_capability = next(
+            index for index, (kind, _) in enumerate(events) if kind == "capability"
+        )
+        self.assertTrue(all(kind == "artifact" for kind, _ in events[1:first_capability]))
+
+        for decision, predicate in (
+            (replace(case.decision, actor="other-operator"), lambda _: True),
+            (replace(case.decision, rationale="unrecorded"), lambda _: False),
+        ):
+            blocked_events: list[str] = []
+            with self.subTest(decision=decision):
+                with self.assertRaises(ValueError):
+                    admit_v3(
+                        case,
+                        decision=decision,
+                        decision_is_recorded=predicate,
+                        artifact_resolver=lambda artifact: (
+                            blocked_events.append("artifact") or case.resolve(artifact)
+                        ),
+                        capability_resolver=lambda digest: (
+                            blocked_events.append("capability")
+                            or case.resolve_capability(digest)
+                        ),
+                    )
+                self.assertEqual(blocked_events, [])
+
+    def test_v3_validates_non_capability_relationships_before_capability_lookup(self) -> None:
+        case = fixture_v3()
+        first = case.request.tools[0]
+        substituted = replace(
+            first,
+            artifact=replace(first.artifact, producer_operation_id="other-producer"),
+        )
+        capabilities: list[str] = []
+        with self.assertRaises(ValueError):
+            admit_v3(
+                case,
+                request=replace(
+                    case.request,
+                    tools=(substituted, *case.request.tools[1:]),
+                ),
+                capability_resolver=lambda digest: (
+                    capabilities.append(digest) or case.resolve_capability(digest)
+                ),
+            )
+        self.assertEqual(capabilities, [])
+
+    def test_v3_capability_resolver_rejects_wrong_type_hash_and_role(self) -> None:
+        case = fixture_v3()
+        build, decode = case.capabilities
+
+        class SpoofedCapability(ExecutorCapability):
+            @property
+            def canonical_identity(self) -> str:
+                return build.canonical_identity
+
+        spoofed = SpoofedCapability(
+            *(getattr(build, field.name) for field in dataclasses.fields(ExecutorCapability))
+        )
+        substitutions = (
+            lambda _: object(),
+            lambda _: replace(build, capability_id="substituted-build"),
+            lambda _: decode,
+            lambda _: spoofed,
+        )
+        for resolver in substitutions:
+            with self.subTest(resolver=resolver):
+                with self.assertRaises((TypeError, ValueError)):
+                    admit_v3(case, capability_resolver=resolver)  # type: ignore[arg-type]
+
+        def raises(_: str) -> ExecutorCapability:
+            raise RuntimeError("capability store unavailable")
+
+        with self.assertRaisesRegex(ValueError, "Unable to resolve") as raised:
+            admit_v3(case, capability_resolver=raises)
+        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+
+    def test_v3_rejects_placeholder_and_native_executable_mismatches(self) -> None:
+        admitted = admit_v3(fixture_v3())
+        base = fixture_v2()
+        build = admitted.capability("build")
+        placeholder_capability = replace(
+            build,
+            argv_template=(*build.argv_template, "{mode}"),
+        )
+        placeholder_capabilities = (
+            placeholder_capability,
+            admitted.capability("decode"),
+        )
+        placeholder_profile = replace(
+            admitted.profile,
+            capability_bindings=(
+                CapabilityBinding("build", placeholder_capability.canonical_identity),
+                admitted.profile.capability_bindings[1],
+            ),
+        )
+        placeholder_case = bind_v3_fixture(
+            base, placeholder_profile, placeholder_capabilities
+        )
+        with self.assertRaisesRegex(ValueError, "path arguments"):
+            admit_v3(placeholder_case)
+
+        decode_tool = admitted.profile.tool_for_role("decode")
+        native_plan = RoleExecutionPlan(
+            "decode",
+            decode_tool.tool_id,
+            (("input", "input_apk"), ("output", "decoded_tree")),
+            45,
+        )
+        native_capability = capability_for_plan(
+            replace(
+                admitted.profile,
+                execution_plans=(admitted.plan("build"), native_plan),
+            ),
+            "decode",
+            executable_sha256="0" * 64,
+        )
+        native_profile = replace(
+            admitted.profile,
+            capability_bindings=(
+                admitted.profile.capability_bindings[0],
+                CapabilityBinding("decode", native_capability.canonical_identity),
+            ),
+            execution_plans=(admitted.plan("build"), native_plan),
+        )
+        native_case = bind_v3_fixture(
+            base,
+            native_profile,
+            (admitted.capability("build"), native_capability),
+        )
+        with self.assertRaisesRegex(ValueError, "Native tool"):
+            admit_v3(native_case)
+
+    def test_v3_capability_tuple_count_order_and_hash_are_exact(self) -> None:
+        admitted = admit_v3(fixture_v3())
+        build, decode = admitted.executor_capabilities
+        mutations = (
+            (build,),
+            (build, decode, build),
+            (decode, build),
+            (replace(build, capability_id="other-build"), decode),
+        )
+        for capabilities in mutations:
+            with self.subTest(capabilities=capabilities):
+                with self.assertRaises(ValueError):
+                    replace(admitted, executor_capabilities=capabilities)
+
+    def test_v3_timeout_and_plan_substitutions_require_new_recorded_authority(self) -> None:
+        approved = fixture_v3()
+        admitted = admit_v3(approved)
+        build = admitted.plan("build")
+        swapped_arguments = tuple(
+            (name, {"decoded_tree": "framework_dir", "framework_dir": "decoded_tree"}.get(slot, slot))
+            for name, slot in build.arguments
+        )
+        changed_plans = (
+            replace(build, timeout_seconds=build.timeout_seconds + 1),
+            replace(build, arguments=swapped_arguments),
+        )
+        for changed_build in changed_plans:
+            profile = replace(
+                admitted.profile,
+                execution_plans=(changed_build, admitted.plan("decode")),
+            )
+            substituted = bind_v3_fixture(
+                fixture_v2(), profile, admitted.executor_capabilities
+            )
+            reads: list[str] = []
+            with self.subTest(changed_build=changed_build):
+                with self.assertRaisesRegex(ValueError, "subject does not bind"):
+                    admit_v3(
+                        substituted,
+                        decision=approved.decision,
+                        decision_is_recorded=approved.decision_is_recorded,
+                        artifact_resolver=lambda artifact: (
+                            reads.append("artifact") or substituted.resolve(artifact)
+                        ),
+                        capability_resolver=lambda digest: (
+                            reads.append("capability")
+                            or substituted.resolve_capability(digest)
+                        ),
+                    )
+                self.assertEqual(reads, [])
+
+    def test_v3_self_consistent_unrecorded_substitution_reads_nothing(self) -> None:
+        approved = fixture_v3()
+        admitted = admit_v3(approved)
+        changed_build = replace(
+            admitted.plan("build"), timeout_seconds=admitted.plan("build").timeout_seconds + 1
+        )
+        substituted = bind_v3_fixture(
+            fixture_v2(),
+            replace(
+                admitted.profile,
+                execution_plans=(changed_build, admitted.plan("decode")),
+            ),
+            admitted.executor_capabilities,
+        )
+        reads: list[str] = []
+        with self.assertRaisesRegex(ValueError, "not recorded"):
+            admit_v3(
+                substituted,
+                decision_is_recorded=approved.decision_is_recorded,
+                artifact_resolver=lambda artifact: (
+                    reads.append("artifact") or substituted.resolve(artifact)
+                ),
+                capability_resolver=lambda digest: (
+                    reads.append("capability")
+                    or substituted.resolve_capability(digest)
+                ),
+            )
+        self.assertEqual(reads, [])
+
+    def test_v2_admission_still_rejects_v3_profile_bytes(self) -> None:
+        case = fixture_v3()
+        with self.assertRaises((TypeError, ValueError)):
+            admit_replay_v2(
+                case.run_spec,
+                case.request,
+                case.decision,
+                case.decision_is_recorded,
+                case.resolve,
+            )
 
     def test_v1_and_v2_decoders_are_schema_separated(self) -> None:
         v1 = admit(fixture())

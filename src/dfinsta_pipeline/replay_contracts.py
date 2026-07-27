@@ -699,7 +699,7 @@ class ToolchainProfileV3:
     def validate_capability(
         self, role: CapabilityRole, capability: ExecutorCapability
     ) -> RoleExecutionPlan:
-        if not isinstance(capability, ExecutorCapability):
+        if type(capability) is not ExecutorCapability:
             raise TypeError("Capability must be an ExecutorCapability")
         if capability.canonical_identity != self.binding(role):
             raise ValueError("Executor capability does not match execution plan role")
@@ -1464,4 +1464,286 @@ def admit_replay_v2(
         source_manifest,
         profile,
         gate_prepared,
+    )
+
+
+def _validate_admitted_relationships_v3_content(
+    run_spec: ReplayRunSpecV2,
+    request: ReplayRequestV2,
+    decision: GateDecision,
+    intent: IntentSpecV2,
+    resolution: ResolutionSpecV3,
+    source_manifest: SourceManifestV1,
+    profile: ToolchainProfileV3,
+    gate_prepared: GatePreparedEnvelopeV2,
+) -> None:
+    if not isinstance(run_spec, ReplayRunSpecV2):
+        raise TypeError("Run specification must be a ReplayRunSpecV2")
+    if not isinstance(request, ReplayRequestV2):
+        raise TypeError("Request must be a ReplayRequestV2")
+    if not isinstance(decision, GateDecision):
+        raise TypeError("Decision must be a GateDecision")
+    if not isinstance(intent, IntentSpecV2):
+        raise TypeError("Intent must be an IntentSpecV2")
+    if not isinstance(resolution, ResolutionSpecV3):
+        raise TypeError("Resolution must be a ResolutionSpecV3")
+    if not isinstance(source_manifest, SourceManifestV1):
+        raise TypeError("Source manifest must be a SourceManifestV1")
+    if not isinstance(profile, ToolchainProfileV3):
+        raise TypeError("Profile must be a ToolchainProfileV3")
+    if not isinstance(gate_prepared, GatePreparedEnvelopeV2):
+        raise TypeError("Gate prepared envelope must be a GatePreparedEnvelopeV2")
+
+    if request.run_spec_sha256 != run_spec.sha256:
+        raise ValueError("Replay request does not bind the run specification")
+    _validate_decision(run_spec, decision)
+    _validate_gate_prepared_relationship(run_spec, request, gate_prepared)
+    _validate_admitted_content_relationships(
+        run_spec, request, intent, resolution, source_manifest, profile
+    )
+    requested_tools = tuple(
+        (tool.tool_id, tool.artifact.kind, tool.artifact.sha256) for tool in request.tools
+    )
+    required_tools = tuple(
+        (tool.tool_id, tool.artifact_kind, tool.artifact_sha256) for tool in profile.tools
+    )
+    if requested_tools != required_tools:
+        raise ValueError("Tool artifacts do not exactly match the toolchain profile")
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedReplayV3:
+    """Relational admission; ledger recording grants execution authority."""
+
+    schema_version: int
+    run_spec: ReplayRunSpecV2
+    request: ReplayRequestV2
+    decision: GateDecision
+    intent: IntentSpecV2
+    resolution: ResolutionSpecV3
+    source_manifest: SourceManifestV1
+    profile: ToolchainProfileV3
+    gate_prepared: GatePreparedEnvelopeV2
+    executor_capabilities: tuple[ExecutorCapability, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 3:
+            raise ValueError("Unsupported admitted replay schema")
+        _validate_admitted_relationships_v3_content(
+            self.run_spec,
+            self.request,
+            self.decision,
+            self.intent,
+            self.resolution,
+            self.source_manifest,
+            self.profile,
+            self.gate_prepared,
+        )
+        if not isinstance(self.executor_capabilities, tuple) or any(
+            type(capability) is not ExecutorCapability
+            for capability in self.executor_capabilities
+        ):
+            raise TypeError(
+                "Executor capabilities must be a tuple of ExecutorCapability objects"
+            )
+        if len(self.executor_capabilities) != len(self.profile.capability_bindings):
+            raise ValueError(
+                "Executor capabilities do not exactly match the toolchain profile"
+            )
+        for binding, capability in zip(
+            self.profile.capability_bindings,
+            self.executor_capabilities,
+            strict=True,
+        ):
+            if capability.canonical_identity != binding.executor_capability_sha256:
+                raise ValueError(
+                    "Executor capabilities do not exactly match the toolchain profile"
+                )
+            self.profile.validate_capability(binding.role, capability)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AdmittedReplayV3:
+        data = _keys(data, cls, "admitted replay")
+        source_manifest_data = _keys(
+            data["source_manifest"], SourceManifestV1, "source manifest wrapper"
+        )
+        return cls(
+            data["schema_version"],
+            ReplayRunSpecV2.from_dict(data["run_spec"]),
+            ReplayRequestV2.from_dict(data["request"]),
+            GateDecision.from_dict(data["decision"]),
+            IntentSpecV2.from_dict(data["intent"]),
+            ResolutionSpecV3.from_dict(data["resolution"]),
+            SourceManifestV1.from_json_value(source_manifest_data["records"]),
+            ToolchainProfileV3.from_dict(data["profile"]),
+            GatePreparedEnvelopeV2.from_dict(data["gate_prepared"]),
+            tuple(
+                ExecutorCapability.from_dict(item)
+                for item in _array(
+                    data["executor_capabilities"], "executor capabilities"
+                )
+            ),
+        )
+
+    def capability(self, role: CapabilityRole) -> ExecutorCapability:
+        if role not in {"install_framework", "decode", "build"}:
+            raise ValueError("Invalid capability role")
+        for binding, capability in zip(
+            self.profile.capability_bindings,
+            self.executor_capabilities,
+            strict=True,
+        ):
+            if binding.role == role:
+                return capability
+        raise KeyError(role)
+
+    def plan(self, role: CapabilityRole) -> RoleExecutionPlan:
+        return self.profile.plan(role)
+
+    @property
+    def run_spec_sha256(self) -> str:
+        return self.run_spec.sha256
+
+    @property
+    def replay_request_sha256(self) -> str:
+        return self.request.sha256
+
+    @property
+    def decision_sha256(self) -> str:
+        return canonical_sha256(self.decision)
+
+    @property
+    def intent_sha256(self) -> str:
+        return self.intent.sha256
+
+    @property
+    def resolution_sha256(self) -> str:
+        return self.resolution.sha256
+
+    @property
+    def source_manifest_sha256(self) -> str:
+        return self.source_manifest.sha256
+
+    @property
+    def toolchain_profile_sha256(self) -> str:
+        return self.profile.sha256
+
+    @property
+    def capability_bindings(self) -> tuple[CapabilityBinding, ...]:
+        return self.profile.capability_bindings
+
+    @property
+    def decode_executor_capability_sha256(self) -> str:
+        return self.profile.binding("decode")
+
+    @property
+    def build_executor_capability_sha256(self) -> str:
+        return self.profile.binding("build")
+
+    @property
+    def install_framework_executor_capability_sha256(self) -> str | None:
+        return self.profile.binding("install_framework") if self.profile.frameworks else None
+
+    @property
+    def direct_artifacts(self) -> tuple[ArtifactRef, ...]:
+        return self.request.direct_artifacts
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+def admit_replay_v3(
+    run_spec: ReplayRunSpecV2,
+    request: ReplayRequestV2,
+    decision: GateDecision,
+    decision_is_recorded: Callable[[GateDecision], bool],
+    artifact_resolver: Callable[[ArtifactRef], bytes],
+    capability_resolver: Callable[[str], ExecutorCapability],
+) -> AdmittedReplayV3:
+    if not isinstance(run_spec, ReplayRunSpecV2) or not isinstance(request, ReplayRequestV2):
+        raise TypeError("Replay admission requires replay contracts")
+    if not isinstance(decision, GateDecision):
+        raise TypeError("Replay admission requires a gate decision")
+    if not callable(decision_is_recorded):
+        raise TypeError("Decision recording predicate must be callable")
+    if not callable(artifact_resolver):
+        raise TypeError("Artifact resolver must be callable")
+    if not callable(capability_resolver):
+        raise TypeError("Capability resolver must be callable")
+
+    if request.run_spec_sha256 != run_spec.sha256:
+        raise ValueError("Replay request does not bind the run specification")
+    _validate_decision(run_spec, decision)
+    try:
+        recorded = decision_is_recorded(decision)
+    except Exception as error:
+        raise ValueError("Unable to verify recorded gate decision") from error
+    if type(recorded) is not bool:
+        raise TypeError("Decision recording predicate must return a boolean")
+    if not recorded:
+        raise ValueError("Gate decision is not recorded")
+
+    if canonical_sha256(request.gate_prepared) != run_spec.gate_prepared_ref_sha256:
+        raise ValueError("Replay request does not bind the gate prepared envelope")
+    gate_prepared_bytes = _resolve_artifact(artifact_resolver, request.gate_prepared)
+    gate_prepared = GatePreparedEnvelopeV2.from_dict(
+        _decode_json(gate_prepared_bytes, "gate prepared envelope")
+    )
+    _validate_gate_prepared_relationship(run_spec, request, gate_prepared)
+    _resolve_artifact(artifact_resolver, request.stock_apk)
+    intent_bytes = _resolve_artifact(artifact_resolver, request.intent)
+    resolution_bytes = _resolve_artifact(artifact_resolver, request.resolution)
+    source_manifest_bytes = _resolve_artifact(artifact_resolver, request.source_manifest)
+    profile_bytes = _resolve_artifact(artifact_resolver, request.toolchain_profile)
+    for framework in request.frameworks:
+        _resolve_artifact(artifact_resolver, framework.artifact)
+    for tool in request.tools:
+        _resolve_artifact(artifact_resolver, tool.artifact)
+
+    intent = IntentSpecV2.from_dict(_decode_json(intent_bytes, "intent"))
+    resolution = ResolutionSpecV3.from_dict(_decode_json(resolution_bytes, "resolution"))
+    source_manifest = SourceManifestV1.from_json_value(
+        _decode_json(source_manifest_bytes, "source manifest")
+    )
+    profile = ToolchainProfileV3.from_dict(
+        _decode_json(profile_bytes, "toolchain profile")
+    )
+    _validate_admitted_relationships_v3_content(
+        run_spec,
+        request,
+        decision,
+        intent,
+        resolution,
+        source_manifest,
+        profile,
+        gate_prepared,
+    )
+
+    capabilities: list[ExecutorCapability] = []
+    for binding in profile.capability_bindings:
+        try:
+            capability = capability_resolver(binding.executor_capability_sha256)
+        except Exception as error:
+            raise ValueError(
+                f"Unable to resolve {binding.role} executor capability"
+            ) from error
+        if type(capability) is not ExecutorCapability:
+            raise TypeError("Capability resolver must return an ExecutorCapability")
+        if capability.canonical_identity != binding.executor_capability_sha256:
+            raise ValueError("Resolved executor capability SHA-256 mismatch")
+        profile.validate_capability(binding.role, capability)
+        capabilities.append(capability)
+
+    return AdmittedReplayV3(
+        3,
+        run_spec,
+        request,
+        decision,
+        intent,
+        resolution,
+        source_manifest,
+        profile,
+        gate_prepared,
+        tuple(capabilities),
     )
