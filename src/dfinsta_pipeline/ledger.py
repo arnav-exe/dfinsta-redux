@@ -5,9 +5,12 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 from .contracts import ArtifactRef, GateDecision, canonical_json
+
+if TYPE_CHECKING:
+    from .replay_contracts import AdmittedReplayV3
 
 
 class Ledger:
@@ -50,6 +53,18 @@ class Ledger:
                     rationale TEXT NOT NULL,
                     issued_at TEXT NOT NULL
                 )""",
+                """CREATE TABLE IF NOT EXISTS admitted_replays_v3 (
+                    run_id TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL CHECK (schema_version = 3),
+                    admitted_replay_sha256 TEXT NOT NULL UNIQUE,
+                    run_spec_sha256 TEXT NOT NULL UNIQUE,
+                    replay_request_sha256 TEXT NOT NULL UNIQUE,
+                    decision_id TEXT NOT NULL UNIQUE,
+                    decision_sha256 TEXT NOT NULL,
+                    toolchain_profile_sha256 TEXT NOT NULL,
+                    admitted_json TEXT NOT NULL,
+                    FOREIGN KEY (decision_id) REFERENCES decisions(decision_id)
+                )""",
                 """CREATE TRIGGER IF NOT EXISTS operation_events_no_update
                     BEFORE UPDATE ON operation_events BEGIN
                     SELECT RAISE(ABORT, 'operation events are append-only'); END""",
@@ -62,6 +77,12 @@ class Ledger:
                 """CREATE TRIGGER IF NOT EXISTS decisions_no_delete
                     BEFORE DELETE ON decisions BEGIN
                     SELECT RAISE(ABORT, 'decisions are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS admitted_replays_v3_no_update
+                    BEFORE UPDATE ON admitted_replays_v3 BEGIN
+                    SELECT RAISE(ABORT, 'admitted replays v3 are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS admitted_replays_v3_no_delete
+                    BEFORE DELETE ON admitted_replays_v3 BEGIN
+                    SELECT RAISE(ABORT, 'admitted replays v3 are append-only'); END""",
             )
             for statement in statements:
                 connection.execute(statement)
@@ -105,6 +126,7 @@ class Ledger:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
         try:
+            connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA busy_timeout=30000")
             for attempt in range(300):
                 try:
@@ -290,6 +312,122 @@ class Ledger:
                 ).fetchone()
                 if row != values:
                     raise ValueError("Decision identity collision") from None
+
+    @staticmethod
+    def _decision_values(decision: GateDecision) -> tuple[object, ...]:
+        return (
+            decision.decision_id,
+            decision.idempotency_id,
+            decision.run_id,
+            decision.gate_id,
+            decision.subject_sha256,
+            decision.admission_sha256,
+            decision.prepared_sha256,
+            decision.policy_revision,
+            decision.actor,
+            decision.decision,
+            decision.rationale,
+            decision.issued_at,
+        )
+
+    @staticmethod
+    def _admitted_replay_v3_values(
+        admitted: AdmittedReplayV3, admitted_json: str
+    ) -> tuple[object, ...]:
+        return (
+            admitted.run_spec.run_id,
+            admitted.schema_version,
+            admitted.sha256,
+            admitted.run_spec_sha256,
+            admitted.replay_request_sha256,
+            admitted.decision.decision_id,
+            admitted.decision_sha256,
+            admitted.toolchain_profile_sha256,
+            admitted_json,
+        )
+
+    @classmethod
+    def _require_decision_row(
+        cls, connection: sqlite3.Connection, decision: GateDecision
+    ) -> None:
+        row = connection.execute(
+            "SELECT decision_id, idempotency_id, run_id, gate_id, subject_sha256, "
+            "admission_sha256, prepared_sha256, policy_revision, actor, decision, rationale, "
+            "issued_at FROM decisions WHERE decision_id = ?",
+            (decision.decision_id,),
+        ).fetchone()
+        if row != cls._decision_values(decision):
+            raise ValueError("Gate decision is not recorded")
+
+    def record_admitted_replay_v3(self, admitted: AdmittedReplayV3) -> None:
+        from .replay_contracts import AdmittedReplayV3
+
+        if type(admitted) is not AdmittedReplayV3:
+            raise TypeError("Admitted replay must be an exact AdmittedReplayV3")
+        admitted_json = canonical_json(admitted)
+        try:
+            normalized = AdmittedReplayV3.from_dict(json.loads(admitted_json))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("Admitted replay is not canonical") from error
+        if canonical_json(normalized) != admitted_json or normalized != admitted:
+            raise ValueError("Admitted replay is not an exact canonical value")
+        values = self._admitted_replay_v3_values(normalized, admitted_json)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_decision_row(connection, normalized.decision)
+            try:
+                connection.execute(
+                    "INSERT INTO admitted_replays_v3 "
+                    "(run_id, schema_version, admitted_replay_sha256, run_spec_sha256, "
+                    "replay_request_sha256, decision_id, decision_sha256, "
+                    "toolchain_profile_sha256, admitted_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+            except sqlite3.IntegrityError:
+                row = connection.execute(
+                    "SELECT run_id, schema_version, admitted_replay_sha256, run_spec_sha256, "
+                    "replay_request_sha256, decision_id, decision_sha256, "
+                    "toolchain_profile_sha256, admitted_json FROM admitted_replays_v3 "
+                    "WHERE run_id = ? OR admitted_replay_sha256 = ? OR run_spec_sha256 = ? "
+                    "OR replay_request_sha256 = ? OR decision_id = ?",
+                    (values[0], values[2], values[3], values[4], values[5]),
+                ).fetchone()
+                if row != values:
+                    raise ValueError("Admitted replay identity collision") from None
+
+    def require_admitted_replay_v3(
+        self, candidate: AdmittedReplayV3
+    ) -> AdmittedReplayV3:
+        from .replay_contracts import AdmittedReplayV3
+
+        if type(candidate) is not AdmittedReplayV3:
+            raise TypeError("Admitted replay must be an exact AdmittedReplayV3")
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT run_id, schema_version, admitted_replay_sha256, run_spec_sha256, "
+                "replay_request_sha256, decision_id, decision_sha256, "
+                "toolchain_profile_sha256, admitted_json FROM admitted_replays_v3 "
+                "WHERE run_id = ?",
+                (candidate.run_spec.run_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Admitted replay authority is not recorded")
+            try:
+                decoded = json.loads(row[8])
+                reconstructed = AdmittedReplayV3.from_dict(decoded)
+                if canonical_json(reconstructed) != row[8]:
+                    raise ValueError("Stored admitted replay is not canonical")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError("Stored admitted replay is corrupt") from error
+            reconstructed_values = self._admitted_replay_v3_values(reconstructed, row[8])
+            candidate_values = self._admitted_replay_v3_values(
+                candidate, canonical_json(candidate)
+            )
+            if row != reconstructed_values or row != candidate_values or reconstructed != candidate:
+                raise ValueError("Admitted replay authority does not match candidate")
+            self._require_decision_row(connection, reconstructed.decision)
+        return reconstructed
 
     def operation_status(self, operation_key: str) -> str | None:
         with self._connection() as connection:
