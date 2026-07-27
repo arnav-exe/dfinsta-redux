@@ -419,6 +419,7 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
         output = await self.invoke(owner="first-owner")
         launches = len(self.launches)
         path = runtime().store.root / "sha256" / output.sha256[:2] / output.sha256
+        path.chmod(0o644)
         path.write_bytes(b"corrupt")
         retry_workspace = (
             runtime().attempts_root

@@ -231,6 +231,7 @@ class StoreAndLedgerTests(unittest.TestCase):
                 kind="test", data=b"value", producer_operation_id="operation-1", input_hashes=()
             )
             path = store.root / "sha256" / reference.sha256[:2] / reference.sha256
+            path.chmod(0o644)
             path.write_bytes(b"corrupt")
             with self.assertRaises(ValueError):
                 store.read_bytes(reference)
