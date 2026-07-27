@@ -2,9 +2,9 @@
 
 ## Objective
 
-Build a reusable multi-agent pipeline that ports DFInsta to new Instagram releases. Instagram 430 is the first fully traced replay fixture and future baseline candidate, not the final destination.
+Build a recurring release pipeline for DFInsta. Each cycle acquires an approved future stock Instagram release, starts from the latest human-promoted `BaselineBundle`, uses bounded Google ADK reasoning to propose target-native adaptations, and runs deterministic approval, apply, build, static verification, signing, and device-validation stages. Acceptance promotes the exact reviewed release as the baseline for the next cycle.
 
-Temporal is the durable outer orchestrator for stage order, multi-day human waits, retries, cancellation, and workflow history. Google ADK owns bounded multi-agent reasoning for mapping, assessment, diagnosis, and drift review. Deterministic programs remain responsible for decoding, indexing, patching, building, signing, verification, and device evidence collection.
+Instagram 340 and 430 are proof fixtures for reconstruction, generalization, replay, and device evidence only. They are not the pipeline's destination or permanently privileged production baselines. Temporal is the durable outer orchestrator for stage order, multi-day human waits, retries, cancellation, and workflow history. Google ADK owns bounded multi-agent reasoning for mapping, assessment, diagnosis, and drift review. Deterministic programs remain responsible for acquisition validation, decoding, indexing, patching, building, signing, verification, and device evidence collection.
 
 This plan incorporates the dry-run evidence in `docs/FINDINGS.md`, the current implementation records, `docs/adk_pipeline_design.md`, and `pipeline_flowchart.md`. The latter two describe the original concept but contain pre-ADK-2.x assumptions and unsafe authority boundaries corrected below.
 
@@ -61,6 +61,10 @@ The initial implementation uses four envelopes rather than implementing every co
 Records split further only when independent lifetimes or concurrency demonstrate the need.
 
 ## Corrected Workflow
+
+### -1. Release Acquisition
+
+At an approved cadence, deterministically acquire or import a future stock Instagram release and record its source, retrieval time, package, version, variant, composition, and content hash. Acquisition creates an immutable candidate artifact only; it does not imply admission, adaptation, signing, installation, or promotion.
 
 ### 0. Run Admission
 
@@ -155,6 +159,8 @@ The human reviews failures, inconclusive claims, and proposed waivers, then subm
 
 Produce a proposed `BaselineBundle`, feature-policy changes, hook-intent changes, target resolution, and decision records. A human-reviewed source-control change promotes them. Agents never commit institutional memory directly.
 
+An accepted `PromotionRecord` designates that exact bundle as the sole default baseline for the next release cycle. A failed, deferred, or fixture-only run does not advance the baseline.
+
 ## Drift Audits
 
 An independent read-only `DriftAuditAgent` runs at four checkpoints:
@@ -186,7 +192,7 @@ Temporal is the sole durable workflow engine. Phase A pins `temporalio==1.30.0`;
 
 ### Phase A Implementation Checkpoint
 
-The atomic commits from `3e91eb5` through `7498dfd` implement, review, and harden the first durable slice. The current suite has 35 Phase A tests and 97 tests overall.
+The atomic commits from `3e91eb5` through `7498dfd` implement, review, and harden the first durable slice. Phase A retains 35 focused tests; the latest full `unittest` discovery after the Phase B authority checkpoints passes 166 tests.
 
 Proven:
 
@@ -259,7 +265,7 @@ Acceptance:
 - Every operation has exact anchor cardinality, idempotence marker, and generated final-DEX proof.
 - 430-specific values occur only in its resolution fixture.
 
-Implementation checkpoint (`1a30252` through `a4b7867`): strict contracts, the target-neutral compiler, generated 340/430 fixtures, decoded-tree apply primitives, both archive backends, and receipt-bound verification are committed and independently reviewed. Provisioned mini-tree tests apply and reapply all 59 340 and seven 430 operations. The remaining Phase B blocker is orchestration: apktool/framework/decoder execution must use admitted `RunSpec` capabilities and ledger-owned attempts with source admission, verified-result adoption, quarantine, and verify-before-publish. A standalone caller-authorized replay CLI was rejected and deleted; no real generic replay has run.
+Implementation checkpoint (`1a30252` through `9ed300a`): strict contracts, the target-neutral compiler, generated 340/430 fixtures, decoded-tree apply primitives, both archive backends, receipt-bound verification, immutable source admission, gate-bound tool admission, and role execution-plan contracts are committed and independently reviewed. Provisioned mini-tree tests apply and reapply all 59 340 and seven 430 operations. Execution remains pending: `ToolchainProfileV3` is not yet admitted by replay admission, and no ledger-owned framework/decode/build/apply/verify Activity or real generic replay has run.
 
 The first admitted source-staging backend is intentionally Linux-only. It requires descriptor-relative `O_NOFOLLOW`/`O_DIRECTORY`, symlink-safe tree removal, and a successful `renameat2(RENAME_NOREPLACE)` probe on the attempt filesystem. Native Windows support must use an equivalent handle-relative reparse-point-safe backend; it must not silently fall back to pathname checks.
 
@@ -300,7 +306,7 @@ Acceptance:
 
 Wrap the proven generic stages in `PortRunWorkflow` Activities and replay 340 and 430 without LLM mutation. Extend the gated device executor only with the controlled operations listed in Stage 8.
 
-430 fixture assertions remain fixture data: six operations, four custom descriptors, 20 DEX files, unsafe full-resource rebuild, stock payload preservation, approved signer, installed-byte identity, startup, settings defaults, and same-key update.
+430 fixture assertions remain fixture data: seven operations comprising six host edits and one four-file custom-code overlay, four custom descriptors, 20 DEX files, unsafe full-resource rebuild, stock payload preservation, approved signer, installed-byte identity, startup, settings defaults, and same-key update.
 
 Acceptance:
 
@@ -347,11 +353,9 @@ Acceptance:
 - Human gate timeout: configurable `blocked`; never implicit approval.
 - Budget exhaustion: `blocked`, `deferred`, or `failed`, never an automatic loop.
 
-## 430 Promotion Boundary
+## 340/430 Fixture Boundary
 
-The current 430 release candidate has passed clean installation, exact installed-byte identity, logged-out and logged-in startup, settings entry, five checked defaults, and a same-key in-place update. It can be used immediately as a golden mechanical replay fixture.
-
-It becomes the accepted behavioral baseline only after strict core contrasts are completed or explicitly waived. Profile-ad runtime absence remains inconclusive without eligible inventory and need not block pipeline implementation.
+The 340 reconstruction and current 430 release candidate are golden proof fixtures for deterministic replay and device-contract development. Their recorded evidence remains authoritative fixture evidence, but neither fixture defines the recurring pipeline's end state. Promotion semantics must ultimately be demonstrated on a future acquired release, whose accepted bundle then becomes the next baseline. Profile-ad runtime absence remains inconclusive without eligible inventory and need not block pipeline implementation.
 
 ## Deferred Work
 

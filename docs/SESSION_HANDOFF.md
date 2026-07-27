@@ -1,12 +1,12 @@
 # Session Handoff
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 ## End Goal
 
-Create a reproducible, privacy-respecting pipeline with Temporal as the durable outer orchestrator and Google ADK as the multi-agent reasoning layer. It takes a clean stock Instagram APK, resolves and applies small target-native DFInsta patches, builds/signs after human authorization, and proves retained behavior with structured device evidence. Instagram 340 / DFInsta 1.4.1 is the golden reference; Instagram 430 is the first fully traced replay fixture and future baseline candidate.
+Create a recurring, privacy-respecting release pipeline with Temporal as the durable outer orchestrator and Google ADK as a bounded reasoning layer. Each cycle acquires an approved future stock Instagram release, adapts it from the latest human-promoted DFInsta baseline, and runs hash-bound approval, deterministic build/static verification, authorized signing, and structured device validation. Acceptance promotes the exact reviewed bundle as the baseline for the next cycle.
 
-Mechanical extraction, indexing, patching, building, and verification must remain deterministic. Agents should handle ambiguous class mapping, diagnosis, and explicit human gates rather than directly improvising the whole port.
+Instagram 340 and 430 are proof fixtures only. They establish reconstruction, mapping, packaging, replay, and device oracles; they are not the final destination or permanently selected production baseline. Mechanical extraction, indexing, patching, building, and verification remain deterministic. Agents propose evidence-backed mappings and diagnosis but cannot approve, mutate, sign, publish, or promote their own output.
 
 ## User Working Preferences
 
@@ -238,7 +238,7 @@ Not yet proven: a separately launched and authenticated trusted-client OS proces
 
 ## Phase B Pipeline State
 
-Commits `1a30252` through `a4b7867` implement the reviewed deterministic core without changing Phase A History contracts:
+Commits `1a30252` through `9ed300a` implement the reviewed deterministic core and admitted execution authority contracts without changing Phase A History contracts:
 
 - Strict target-independent intent and version-scoped resolution contracts, including exhaustive per-target implemented/omitted status with rationale.
 - Generated 340 and 430 fixtures plus source manifests. The 340 fixture has 59 operations, including 45 exact method/register-scoped smali edits. The 430 fixture has its six proven host edits plus one four-file custom-code overlay.
@@ -246,21 +246,22 @@ Commits `1a30252` through `a4b7867` implement the reviewed deterministic core wi
 - A target-neutral decoded-tree applier. Provisioned mini-tree tests apply all 59 340 operations and all seven 430 operations, then classify every second-run operation as already applied.
 - Full-rebuild and stock-DEX-graft archive backends with no-clobber staging, exact DEX topology, signature stripping, and retained stock entry byte/order/metadata preservation.
 - A receipt-bound verifier for operation proofs, descriptor placement, DEX strings, archive preservation, resources, manifest components, and backend policy. The decoded tree is accepted only through an output/tree/tool-capability receipt that the admitted executor and CAS must own.
+- Immutable source and tool bytes plus exact producer lineage are bound into recorded replay authority. `ToolchainProfileV3` role plans bind tool identity, logical paths, timeout, and executor capability shape. These remain authority contracts: replay admission does not yet admit V3 plans and no replay Activity executes them.
 
 The standalone replay CLI prototype was rejected and deleted before commit or execution. Caller-supplied tool hashes are not admission, and a self-issued decoder receipt is not capability provenance. Real replay must run as ledger-owned attempt Activities through admitted executor capabilities, verify source manifests, keep output attempt-local through final verification, then complete/adopt or quarantine before exclusive publication.
 
 The initial secure source-staging primitive is deliberately restricted to Linux workers with descriptor-relative no-follow opens, symlink-safe removal, and working `renameat2(RENAME_NOREPLACE)` on the attempt filesystem. Native Windows staging remains a separate required backend; unsafe pathname fallbacks are rejected.
 
-Focused Phase B coverage currently includes contract, compiler, fixture, apply, backend, and verifier suites. No real generic 340/430 apktool replay has run yet. The legacy target-specific rebuilds remain the exercised artifact evidence.
+The latest full `unittest` discovery passes 166 tests. No real generic 340/430 apktool replay has run yet. The legacy target-specific rebuilds remain the exercised artifact evidence.
 
 ## Immediate Next Actions
 
-1. Integrate the committed Phase B core with ledger-owned attempt Activities and admitted immutable apktool/framework/decoder profiles. Add completed-result adoption, incomplete-attempt quarantine, and verify-before-publish.
+1. Gate-bind `ToolchainProfileV3` execution plans in replay admission, then implement ledger-owned attempt Activities for framework installation, decode, source staging, apply, build, verification, completed-result adoption, incomplete-attempt quarantine, and verify-before-publish.
 2. Replay both fixtures from clean APKs through that admitted path, then add mutation fixtures for missing/ambiguous anchors, DEX movement/collision, and unsafe resource rebuilds.
 3. Complete Phase A authority/deployment evidence with an authenticated trusted-client process, hard process-loss test, and saved replay corpus. Normal Current-version rollout is proven.
 4. Add Google ADK as bounded read-only Temporal Activities only after deterministic generalization passes.
 5. Replay the admitted engine through the durable workflow before adding specialist agent topology.
-6. Repeat strict core contrasts before promoting 430 as the accepted behavioral baseline; keep restart/cache caveats explicit.
+6. Use strict 340/430 contrasts to validate fixture and device-executor behavior. Demonstrate promotion on an accepted future release and use that promoted bundle as the next rolling baseline.
 7. Treat profile-ad runtime validation as inventory-dependent and non-blocking for pipeline implementation.
 
 ## Instagram 430 State
