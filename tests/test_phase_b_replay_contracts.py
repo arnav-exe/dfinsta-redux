@@ -12,6 +12,7 @@ from dfinsta_pipeline.contracts import (
     canonical_json,
     canonical_sha256,
 )
+from dfinsta_pipeline.executor import ExecutorCapability
 from dfinsta_pipeline.port_contracts import (
     ApktoolFullRebuildBackend,
     HookIntent,
@@ -32,10 +33,12 @@ from dfinsta_pipeline.replay_contracts import (
     ReplayRequestV2,
     ReplayRunSpecV1,
     ReplayRunSpecV2,
+    RoleExecutionPlan,
     SourceManifestV1,
     ToolArtifact,
     ToolchainProfile,
     ToolchainProfileV2,
+    ToolchainProfileV3,
     ToolRequirement,
     admit_replay,
     admit_replay_v2,
@@ -341,6 +344,56 @@ def fixture_v2(
         for tool, (_, _, payload) in zip(tool_artifacts, tool_payloads, strict=True)
     )
     return FixtureV2(run_spec, request, decision, payloads)
+
+
+def profile_v3(with_framework: bool = False) -> ToolchainProfileV3:
+    profile = admit_v2(fixture_v2(with_framework)).profile
+    plans = [
+        RoleExecutionPlan(
+            "build",
+            "resource-compiler",
+            (
+                ("decoded_tree", "decoded_tree"),
+                ("framework_dir", "framework_dir"),
+                ("intermediate_apk", "intermediate_apk"),
+                ("tool", "tool"),
+            ),
+            300,
+        ),
+        RoleExecutionPlan(
+            "decode",
+            "bundle-engine",
+            (
+                ("decoded_tree", "decoded_tree"),
+                ("framework_dir", "framework_dir"),
+                ("input_apk", "input_apk"),
+                ("tool", "tool"),
+            ),
+            300,
+        ),
+    ]
+    if with_framework:
+        plans.append(
+            RoleExecutionPlan(
+                "install_framework",
+                "resource-compiler",
+                (
+                    ("framework_apk", "framework_apk"),
+                    ("framework_dir", "framework_dir"),
+                    ("tool", "tool"),
+                ),
+                300,
+            )
+        )
+    return ToolchainProfileV3(
+        3,
+        profile.profile_id,
+        profile.backend_kind,
+        profile.capability_bindings,
+        profile.frameworks,
+        profile.tools,
+        tuple(sorted(plans, key=lambda plan: plan.role)),
+    )
 
 
 def resolve_from(payloads: dict[str, bytes]) -> Callable[[ArtifactRef], bytes]:
@@ -757,9 +810,157 @@ class ReplayContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             replace(case.request, tools=(case.request.tools[0], case.request.tools[0]))
 
+    def test_v3_execution_plans_are_exact_role_authority(self) -> None:
+        profile = profile_v3(True)
+        build, decode, install = profile.execution_plans
+        self.assertEqual(RoleExecutionPlan.from_dict(asdict(build)), build)
+        self.assertEqual(ToolchainProfileV3.from_dict(asdict(profile)), profile)
+        self.assertEqual(profile.plan("build"), build)
+        self.assertEqual(profile.plan("decode"), decode)
+        self.assertEqual(profile.plan("install_framework"), install)
+        with self.assertRaises(ValueError):
+            replace(profile, execution_plans=(build, decode))
+        with self.assertRaises(ValueError):
+            replace(profile, execution_plans=(decode, build, install))
+        with self.assertRaises(ValueError):
+            replace(
+                profile,
+                execution_plans=(replace(build, tool_id="bundle-engine"), decode, install),
+            )
+        with self.assertRaises(ValueError):
+            replace(
+                profile,
+                execution_plans=(
+                    build,
+                    decode,
+                    replace(install, tool_id="bundle-engine"),
+                ),
+            )
+        with self.assertRaises(ValueError):
+            replace(
+                build,
+                arguments=tuple(
+                    pair for pair in build.arguments if pair[1] != "intermediate_apk"
+                ),
+            )
+        with self.assertRaises(ValueError):
+            replace(build, arguments=(*build.arguments, ("extra", "tool")))
+        with self.assertRaises(ValueError):
+            replace(build, timeout_seconds=0)
+
+    def test_v3_execution_plan_matches_resolved_capability_paths(self) -> None:
+        profile = profile_v3()
+        capabilities = {}
+        for role in ("build", "decode"):
+            plan = profile.plan(role)
+            names = tuple(name for name, _ in plan.arguments)
+            capabilities[role] = ExecutorCapability(
+                1,
+                f"{role}-capability",
+                "f" * 64,
+                tuple(f"{{{name}}}" for name in names),
+                names,
+                ("stock-apk",),
+                "synthetic-output",
+                (),
+                (),
+                ("output",),
+            )
+        profile = replace(
+            profile,
+            capability_bindings=tuple(
+                CapabilityBinding(role, capabilities[role].canonical_identity)
+                for role in ("build", "decode")
+            ),
+        )
+        self.assertEqual(profile.validate_capability("build", capabilities["build"]), profile.plan("build"))
+        self.assertEqual(
+            profile.validate_capability("decode", capabilities["decode"]),
+            profile.plan("decode"),
+        )
+        with self.assertRaises(ValueError):
+            profile.validate_capability("build", capabilities["decode"])
+
+        renamed = replace(
+            profile.plan("build"),
+            arguments=tuple(
+                (f"argument_{index}", slot)
+                for index, (_, slot) in enumerate(profile.plan("build").arguments)
+            ),
+        )
+        renamed_profile = replace(
+            profile,
+            execution_plans=(renamed, profile.plan("decode")),
+        )
+        with self.assertRaisesRegex(ValueError, "path arguments"):
+            renamed_profile.validate_capability("build", capabilities["build"])
+
+        decode = capabilities["decode"]
+        non_path = replace(decode, argv_template=(*decode.argv_template, "{mode}"))
+        non_path_profile = replace(
+            profile,
+            capability_bindings=(
+                profile.capability_bindings[0],
+                CapabilityBinding("decode", non_path.canonical_identity),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "path arguments"):
+            non_path_profile.validate_capability("decode", non_path)
+
+    def test_v3_native_tool_plan_needs_only_role_io_paths(self) -> None:
+        base = profile_v3()
+        tool = replace(
+            base.tool_for_role("decode"),
+            artifact_sha256="f" * 64,
+        )
+        tools = (tool, base.tool_for_role("build"))
+        plan = RoleExecutionPlan(
+            "decode",
+            tool.tool_id,
+            (("input", "input_apk"), ("output", "decoded_tree")),
+            45,
+        )
+        capability = ExecutorCapability(
+            1,
+            "native-decode",
+            tool.artifact_sha256,
+            ("decode", "{input}", "--output", "{output}"),
+            ("input", "output"),
+            ("stock-apk",),
+            "decoded-tree",
+            (),
+            (),
+            ("output",),
+        )
+        profile = ToolchainProfileV3(
+            3,
+            base.profile_id,
+            base.backend_kind,
+            (
+                base.capability_bindings[0],
+                CapabilityBinding("decode", capability.canonical_identity),
+            ),
+            base.frameworks,
+            tools,
+            (base.plan("build"), plan),
+        )
+        self.assertEqual(profile.validate_capability("decode", capability), plan)
+        self.assertEqual(profile.validate_capability("decode", capability).timeout_seconds, 45)
+        mismatched = replace(capability, executable_sha256="e" * 64)
+        mismatched_profile = replace(
+            profile,
+            capability_bindings=(
+                profile.capability_bindings[0],
+                CapabilityBinding("decode", mismatched.canonical_identity),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "Native tool"):
+            mismatched_profile.validate_capability("decode", mismatched)
+
     def test_v1_and_v2_decoders_are_schema_separated(self) -> None:
         v1 = admit(fixture())
         v2 = admit_v2(fixture_v2())
+        v3_profile = profile_v3()
         decoder_pairs = (
             (ReplayRunSpecV1.from_dict, asdict(v2.run_spec)),
             (ReplayRunSpecV2.from_dict, asdict(v1.run_spec)),
@@ -769,11 +970,25 @@ class ReplayContractTests(unittest.TestCase):
             (ReplayRequestV2.from_dict, asdict(v1.request)),
             (AdmittedReplay.from_dict, asdict(v2)),
             (AdmittedReplayV2.from_dict, asdict(v1)),
+            (ToolchainProfileV2.from_dict, asdict(v3_profile)),
+            (ToolchainProfileV3.from_dict, asdict(v2.profile)),
         )
         for decoder, payload in decoder_pairs:
             with self.subTest(decoder=decoder):
                 with self.assertRaises((TypeError, ValueError)):
                     decoder(payload)
+
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(ToolchainProfileV2)),
+            (
+                "schema_version",
+                "profile_id",
+                "backend_kind",
+                "capability_bindings",
+                "frameworks",
+                "tools",
+            ),
+        )
 
     def test_v2_requires_exact_tool_id_kind_and_hash_pairs(self) -> None:
         admitted = admit_v2(fixture_v2())

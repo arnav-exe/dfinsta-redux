@@ -4,10 +4,12 @@ import dataclasses
 import hashlib
 import json
 import re
+import string
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 from .contracts import ArtifactRef, GateDecision, canonical_sha256
+from .executor import ExecutorCapability
 from .port_contracts import IntentSpecV2, ResolutionSpecV3, SourceFile
 
 
@@ -16,6 +18,14 @@ ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 LOWER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 CapabilityRole = Literal["install_framework", "decode", "build"]
 BackendKind = Literal["apktool_full_rebuild", "stock_dex_graft"]
+LogicalPath = Literal[
+    "tool",
+    "framework_apk",
+    "framework_dir",
+    "input_apk",
+    "decoded_tree",
+    "intermediate_apk",
+]
 
 
 def _keys(data: object, cls: type[object], label: str) -> dict[str, Any]:
@@ -359,6 +369,71 @@ class ToolRequirement:
 
 
 @dataclass(frozen=True, slots=True)
+class RoleExecutionPlan:
+    role: CapabilityRole
+    tool_id: str
+    arguments: tuple[tuple[str, LogicalPath], ...]
+    timeout_seconds: int
+
+    def __post_init__(self) -> None:
+        required_slots = {
+            "install_framework": {"framework_apk", "framework_dir"},
+            "decode": {"input_apk", "decoded_tree"},
+            "build": {"decoded_tree", "intermediate_apk"},
+        }
+        allowed_slots = {
+            "install_framework": required_slots["install_framework"] | {"tool"},
+            "decode": required_slots["decode"] | {"tool", "framework_dir"},
+            "build": required_slots["build"] | {"tool", "framework_dir"},
+        }
+        if self.role not in required_slots:
+            raise ValueError("Invalid execution plan role")
+        _identifier(self.tool_id, "execution plan tool id", lowercase=True)
+        if not isinstance(self.arguments, tuple) or any(
+            not isinstance(pair, tuple)
+            or len(pair) != 2
+            or type(pair[0]) is not str
+            or type(pair[1]) is not str
+            for pair in self.arguments
+        ):
+            raise TypeError("Execution plan arguments must be a tuple of string pairs")
+        names = tuple(pair[0] for pair in self.arguments)
+        if names != tuple(sorted(names)) or len(names) != len(set(names)):
+            raise ValueError("Execution plan argument names must be sorted and unique")
+        if any(not name.isidentifier() for name in names):
+            raise ValueError("Invalid execution plan argument name")
+        slots = tuple(pair[1] for pair in self.arguments)
+        if (
+            len(slots) != len(set(slots))
+            or not required_slots[self.role].issubset(slots)
+            or not set(slots).issubset(allowed_slots[self.role])
+        ):
+            raise ValueError("Execution plan logical paths do not match role")
+        if type(self.timeout_seconds) is not int:
+            raise TypeError("Execution plan timeout must be an integer")
+        if not 1 <= self.timeout_seconds <= 3600:
+            raise ValueError("Execution plan timeout must be between 1 and 3600 seconds")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoleExecutionPlan:
+        data = _keys(data, cls, "role execution plan")
+        arguments = _array(data["arguments"], "execution plan arguments")
+        return cls(
+            data["role"],
+            data["tool_id"],
+            tuple(
+                tuple(_array(pair, "execution plan argument"))
+                for pair in arguments
+            ),
+            data["timeout_seconds"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ToolchainProfile:
     schema_version: int
     profile_id: str
@@ -526,6 +601,124 @@ class ToolchainProfileV2:
             if role in requirement.roles:
                 return requirement
         raise KeyError(role)
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolchainProfileV3:
+    schema_version: int
+    profile_id: str
+    backend_kind: BackendKind
+    capability_bindings: tuple[CapabilityBinding, ...]
+    frameworks: tuple[FrameworkRequirement, ...]
+    tools: tuple[ToolRequirement, ...]
+    execution_plans: tuple[RoleExecutionPlan, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 3:
+            raise ValueError("Unsupported toolchain profile schema")
+        base = ToolchainProfileV2(
+            2,
+            self.profile_id,
+            self.backend_kind,
+            self.capability_bindings,
+            self.frameworks,
+            self.tools,
+        )
+        expected_roles = {binding.role for binding in base.capability_bindings}
+        if not isinstance(self.execution_plans, tuple) or any(
+            not isinstance(plan, RoleExecutionPlan) for plan in self.execution_plans
+        ):
+            raise TypeError("Execution plans must be a tuple of RoleExecutionPlan objects")
+        _sorted_unique(self.execution_plans, "execution plans", key=lambda item: item.role)
+        if {plan.role for plan in self.execution_plans} != expected_roles:
+            raise ValueError("Execution plans do not match capability roles")
+        tools_by_id = {tool.tool_id: tool for tool in self.tools}
+        if any(
+            plan.tool_id not in tools_by_id or plan.role not in tools_by_id[plan.tool_id].roles
+            for plan in self.execution_plans
+        ):
+            raise ValueError("Execution plans do not match tool role assignments")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ToolchainProfileV3:
+        data = _keys(data, cls, "toolchain profile")
+        return cls(
+            data["schema_version"],
+            data["profile_id"],
+            data["backend_kind"],
+            tuple(
+                CapabilityBinding.from_dict(item)
+                for item in _array(data["capability_bindings"], "capability bindings")
+            ),
+            tuple(
+                FrameworkRequirement.from_dict(item)
+                for item in _array(data["frameworks"], "framework requirements")
+            ),
+            tuple(
+                ToolRequirement.from_dict(item)
+                for item in _array(data["tools"], "tool requirements")
+            ),
+            tuple(
+                RoleExecutionPlan.from_dict(item)
+                for item in _array(data["execution_plans"], "execution plans")
+            ),
+        )
+
+    def binding(self, role: CapabilityRole) -> str:
+        return ToolchainProfileV2(
+            2,
+            self.profile_id,
+            self.backend_kind,
+            self.capability_bindings,
+            self.frameworks,
+            self.tools,
+        ).binding(role)
+
+    def tool_for_role(self, role: CapabilityRole) -> ToolRequirement:
+        return ToolchainProfileV2(
+            2,
+            self.profile_id,
+            self.backend_kind,
+            self.capability_bindings,
+            self.frameworks,
+            self.tools,
+        ).tool_for_role(role)
+
+    def plan(self, role: CapabilityRole) -> RoleExecutionPlan:
+        if role not in {"install_framework", "decode", "build"}:
+            raise ValueError("Invalid capability role")
+        for plan in self.execution_plans:
+            if plan.role == role:
+                return plan
+        raise KeyError(role)
+
+    def validate_capability(
+        self, role: CapabilityRole, capability: ExecutorCapability
+    ) -> RoleExecutionPlan:
+        if not isinstance(capability, ExecutorCapability):
+            raise TypeError("Capability must be an ExecutorCapability")
+        if capability.canonical_identity != self.binding(role):
+            raise ValueError("Executor capability does not match execution plan role")
+        plan = self.plan(role)
+        placeholders = {
+            field_name
+            for template in capability.argv_template
+            for _, field_name, _, _ in string.Formatter().parse(template)
+            if field_name is not None
+        }
+        argument_names = tuple(name for name, _ in plan.arguments)
+        if placeholders != set(capability.path_arguments) or argument_names != capability.path_arguments:
+            raise ValueError("Execution plan arguments do not match capability path arguments")
+        tool = self.tool_for_role(role)
+        if "tool" not in {slot for _, slot in plan.arguments} and (
+            capability.executable_sha256 != tool.artifact_sha256
+        ):
+            raise ValueError("Native tool does not match capability executable")
+        return plan
 
     @property
     def sha256(self) -> str:
