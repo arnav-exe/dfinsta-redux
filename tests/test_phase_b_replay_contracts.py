@@ -23,14 +23,22 @@ from dfinsta_pipeline.port_contracts import (
 )
 from dfinsta_pipeline.replay_contracts import (
     AdmittedReplay,
+    AdmittedReplayV2,
     CapabilityBinding,
     FrameworkArtifact,
     FrameworkRequirement,
+    GatePreparedEnvelopeV2,
     ReplayRequest,
+    ReplayRequestV2,
     ReplayRunSpecV1,
+    ReplayRunSpecV2,
     SourceManifestV1,
+    ToolArtifact,
     ToolchainProfile,
+    ToolchainProfileV2,
+    ToolRequirement,
     admit_replay,
+    admit_replay_v2,
 )
 
 
@@ -203,6 +211,138 @@ def fixture(with_framework: bool = False) -> Fixture:
     return Fixture(run_spec, request, decision, payloads)
 
 
+@dataclass(frozen=True)
+class FixtureV2:
+    run_spec: ReplayRunSpecV2
+    request: ReplayRequestV2
+    decision: GateDecision
+    payloads: dict[str, bytes]
+
+    def resolve(self, artifact: ArtifactRef) -> bytes:
+        return self.payloads[canonical_sha256(artifact)]
+
+    def decision_is_recorded(self, decision: GateDecision) -> bool:
+        return canonical_sha256(decision) == canonical_sha256(self.decision)
+
+
+def fixture_v2(
+    with_framework: bool = False, *, tool_payload_suffix: bytes = b""
+) -> FixtureV2:
+    base = fixture(with_framework)
+    admitted = admit(base)
+    tool_payloads = (
+        (
+            "bundle-engine",
+            "native-binary",
+            b"synthetic bundle engine" + tool_payload_suffix,
+        ),
+        (
+            "resource-compiler",
+            "java-archive",
+            b"synthetic resource compiler" + tool_payload_suffix,
+        ),
+    )
+    tool_artifacts = tuple(
+        ToolArtifact(tool_id, artifact_ref(kind, payload))
+        for tool_id, kind, payload in tool_payloads
+    )
+    tool_roles = {
+        "bundle-engine": ("decode",),
+        "resource-compiler": (
+            ("build", "install_framework") if with_framework else ("build",)
+        ),
+    }
+    profile = ToolchainProfileV2(
+        2,
+        admitted.profile.profile_id,
+        admitted.profile.backend_kind,
+        admitted.profile.capability_bindings,
+        admitted.profile.frameworks,
+        tuple(
+            ToolRequirement(
+                tool.tool_id,
+                tool.artifact.kind,
+                tool.artifact.sha256,
+                tool_roles[tool.tool_id],
+            )
+            for tool in tool_artifacts
+        ),
+    )
+    profile_payload = json_bytes(profile)
+    profile_ref = artifact_ref("toolchain-profile", profile_payload)
+    gate_prepared = GatePreparedEnvelopeV2(
+        2,
+        base.request.stock_apk,
+        base.request.intent,
+        base.request.resolution,
+        base.request.source_manifest,
+        profile_ref,
+        base.request.frameworks,
+        tool_artifacts,
+    )
+    gate_prepared_payload = json_bytes(gate_prepared)
+    gate_prepared_inputs = (
+        gate_prepared.stock_apk.sha256,
+        gate_prepared.intent.sha256,
+        gate_prepared.resolution.sha256,
+        gate_prepared.source_manifest.sha256,
+        gate_prepared.toolchain_profile.sha256,
+        *(framework.artifact.sha256 for framework in gate_prepared.frameworks),
+        *(tool.artifact.sha256 for tool in gate_prepared.tools),
+    )
+    gate_prepared_ref = artifact_ref(
+        "replay-gate-prepared-v2",
+        gate_prepared_payload,
+        inputs=gate_prepared_inputs,
+    )
+    run_spec = ReplayRunSpecV2(
+        2,
+        base.run_spec.run_id,
+        base.run_spec.subject_sha256,
+        base.run_spec.intent_sha256,
+        base.run_spec.resolution_sha256,
+        base.run_spec.source_manifest_sha256,
+        profile.sha256,
+        base.run_spec.executor_capability_sha256s,
+        base.run_spec.gate_id,
+        base.run_spec.gate_admission_sha256,
+        gate_prepared_ref.sha256,
+        canonical_sha256(gate_prepared_ref),
+        base.run_spec.allowed_actor,
+        base.run_spec.policy_revision,
+        base.run_spec.apk_composition,
+    )
+    request = ReplayRequestV2(
+        2,
+        run_spec.sha256,
+        gate_prepared_ref,
+        base.request.stock_apk,
+        base.request.intent,
+        base.request.resolution,
+        base.request.source_manifest,
+        profile_ref,
+        base.request.frameworks,
+        tool_artifacts,
+    )
+    decision = replace(
+        base.decision,
+        subject_sha256=run_spec.sha256,
+        prepared_sha256=gate_prepared_ref.sha256,
+    )
+    payloads = {
+        key: value
+        for key, value in base.payloads.items()
+        if key != canonical_sha256(base.request.toolchain_profile)
+    }
+    payloads[canonical_sha256(profile_ref)] = profile_payload
+    payloads[canonical_sha256(gate_prepared_ref)] = gate_prepared_payload
+    payloads.update(
+        (canonical_sha256(tool.artifact), payload)
+        for tool, (_, _, payload) in zip(tool_artifacts, tool_payloads, strict=True)
+    )
+    return FixtureV2(run_spec, request, decision, payloads)
+
+
 def resolve_from(payloads: dict[str, bytes]) -> Callable[[ArtifactRef], bytes]:
     return lambda artifact: payloads[canonical_sha256(artifact)]
 
@@ -225,7 +365,67 @@ def admit(
     )
 
 
+def admit_v2(
+    case: FixtureV2,
+    *,
+    run_spec: ReplayRunSpecV2 | None = None,
+    request: ReplayRequestV2 | None = None,
+    decision: GateDecision | None = None,
+    decision_is_recorded: Callable[[GateDecision], bool] | None = None,
+    artifact_resolver: Callable[[ArtifactRef], bytes] | None = None,
+) -> AdmittedReplayV2:
+    return admit_replay_v2(
+        run_spec or case.run_spec,
+        request or case.request,
+        decision or case.decision,
+        decision_is_recorded or case.decision_is_recorded,
+        artifact_resolver or case.resolve,
+    )
+
+
 class ReplayContractTests(unittest.TestCase):
+    def test_v1_identity_is_pinned(self) -> None:
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(ToolchainProfile)),
+            (
+                "schema_version",
+                "profile_id",
+                "backend_kind",
+                "capability_bindings",
+                "frameworks",
+            ),
+        )
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(ReplayRequest)),
+            (
+                "schema_version",
+                "run_spec_sha256",
+                "stock_apk",
+                "intent",
+                "resolution",
+                "source_manifest",
+                "toolchain_profile",
+                "frameworks",
+            ),
+        )
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(AdmittedReplay)),
+            (
+                "schema_version",
+                "run_spec",
+                "request",
+                "decision",
+                "intent",
+                "resolution",
+                "source_manifest",
+                "profile",
+            ),
+        )
+        self.assertEqual(
+            admit(fixture()).sha256,
+            "bc8e7fa6c90a6a9998b74a035ef025dc4447ed2d75eddee52600e33726890a20",
+        )
+
     def test_replay_run_gate_fields_are_strict_and_phase_a_is_unchanged(self) -> None:
         run_spec = fixture().run_spec
         self.assertEqual(ReplayRunSpecV1.from_dict(asdict(run_spec)), run_spec)
@@ -452,6 +652,297 @@ class ReplayContractTests(unittest.TestCase):
                 admitted,
                 profile=replace(admitted.profile, backend_kind="stock_dex_graft"),
             )
+
+    def test_v2_roundtrips_and_hashes_include_tools(self) -> None:
+        case = fixture_v2()
+        admitted = admit_v2(case)
+        tool = case.request.tools[0]
+        requirement = admitted.profile.tools[0]
+        self.assertEqual(ToolArtifact.from_dict(asdict(tool)), tool)
+        self.assertEqual(ToolRequirement.from_dict(asdict(requirement)), requirement)
+        self.assertEqual(requirement.requirement_sha256, canonical_sha256(requirement))
+        self.assertEqual(ToolchainProfileV2.from_dict(asdict(admitted.profile)), admitted.profile)
+        self.assertEqual(ReplayRequestV2.from_dict(asdict(case.request)), case.request)
+        self.assertEqual(
+            GatePreparedEnvelopeV2.from_dict(asdict(admitted.gate_prepared)),
+            admitted.gate_prepared,
+        )
+        self.assertEqual(AdmittedReplayV2.from_dict(asdict(admitted)), admitted)
+        self.assertEqual(admitted.direct_artifacts, case.request.direct_artifacts)
+        self.assertEqual(admitted.toolchain_profile_sha256, admitted.profile.sha256)
+        self.assertEqual(
+            case.run_spec.gate_prepared_sha256,
+            case.request.gate_prepared.sha256,
+        )
+        self.assertEqual(
+            case.run_spec.gate_prepared_ref_sha256,
+            canonical_sha256(case.request.gate_prepared),
+        )
+        self.assertEqual(case.decision.prepared_sha256, case.request.gate_prepared.sha256)
+        self.assertNotEqual(
+            admitted.profile.sha256,
+            replace(
+                admitted.profile,
+                tools=(
+                    replace(requirement, artifact_kind="portable-binary"),
+                    *admitted.profile.tools[1:],
+                ),
+            ).sha256,
+        )
+        changed_tool = replace(tool, artifact=artifact_ref(tool.artifact.kind, b"changed tool"))
+        self.assertNotEqual(
+            case.request.sha256,
+            replace(case.request, tools=(changed_tool, *case.request.tools[1:])).sha256,
+        )
+
+    def test_v2_admits_role_bound_tools_with_and_without_frameworks(self) -> None:
+        for with_framework in (False, True):
+            case = fixture_v2(with_framework)
+            admitted = admit_v2(case)
+            with self.subTest(with_framework=with_framework):
+                self.assertEqual(
+                    tuple(tool.tool_id for tool in admitted.profile.tools),
+                    ("bundle-engine", "resource-compiler"),
+                )
+                self.assertEqual(
+                    admitted.install_framework_executor_capability_sha256,
+                    "c" * 64 if with_framework else None,
+                )
+                self.assertEqual(
+                    tuple(tool.artifact for tool in admitted.request.tools),
+                    admitted.direct_artifacts[-2:],
+                )
+                self.assertEqual(
+                    admitted.profile.tool_for_role("decode").tool_id,
+                    "bundle-engine",
+                )
+                self.assertEqual(
+                    admitted.profile.tool_for_role("build").tool_id,
+                    "resource-compiler",
+                )
+
+    def test_v2_tool_contracts_reject_bad_ids_duplicates_hashes_and_order(self) -> None:
+        case = fixture_v2()
+        admitted = admit_v2(case)
+        first, second = admitted.profile.tools
+        for constructor in (
+            lambda: ToolRequirement("Uppercase", "native-binary", "1" * 64, ("decode",)),
+            lambda: ToolRequirement("valid", "", "1" * 64, ("decode",)),
+            lambda: ToolRequirement("valid", "native-binary", "1" * 64, ()),
+            lambda: ToolArtifact("Uppercase", case.request.tools[0].artifact),
+        ):
+            with self.subTest(constructor=constructor):
+                with self.assertRaises((TypeError, ValueError)):
+                    constructor()
+        with self.assertRaises(ValueError):
+            replace(admitted.profile, tools=())
+        with self.assertRaises(ValueError):
+            replace(admitted.profile, tools=(second, first))
+        with self.assertRaises(ValueError):
+            replace(admitted.profile, tools=(first, first))
+        with self.assertRaises(ValueError):
+            replace(admitted.profile, tools=(first, replace(second, roles=("decode",))))
+        with self.assertRaises(ValueError):
+            replace(admitted.profile, tools=(first, replace(second, roles=("install_framework",))))
+        with self.assertRaises(ValueError):
+            replace(
+                admitted.profile,
+                tools=(
+                    first,
+                    replace(second, artifact_sha256=first.artifact_sha256),
+                ),
+            )
+        with self.assertRaises(ValueError):
+            replace(case.request, tools=tuple(reversed(case.request.tools)))
+        with self.assertRaises(ValueError):
+            replace(case.request, tools=(case.request.tools[0], case.request.tools[0]))
+
+    def test_v1_and_v2_decoders_are_schema_separated(self) -> None:
+        v1 = admit(fixture())
+        v2 = admit_v2(fixture_v2())
+        decoder_pairs = (
+            (ReplayRunSpecV1.from_dict, asdict(v2.run_spec)),
+            (ReplayRunSpecV2.from_dict, asdict(v1.run_spec)),
+            (ToolchainProfile.from_dict, asdict(v2.profile)),
+            (ToolchainProfileV2.from_dict, asdict(v1.profile)),
+            (ReplayRequest.from_dict, asdict(v2.request)),
+            (ReplayRequestV2.from_dict, asdict(v1.request)),
+            (AdmittedReplay.from_dict, asdict(v2)),
+            (AdmittedReplayV2.from_dict, asdict(v1)),
+        )
+        for decoder, payload in decoder_pairs:
+            with self.subTest(decoder=decoder):
+                with self.assertRaises((TypeError, ValueError)):
+                    decoder(payload)
+
+    def test_v2_requires_exact_tool_id_kind_and_hash_pairs(self) -> None:
+        admitted = admit_v2(fixture_v2())
+        first, second = admitted.request.tools
+        additional = ToolArtifact("z-tool", artifact_ref("tool-binary", b"additional"))
+        substitutions = (
+            (first,),
+            (replace(first, tool_id="alternate-tool"), second),
+            (replace(first, artifact=replace(first.artifact, kind="portable-binary")), second),
+            (replace(first, artifact=artifact_ref(first.artifact.kind, b"substitute")), second),
+            (first, second, additional),
+        )
+        for tools in substitutions:
+            with self.subTest(tools=tools):
+                with self.assertRaises(ValueError):
+                    replace(admitted, request=replace(admitted.request, tools=tools))
+
+    def test_v2_tool_bytes_and_exact_producer_lineage_are_resolved(self) -> None:
+        case = fixture_v2()
+        admitted = admit_v2(case)
+        tool = case.request.tools[0]
+        substituted = replace(
+            tool,
+            artifact=replace(tool.artifact, producer_operation_id="other-producer"),
+        )
+        substituted_request = replace(
+            admitted.request,
+            tools=(substituted, *admitted.request.tools[1:]),
+        )
+        with self.assertRaises(ValueError):
+            replace(admitted, request=substituted_request)
+        admitted_data = asdict(admitted)
+        admitted_data["request"]["tools"][0]["artifact"][
+            "producer_operation_id"
+        ] = "other-producer"
+        with self.assertRaises(ValueError):
+            AdmittedReplayV2.from_dict(admitted_data)
+
+        reads: list[ArtifactRef] = []
+
+        def resolver(artifact: ArtifactRef) -> bytes:
+            reads.append(artifact)
+            return case.resolve(artifact)
+
+        with self.assertRaises(ValueError):
+            admit_v2(case, request=substituted_request, artifact_resolver=resolver)
+        self.assertEqual(reads, [case.request.gate_prepared])
+
+        payloads = dict(case.payloads)
+        payloads[canonical_sha256(tool.artifact)] = b"tampered tool bytes"
+        with self.assertRaises(ValueError):
+            admit_v2(case, artifact_resolver=resolve_from(payloads))
+
+    def test_v2_from_dict_rejects_direct_and_whitespace_raw_ref_substitutions(self) -> None:
+        admitted = admit_v2(fixture_v2())
+        direct_substitution = asdict(admitted)
+        direct_substitution["request"]["intent"]["producer_operation_id"] = (
+            "other-producer"
+        )
+        with self.assertRaises(ValueError):
+            AdmittedReplayV2.from_dict(direct_substitution)
+
+        envelope_lineage_substitution = asdict(admitted)
+        envelope_lineage_substitution["request"]["gate_prepared"][
+            "producer_operation_id"
+        ] = "other-producer"
+        with self.assertRaises(ValueError):
+            AdmittedReplayV2.from_dict(envelope_lineage_substitution)
+
+        whitespace_payload = b" \n" + json_bytes(admitted.gate_prepared)
+        whitespace_ref = artifact_ref(
+            "replay-gate-prepared-v2", whitespace_payload
+        )
+        whitespace_substitution = asdict(admitted)
+        whitespace_substitution["request"]["gate_prepared"] = asdict(whitespace_ref)
+        whitespace_substitution["run_spec"]["gate_prepared_sha256"] = (
+            whitespace_ref.sha256
+        )
+        whitespace_substitution["run_spec"]["gate_prepared_ref_sha256"] = (
+            canonical_sha256(whitespace_ref)
+        )
+        changed_run = ReplayRunSpecV2.from_dict(whitespace_substitution["run_spec"])
+        whitespace_substitution["request"]["run_spec_sha256"] = changed_run.sha256
+        whitespace_substitution["decision"]["subject_sha256"] = changed_run.sha256
+        whitespace_substitution["decision"]["prepared_sha256"] = whitespace_ref.sha256
+        with self.assertRaises(ValueError):
+            AdmittedReplayV2.from_dict(whitespace_substitution)
+
+    def test_v2_rejects_incomplete_gate_prepared_input_lineage(self) -> None:
+        admitted = admit_v2(fixture_v2())
+        substituted = asdict(admitted)
+        gate_ref = replace(
+            admitted.request.gate_prepared,
+            input_hashes=admitted.request.gate_prepared.input_hashes[:-1],
+        )
+        substituted["request"]["gate_prepared"] = asdict(gate_ref)
+        substituted["run_spec"]["gate_prepared_ref_sha256"] = canonical_sha256(gate_ref)
+        changed_run = ReplayRunSpecV2.from_dict(substituted["run_spec"])
+        substituted["request"]["run_spec_sha256"] = changed_run.sha256
+        substituted["decision"]["subject_sha256"] = changed_run.sha256
+        with self.assertRaisesRegex(ValueError, "input lineage is incomplete"):
+            AdmittedReplayV2.from_dict(substituted)
+
+    def test_v2_self_consistent_substitution_fails_unchanged_recorded_decision(self) -> None:
+        approved = fixture_v2()
+        substituted = fixture_v2(tool_payload_suffix=b" substituted")
+        reads: list[ArtifactRef] = []
+
+        def resolver(artifact: ArtifactRef) -> bytes:
+            reads.append(artifact)
+            return substituted.resolve(artifact)
+
+        with self.assertRaisesRegex(ValueError, "subject does not bind"):
+            admit_v2(
+                substituted,
+                decision=approved.decision,
+                decision_is_recorded=approved.decision_is_recorded,
+                artifact_resolver=resolver,
+            )
+        self.assertEqual(reads, [])
+
+    def test_v2_decision_is_checked_and_recorded_before_artifact_reads(self) -> None:
+        case = fixture_v2()
+        reads: list[ArtifactRef] = []
+
+        def resolver(artifact: ArtifactRef) -> bytes:
+            reads.append(artifact)
+            return case.resolve(artifact)
+
+        with self.assertRaises(ValueError):
+            admit_v2(
+                case,
+                decision=replace(case.decision, actor="other-operator"),
+                decision_is_recorded=lambda _: True,
+                artifact_resolver=resolver,
+            )
+        self.assertEqual(reads, [])
+        with self.assertRaises(ValueError):
+            admit_v2(case, decision_is_recorded=lambda _: False, artifact_resolver=resolver)
+        self.assertEqual(reads, [])
+
+    def test_v2_capabilities_backend_frameworks_and_decision_are_relational(self) -> None:
+        admitted = admit_v2(fixture_v2(True))
+        changed_run = replace(
+            admitted.run_spec,
+            executor_capability_sha256s=(
+                "0" * 64,
+                *admitted.run_spec.executor_capability_sha256s,
+            ),
+        )
+        mutations = (
+            {"decision": replace(admitted.decision, gate_id="other-gate")},
+            {
+                "run_spec": changed_run,
+                "request": replace(admitted.request, run_spec_sha256=changed_run.sha256),
+                "decision": replace(admitted.decision, subject_sha256=changed_run.sha256),
+            },
+            {"profile": replace(admitted.profile, backend_kind="stock_dex_graft")},
+            {
+                "request": replace(
+                    admitted.request,
+                    frameworks=(replace(admitted.request.frameworks[0], package_id=8),),
+                )
+            },
+        )
+        for changes in mutations:
+            with self.subTest(changes=changes):
+                with self.assertRaises(ValueError):
+                    replace(admitted, **changes)
 
     def test_replay_contract_source_is_target_neutral(self) -> None:
         source = (
