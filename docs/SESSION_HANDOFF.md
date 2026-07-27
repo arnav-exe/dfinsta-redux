@@ -238,7 +238,7 @@ Not yet proven: a separately launched and authenticated trusted-client OS proces
 
 ## Phase B Pipeline State
 
-Commits `1a30252` through `9ed300a` implement the reviewed deterministic core and admitted execution authority contracts without changing Phase A History contracts:
+Commits `1a30252` through `3a74d20` implement the reviewed deterministic core and admitted execution authority contracts without changing Phase A History contracts:
 
 - Strict target-independent intent and version-scoped resolution contracts, including exhaustive per-target implemented/omitted status with rationale.
 - Generated 340 and 430 fixtures plus source manifests. The 340 fixture has 59 operations, including 45 exact method/register-scoped smali edits. The 430 fixture has its six proven host edits plus one four-file custom-code overlay.
@@ -246,17 +246,17 @@ Commits `1a30252` through `9ed300a` implement the reviewed deterministic core an
 - A target-neutral decoded-tree applier. Provisioned mini-tree tests apply all 59 340 operations and all seven 430 operations, then classify every second-run operation as already applied.
 - Full-rebuild and stock-DEX-graft archive backends with no-clobber staging, exact DEX topology, signature stripping, and retained stock entry byte/order/metadata preservation.
 - A receipt-bound verifier for operation proofs, descriptor placement, DEX strings, archive preservation, resources, manifest components, and backend policy. The decoded tree is accepted only through an output/tree/tool-capability receipt that the admitted executor and CAS must own.
-- Immutable source and tool bytes plus exact producer lineage are bound into recorded replay authority. `ToolchainProfileV3` role plans bind tool identity, logical paths, timeout, and executor capability shape. These remain authority contracts: replay admission does not yet admit V3 plans and no replay Activity executes them.
+- Immutable source and tool bytes plus exact producer lineage are bound into recorded replay authority. `ToolchainProfileV3` role plans bind tool identity, logical paths, timeout, and executor capability shape. Replay-v3 admission resolves and validates exact concrete executor capabilities only after the recorded gate decision and artifact relationships pass. Ledger recording of the admitted replay and replay Activity execution remain pending.
 
 The standalone replay CLI prototype was rejected and deleted before commit or execution. Caller-supplied tool hashes are not admission, and a self-issued decoder receipt is not capability provenance. Real replay must run as ledger-owned attempt Activities through admitted executor capabilities, verify source manifests, keep output attempt-local through final verification, then complete/adopt or quarantine before exclusive publication.
 
 The initial secure source-staging primitive is deliberately restricted to Linux workers with descriptor-relative no-follow opens, symlink-safe removal, and working `renameat2(RENAME_NOREPLACE)` on the attempt filesystem. Native Windows staging remains a separate required backend; unsafe pathname fallbacks are rejected.
 
-The latest full `unittest` discovery passes 166 tests. No real generic 340/430 apktool replay has run yet. The legacy target-specific rebuilds remain the exercised artifact evidence.
+The latest full `unittest` discovery passes 176 tests. No real generic 340/430 apktool replay has run yet. The legacy target-specific rebuilds remain the exercised artifact evidence.
 
 ## Immediate Next Actions
 
-1. Gate-bind `ToolchainProfileV3` execution plans in replay admission, then implement ledger-owned attempt Activities for framework installation, decode, source staging, apply, build, verification, completed-result adoption, incomplete-attempt quarantine, and verify-before-publish.
+1. Record admitted replay-v3 authority in the ledger, then implement ledger-owned attempt Activities for framework installation, decode, source staging, apply, build, verification, completed-result adoption, incomplete-attempt quarantine, and verify-before-publish.
 2. Replay both fixtures from clean APKs through that admitted path, then add mutation fixtures for missing/ambiguous anchors, DEX movement/collision, and unsafe resource rebuilds.
 3. Complete Phase A authority/deployment evidence with an authenticated trusted-client process, hard process-loss test, and saved replay corpus. Normal Current-version rollout is proven.
 4. Add Google ADK as bounded read-only Temporal Activities only after deterministic generalization passes.
