@@ -192,7 +192,7 @@ Temporal is the sole durable workflow engine. Phase A pins `temporalio==1.30.0`;
 
 ### Phase A Implementation Checkpoint
 
-The atomic commits from `3e91eb5` through `7498dfd` implement, review, and harden the first durable slice. Phase A retains 35 focused tests; the latest full `unittest` discovery after replay-v3 source admission passes 215 tests.
+The atomic commits from `3e91eb5` through `7498dfd` implement, review, and harden the first durable slice. Phase A retains 35 focused tests; the latest full `unittest` discovery after canonical decoded-tree provenance passes 264 tests.
 
 Proven:
 
@@ -265,7 +265,7 @@ Acceptance:
 - Every operation has exact anchor cardinality, idempotence marker, and generated final-DEX proof.
 - 430-specific values occur only in its resolution fixture.
 
-Implementation checkpoint (`1a30252` through `61a8b54`): strict contracts, the target-neutral compiler, generated 340/430 fixtures, decoded-tree apply primitives, both archive backends, receipt-bound verification, gate-bound tool admission, role execution plans, replay-v3 admission, append-only ledger authority, an unregistered synthetic decode Activity, and replay-v3 secure source staging are committed and independently reviewed. The Activity proves authority-first normalization, descriptor-relative attempt materialization, unchanged admitted executor invocation, deterministic CAS effects, adoption, and quarantine. Source staging now derives only from normalized ledger authority without changing V1 semantics. The Activity still does not persist a decoded tree or run apktool. Provisioned mini-tree tests apply and reapply all 59 340 and seven 430 operations; real generic replay remains pending.
+Implementation checkpoint (`1a30252` through `b45fc0d`): strict contracts, the target-neutral compiler, generated 340/430 fixtures, decoded-tree apply primitives, both archive backends, receipt-bound verification, gate-bound tool admission, role execution plans, replay-v3 admission, append-only ledger authority, an unregistered synthetic decode Activity, replay-v3 secure source staging, hardened CAS blobs, and canonical decoded-tree manifest/blob closures are committed and independently reviewed. Tree capture and materialization are descriptor-relative, quota-bound, portable-path checked, and reject links, hardlinks, special files, collisions, and overwrite. They assume a quiescent owner-private tree; hostile same-UID mutation and real apktool remain blocked on process confinement. The synthetic Activity has not yet replaced its JSON checkpoint with a decoded-tree receipt. Provisioned mini-tree tests apply and reapply all 59 340 and seven 430 operations; real generic replay remains pending.
 
 The first admitted source-staging backend is intentionally Linux-only. It requires descriptor-relative `O_NOFOLLOW`/`O_DIRECTORY`, symlink-safe tree removal, and a successful `renameat2(RENAME_NOREPLACE)` probe on the attempt filesystem. Native Windows support must use an equivalent handle-relative reparse-point-safe backend; it must not silently fall back to pathname checks.
 
