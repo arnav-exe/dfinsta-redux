@@ -13,8 +13,9 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from .contracts import canonical_sha256
+from .ledger import Ledger
 from .port_contracts import SourceFile
-from .replay_contracts import AdmittedReplay, SourceManifestV1
+from .replay_contracts import AdmittedReplay, AdmittedReplayV3, SourceManifestV1
 
 
 DESTINATION_NAME = "admitted-source"
@@ -43,6 +44,64 @@ class SourceAdmissionReport:
     file_count: int
     relative_destination: str
     passed: bool
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAdmissionReportV2:
+    schema_version: int
+    admitted_replay_sha256: str
+    source_manifest_sha256: str
+    staged_tree_sha256: str
+    file_count: int
+    relative_destination: str
+    passed: bool
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise ValueError("Unsupported source admission report schema")
+        for value, label in (
+            (self.admitted_replay_sha256, "admitted replay SHA-256"),
+            (self.source_manifest_sha256, "source manifest SHA-256"),
+            (self.staged_tree_sha256, "staged tree SHA-256"),
+        ):
+            _report_sha256(value, label)
+        if type(self.file_count) is not int:
+            raise TypeError("Source admission report file count must be an integer")
+        if self.file_count < 0:
+            raise ValueError("Source admission report file count must be nonnegative")
+        if type(self.relative_destination) is not str:
+            raise TypeError("Source admission report destination must be a string")
+        if self.relative_destination != DESTINATION_NAME:
+            raise ValueError("Invalid source admission report destination")
+        if type(self.passed) is not bool:
+            raise TypeError("Source admission report passed must be a boolean")
+        if not self.passed:
+            raise ValueError("Source admission report must record success")
+
+    @classmethod
+    def from_dict(cls, data: object) -> SourceAdmissionReportV2:
+        if type(data) is not dict or any(type(key) is not str for key in data):
+            raise TypeError("Source admission report must be an object with string keys")
+        expected = {
+            "schema_version",
+            "admitted_replay_sha256",
+            "source_manifest_sha256",
+            "staged_tree_sha256",
+            "file_count",
+            "relative_destination",
+            "passed",
+        }
+        unknown = set(data) - expected
+        missing = expected - set(data)
+        if unknown:
+            raise ValueError(f"Unknown source admission report field: {sorted(unknown)[0]}")
+        if missing:
+            raise ValueError(f"Missing source admission report field: {sorted(missing)[0]}")
+        return cls(**data)
 
     @property
     def sha256(self) -> str:
@@ -112,6 +171,57 @@ def admit_source_bundle(
     )
 
 
+def admit_source_bundle_v2(
+    candidate: AdmittedReplayV3,
+    source_root: Path,
+    attempt_root: Path,
+    ledger: Ledger,
+) -> SourceAdmissionReportV2:
+    admitted = _require_v3_authority(candidate, ledger)
+    _require_runtime()
+
+    source = _directory_path(source_root, "source root")
+    attempt = _directory_path(attempt_root, "attempt root")
+    if source == attempt or source in attempt.parents or attempt in source.parents:
+        raise SourceAdmissionError("Source and attempt roots must not overlap")
+    _probe_noreplace(attempt)
+
+    destination = attempt / DESTINATION_NAME
+    if _lexists(destination):
+        raise SourceAdmissionError(f"Destination already exists: {destination}")
+
+    manifest = admitted.source_manifest
+    staged_records = _preflight(source, manifest.records)
+    staged_sha256 = _records_sha256(staged_records)
+
+    temporary: Path | None = None
+    try:
+        if _lexists(destination):
+            raise SourceAdmissionError(f"Destination already exists: {destination}")
+        temporary = Path(tempfile.mkdtemp(prefix=f".{DESTINATION_NAME}-", dir=attempt))
+        _write_tree(temporary, staged_records)
+        _publish_without_overwrite(temporary, destination)
+        temporary = None
+        _fsync_directory(attempt)
+    except SourceAdmissionError:
+        raise
+    except OSError as error:
+        raise SourceAdmissionError(f"Could not stage source bundle: {error}") from error
+    finally:
+        if temporary is not None:
+            _remove_tree(temporary)
+
+    return SourceAdmissionReportV2(
+        2,
+        admitted.sha256,
+        manifest.sha256,
+        staged_sha256,
+        len(staged_records),
+        DESTINATION_NAME,
+        True,
+    )
+
+
 def verify_staged_source(
     report: SourceAdmissionReport, admitted: AdmittedReplay, destination: Path
 ) -> None:
@@ -121,6 +231,44 @@ def verify_staged_source(
     admitted = _revalidate_admitted(admitted)
     if (
         report.schema_version != 1
+        or not report.passed
+        or report.relative_destination != DESTINATION_NAME
+        or report.admitted_replay_sha256 != admitted.sha256
+        or report.source_manifest_sha256 != admitted.source_manifest.sha256
+        or report.file_count != len(admitted.source_manifest.records)
+    ):
+        raise SourceAdmissionError("Source admission report does not match admitted replay")
+    tree = _directory_path(destination, "staged source")
+    if tree.name != report.relative_destination:
+        raise SourceAdmissionError("Staged source destination does not match report")
+    records = _tree_records(tree)
+    if len(records) != report.file_count:
+        raise SourceAdmissionError("Staged source file count mismatch")
+    expected = admitted.source_manifest.records
+    if tuple(relative for relative, _ in records) != tuple(
+        record.relative_path for record in expected
+    ) or any(
+        hashlib.sha256(data).hexdigest() != source.sha256
+        for (relative, data), source in zip(records, expected, strict=True)
+    ):
+        raise SourceAdmissionError("Staged source does not match source manifest")
+    if _records_sha256(records) != report.staged_tree_sha256:
+        raise SourceAdmissionError("Staged source tree SHA-256 mismatch")
+
+
+def verify_staged_source_v2(
+    report: SourceAdmissionReportV2,
+    candidate: AdmittedReplayV3,
+    destination: Path,
+    ledger: Ledger,
+) -> None:
+    admitted = _require_v3_authority(candidate, ledger)
+    if type(report) is not SourceAdmissionReportV2:
+        raise TypeError("report must be an exact SourceAdmissionReportV2")
+    report = SourceAdmissionReportV2.from_dict(asdict(report))
+    _require_runtime()
+    if (
+        report.schema_version != 2
         or not report.passed
         or report.relative_destination != DESTINATION_NAME
         or report.admitted_replay_sha256 != admitted.sha256
@@ -403,6 +551,21 @@ def _revalidate_admitted(admitted: object) -> AdmittedReplay:
     if validated != admitted:
         raise SourceAdmissionError("Admitted replay changed during relational revalidation")
     return validated
+
+
+def _require_v3_authority(candidate: object, ledger: object) -> AdmittedReplayV3:
+    if type(ledger) is not Ledger:
+        raise TypeError("ledger must be an exact Ledger")
+    if type(candidate) is not AdmittedReplayV3:
+        raise TypeError("candidate must be an exact AdmittedReplayV3")
+    return Ledger.require_admitted_replay_v3(ledger, candidate)
+
+
+def _report_sha256(value: object, label: str) -> None:
+    if type(value) is not str:
+        raise TypeError(f"{label} must be a string")
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"Invalid {label}")
 
 
 def _load_renameat2():
