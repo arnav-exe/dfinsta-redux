@@ -338,6 +338,55 @@ class StoreAndLedgerTests(unittest.TestCase):
             ledger.record_effect("operation-1", "new-run-owner", output)
             self.assertEqual(ledger.operation_event_count("operation-1", "effect"), 1)
 
+    def test_released_pending_claim_allows_only_a_new_owner_to_take_over(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory) / "ledger.sqlite3")
+            self.assertIsNone(
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "owner-1", retry_safe=False
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "owner"):
+                ledger.release_pending_operation("operation-1", "owner-2")
+            ledger.release_pending_operation("operation-1", "owner-1")
+            self.assertIsNone(
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "owner-2", retry_safe=False
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "owner"):
+                ledger.release_pending_operation("operation-1", "owner-1")
+
+    def test_operation_owner_token_must_be_nonempty(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory) / "ledger.sqlite3")
+            with self.assertRaisesRegex(ValueError, "owner token"):
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "", retry_safe=False
+                )
+            ledger.begin_operation(
+                "operation-1", "test", "a" * 64, "owner-1", retry_safe=False
+            )
+            ledger.release_pending_operation("operation-1", "owner-1")
+            output = ArtifactRef(
+                1,
+                "test",
+                "b" * 64,
+                1,
+                f"cas://sha256/{'b' * 64}",
+                "operation-1",
+                (),
+            )
+            with self.assertRaisesRegex(ValueError, "owner token"):
+                ledger.record_effect("operation-1", "", output)
+            with self.assertRaisesRegex(ValueError, "owner token"):
+                ledger.quarantine_operation("operation-1", "")
+            self.assertIsNone(
+                ledger.begin_operation(
+                    "operation-1", "test", "a" * 64, "owner-2", retry_safe=False
+                )
+            )
+
     def test_legacy_events_backfill_current_claims(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ledger.sqlite3"

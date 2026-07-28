@@ -365,90 +365,88 @@ def _bounded_directory_names(directory_fd: int) -> list[str]:
     return sorted(names, key=lambda item: item.encode("utf-8"))
 
 
-def capture_decoded_tree(
+def _validate_capture_inputs(
     store: ContentStore,
-    root: Path,
     producer_operation_id: str,
     input_hashes: tuple[str, ...],
-) -> ArtifactRef:
+) -> None:
     _require_runtime()
     if type(store) is not ContentStore:
         raise TypeError("store must be an exact ContentStore")
-    if not isinstance(root, Path):
-        raise TypeError("root must be a Path")
     if type(producer_operation_id) is not str or type(input_hashes) is not tuple:
         raise TypeError("Invalid decoded-tree artifact lineage types")
     if ID_PATTERN.fullmatch(producer_operation_id) is None:
         raise ValueError("Invalid decoded-tree producer operation ID")
     for input_hash in input_hashes:
         _validate_sha256(input_hash, "decoded-tree input SHA-256")
+
+
+def _capture_decoded_tree_manifest(
+    store: ContentStore,
+    root_fd: int,
+) -> DecodedTreeManifestV1:
     manifest_budget = _MANIFEST_FIXED_OVERHEAD
     if manifest_budget > MAX_MANIFEST_BYTES:
         raise DecodedArtifactError("Decoded-tree manifest exceeds the V1 byte limit")
 
-    root_fd, root_identity = _open_absolute_directory(root)
     root_metadata = os.fstat(root_fd)
     entries: list[DecodedTreeEntryV1] = []
     file_stats: dict[str, os.stat_result] = {}
     total_bytes = 0
-    try:
-        def reserve_manifest_entry(relative: str) -> None:
-            nonlocal manifest_budget
-            manifest_budget += _manifest_entry_budget(relative)
-            if manifest_budget > MAX_MANIFEST_BYTES:
-                raise DecodedArtifactError("Decoded-tree manifest exceeds the V1 byte limit")
 
-        def scan(directory_fd: int, prefix: tuple[str, ...]) -> None:
-            nonlocal total_bytes
-            directory_before = os.fstat(directory_fd)
-            for name in _bounded_directory_names(directory_fd):
-                if len(entries) >= MAX_ENTRIES:
-                    raise DecodedArtifactError("Decoded tree exceeds the V1 entry limit")
-                _validate_component(name)
-                parts = (*prefix, name)
-                relative = "/".join(parts)
-                _path_parts(relative)
-                metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                if stat.S_ISLNK(metadata.st_mode):
-                    raise DecodedArtifactError(f"Symlink or junction in decoded tree: {relative}")
-                if stat.S_ISDIR(metadata.st_mode):
-                    child_fd = os.open(name, _directory_flags(), dir_fd=directory_fd)
-                    try:
-                        opened = os.fstat(child_fd)
-                        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
-                            raise DecodedArtifactError("Decoded-tree directory changed while being opened")
-                        reserve_manifest_entry(relative)
-                        entries.append(DecodedTreeEntryV1(relative, "directory", None, None))
-                        scan(child_fd, parts)
-                        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                        if not _same_stat(metadata, current):
-                            raise DecodedArtifactError("Decoded-tree directory changed while being captured")
-                    finally:
-                        os.close(child_fd)
-                elif stat.S_ISREG(metadata.st_mode):
+    def reserve_manifest_entry(relative: str) -> None:
+        nonlocal manifest_budget
+        manifest_budget += _manifest_entry_budget(relative)
+        if manifest_budget > MAX_MANIFEST_BYTES:
+            raise DecodedArtifactError("Decoded-tree manifest exceeds the V1 byte limit")
+
+    def scan(directory_fd: int, prefix: tuple[str, ...]) -> None:
+        nonlocal total_bytes
+        directory_before = os.fstat(directory_fd)
+        for name in _bounded_directory_names(directory_fd):
+            if len(entries) >= MAX_ENTRIES:
+                raise DecodedArtifactError("Decoded tree exceeds the V1 entry limit")
+            _validate_component(name)
+            parts = (*prefix, name)
+            relative = "/".join(parts)
+            _path_parts(relative)
+            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISLNK(metadata.st_mode):
+                raise DecodedArtifactError(f"Symlink or junction in decoded tree: {relative}")
+            if stat.S_ISDIR(metadata.st_mode):
+                child_fd = os.open(name, _directory_flags(), dir_fd=directory_fd)
+                try:
+                    opened = os.fstat(child_fd)
+                    if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                        raise DecodedArtifactError("Decoded-tree directory changed while being opened")
                     reserve_manifest_entry(relative)
-                    data, stable_metadata = _read_stable_file(directory_fd, name, metadata)
-                    total_bytes += len(data)
-                    if total_bytes > MAX_TOTAL_FILE_BYTES:
-                        raise DecodedArtifactError("Decoded tree exceeds the V1 total-size limit")
-                    # Earlier blobs may remain after a later failure, but without a
-                    # published manifest reference they are non-authoritative CAS orphans.
-                    blob_sha256, blob_size = store.put_blob(data)
-                    file_stats[relative] = stable_metadata
-                    entries.append(DecodedTreeEntryV1(relative, "file", blob_size, blob_sha256))
-                else:
-                    raise DecodedArtifactError(f"Special file in decoded tree: {relative}")
-            if not _same_stat(directory_before, os.fstat(directory_fd)):
-                raise DecodedArtifactError("Decoded-tree directory changed while being enumerated")
+                    entries.append(DecodedTreeEntryV1(relative, "directory", None, None))
+                    scan(child_fd, parts)
+                    current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if not _same_stat(metadata, current):
+                        raise DecodedArtifactError("Decoded-tree directory changed while being captured")
+                finally:
+                    os.close(child_fd)
+            elif stat.S_ISREG(metadata.st_mode):
+                reserve_manifest_entry(relative)
+                data, stable_metadata = _read_stable_file(directory_fd, name, metadata)
+                total_bytes += len(data)
+                if total_bytes > MAX_TOTAL_FILE_BYTES:
+                    raise DecodedArtifactError("Decoded tree exceeds the V1 total-size limit")
+                # Earlier blobs may remain after a later failure, but without a
+                # published manifest reference they are non-authoritative CAS orphans.
+                blob_sha256, blob_size = store.put_blob(data)
+                file_stats[relative] = stable_metadata
+                entries.append(DecodedTreeEntryV1(relative, "file", blob_size, blob_sha256))
+            else:
+                raise DecodedArtifactError(f"Special file in decoded tree: {relative}")
+        if not _same_stat(directory_before, os.fstat(directory_fd)):
+            raise DecodedArtifactError("Decoded-tree directory changed while being enumerated")
 
-        scan(root_fd, ())
-        _verify_saved_file_stats(root_fd, file_stats)
-        if not _same_stat(root_metadata, os.fstat(root_fd)):
-            raise DecodedArtifactError("Decoded-tree root changed during stability sweep")
-    finally:
-        os.close(root_fd)
-    if not _reopen_matches(root, root_identity):
-        raise DecodedArtifactError("Decoded-tree root identity changed during capture")
+    scan(root_fd, ())
+    _verify_saved_file_stats(root_fd, file_stats)
+    if not _same_stat(root_metadata, os.fstat(root_fd)):
+        raise DecodedArtifactError("Decoded-tree root changed during stability sweep")
 
     entries.sort(key=lambda entry: entry.path.encode("utf-8"))
     digest = hashlib.sha256()
@@ -460,11 +458,60 @@ def capture_decoded_tree(
     payload = manifest.canonical_bytes()
     if len(payload) > MAX_MANIFEST_BYTES:
         raise DecodedArtifactError("Decoded-tree manifest exceeds the V1 byte limit")
+    return manifest
+
+
+def _publish_decoded_tree_manifest(
+    store: ContentStore,
+    manifest: DecodedTreeManifestV1,
+    producer_operation_id: str,
+    input_hashes: tuple[str, ...],
+) -> ArtifactRef:
     return store.put_bytes(
         kind=MANIFEST_KIND,
-        data=payload,
+        data=manifest.canonical_bytes(),
         producer_operation_id=producer_operation_id,
         input_hashes=input_hashes,
+    )
+
+
+def capture_decoded_tree(
+    store: ContentStore,
+    root: Path,
+    producer_operation_id: str,
+    input_hashes: tuple[str, ...],
+) -> ArtifactRef:
+    _validate_capture_inputs(store, producer_operation_id, input_hashes)
+    if not isinstance(root, Path):
+        raise TypeError("root must be a Path")
+    root_fd, root_identity = _open_absolute_directory(root)
+    try:
+        manifest = _capture_decoded_tree_manifest(store, root_fd)
+    finally:
+        os.close(root_fd)
+    if not _reopen_matches(root, root_identity):
+        raise DecodedArtifactError("Decoded-tree root identity changed during capture")
+    return _publish_decoded_tree_manifest(
+        store, manifest, producer_operation_id, input_hashes
+    )
+
+
+def capture_decoded_tree_fd(
+    store: ContentStore,
+    root_fd: int,
+    producer_operation_id: str,
+    input_hashes: tuple[str, ...],
+) -> ArtifactRef:
+    _validate_capture_inputs(store, producer_operation_id, input_hashes)
+    if type(root_fd) is not int:
+        raise TypeError("root_fd must be an integer descriptor")
+    descriptor = os.open(".", _directory_flags(), dir_fd=root_fd)
+    try:
+        manifest = _capture_decoded_tree_manifest(store, descriptor)
+    finally:
+        os.close(descriptor)
+    return _publish_decoded_tree_manifest(
+        store, manifest, producer_operation_id, input_hashes
     )
 
 

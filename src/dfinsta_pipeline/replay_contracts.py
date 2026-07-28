@@ -1689,6 +1689,112 @@ class ReplayDecodeCheckpointResultV1:
         return canonical_sha256(self)
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayDecodedTreeReceiptV1:
+    schema_version: int
+    decoded_apk_role: Literal["stock_input", "final_output"]
+    admitted_replay_sha256: str
+    input_apk: ArtifactRef
+    toolchain_profile_id: str
+    toolchain_profile_sha256: str
+    role: Literal["decode"]
+    execution_plan_sha256: str
+    executor_capability_sha256: str
+    tool_artifact_sha256: str
+    execution_request_sha256: str
+    decoded_tree_manifest: ArtifactRef
+    decoded_tree_semantic_sha256: str
+    operation_key: str
+    success: Literal[True]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay decoded-tree receipt schema")
+        if type(self.decoded_apk_role) is not str:
+            raise TypeError("Decoded APK role must be a string")
+        if self.decoded_apk_role not in {"stock_input", "final_output"}:
+            raise ValueError("Invalid decoded APK role")
+        if type(self.input_apk) is not ArtifactRef:
+            raise TypeError("Input APK must be an exact ArtifactRef")
+        allowed_input_kinds = {
+            "stock_input": {"stock-apk"},
+            "final_output": {"final-apk"},
+        }
+        if self.input_apk.kind not in allowed_input_kinds[self.decoded_apk_role]:
+            raise ValueError("Input APK kind does not match decoded APK role")
+        _identifier(self.toolchain_profile_id, "toolchain profile id", lowercase=True)
+        for value, label in (
+            (self.admitted_replay_sha256, "admitted replay SHA-256"),
+            (self.toolchain_profile_sha256, "toolchain profile SHA-256"),
+            (self.execution_plan_sha256, "execution plan SHA-256"),
+            (self.executor_capability_sha256, "executor capability SHA-256"),
+            (self.tool_artifact_sha256, "tool artifact SHA-256"),
+            (self.execution_request_sha256, "execution request SHA-256"),
+            (self.decoded_tree_semantic_sha256, "decoded-tree semantic SHA-256"),
+        ):
+            _sha256(value, label)
+        if type(self.role) is not str:
+            raise TypeError("Replay decoded-tree receipt role must be a string")
+        if self.role != "decode":
+            raise ValueError("Replay decoded-tree receipt role must be decode")
+        if type(self.decoded_tree_manifest) is not ArtifactRef:
+            raise TypeError("Decoded-tree manifest must be an exact ArtifactRef")
+        if self.decoded_tree_manifest.kind != "decoded-tree-manifest-v1":
+            raise ValueError("Invalid decoded-tree manifest kind")
+        _sha256(self.operation_key, "operation key")
+        if self.decoded_tree_manifest.producer_operation_id != self.operation_key:
+            raise ValueError("Decoded-tree manifest producer does not match operation")
+        if self.decoded_tree_manifest.input_hashes != self.execution_input_hashes:
+            raise ValueError("Decoded-tree manifest input lineage is incomplete")
+        if type(self.success) is not bool or self.success is not True:
+            raise ValueError("Replay decoded-tree receipt requires success")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayDecodedTreeReceiptV1:
+        data = _keys(data, cls, "replay decoded-tree receipt")
+        return cls(
+            data["schema_version"],
+            data["decoded_apk_role"],
+            data["admitted_replay_sha256"],
+            ArtifactRef.from_dict(data["input_apk"]),
+            data["toolchain_profile_id"],
+            data["toolchain_profile_sha256"],
+            data["role"],
+            data["execution_plan_sha256"],
+            data["executor_capability_sha256"],
+            data["tool_artifact_sha256"],
+            data["execution_request_sha256"],
+            ArtifactRef.from_dict(data["decoded_tree_manifest"]),
+            data["decoded_tree_semantic_sha256"],
+            data["operation_key"],
+            data["success"],
+        )
+
+    @property
+    def execution_input_hashes(self) -> tuple[str, ...]:
+        return (
+            self.admitted_replay_sha256,
+            canonical_sha256(self.input_apk),
+            self.toolchain_profile_sha256,
+            self.execution_plan_sha256,
+            self.executor_capability_sha256,
+            self.tool_artifact_sha256,
+            self.execution_request_sha256,
+        )
+
+    @property
+    def receipt_input_hashes(self) -> tuple[str, ...]:
+        return (
+            *self.execution_input_hashes,
+            canonical_sha256(self.decoded_tree_manifest),
+            self.decoded_tree_semantic_sha256,
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
 def admit_replay_v3(
     run_spec: ReplayRunSpecV2,
     request: ReplayRequestV2,

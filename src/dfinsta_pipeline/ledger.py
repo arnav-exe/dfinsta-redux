@@ -159,6 +159,8 @@ class Ledger:
         *,
         retry_safe: bool,
     ) -> ArtifactRef | None:
+        if type(owner_token) is not str or not owner_token:
+            raise ValueError("Operation owner token must be a non-empty string")
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -187,7 +189,7 @@ class Ledger:
             if row[4] == "quarantined":
                 raise ValueError("Operation is quarantined")
             if row[2] != owner_token:
-                if not retry_safe:
+                if row[2] != "" and not retry_safe:
                     raise ValueError("Operation is already claimed")
                 updated = connection.execute(
                     "UPDATE operation_claims SET owner_token = ?, owner_attempt = owner_attempt + 1 "
@@ -204,9 +206,31 @@ class Ledger:
                 )
             return None
 
+    def release_pending_operation(self, operation_key: str, owner_token: str) -> None:
+        if type(owner_token) is not str or not owner_token:
+            raise ValueError("Operation owner token must be a non-empty string")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT owner_token, status FROM operation_claims WHERE operation_key = ?",
+                (operation_key,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Operation was not started")
+            if row[0] != owner_token:
+                raise ValueError("Operation release owner does not match claim")
+            if row[1] != "pending":
+                raise ValueError("Only a pending operation can be released")
+            connection.execute(
+                "UPDATE operation_claims SET owner_token = '' WHERE operation_key = ?",
+                (operation_key,),
+            )
+
     def record_effect(
         self, operation_key: str, owner_token: str, output: ArtifactRef
     ) -> ArtifactRef:
+        if type(owner_token) is not str or not owner_token:
+            raise ValueError("Operation owner token must be a non-empty string")
         output_json = canonical_json(output)
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -264,6 +288,8 @@ class Ledger:
         return output
 
     def quarantine_operation(self, operation_key: str, owner_token: str) -> None:
+        if type(owner_token) is not str or not owner_token:
+            raise ValueError("Operation owner token must be a non-empty string")
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(

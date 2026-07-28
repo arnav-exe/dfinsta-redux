@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import asdict, replace
@@ -14,11 +15,13 @@ from dfinsta_pipeline.activities import (
     replay_decode_checkpoint_activity,
     runtime,
 )
-from dfinsta_pipeline.contracts import canonical_json
+from dfinsta_pipeline.contracts import ArtifactRef, canonical_json, canonical_sha256
+from dfinsta_pipeline.decoded_artifact import load_decoded_tree
 from dfinsta_pipeline.replay_contracts import (
     AdmittedReplayV3,
     CapabilityBinding,
     ReplayDecodeCheckpointResultV1,
+    ReplayDecodedTreeReceiptV1,
 )
 from tests.test_phase_b_replay_contracts import (
     admit_v3,
@@ -62,8 +65,22 @@ class FakeProcess:
         self.returncode: int | None = returncode
         self.killed = False
         self.reaped = False
+        self.cwd: Path | None = None
+        self.output_builder = self._build_output
+
+    @staticmethod
+    def _build_output(output: Path) -> None:
+        (output / "empty").mkdir(parents=True)
+        (output / "smali").mkdir()
+        (output / "smali" / "Example.smali").write_text(
+            ".class public LExample;\n", encoding="utf-8"
+        )
+        (output / "resources.bin").write_bytes(bytes(range(256)))
 
     async def communicate(self) -> tuple[bytes, bytes]:
+        if self.returncode == 0:
+            assert self.cwd is not None
+            self.output_builder(self.cwd / "output")
         self.reaped = True
         return self.stdout, self.stderr
 
@@ -112,6 +129,87 @@ class ReplayDecodeCheckpointContractTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises((TypeError, ValueError)):
                 ReplayDecodeCheckpointResultV1.from_dict(mutation)
 
+    def test_decoded_tree_receipt_is_strict_and_binds_nested_lineage(self) -> None:
+        input_apk = ArtifactRef(
+            1,
+            "stock-apk",
+            "1" * 64,
+            3,
+            f"cas://sha256/{'1' * 64}",
+            "stock-producer",
+            (),
+        )
+        execution_inputs = (
+            "2" * 64,
+            canonical_sha256(input_apk),
+            "3" * 64,
+            "4" * 64,
+            "5" * 64,
+            "6" * 64,
+            "7" * 64,
+        )
+        manifest = ArtifactRef(
+            1,
+            "decoded-tree-manifest-v1",
+            "8" * 64,
+            4,
+            f"cas://sha256/{'8' * 64}",
+            "9" * 64,
+            execution_inputs,
+        )
+        receipt = ReplayDecodedTreeReceiptV1(
+            1,
+            "stock_input",
+            "2" * 64,
+            input_apk,
+            "apktool-v1",
+            "3" * 64,
+            "decode",
+            "4" * 64,
+            "5" * 64,
+            "6" * 64,
+            "7" * 64,
+            manifest,
+            "a" * 64,
+            "9" * 64,
+            True,
+        )
+        self.assertEqual(ReplayDecodedTreeReceiptV1.from_dict(asdict(receipt)), receipt)
+        self.assertEqual(receipt.execution_input_hashes, execution_inputs)
+        self.assertEqual(
+            receipt.receipt_input_hashes,
+            (*execution_inputs, canonical_sha256(manifest), "a" * 64),
+        )
+
+        mutations = (
+            {**asdict(receipt), "schema_version": True},
+            {**asdict(receipt), "decoded_apk_role": "other"},
+            {**asdict(receipt), "input_apk": {**asdict(input_apk), "kind": "final-apk"}},
+            {**asdict(receipt), "toolchain_profile_id": "UPPER"},
+            {**asdict(receipt), "role": "build"},
+            {**asdict(receipt), "success": 1},
+            {**asdict(receipt), "operation_key": "A" * 64},
+            {
+                **asdict(receipt),
+                "decoded_tree_manifest": {
+                    **asdict(manifest),
+                    "input_hashes": execution_inputs[:-1],
+                },
+            },
+            {**asdict(receipt), "extra": "field"},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises((TypeError, ValueError)):
+                ReplayDecodedTreeReceiptV1.from_dict(mutation)
+
+    def test_activity_receipt_parser_rejects_duplicate_and_noncanonical_json(self) -> None:
+        for payload in (
+            b'{"schema_version":1,"schema_version":1}',
+            b'{ "schema_version":1}',
+        ):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                activities._strict_replay_decoded_tree_receipt(payload)
+
 
 class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -131,6 +229,9 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
 
         async def launcher(*argv: str, **kwargs: Any) -> FakeProcess:
             self.launches.append({"argv": argv, **kwargs})
+            self.process.cwd = Path(kwargs["cwd"])
+            if (self.process.cwd / "output").exists():
+                raise AssertionError("output existed before launch")
             return self.process
 
         capability_hash = self.admitted.capability("decode").executable_sha256
@@ -172,6 +273,37 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
         assert row is not None
         return row
 
+    @staticmethod
+    def receipt(output: ArtifactRef) -> ReplayDecodedTreeReceiptV1:
+        return ReplayDecodedTreeReceiptV1.from_dict(
+            json.loads(runtime().store.read_bytes(output))
+        )
+
+    @staticmethod
+    def blob_path(reference: ArtifactRef | str) -> Path:
+        digest = reference if isinstance(reference, str) else reference.sha256
+        return runtime().store.root / "sha256" / digest[:2] / digest
+
+    def configure_fresh_runtime(self, name: str) -> None:
+        root = self.root / name
+        self.process = FakeProcess()
+        configure_runtime(
+            root / "state",
+            attempts_root=root / "attempts",
+            executor_paths={
+                self.admitted.capability("decode").executable_sha256: self.executable
+            },
+            launcher=runtime().launcher,
+        )
+        for payload in self.case.payloads.values():
+            runtime().store.put_bytes(
+                kind="fixture",
+                data=payload,
+                producer_operation_id="fixture-producer",
+                input_hashes=(),
+            )
+        self.record_authority(self.admitted)
+
     async def test_happy_path_uses_exact_admitted_inputs_and_completes_effect(self) -> None:
         real_execute = activities.execute
         calls: list[dict[str, Any]] = []
@@ -195,7 +327,7 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((workspace / "input.apk").read_bytes(), self.case.resolve(admitted.request.stock_apk))
         self.assertEqual((workspace / "tool").read_bytes(), self.case.resolve(tool.artifact))
         self.assertTrue((workspace / "framework").is_dir())
-        self.assertFalse((workspace / "output").exists())
+        self.assertTrue((workspace / "output").is_dir())
         self.assertEqual(self.launches[0]["argv"][1:], ("output", "framework", "input.apk", "tool"))
         self.assertEqual(calls[0]["kwargs"]["timeout_seconds"], plan.timeout_seconds)
         self.assertIs(calls[0]["kwargs"]["launcher"], runtime().launcher)
@@ -207,15 +339,39 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
                 for name, slot in plan.arguments
             ),
         )
-        result = ReplayDecodeCheckpointResultV1.from_dict(
-            json.loads(runtime().store.read_bytes(output))
+        receipt = self.receipt(output)
+        manifest = load_decoded_tree(runtime().store, receipt.decoded_tree_manifest)
+        old_domain_key = activities.operation_key(
+            "replay_decode_checkpoint",
+            {
+                "schema_version": 1,
+                "admitted_replay_sha256": receipt.admitted_replay_sha256,
+                "role": receipt.role,
+                "execution_plan_sha256": receipt.execution_plan_sha256,
+                "executor_capability_sha256": receipt.executor_capability_sha256,
+                "tool_artifact_sha256": receipt.tool_artifact_sha256,
+                "execution_request_sha256": receipt.execution_request_sha256,
+            },
         )
-        self.assertEqual(result.admitted_replay_sha256, admitted.sha256)
-        self.assertEqual(result.execution_request_sha256, request.canonical_identity)
-        self.assertEqual(result.tool_artifact_sha256, tool.artifact.sha256)
-        self.assertEqual(output.input_hashes[3], tool.artifact.sha256)
-        self.assertNotEqual(output.input_hashes[3], tool.sha256)
-        self.assertEqual(result.returncode, 0)
+        self.assertEqual(output.kind, "replay-decoded-tree-receipt-v1")
+        self.assertNotEqual(key, old_domain_key)
+        self.assertEqual(receipt.admitted_replay_sha256, admitted.sha256)
+        self.assertEqual(receipt.input_apk, admitted.request.stock_apk)
+        self.assertEqual(receipt.execution_request_sha256, request.canonical_identity)
+        self.assertEqual(receipt.tool_artifact_sha256, tool.artifact.sha256)
+        self.assertEqual(receipt.decoded_tree_semantic_sha256, manifest.decoded_tree_sha256)
+        self.assertEqual(receipt.decoded_tree_manifest.input_hashes, receipt.execution_input_hashes)
+        self.assertEqual(output.input_hashes, receipt.receipt_input_hashes)
+        self.assertEqual(
+            tuple((entry.path, entry.kind) for entry in manifest.entries),
+            (
+                ("empty", "directory"),
+                ("resources.bin", "file"),
+                ("smali", "directory"),
+                ("smali/Example.smali", "file"),
+            ),
+        )
+        self.assertTrue(receipt.success)
 
     async def test_unrecorded_authority_has_no_operation_cas_workspace_registry_or_launch(self) -> None:
         other_root = self.root / "unrecorded"
@@ -251,7 +407,7 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
             runtime().ledger, "require_admitted_replay_v3", return_value=normalized
         ):
             output = await self.invoke(self.admitted)
-        decoded = ReplayDecodeCheckpointResultV1.from_dict(json.loads(runtime().store.read_bytes(output)))
+        decoded = self.receipt(output)
         self.assertEqual(decoded.admitted_replay_sha256, normalized.sha256)
         self.assertNotEqual(decoded.admitted_replay_sha256, self.admitted.sha256)
 
@@ -286,6 +442,76 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.producer_operation_id, first_key)
         self.assertEqual(runtime().store.read_bytes(second), first_bytes)
         self.assertEqual(second.sha256, first.sha256)
+        self.assertEqual(
+            self.receipt(second).decoded_tree_manifest,
+            ReplayDecodedTreeReceiptV1.from_dict(json.loads(first_bytes)).decoded_tree_manifest,
+        )
+
+    async def test_empty_directory_and_file_changes_alter_tree_and_receipt_identity(self) -> None:
+        first = await self.invoke(owner="first-owner")
+        first_receipt = self.receipt(first)
+
+        async def run_variant(
+            name: str, output_builder: Any
+        ) -> tuple[ArtifactRef, ReplayDecodedTreeReceiptV1]:
+            variant_root = self.root / name
+            variant_executable = variant_root / "executor.bin"
+            variant_executable.parent.mkdir()
+            variant_executable.write_bytes(self.executable.read_bytes())
+            self.process = FakeProcess()
+            self.process.output_builder = output_builder
+            configure_runtime(
+                variant_root / "state",
+                attempts_root=variant_root / "attempts",
+                executor_paths={
+                    self.admitted.capability("decode").executable_sha256: variant_executable
+                },
+                launcher=runtime().launcher,
+            )
+            for payload in self.case.payloads.values():
+                runtime().store.put_bytes(
+                    kind="fixture",
+                    data=payload,
+                    producer_operation_id="fixture-producer",
+                    input_hashes=(),
+                )
+            self.record_authority(self.admitted)
+            output = await self.invoke(owner=f"owner-{name}")
+            return output, self.receipt(output)
+
+        def extra_empty_directory(output: Path) -> None:
+            FakeProcess._build_output(output)
+            (output / "another-empty").mkdir()
+
+        directory_output, directory_receipt = await run_variant(
+            "changed-directory", extra_empty_directory
+        )
+        self.assertEqual(directory_output.producer_operation_id, first.producer_operation_id)
+        self.assertNotEqual(
+            directory_receipt.decoded_tree_manifest.sha256,
+            first_receipt.decoded_tree_manifest.sha256,
+        )
+        self.assertEqual(
+            directory_receipt.decoded_tree_semantic_sha256,
+            first_receipt.decoded_tree_semantic_sha256,
+        )
+        self.assertNotEqual(directory_output.sha256, first.sha256)
+
+        def changed_file(output: Path) -> None:
+            FakeProcess._build_output(output)
+            (output / "resources.bin").write_bytes(b"changed")
+
+        file_output, file_receipt = await run_variant("changed-file", changed_file)
+        self.assertEqual(file_output.producer_operation_id, first.producer_operation_id)
+        self.assertNotEqual(
+            file_receipt.decoded_tree_manifest.sha256,
+            first_receipt.decoded_tree_manifest.sha256,
+        )
+        self.assertNotEqual(
+            file_receipt.decoded_tree_semantic_sha256,
+            first_receipt.decoded_tree_semantic_sha256,
+        )
+        self.assertNotEqual(file_output.sha256, first.sha256)
 
     async def test_attempts_root_overlap_is_rejected_without_creation(self) -> None:
         state_root = self.root / "overlap-state"
@@ -336,12 +562,71 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
             launcher=runtime().launcher,
         )
         self.record_authority(self.admitted)
-        with self.assertRaisesRegex(ValueError, "runtime executable"):
-            await self.invoke()
+        with mock.patch.object(
+            runtime().store, "read_bytes", wraps=runtime().store.read_bytes
+        ) as read_bytes:
+            with self.assertRaisesRegex(ValueError, "runtime executable"):
+                await self.invoke()
+        read_bytes.assert_not_called()
         _, status = self.sole_operation()
         self.assertEqual(status, "pending")
         self.assertFalse(runtime().attempts_root.exists())
         self.assertEqual(self.launches, [])
+
+    async def test_released_preworkspace_claim_can_retry_with_a_new_owner(self) -> None:
+        state_root = self.root / "released-state"
+        attempts_root = self.root / "released-attempts"
+        configure_runtime(
+            state_root,
+            attempts_root=attempts_root,
+            executor_paths={},
+            launcher=runtime().launcher,
+        )
+        self.record_authority(self.admitted)
+        with self.assertRaisesRegex(ValueError, "runtime executable"):
+            await self.invoke(owner="first-owner")
+
+        configure_runtime(
+            state_root,
+            attempts_root=attempts_root,
+            executor_paths={
+                self.admitted.capability("decode").executable_sha256: self.executable
+            },
+            launcher=runtime().launcher,
+        )
+        for payload in self.case.payloads.values():
+            runtime().store.put_bytes(
+                kind="fixture",
+                data=payload,
+                producer_operation_id="fixture-producer",
+                input_hashes=(),
+            )
+        self.record_authority(self.admitted)
+        output = await self.invoke(owner="second-owner")
+        self.assertEqual(runtime().ledger.operation_status(output.producer_operation_id), "completed")
+        self.assertEqual(len(self.launches), 1)
+
+    async def test_release_failure_does_not_mask_preworkspace_failure(self) -> None:
+        configure_runtime(
+            self.root / "release-failure-state",
+            attempts_root=self.root / "release-failure-attempts",
+            executor_paths={},
+            launcher=runtime().launcher,
+        )
+        self.record_authority(self.admitted)
+        with mock.patch.object(
+            activities.Ledger,
+            "release_pending_operation",
+            side_effect=RuntimeError("release unavailable"),
+        ):
+            with self.assertRaisesRegex(ValueError, "runtime executable") as caught:
+                await self.invoke()
+        self.assertTrue(
+            any(
+                "Pending operation release failed: RuntimeError: release unavailable" in note
+                for note in caught.exception.__notes__
+            )
+        )
 
     async def test_nonzero_exit_quarantines_without_effect(self) -> None:
         self.process = FakeProcess(returncode=7)
@@ -350,6 +635,83 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
         key, status = self.sole_operation()
         self.assertEqual(status, "quarantined")
         self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+
+    async def test_invalid_success_outputs_quarantine_without_effect(self) -> None:
+        builders = {
+            "missing": lambda output: None,
+            "file": lambda output: output.write_bytes(b"not a directory"),
+            "symlink": lambda output: output.symlink_to(self.root),
+            "unsafe-path": lambda output: (
+                output.mkdir(),
+                (output / "bad:name").write_bytes(b"bad"),
+            ),
+            "hardlink": lambda output: (
+                output.mkdir(),
+                (output / "first").write_bytes(b"same"),
+                (output / "second").hardlink_to(output / "first"),
+            ),
+            "special": lambda output: (
+                output.mkdir(),
+                os.mkfifo(output / "fifo"),
+            ),
+        }
+        for index, (name, builder) in enumerate(builders.items()):
+            with self.subTest(name=name):
+                if index:
+                    state = self.root / f"invalid-{name}"
+                    configure_runtime(
+                        state / "state",
+                        attempts_root=state / "attempts",
+                        executor_paths={
+                            self.admitted.capability("decode").executable_sha256: self.executable
+                        },
+                        launcher=runtime().launcher,
+                    )
+                    for payload in self.case.payloads.values():
+                        runtime().store.put_bytes(
+                            kind="fixture",
+                            data=payload,
+                            producer_operation_id="fixture-producer",
+                            input_hashes=(),
+                        )
+                    self.record_authority(self.admitted)
+                self.process = FakeProcess()
+                self.process.output_builder = builder
+                with self.assertRaises((OSError, ValueError)):
+                    await self.invoke(owner=f"owner-{name}")
+                key, status = self.sole_operation()
+                self.assertEqual(status, "quarantined")
+                self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+
+    async def test_capture_failure_after_workspace_quarantines_without_effect(self) -> None:
+        with mock.patch.object(
+            activities, "capture_decoded_tree_fd", side_effect=RuntimeError("capture failed")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "capture failed"):
+                await self.invoke()
+        key, status = self.sole_operation()
+        self.assertEqual(status, "quarantined")
+        self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+
+    async def test_failure_after_receipt_publication_quarantines_without_effect(self) -> None:
+        with mock.patch.object(
+            runtime().ledger, "record_effect", side_effect=RuntimeError("effect unavailable")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "effect unavailable"):
+                await self.invoke()
+        key, status = self.sole_operation()
+        self.assertEqual(status, "quarantined")
+        self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+        receipt_blobs = []
+        for prefix in (runtime().store.root / "sha256").iterdir():
+            for blob in prefix.iterdir():
+                try:
+                    value = json.loads(blob.read_bytes())
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if isinstance(value, dict) and value.get("operation_key") == key:
+                    receipt_blobs.append(blob)
+        self.assertEqual(len(receipt_blobs), 1)
 
     async def test_tampered_executor_fails_before_launch_and_effect(self) -> None:
         self.executable.write_bytes(b"tampered executable bytes")
@@ -376,10 +738,50 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
         (runtime().attempts_root / key).symlink_to(target, target_is_directory=True)
 
         with self.assertRaises(OSError):
-            await self.invoke(owner="retry-owner")
+            await self.invoke(owner="first-owner")
         self.assertEqual(self.launches, [])
         self.assertEqual(runtime().ledger.operation_status(key), "pending")
         self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+
+    async def test_overlapping_owner_is_rejected_without_workspace_or_launch(self) -> None:
+        process = BlockingProcess()
+        self.process = process
+        first = asyncio.create_task(self.invoke(owner="first-owner"))
+        await process.started.wait()
+        key, status = self.sole_operation()
+        self.assertEqual(status, "pending")
+        with self.assertRaisesRegex(ValueError, "already claimed"):
+            await self.invoke(owner="second-owner")
+        self.assertEqual(len(self.launches), 1)
+        self.assertEqual(runtime().ledger.operation_event_count(key, "pending"), 1)
+        first.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+        self.assertEqual(runtime().ledger.operation_status(key), "quarantined")
+
+    async def test_workspace_path_replacement_cannot_redirect_descriptor_capture(self) -> None:
+        capture = activities.capture_decoded_tree_fd
+
+        def replace_workspace_path(*args: Any, **kwargs: Any) -> ArtifactRef:
+            workspace = Path(self.launches[0]["cwd"])
+            moved = workspace.with_name(f"{workspace.name}-moved")
+            workspace.rename(moved)
+            replacement = workspace / "output"
+            replacement.mkdir(parents=True)
+            (replacement / "attacker.txt").write_bytes(b"replacement")
+            return capture(*args, **kwargs)
+
+        with mock.patch.object(
+            activities, "capture_decoded_tree_fd", side_effect=replace_workspace_path
+        ):
+            output = await self.invoke()
+        manifest = load_decoded_tree(
+            runtime().store, self.receipt(output).decoded_tree_manifest
+        )
+        self.assertEqual(
+            tuple(entry.path for entry in manifest.entries),
+            ("empty", "resources.bin", "smali", "smali/Example.smali"),
+        )
 
     async def test_cancellation_kills_reaps_and_quarantines(self) -> None:
         process = BlockingProcess()
@@ -430,6 +832,73 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
             await self.invoke(owner="retry-owner")
         self.assertEqual(len(self.launches), launches)
         self.assertFalse(retry_workspace.exists())
+
+    async def test_missing_manifest_fails_adoption_without_launch_or_completion(self) -> None:
+        output = await self.invoke(owner="first-owner")
+        receipt = self.receipt(output)
+        self.blob_path(receipt.decoded_tree_manifest).unlink()
+        launches = len(self.launches)
+        with self.assertRaises((FileNotFoundError, ValueError)):
+            await self.invoke(owner="retry-owner")
+        self.assertEqual(len(self.launches), launches)
+        self.assertEqual(runtime().ledger.operation_status(output.producer_operation_id), "completed")
+
+    async def test_hardlinked_child_blob_fails_adoption_without_launch(self) -> None:
+        output = await self.invoke(owner="first-owner")
+        receipt = self.receipt(output)
+        manifest = load_decoded_tree(runtime().store, receipt.decoded_tree_manifest)
+        child = next(entry for entry in manifest.entries if entry.kind == "file")
+        link = self.root / "child-link"
+        link.hardlink_to(self.blob_path(child.sha256))
+        launches = len(self.launches)
+        with self.assertRaises(ValueError):
+            await self.invoke(owner="retry-owner")
+        self.assertEqual(len(self.launches), launches)
+
+    async def test_receipt_manifest_and_child_blob_tampering_all_fail_closed(self) -> None:
+        for layer in ("receipt", "manifest", "child"):
+            for mutation in ("corrupt", "missing", "writable", "hardlinked"):
+                with self.subTest(layer=layer, mutation=mutation):
+                    self.configure_fresh_runtime(f"tamper-{layer}-{mutation}")
+                    output = await self.invoke(owner="first-owner")
+                    receipt = self.receipt(output)
+                    manifest = load_decoded_tree(runtime().store, receipt.decoded_tree_manifest)
+                    child = next(entry for entry in manifest.entries if entry.kind == "file")
+                    references = {
+                        "receipt": output.sha256,
+                        "manifest": receipt.decoded_tree_manifest.sha256,
+                        "child": child.sha256,
+                    }
+                    path = self.blob_path(references[layer])
+                    if mutation == "corrupt":
+                        path.chmod(0o644)
+                        path.write_bytes(b"corrupt")
+                    elif mutation == "missing":
+                        path.unlink()
+                    elif mutation == "writable":
+                        path.chmod(0o644)
+                    else:
+                        (self.root / f"link-{layer}-{mutation}").hardlink_to(path)
+
+                    launches = len(self.launches)
+                    completion_events = runtime().ledger.operation_event_count(
+                        output.producer_operation_id, "completed"
+                    )
+                    retry_workspace = (
+                        runtime().attempts_root
+                        / output.producer_operation_id
+                        / hashlib.sha256(b"retry-owner").hexdigest()
+                    )
+                    with self.assertRaises((OSError, ValueError)):
+                        await self.invoke(owner="retry-owner")
+                    self.assertEqual(len(self.launches), launches)
+                    self.assertFalse(retry_workspace.exists())
+                    self.assertEqual(
+                        runtime().ledger.operation_event_count(
+                            output.producer_operation_id, "completed"
+                        ),
+                        completion_events,
+                    )
 
     async def test_caller_cannot_substitute_plan_or_tool(self) -> None:
         substituted = admit_v3(fixture_v3(with_framework=True))
