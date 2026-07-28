@@ -1,6 +1,6 @@
 # Session Handoff
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 ## End Goal
 
@@ -247,7 +247,8 @@ Commits `1a30252` through `b45fc0d` implement the reviewed deterministic core an
 - Full-rebuild and stock-DEX-graft archive backends with no-clobber staging, exact DEX topology, signature stripping, and retained stock entry byte/order/metadata preservation.
 - A receipt-bound verifier for operation proofs, descriptor placement, DEX strings, archive preservation, resources, manifest components, and backend policy. The decoded tree is accepted only through an output/tree/tool-capability receipt that the admitted executor and CAS must own.
 - Immutable source and tool bytes plus exact producer lineage are bound into recorded replay authority. `ToolchainProfileV3` role plans bind tool identity, logical paths, timeout, and executor capability shape. Replay-v3 admission resolves and validates exact concrete executor capabilities only after the recorded gate decision and artifact relationships pass. The ledger records canonical admitted replay-v3 authority append-only and returns a normalized object for execution; full replay Activity execution remains pending.
-- An unregistered synthetic decode Activity requires normalized ledger authority before all external access, creates descriptor-relative attempt-private inputs, projects the selected capability into an internal Phase A `RunSpec`, invokes unchanged `execute()` with admitted arguments and timeout, and proves deterministic effect adoption plus failure/cancellation quarantine. Its result is an execution checkpoint only; decoded-tree provenance and real apktool remain unimplemented.
+- An unregistered decode Activity requires normalized ledger authority before all external access, creates descriptor-relative attempt-private inputs, projects the selected capability into an internal Phase A `RunSpec`, and invokes unchanged `execute()` with admitted arguments and timeout. It emits `ReplayDecodedTreeReceiptV1`, binding the exact input APK, profile, plan, capability, tool, request, canonical tree manifest, semantic hash, and operation key. Receipt, manifest, and every child blob are validated before effect recording and again during adoption.
+- Decode output is opened relative to the still-pinned workspace descriptor and captured by descriptor, so replacing the workspace pathname cannot redirect the authoritative scan. Active decode claims reject takeover. A pre-workspace failure may release only its exact pending claim for a later owner; cancellation and failures after workspace creation quarantine. Release persists in the mutable current-claim index but is not represented in the append-only operation event stream.
 - Replay-v3 source staging uses a separate strict schema-2 report and concrete ledger authority before any source, attempt, or destination access. It preserves the committed V1 callback API while reusing its Linux descriptor-relative no-follow, no-replace, fsync, and read-only publication mechanics.
 - CAS blobs now pin root identity, reject path/link/type/permission substitution, publish read-only content descriptor-relatively, and handle concurrent readers/writers without accepting persistent hardlinks. Decoded trees are canonical manifest-plus-blob closures with explicit directory topology, portable path policy, verifier-compatible semantic hashes, bounded capture, strict closure loading, and exclusive materialization.
 
@@ -255,12 +256,12 @@ The standalone replay CLI prototype was rejected and deleted before commit or ex
 
 The initial secure source-staging primitive is deliberately restricted to Linux workers with descriptor-relative no-follow opens, symlink-safe removal, and working `renameat2(RENAME_NOREPLACE)` on the attempt filesystem. Native Windows staging remains a separate required backend; unsafe pathname fallbacks are rejected.
 
-The latest full `unittest` discovery passes 264 tests. No real generic 340/430 apktool replay has run yet. The legacy target-specific rebuilds remain the exercised artifact evidence.
+The latest full `unittest` discovery passes 279 tests. Independent adversarial review returned GO after descriptor-substitution, overlapping-owner, released-claim forgery, and cleanup-error findings were fixed. No real generic 340/430 apktool replay has run yet. The legacy target-specific rebuilds remain the exercised artifact evidence.
 
 ## Immediate Next Actions
 
-1. Replace the synthetic decode JSON effect with a ledger-owned decoded-tree receipt that binds the exact input APK, admitted plan/capability/tool/request, canonical tree manifest, and semantic hash; adoption must verify the full CAS closure before completion.
-2. Replay both fixtures from clean APKs through that admitted path, then add mutation fixtures for missing/ambiguous anchors, DEX movement/collision, and unsafe resource rebuilds.
+1. Add the ledger-owned tree-to-tree apply checkpoint: materialize the admitted decoded manifest, stage replay-v3 source, compile/apply deterministic operations, capture a patched-tree manifest, and adopt only after full closure verification.
+2. Replay both fixtures from clean APKs through the admitted decode/apply path, then add mutation fixtures for missing/ambiguous anchors, DEX movement/collision, and unsafe resource rebuilds.
 3. Complete Phase A authority/deployment evidence with an authenticated trusted-client process, hard process-loss test, and saved replay corpus. Normal Current-version rollout is proven.
 4. Add Google ADK as bounded read-only Temporal Activities only after deterministic generalization passes.
 5. Replay the admitted engine through the durable workflow before adding specialist agent topology.
