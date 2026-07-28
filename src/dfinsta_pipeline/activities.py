@@ -20,13 +20,17 @@ from .decoded_artifact import (
     capture_decoded_tree_fd,
     load_decoded_tree,
     materialize_decoded_tree,
+    verify_materialized_decoded_tree,
 )
 from .executor import ExecutionMetadata, ExecutionRequest, Launcher, execute
 from .ledger import Ledger
 from .replay_contracts import (
     AdmittedReplayV3,
     ReplayApplyOperationResultV1,
+    ReplayDecodedTreeReceiptV2,
     ReplayDecodedTreeReceiptV1,
+    ReplayFrameworkCacheReceiptV1,
+    ReplayFrameworkInstallationV1,
     ReplayPatchedTreeReceiptV1,
     ReplaySourceAdmissionEvidenceV1,
 )
@@ -212,7 +216,18 @@ def _verify_workspace_path(workspace: Path, workspace_fd: int) -> None:
         raise ValueError("Replay workspace path changed after secure creation")
 
 
-def _strict_replay_decoded_tree_receipt(data: bytes) -> ReplayDecodedTreeReceiptV1:
+def _validate_runtime_executable(path: Path, expected_sha256: str) -> None:
+    if not path.is_file():
+        raise ValueError("Runtime executable is not a regular file")
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != expected_sha256:
+        raise ValueError("Runtime executable does not match admitted capability")
+
+
+def _strict_receipt_json(data: bytes, contract: type[object], label: str) -> object:
     def object_pairs(value: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for name, item in value:
@@ -231,12 +246,32 @@ def _strict_replay_decoded_tree_receipt(data: bytes) -> ReplayDecodedTreeReceipt
             object_pairs_hook=object_pairs,
             parse_constant=reject_constant,
         )
-        result = ReplayDecodedTreeReceiptV1.from_dict(value)
+        result = contract.from_dict(value)  # type: ignore[attr-defined]
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
-        raise ValueError("Invalid replay decoded-tree receipt") from error
+        raise ValueError(f"Invalid {label}") from error
     if canonical_json(result).encode("utf-8") != data:
-        raise ValueError("Replay decoded-tree receipt is not canonical")
+        raise ValueError(f"{label.capitalize()} is not canonical")
     return result
+
+
+def _strict_replay_decoded_tree_receipt(data: bytes) -> ReplayDecodedTreeReceiptV1:
+    return _strict_receipt_json(
+        data, ReplayDecodedTreeReceiptV1, "replay decoded-tree receipt"
+    )  # type: ignore[return-value]
+
+
+def _strict_replay_decoded_tree_receipt_v2(data: bytes) -> ReplayDecodedTreeReceiptV2:
+    return _strict_receipt_json(
+        data, ReplayDecodedTreeReceiptV2, "replay decoded-tree V2 receipt"
+    )  # type: ignore[return-value]
+
+
+def _strict_replay_framework_cache_receipt(
+    data: bytes,
+) -> ReplayFrameworkCacheReceiptV1:
+    return _strict_receipt_json(
+        data, ReplayFrameworkCacheReceiptV1, "replay framework cache receipt"
+    )  # type: ignore[return-value]
 
 
 def _validate_replay_decoded_tree_receipt(
@@ -284,7 +319,192 @@ def _validate_replay_decoded_tree_receipt(
     return receipt
 
 
-def _replay_decode_operation_identity(admitted: AdmittedReplayV3) -> tuple[str, str, str]:
+def _validate_framework_cache_topology(
+    receipt: ReplayFrameworkCacheReceiptV1,
+) -> None:
+    manifest = load_decoded_tree(runtime().store, receipt.framework_cache_manifest)
+    if manifest.decoded_tree_sha256 != receipt.framework_cache_semantic_sha256:
+        raise ValueError("Framework cache receipt semantic SHA-256 does not match manifest")
+    expected_paths = tuple(
+        sorted(
+            (f"{item.package_id}.apk" for item in receipt.installations),
+            key=lambda value: value.encode("utf-8"),
+        )
+    )
+    if (
+        tuple(entry.path for entry in manifest.entries) != expected_paths
+        or any(entry.kind != "file" for entry in manifest.entries)
+    ):
+        raise ValueError("Framework cache topology does not exactly match installations")
+
+
+def _framework_cache_snapshot(framework_fd: int) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    with os.scandir(framework_fd) as entries:
+        names = sorted((entry.name for entry in entries), key=lambda value: value.encode("utf-8"))
+    for name in names:
+        metadata = os.stat(name, dir_fd=framework_fd, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError("Framework cache contains an unsafe entry")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=framework_fd,
+        )
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise ValueError("Framework cache entry changed while being opened")
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: os.read(descriptor, 1024 * 1024), b""):
+                digest.update(chunk)
+            after = os.fstat(descriptor)
+            current = os.stat(name, dir_fd=framework_fd, follow_symlinks=False)
+            stable = lambda value: (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_nlink,
+                value.st_size,
+                value.st_mtime_ns,
+                value.st_ctime_ns,
+            )
+            if stable(metadata) != stable(after) or stable(metadata) != stable(current):
+                raise ValueError("Framework cache entry changed while being read")
+            snapshot[name] = digest.hexdigest()
+        finally:
+            os.close(descriptor)
+    return snapshot
+
+
+def _framework_installation_requests(
+    admitted: AdmittedReplayV3,
+) -> tuple[
+    object,
+    object,
+    object,
+    tuple[ReplayFrameworkInstallationV1, ...],
+    tuple[ExecutionRequest, ...],
+]:
+    if not admitted.request.frameworks:
+        raise ValueError("Replay framework installation requires nonempty frameworks")
+    role = "install_framework"
+    plan = admitted.plan(role)
+    capability = admitted.capability(role)
+    requirement = admitted.profile.tool_for_role(role)
+    tool = next(
+        item for item in admitted.request.tools if item.tool_id == requirement.tool_id
+    )
+    logical_paths = {
+        "tool": "tool",
+        "framework_dir": "framework",
+    }
+    requests = tuple(
+        ExecutionRequest(
+            1,
+            capability.capability_id,
+            capability.canonical_identity,
+            framework.artifact,
+            capability.output_kind,
+            tuple(
+                (
+                    name,
+                    f"framework-apks/{framework.package_id}.apk"
+                    if slot == "framework_apk"
+                    else logical_paths[slot],
+                )
+                for name, slot in plan.arguments
+            ),
+            (),
+            admitted.run_spec.apk_composition,
+        )
+        for framework in admitted.request.frameworks
+    )
+    installations = tuple(
+        ReplayFrameworkInstallationV1(
+            framework.package_id,
+            framework.artifact,
+            request.canonical_identity,
+        )
+        for framework, request in zip(admitted.request.frameworks, requests, strict=True)
+    )
+    return plan, capability, tool, installations, requests
+
+
+def _replay_framework_operation_identity(
+    admitted: AdmittedReplayV3,
+) -> tuple[
+    str,
+    str,
+    tuple[ReplayFrameworkInstallationV1, ...],
+    tuple[ExecutionRequest, ...],
+]:
+    plan, capability, tool, installations, requests = _framework_installation_requests(
+        admitted
+    )
+    operation_input = {
+        "schema_version": 1,
+        "admitted_replay_sha256": admitted.sha256,
+        "toolchain_profile_id": admitted.profile.profile_id,
+        "toolchain_profile_sha256": admitted.profile.sha256,
+        "role": "install_framework",
+        "execution_plan_sha256": plan.sha256,
+        "executor_capability_sha256": capability.canonical_identity,
+        "tool_artifact_sha256": tool.artifact.sha256,
+        "installations": installations,
+    }
+    return (
+        operation_key("replay_install_frameworks_v1", operation_input),
+        canonical_sha256(operation_input),
+        installations,
+        requests,
+    )
+
+
+def _validate_replay_framework_cache_receipt(
+    output: ArtifactRef,
+    key: str,
+    *,
+    admitted: AdmittedReplayV3,
+    installations: tuple[ReplayFrameworkInstallationV1, ...],
+) -> ReplayFrameworkCacheReceiptV1:
+    if (
+        output.kind != "replay-framework-cache-receipt-v1"
+        or output.producer_operation_id != key
+    ):
+        raise ValueError("Adopted framework cache receipt does not match operation lineage")
+    receipt = _strict_replay_framework_cache_receipt(runtime().store.read_bytes(output))
+    plan = admitted.plan("install_framework")
+    capability = admitted.capability("install_framework")
+    tool = next(
+        item
+        for item in admitted.request.tools
+        if item.tool_id == admitted.profile.tool_for_role("install_framework").tool_id
+    )
+    if (
+        output.sha256 != receipt.sha256
+        or output.input_hashes != receipt.receipt_input_hashes
+        or receipt.admitted_replay_sha256 != admitted.sha256
+        or receipt.toolchain_profile_id != admitted.profile.profile_id
+        or receipt.toolchain_profile_sha256 != admitted.profile.sha256
+        or receipt.role != "install_framework"
+        or receipt.execution_plan_sha256 != plan.sha256
+        or receipt.executor_capability_sha256 != capability.canonical_identity
+        or receipt.tool_artifact_sha256 != tool.artifact.sha256
+        or receipt.installations != installations
+        or receipt.operation_key != key
+        or receipt.success is not True
+    ):
+        raise ValueError("Adopted framework cache receipt does not match admitted execution")
+    _validate_framework_cache_topology(receipt)
+    return receipt
+
+
+def _replay_decode_operation_identity(
+    admitted: AdmittedReplayV3,
+    completed_framework_cache_receipt: ArtifactRef | None = None,
+    framework_receipt: ReplayFrameworkCacheReceiptV1 | None = None,
+) -> tuple[str, str, str]:
     role = "decode"
     plan = admitted.plan(role)
     capability = admitted.capability(role)
@@ -321,11 +541,85 @@ def _replay_decode_operation_identity(admitted: AdmittedReplayV3) -> tuple[str, 
         "tool_artifact_sha256": tool.artifact.sha256,
         "execution_request_sha256": request.canonical_identity,
     }
+    if admitted.request.frameworks:
+        if completed_framework_cache_receipt is None or framework_receipt is None:
+            raise ValueError("Framework-aware decode requires its completed framework cache")
+        if "framework_dir" not in {slot for _, slot in plan.arguments}:
+            raise ValueError("Framework-aware decode plan must consume the framework cache")
+        operation_input.update(
+            {
+                "completed_framework_cache_receipt": completed_framework_cache_receipt,
+                "framework_cache_manifest": framework_receipt.framework_cache_manifest,
+                "framework_cache_semantic_sha256": framework_receipt.framework_cache_semantic_sha256,
+            }
+        )
     return (
-        operation_key("replay_decode_tree_v1", operation_input),
+        operation_key(
+            "replay_decode_tree_v2" if admitted.request.frameworks else "replay_decode_tree_v1",
+            operation_input,
+        ),
         canonical_sha256(operation_input),
         request.canonical_identity,
     )
+
+
+def _validate_replay_decoded_tree_receipt_v2(
+    output: ArtifactRef,
+    key: str,
+    *,
+    admitted: AdmittedReplayV3,
+    execution_request_sha256: str,
+    completed_framework_cache_receipt: ArtifactRef,
+    framework_receipt: ReplayFrameworkCacheReceiptV1,
+) -> ReplayDecodedTreeReceiptV2:
+    if (
+        output.kind != "replay-decoded-tree-receipt-v2"
+        or output.producer_operation_id != key
+    ):
+        raise ValueError("Adopted replay decoded-tree V2 receipt does not match operation lineage")
+    framework_key, _, installations, _ = _replay_framework_operation_identity(admitted)
+    validated_framework_receipt = _validate_replay_framework_cache_receipt(
+        completed_framework_cache_receipt,
+        framework_key,
+        admitted=admitted,
+        installations=installations,
+    )
+    if validated_framework_receipt != framework_receipt:
+        raise ValueError("Framework cache predecessor does not match validated receipt")
+    receipt = _strict_replay_decoded_tree_receipt_v2(runtime().store.read_bytes(output))
+    plan = admitted.plan("decode")
+    capability = admitted.capability("decode")
+    tool = next(
+        item
+        for item in admitted.request.tools
+        if item.tool_id == admitted.profile.tool_for_role("decode").tool_id
+    )
+    if (
+        output.sha256 != receipt.sha256
+        or output.input_hashes != receipt.receipt_input_hashes
+        or receipt.decoded_apk_role != "stock_input"
+        or receipt.admitted_replay_sha256 != admitted.sha256
+        or receipt.input_apk != admitted.request.stock_apk
+        or receipt.toolchain_profile_id != admitted.profile.profile_id
+        or receipt.toolchain_profile_sha256 != admitted.profile.sha256
+        or receipt.role != "decode"
+        or receipt.execution_plan_sha256 != plan.sha256
+        or receipt.executor_capability_sha256 != capability.canonical_identity
+        or receipt.tool_artifact_sha256 != tool.artifact.sha256
+        or receipt.execution_request_sha256 != execution_request_sha256
+        or receipt.completed_framework_cache_receipt
+        != completed_framework_cache_receipt
+        or receipt.framework_cache_manifest != framework_receipt.framework_cache_manifest
+        or receipt.framework_cache_semantic_sha256
+        != framework_receipt.framework_cache_semantic_sha256
+        or receipt.operation_key != key
+        or receipt.success is not True
+    ):
+        raise ValueError("Adopted replay decoded-tree V2 receipt does not match admitted execution")
+    manifest = load_decoded_tree(runtime().store, receipt.decoded_tree_manifest)
+    if manifest.decoded_tree_sha256 != receipt.decoded_tree_semantic_sha256:
+        raise ValueError("Decoded-tree receipt semantic SHA-256 does not match manifest")
+    return receipt
 
 
 def _strict_replay_patched_tree_receipt(data: bytes) -> ReplayPatchedTreeReceiptV1:
@@ -401,7 +695,7 @@ def _validate_replay_patched_tree_receipt(
     *,
     admitted: AdmittedReplayV3,
     completed_decode_receipt: ArtifactRef,
-    decoded_receipt: ReplayDecodedTreeReceiptV1,
+    decoded_receipt: ReplayDecodedTreeReceiptV1 | ReplayDecodedTreeReceiptV2,
     compiled: TargetPortSpecV2,
 ) -> ReplayPatchedTreeReceiptV1:
     if (
@@ -464,6 +758,201 @@ def _adopt_existing(
 
 
 @activity.defn
+async def replay_install_frameworks_checkpoint_activity(
+    candidate: AdmittedReplayV3,
+) -> ArtifactRef:
+    configured = runtime()
+    admitted = Ledger.require_admitted_replay_v3(configured.ledger, candidate)
+    key, operation_input_sha256, installations, requests = (
+        _replay_framework_operation_identity(admitted)
+    )
+    plan = admitted.plan("install_framework")
+    capability = admitted.capability("install_framework")
+    tool = next(
+        item
+        for item in admitted.request.tools
+        if item.tool_id == admitted.profile.tool_for_role("install_framework").tool_id
+    )
+    admitted_spec = RunSpec(
+        1,
+        admitted.run_spec.run_id,
+        admitted.run_spec.subject_sha256,
+        admitted.run_spec.intent_sha256,
+        admitted.run_spec.resolution_sha256,
+        capability.canonical_identity,
+        admitted.run_spec.policy_revision,
+        admitted.run_spec.allowed_actor,
+        1,
+        admitted.run_spec.apk_composition,
+        False,
+        0,
+    )
+    owner = _activity_owner()
+    operation_claimed = False
+    existing = Ledger.begin_operation(
+        configured.ledger,
+        key,
+        "replay_install_frameworks_v1",
+        operation_input_sha256,
+        owner,
+        retry_safe=False,
+    )
+    if existing is not None:
+        _validate_replay_framework_cache_receipt(
+            existing,
+            key,
+            admitted=admitted,
+            installations=installations,
+        )
+        return Ledger.complete_operation(configured.ledger, key, existing)
+    operation_claimed = True
+
+    workspace_created = False
+    effect_recorded = False
+    try:
+        try:
+            executable = configured.executor_paths[capability.executable_sha256]
+        except KeyError as error:
+            raise ValueError("No runtime executable for admitted capability") from error
+        _validate_runtime_executable(executable, capability.executable_sha256)
+
+        tool_bytes = configured.store.read_bytes(tool.artifact)
+        framework_bytes = tuple(
+            configured.store.read_bytes(item.framework_apk) for item in installations
+        )
+        execution_input_hashes = (
+            admitted.sha256,
+            admitted.profile.sha256,
+            plan.sha256,
+            capability.canonical_identity,
+            tool.artifact.sha256,
+            *(canonical_sha256(item) for item in installations),
+        )
+
+        attempts_fd = _open_or_create_directory(configured.attempts_root)
+        operation_fd: int | None = None
+        workspace_fd: int | None = None
+        framework_apks_fd: int | None = None
+        framework_fd: int | None = None
+        try:
+            try:
+                os.mkdir(key, mode=0o700, dir_fd=attempts_fd)
+            except FileExistsError:
+                pass
+            operation_fd = _open_existing_directory(attempts_fd, key)
+            owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()
+            workspace_fd = _exclusive_directory(operation_fd, owner_hash)
+            workspace = configured.attempts_root / key / owner_hash
+            workspace_created = True
+            framework_apks_fd = _exclusive_directory(workspace_fd, "framework-apks")
+            framework_fd = _exclusive_directory(workspace_fd, "framework")
+            _exclusive_file(workspace_fd, "tool", tool_bytes)
+            for installation, data in zip(installations, framework_bytes, strict=True):
+                _exclusive_file(
+                    framework_apks_fd,
+                    f"{installation.package_id}.apk",
+                    data,
+                )
+            _verify_workspace_path(workspace, workspace_fd)
+
+            cache_snapshot: dict[str, str] = {}
+            for installation, request in zip(installations, requests, strict=True):
+                execution = await execute(
+                    capability,
+                    request,
+                    ExecutionMetadata(executable, workspace, workspace),
+                    admitted_spec=admitted_spec,
+                    timeout_seconds=plan.timeout_seconds,
+                    launcher=configured.launcher,
+                )
+                if execution.returncode != 0:
+                    raise RuntimeError(
+                        "Replay framework installation "
+                        f"{installation.package_id} failed with exit code {execution.returncode}"
+                    )
+                _verify_workspace_path(workspace, workspace_fd)
+                _verify_workspace_path(workspace / "framework", framework_fd)
+                current_snapshot = _framework_cache_snapshot(framework_fd)
+                expected_name = f"{installation.package_id}.apk"
+                if (
+                    expected_name in cache_snapshot
+                    or set(current_snapshot) != {*cache_snapshot, expected_name}
+                    or any(
+                        current_snapshot[name] != digest
+                        for name, digest in cache_snapshot.items()
+                    )
+                ):
+                    raise ValueError(
+                        "Framework installation did not add exactly its declared package id"
+                    )
+                cache_snapshot = current_snapshot
+
+            manifest_ref = capture_decoded_tree_fd(
+                configured.store,
+                framework_fd,
+                key,
+                execution_input_hashes,
+            )
+        finally:
+            _close_descriptors(
+                framework_fd,
+                framework_apks_fd,
+                workspace_fd,
+                operation_fd,
+                attempts_fd,
+            )
+
+        manifest = load_decoded_tree(configured.store, manifest_ref)
+        receipt = ReplayFrameworkCacheReceiptV1(
+            1,
+            admitted.sha256,
+            admitted.profile.profile_id,
+            admitted.profile.sha256,
+            "install_framework",
+            plan.sha256,
+            capability.canonical_identity,
+            tool.artifact.sha256,
+            installations,
+            manifest_ref,
+            manifest.decoded_tree_sha256,
+            key,
+            True,
+        )
+        _validate_framework_cache_topology(receipt)
+        output = configured.store.put_bytes(
+            kind="replay-framework-cache-receipt-v1",
+            data=canonical_json(receipt).encode("utf-8"),
+            producer_operation_id=key,
+            input_hashes=receipt.receipt_input_hashes,
+        )
+        _validate_replay_framework_cache_receipt(
+            output,
+            key,
+            admitted=admitted,
+            installations=installations,
+        )
+        Ledger.record_effect(configured.ledger, key, owner, output)
+        effect_recorded = True
+        return Ledger.complete_operation(configured.ledger, key, output)
+    except asyncio.CancelledError:
+        if not effect_recorded:
+            Ledger.quarantine_operation(configured.ledger, key, owner)
+        raise
+    except BaseException as error:
+        if workspace_created and not effect_recorded:
+            Ledger.quarantine_operation(configured.ledger, key, owner)
+        elif operation_claimed and not effect_recorded:
+            try:
+                Ledger.release_pending_operation(configured.ledger, key, owner)
+            except BaseException as release_error:
+                error.add_note(
+                    "Pending operation release failed: "
+                    f"{type(release_error).__name__}: {release_error}"
+                )
+        raise
+
+
+@activity.defn
 async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> ArtifactRef:
     configured = runtime()
     admitted = Ledger.require_admitted_replay_v3(configured.ledger, candidate)
@@ -506,7 +995,32 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
         0,
     )
     tool_artifact_sha256 = tool.artifact.sha256
-    key, operation_input_sha256, _ = _replay_decode_operation_identity(admitted)
+    completed_framework_cache_receipt: ArtifactRef | None = None
+    framework_receipt: ReplayFrameworkCacheReceiptV1 | None = None
+    if admitted.request.frameworks:
+        (
+            framework_key,
+            framework_input_sha256,
+            installations,
+            _,
+        ) = _replay_framework_operation_identity(admitted)
+        completed_framework_cache_receipt = Ledger.require_completed_operation(
+            configured.ledger,
+            framework_key,
+            "replay_install_frameworks_v1",
+            framework_input_sha256,
+        )
+        framework_receipt = _validate_replay_framework_cache_receipt(
+            completed_framework_cache_receipt,
+            framework_key,
+            admitted=admitted,
+            installations=installations,
+        )
+    key, operation_input_sha256, _ = _replay_decode_operation_identity(
+        admitted,
+        completed_framework_cache_receipt,
+        framework_receipt,
+    )
     execution_input_hashes = (
         admitted.sha256,
         canonical_sha256(admitted.request.stock_apk),
@@ -516,29 +1030,50 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
         tool_artifact_sha256,
         request.canonical_identity,
     )
+    if framework_receipt is not None and completed_framework_cache_receipt is not None:
+        execution_input_hashes = (
+            *execution_input_hashes,
+            canonical_sha256(completed_framework_cache_receipt),
+            canonical_sha256(framework_receipt.framework_cache_manifest),
+            framework_receipt.framework_cache_semantic_sha256,
+        )
     owner = _activity_owner()
     operation_claimed = False
-    existing = configured.ledger.begin_operation(
+    decode_kind = (
+        "replay_decode_tree_v2" if framework_receipt is not None else "replay_decode_tree_v1"
+    )
+    existing = Ledger.begin_operation(
+        configured.ledger,
         key,
-        "replay_decode_tree_v1",
+        decode_kind,
         operation_input_sha256,
         owner,
         retry_safe=False,
     )
     if existing is not None:
-        _validate_replay_decoded_tree_receipt(
-            existing,
-            key,
-            admitted_replay_sha256=admitted.sha256,
-            input_apk=admitted.request.stock_apk,
-            toolchain_profile_id=admitted.profile.profile_id,
-            toolchain_profile_sha256=admitted.profile.sha256,
-            execution_plan_sha256=plan.sha256,
-            executor_capability_sha256=capability.canonical_identity,
-            tool_artifact_sha256=tool_artifact_sha256,
-            execution_request_sha256=request.canonical_identity,
-        )
-        return configured.ledger.complete_operation(key, existing)
+        if framework_receipt is None or completed_framework_cache_receipt is None:
+            _validate_replay_decoded_tree_receipt(
+                existing,
+                key,
+                admitted_replay_sha256=admitted.sha256,
+                input_apk=admitted.request.stock_apk,
+                toolchain_profile_id=admitted.profile.profile_id,
+                toolchain_profile_sha256=admitted.profile.sha256,
+                execution_plan_sha256=plan.sha256,
+                executor_capability_sha256=capability.canonical_identity,
+                tool_artifact_sha256=tool_artifact_sha256,
+                execution_request_sha256=request.canonical_identity,
+            )
+        else:
+            _validate_replay_decoded_tree_receipt_v2(
+                existing,
+                key,
+                admitted=admitted,
+                execution_request_sha256=request.canonical_identity,
+                completed_framework_cache_receipt=completed_framework_cache_receipt,
+                framework_receipt=framework_receipt,
+            )
+        return Ledger.complete_operation(configured.ledger, key, existing)
     operation_claimed = True
 
     workspace_created = False
@@ -548,8 +1083,7 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
             executable = configured.executor_paths[capability.executable_sha256]
         except KeyError as error:
             raise ValueError("No runtime executable for admitted capability") from error
-        if not executable.is_file():
-            raise ValueError("Runtime executable is not a regular file")
+        _validate_runtime_executable(executable, capability.executable_sha256)
 
         stock_bytes = configured.store.read_bytes(admitted.request.stock_apk)
         tool_bytes = configured.store.read_bytes(tool.artifact)
@@ -558,6 +1092,7 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
         attempts_fd = _open_or_create_directory(configured.attempts_root)
         operation_fd: int | None = None
         workspace_fd: int | None = None
+        framework_fd: int | None = None
         output_fd: int | None = None
         try:
             try:
@@ -573,7 +1108,16 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
             if uses_tool_path:
                 _exclusive_file(workspace_fd, "tool", tool_bytes)
             if any(slot == "framework_dir" for _, slot in plan.arguments):
-                os.mkdir("framework", mode=0o700, dir_fd=workspace_fd)
+                if framework_receipt is None:
+                    os.mkdir("framework", mode=0o700, dir_fd=workspace_fd)
+                else:
+                    materialize_decoded_tree(
+                        configured.store,
+                        framework_receipt.framework_cache_manifest,
+                        workspace,
+                        "framework",
+                    )
+                framework_fd = _open_existing_directory(workspace_fd, "framework")
             try:
                 os.stat("output", dir_fd=workspace_fd, follow_symlinks=False)
             except FileNotFoundError:
@@ -581,6 +1125,9 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
             else:
                 raise ValueError("Replay decoded-tree output must be absent before launch")
             _verify_workspace_path(workspace, workspace_fd)
+            if framework_receipt is not None:
+                assert framework_fd is not None
+                _verify_workspace_path(workspace / "framework", framework_fd)
 
             execution = await execute(
                 capability,
@@ -592,6 +1139,17 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
             )
             if execution.returncode != 0:
                 raise RuntimeError(f"Replay decode failed with exit code {execution.returncode}")
+            if framework_receipt is not None:
+                assert framework_fd is not None
+                _verify_workspace_path(workspace / "framework", framework_fd)
+                framework_manifest = load_decoded_tree(
+                    configured.store,
+                    framework_receipt.framework_cache_manifest,
+                )
+                verify_materialized_decoded_tree(
+                    framework_manifest,
+                    workspace / "framework",
+                )
             output_fd = _open_existing_directory(workspace_fd, "output")
             manifest_ref = capture_decoded_tree_fd(
                 configured.store,
@@ -600,53 +1158,97 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
                 execution_input_hashes,
             )
         finally:
-            _close_descriptors(output_fd, workspace_fd, operation_fd, attempts_fd)
+            _close_descriptors(
+                output_fd,
+                framework_fd,
+                workspace_fd,
+                operation_fd,
+                attempts_fd,
+            )
         manifest = load_decoded_tree(configured.store, manifest_ref)
-        receipt = ReplayDecodedTreeReceiptV1(
-            1,
-            "stock_input",
-            admitted.sha256,
-            admitted.request.stock_apk,
-            admitted.profile.profile_id,
-            admitted.profile.sha256,
-            role,
-            plan.sha256,
-            capability.canonical_identity,
-            tool_artifact_sha256,
-            request.canonical_identity,
-            manifest_ref,
-            manifest.decoded_tree_sha256,
-            key,
-            True,
-        )
+        if framework_receipt is None or completed_framework_cache_receipt is None:
+            receipt: ReplayDecodedTreeReceiptV1 | ReplayDecodedTreeReceiptV2 = (
+                ReplayDecodedTreeReceiptV1(
+                    1,
+                    "stock_input",
+                    admitted.sha256,
+                    admitted.request.stock_apk,
+                    admitted.profile.profile_id,
+                    admitted.profile.sha256,
+                    role,
+                    plan.sha256,
+                    capability.canonical_identity,
+                    tool_artifact_sha256,
+                    request.canonical_identity,
+                    manifest_ref,
+                    manifest.decoded_tree_sha256,
+                    key,
+                    True,
+                )
+            )
+        else:
+            receipt = ReplayDecodedTreeReceiptV2(
+                2,
+                "stock_input",
+                admitted.sha256,
+                admitted.request.stock_apk,
+                admitted.profile.profile_id,
+                admitted.profile.sha256,
+                role,
+                plan.sha256,
+                capability.canonical_identity,
+                tool_artifact_sha256,
+                request.canonical_identity,
+                completed_framework_cache_receipt,
+                framework_receipt.framework_cache_manifest,
+                framework_receipt.framework_cache_semantic_sha256,
+                manifest_ref,
+                manifest.decoded_tree_sha256,
+                key,
+                True,
+            )
         output = configured.store.put_bytes(
-            kind="replay-decoded-tree-receipt-v1",
+            kind=(
+                "replay-decoded-tree-receipt-v2"
+                if framework_receipt is not None
+                else "replay-decoded-tree-receipt-v1"
+            ),
             data=canonical_json(receipt).encode("utf-8"),
             producer_operation_id=key,
             input_hashes=receipt.receipt_input_hashes,
         )
-        _validate_replay_decoded_tree_receipt(
-            output,
-            key,
-            admitted_replay_sha256=admitted.sha256,
-            input_apk=admitted.request.stock_apk,
-            toolchain_profile_id=admitted.profile.profile_id,
-            toolchain_profile_sha256=admitted.profile.sha256,
-            execution_plan_sha256=plan.sha256,
-            executor_capability_sha256=capability.canonical_identity,
-            tool_artifact_sha256=tool_artifact_sha256,
-            execution_request_sha256=request.canonical_identity,
-        )
-        configured.ledger.record_effect(key, owner, output)
+        if framework_receipt is None or completed_framework_cache_receipt is None:
+            _validate_replay_decoded_tree_receipt(
+                output,
+                key,
+                admitted_replay_sha256=admitted.sha256,
+                input_apk=admitted.request.stock_apk,
+                toolchain_profile_id=admitted.profile.profile_id,
+                toolchain_profile_sha256=admitted.profile.sha256,
+                execution_plan_sha256=plan.sha256,
+                executor_capability_sha256=capability.canonical_identity,
+                tool_artifact_sha256=tool_artifact_sha256,
+                execution_request_sha256=request.canonical_identity,
+            )
+        else:
+            _validate_replay_decoded_tree_receipt_v2(
+                output,
+                key,
+                admitted=admitted,
+                execution_request_sha256=request.canonical_identity,
+                completed_framework_cache_receipt=completed_framework_cache_receipt,
+                framework_receipt=framework_receipt,
+            )
+        Ledger.record_effect(configured.ledger, key, owner, output)
         effect_recorded = True
-        return configured.ledger.complete_operation(key, output)
+        return Ledger.complete_operation(configured.ledger, key, output)
     except asyncio.CancelledError:
         if not effect_recorded:
-            configured.ledger.quarantine_operation(key, owner)
+            Ledger.quarantine_operation(configured.ledger, key, owner)
         raise
     except BaseException as error:
         if workspace_created and not effect_recorded:
-            configured.ledger.quarantine_operation(key, owner)
+            Ledger.quarantine_operation(configured.ledger, key, owner)
         elif operation_claimed and not effect_recorded:
             try:
                 Ledger.release_pending_operation(configured.ledger, key, owner)
@@ -663,33 +1265,70 @@ async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> 
     configured = runtime()
     admitted = Ledger.require_admitted_replay_v3(configured.ledger, candidate)
 
+    completed_framework_cache_receipt: ArtifactRef | None = None
+    framework_receipt: ReplayFrameworkCacheReceiptV1 | None = None
+    if admitted.request.frameworks:
+        (
+            framework_key,
+            framework_input_sha256,
+            installations,
+            _,
+        ) = _replay_framework_operation_identity(admitted)
+        completed_framework_cache_receipt = Ledger.require_completed_operation(
+            configured.ledger,
+            framework_key,
+            "replay_install_frameworks_v1",
+            framework_input_sha256,
+        )
+        framework_receipt = _validate_replay_framework_cache_receipt(
+            completed_framework_cache_receipt,
+            framework_key,
+            admitted=admitted,
+            installations=installations,
+        )
     (
         decode_key,
         decode_input_sha256,
         decode_execution_request_sha256,
-    ) = _replay_decode_operation_identity(admitted)
+    ) = _replay_decode_operation_identity(
+        admitted,
+        completed_framework_cache_receipt,
+        framework_receipt,
+    )
     completed_decode_receipt = Ledger.require_completed_operation(
         configured.ledger,
         decode_key,
-        "replay_decode_tree_v1",
+        "replay_decode_tree_v2" if framework_receipt is not None else "replay_decode_tree_v1",
         decode_input_sha256,
     )
-    decoded_receipt = _validate_replay_decoded_tree_receipt(
-        completed_decode_receipt,
-        decode_key,
-        admitted_replay_sha256=admitted.sha256,
-        input_apk=admitted.request.stock_apk,
-        toolchain_profile_id=admitted.profile.profile_id,
-        toolchain_profile_sha256=admitted.profile.sha256,
-        execution_plan_sha256=admitted.plan("decode").sha256,
-        executor_capability_sha256=admitted.capability("decode").canonical_identity,
-        tool_artifact_sha256=next(
-            tool.artifact.sha256
-            for tool in admitted.request.tools
-            if tool.tool_id == admitted.profile.tool_for_role("decode").tool_id
-        ),
-        execution_request_sha256=decode_execution_request_sha256,
-    )
+    if framework_receipt is None or completed_framework_cache_receipt is None:
+        decoded_receipt: ReplayDecodedTreeReceiptV1 | ReplayDecodedTreeReceiptV2 = (
+            _validate_replay_decoded_tree_receipt(
+                completed_decode_receipt,
+                decode_key,
+                admitted_replay_sha256=admitted.sha256,
+                input_apk=admitted.request.stock_apk,
+                toolchain_profile_id=admitted.profile.profile_id,
+                toolchain_profile_sha256=admitted.profile.sha256,
+                execution_plan_sha256=admitted.plan("decode").sha256,
+                executor_capability_sha256=admitted.capability("decode").canonical_identity,
+                tool_artifact_sha256=next(
+                    tool.artifact.sha256
+                    for tool in admitted.request.tools
+                    if tool.tool_id == admitted.profile.tool_for_role("decode").tool_id
+                ),
+                execution_request_sha256=decode_execution_request_sha256,
+            )
+        )
+    else:
+        decoded_receipt = _validate_replay_decoded_tree_receipt_v2(
+            completed_decode_receipt,
+            decode_key,
+            admitted=admitted,
+            execution_request_sha256=decode_execution_request_sha256,
+            completed_framework_cache_receipt=completed_framework_cache_receipt,
+            framework_receipt=framework_receipt,
+        )
     compiled = compile_port(admitted.intent, admitted.resolution)
     if type(compiled) is not TargetPortSpecV2:
         raise TypeError("Replay apply requires an exact TargetPortSpecV2")
@@ -708,7 +1347,8 @@ async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> 
     key = operation_key("replay_apply_tree_v1", operation_input)
     owner = _activity_owner()
     operation_claimed = False
-    existing = configured.ledger.begin_operation(
+    existing = Ledger.begin_operation(
+        configured.ledger,
         key,
         "replay_apply_tree_v1",
         canonical_sha256(operation_input),
@@ -724,7 +1364,7 @@ async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> 
             decoded_receipt=decoded_receipt,
             compiled=compiled,
         )
-        return configured.ledger.complete_operation(key, existing)
+        return Ledger.complete_operation(configured.ledger, key, existing)
     operation_claimed = True
 
     workspace_created = False
@@ -848,16 +1488,16 @@ async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> 
             compiled=compiled,
         )
         await asyncio.sleep(0)
-        configured.ledger.record_effect(key, owner, output)
+        Ledger.record_effect(configured.ledger, key, owner, output)
         effect_recorded = True
-        return configured.ledger.complete_operation(key, output)
+        return Ledger.complete_operation(configured.ledger, key, output)
     except asyncio.CancelledError:
         if not effect_recorded:
-            configured.ledger.quarantine_operation(key, owner)
+            Ledger.quarantine_operation(configured.ledger, key, owner)
         raise
     except BaseException as error:
         if workspace_created and not effect_recorded:
-            configured.ledger.quarantine_operation(key, owner)
+            Ledger.quarantine_operation(configured.ledger, key, owner)
         elif operation_claimed and not effect_recorded:
             try:
                 Ledger.release_pending_operation(configured.ledger, key, owner)

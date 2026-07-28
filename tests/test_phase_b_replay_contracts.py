@@ -32,6 +32,10 @@ from dfinsta_pipeline.replay_contracts import (
     GatePreparedEnvelopeV2,
     ReplayRequest,
     ReplayRequestV2,
+    ReplayDecodedTreeReceiptV1,
+    ReplayDecodedTreeReceiptV2,
+    ReplayFrameworkCacheReceiptV1,
+    ReplayFrameworkInstallationV1,
     ReplayRunSpecV1,
     ReplayRunSpecV2,
     RoleExecutionPlan,
@@ -111,7 +115,15 @@ class Fixture:
         return canonical_sha256(decision) == canonical_sha256(self.decision)
 
 
-def fixture(with_framework: bool = False) -> Fixture:
+def fixture(
+    with_framework: bool = False,
+    *,
+    framework_package_ids: tuple[int, ...] | None = None,
+    framework_payload_suffix: bytes = b"",
+) -> Fixture:
+    if framework_package_ids is not None:
+        with_framework = bool(framework_package_ids)
+    package_ids = framework_package_ids or ((7,) if with_framework else ())
     intent = synthetic_intent()
     profile = synthetic_profile(with_framework)
     source_manifest = SourceManifestV1(
@@ -126,14 +138,33 @@ def fixture(with_framework: bool = False) -> Fixture:
     framework_artifacts: tuple[FrameworkArtifact, ...] = ()
     framework_payloads: list[tuple[ArtifactRef, bytes]] = []
     if with_framework:
-        framework_payload = b"synthetic framework APK"
-        framework_ref = artifact_ref("framework-apk", framework_payload)
+        framework_payloads = [
+            (
+                artifact_ref(
+                    "framework-apk",
+                    f"synthetic framework APK {package_id}".encode()
+                    + framework_payload_suffix,
+                ),
+                f"synthetic framework APK {package_id}".encode()
+                + framework_payload_suffix,
+            )
+            for package_id in package_ids
+        ]
         profile = replace(
             profile,
-            frameworks=(FrameworkRequirement(7, framework_ref.sha256),),
+            frameworks=tuple(
+                FrameworkRequirement(package_id, framework_ref.sha256)
+                for package_id, (framework_ref, _) in zip(
+                    package_ids, framework_payloads, strict=True
+                )
+            ),
         )
-        framework_artifacts = (FrameworkArtifact(7, framework_ref),)
-        framework_payloads.append((framework_ref, framework_payload))
+        framework_artifacts = tuple(
+            FrameworkArtifact(package_id, framework_ref)
+            for package_id, (framework_ref, _) in zip(
+                package_ids, framework_payloads, strict=True
+            )
+        )
 
     resolution = ResolutionSpecV3(
         3,
@@ -231,9 +262,17 @@ class FixtureV2:
 
 
 def fixture_v2(
-    with_framework: bool = False, *, tool_payload_suffix: bytes = b""
+    with_framework: bool = False,
+    *,
+    tool_payload_suffix: bytes = b"",
+    framework_package_ids: tuple[int, ...] | None = None,
+    framework_payload_suffix: bytes = b"",
 ) -> FixtureV2:
-    base = fixture(with_framework)
+    base = fixture(
+        with_framework,
+        framework_package_ids=framework_package_ids,
+        framework_payload_suffix=framework_payload_suffix,
+    )
     admitted = admit(base)
     tool_payloads = (
         (
@@ -348,8 +387,19 @@ def fixture_v2(
     return FixtureV2(run_spec, request, decision, payloads)
 
 
-def profile_v3(with_framework: bool = False) -> ToolchainProfileV3:
-    profile = admit_v2(fixture_v2(with_framework)).profile
+def profile_v3(
+    with_framework: bool = False,
+    *,
+    framework_package_ids: tuple[int, ...] | None = None,
+    framework_payload_suffix: bytes = b"",
+) -> ToolchainProfileV3:
+    profile = admit_v2(
+        fixture_v2(
+            with_framework,
+            framework_package_ids=framework_package_ids,
+            framework_payload_suffix=framework_payload_suffix,
+        )
+    ).profile
     plans = [
         RoleExecutionPlan(
             "build",
@@ -412,11 +462,11 @@ def capability_for_plan(
         executable_sha256,
         tuple(f"{{{name}}}" for name in names),
         names,
-        ("stock-apk",),
-        "synthetic-output",
+        ("framework-apk",) if role == "install_framework" else ("stock-apk",),
+        "framework-cache" if role == "install_framework" else "synthetic-output",
         (),
         (),
-        ("output",),
+        ("framework",) if role == "install_framework" else ("output",),
     )
 
 
@@ -504,9 +554,22 @@ def _json_dict(payload: bytes) -> dict[str, Any]:
     return value
 
 
-def fixture_v3(with_framework: bool = False) -> FixtureV3:
-    base = fixture_v2(with_framework)
-    profile = profile_v3(with_framework)
+def fixture_v3(
+    with_framework: bool = False,
+    *,
+    framework_package_ids: tuple[int, ...] | None = None,
+    framework_payload_suffix: bytes = b"",
+) -> FixtureV3:
+    base = fixture_v2(
+        with_framework,
+        framework_package_ids=framework_package_ids,
+        framework_payload_suffix=framework_payload_suffix,
+    )
+    profile = profile_v3(
+        with_framework,
+        framework_package_ids=framework_package_ids,
+        framework_payload_suffix=framework_payload_suffix,
+    )
     capabilities = tuple(
         capability_for_plan(profile, binding.role)
         for binding in profile.capability_bindings
@@ -583,6 +646,108 @@ def admit_v3(
     )
 
 
+def framework_contract_receipt() -> ReplayFrameworkCacheReceiptV1:
+    operation_key = "a" * 64
+    installations = tuple(
+        ReplayFrameworkInstallationV1(
+            package_id,
+            artifact_ref(
+                "framework-apk", f"framework contract {package_id}".encode()
+            ),
+            str(package_id % 10) * 64,
+        )
+        for package_id in (2, 10)
+    )
+    execution_inputs = (
+        "b" * 64,
+        "c" * 64,
+        "d" * 64,
+        "e" * 64,
+        "f" * 64,
+        *(canonical_sha256(item) for item in installations),
+    )
+    manifest = ArtifactRef(
+        1,
+        "decoded-tree-manifest-v1",
+        "1" * 64,
+        11,
+        f"cas://sha256/{'1' * 64}",
+        operation_key,
+        execution_inputs,
+    )
+    return ReplayFrameworkCacheReceiptV1(
+        1,
+        "b" * 64,
+        "synthetic-full",
+        "c" * 64,
+        "install_framework",
+        "d" * 64,
+        "e" * 64,
+        "f" * 64,
+        installations,
+        manifest,
+        "2" * 64,
+        operation_key,
+        True,
+    )
+
+
+def decoded_v2_contract_receipt() -> ReplayDecodedTreeReceiptV2:
+    framework = framework_contract_receipt()
+    completed = ArtifactRef(
+        1,
+        "replay-framework-cache-receipt-v1",
+        framework.sha256,
+        len(json_bytes(framework)),
+        f"cas://sha256/{framework.sha256}",
+        framework.operation_key,
+        framework.receipt_input_hashes,
+    )
+    input_apk = artifact_ref("stock-apk", b"contract stock")
+    operation_key = "3" * 64
+    fixed = (
+        "4" * 64,
+        canonical_sha256(input_apk),
+        "5" * 64,
+        "6" * 64,
+        "7" * 64,
+        "8" * 64,
+        "9" * 64,
+        canonical_sha256(completed),
+        canonical_sha256(framework.framework_cache_manifest),
+        framework.framework_cache_semantic_sha256,
+    )
+    manifest = ArtifactRef(
+        1,
+        "decoded-tree-manifest-v1",
+        "0" * 64,
+        9,
+        f"cas://sha256/{'0' * 64}",
+        operation_key,
+        fixed,
+    )
+    return ReplayDecodedTreeReceiptV2(
+        2,
+        "stock_input",
+        "4" * 64,
+        input_apk,
+        "synthetic-full",
+        "5" * 64,
+        "decode",
+        "6" * 64,
+        "7" * 64,
+        "8" * 64,
+        "9" * 64,
+        completed,
+        framework.framework_cache_manifest,
+        framework.framework_cache_semantic_sha256,
+        manifest,
+        "a" * 64,
+        operation_key,
+        True,
+    )
+
+
 class ReplayContractTests(unittest.TestCase):
     def test_v1_identity_is_pinned(self) -> None:
         self.assertEqual(
@@ -628,6 +793,183 @@ class ReplayContractTests(unittest.TestCase):
         self.assertEqual(
             admit_v2(fixture_v2()).sha256,
             "2811658b7a502ac2665f8048fed4c450b07d967ed7abd5369d07da22332384b3",
+        )
+
+    def test_framework_contracts_are_strict_ordered_and_lineage_bound(self) -> None:
+        receipt = framework_contract_receipt()
+        value = asdict(receipt)
+        self.assertEqual(
+            ReplayFrameworkInstallationV1.from_dict(value["installations"][0]),
+            receipt.installations[0],
+        )
+        self.assertEqual(ReplayFrameworkCacheReceiptV1.from_dict(value), receipt)
+        self.assertEqual(
+            tuple(item.package_id for item in receipt.installations), (2, 10)
+        )
+        self.assertEqual(
+            receipt.framework_cache_manifest.input_hashes,
+            receipt.execution_input_hashes,
+        )
+        self.assertEqual(
+            receipt.receipt_input_hashes,
+            (
+                *receipt.execution_input_hashes,
+                canonical_sha256(receipt.framework_cache_manifest),
+                receipt.framework_cache_semantic_sha256,
+            ),
+        )
+
+        installation = value["installations"][0]
+        installation_mutations = (
+            {key: item for key, item in installation.items() if key != "package_id"},
+            {**installation, "unknown": 1},
+            {**installation, "package_id": True},
+            {
+                **installation,
+                "framework_apk": {**installation["framework_apk"], "kind": "stock-apk"},
+            },
+            {**installation, "execution_request_sha256": "A" * 64},
+        )
+        for mutation in installation_mutations:
+            with self.subTest(installation=mutation), self.assertRaises(
+                (TypeError, ValueError)
+            ):
+                ReplayFrameworkInstallationV1.from_dict(mutation)
+
+        receipt_mutations = (
+            {key: item for key, item in value.items() if key != "success"},
+            {**value, "unknown": 1},
+            {**value, "schema_version": True},
+            {**value, "role": "decode"},
+            {**value, "installations": list(reversed(value["installations"]))},
+            {**value, "installations": [value["installations"][0]] * 2},
+            {
+                **value,
+                "framework_cache_manifest": {
+                    **value["framework_cache_manifest"],
+                    "kind": "other-manifest",
+                },
+            },
+            {
+                **value,
+                "framework_cache_manifest": {
+                    **value["framework_cache_manifest"],
+                    "producer_operation_id": "0" * 64,
+                },
+            },
+            {
+                **value,
+                "framework_cache_manifest": {
+                    **value["framework_cache_manifest"],
+                    "input_hashes": value["framework_cache_manifest"]["input_hashes"][:-1],
+                },
+            },
+        )
+        for mutation in receipt_mutations:
+            with self.subTest(receipt=mutation), self.assertRaises(
+                (TypeError, ValueError)
+            ):
+                ReplayFrameworkCacheReceiptV1.from_dict(mutation)
+
+    def test_decoded_v2_contract_is_strict_and_binds_framework_lineage(self) -> None:
+        receipt = decoded_v2_contract_receipt()
+        value = asdict(receipt)
+        self.assertEqual(ReplayDecodedTreeReceiptV2.from_dict(value), receipt)
+        self.assertEqual(
+            receipt.execution_input_hashes[-3:],
+            (
+                canonical_sha256(receipt.completed_framework_cache_receipt),
+                canonical_sha256(receipt.framework_cache_manifest),
+                receipt.framework_cache_semantic_sha256,
+            ),
+        )
+        mutations = (
+            {key: item for key, item in value.items() if key != "success"},
+            {**value, "unknown": 1},
+            {**value, "schema_version": True},
+            {**value, "success": 1},
+            {**value, "role": "build"},
+            {
+                **value,
+                "completed_framework_cache_receipt": {
+                    **value["completed_framework_cache_receipt"],
+                    "kind": "other",
+                },
+            },
+            {
+                **value,
+                "framework_cache_manifest": {
+                    **value["framework_cache_manifest"],
+                    "producer_operation_id": "f" * 64,
+                },
+            },
+            {
+                **value,
+                "decoded_tree_manifest": {
+                    **value["decoded_tree_manifest"],
+                    "kind": "other",
+                },
+            },
+            {
+                **value,
+                "decoded_tree_manifest": {
+                    **value["decoded_tree_manifest"],
+                    "input_hashes": value["decoded_tree_manifest"]["input_hashes"][:-1],
+                },
+            },
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises(
+                (TypeError, ValueError)
+            ):
+                ReplayDecodedTreeReceiptV2.from_dict(mutation)
+
+        with self.assertRaises((TypeError, ValueError)):
+            ReplayDecodedTreeReceiptV1.from_dict(value)
+        with self.assertRaises((TypeError, ValueError)):
+            ReplayDecodedTreeReceiptV2.from_dict(
+                asdict(
+                    ReplayDecodedTreeReceiptV1(
+                        1,
+                        receipt.decoded_apk_role,
+                        receipt.admitted_replay_sha256,
+                        receipt.input_apk,
+                        receipt.toolchain_profile_id,
+                        receipt.toolchain_profile_sha256,
+                        receipt.role,
+                        receipt.execution_plan_sha256,
+                        receipt.executor_capability_sha256,
+                        receipt.tool_artifact_sha256,
+                        receipt.execution_request_sha256,
+                        replace(
+                            receipt.decoded_tree_manifest,
+                            input_hashes=receipt.execution_input_hashes[:7],
+                        ),
+                        receipt.decoded_tree_semantic_sha256,
+                        receipt.operation_key,
+                        True,
+                    )
+                )
+            )
+
+    def test_framework_fixture_numeric_install_and_lexical_manifest_orders_are_distinct(self) -> None:
+        admitted = admit_v3(
+            fixture_v3(True, framework_package_ids=(2, 10))
+        )
+        self.assertEqual(
+            tuple(item.package_id for item in admitted.request.frameworks), (2, 10)
+        )
+        self.assertEqual(
+            admitted.capability("install_framework").input_kinds,
+            ("framework-apk",),
+        )
+        self.assertEqual(
+            admitted.capability("install_framework").output_kind,
+            "framework-cache",
+        )
+        self.assertEqual(
+            admitted.capability("install_framework").allowed_mutation_paths,
+            ("framework",),
         )
 
     def test_replay_run_gate_fields_are_strict_and_phase_a_is_unchanged(self) -> None:

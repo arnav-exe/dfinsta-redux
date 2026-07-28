@@ -27,6 +27,8 @@ from dfinsta_pipeline.replay_contracts import (
     GatePreparedEnvelopeV2,
     ReplayApplyOperationResultV1,
     ReplayDecodedTreeReceiptV1,
+    ReplayDecodedTreeReceiptV2,
+    ReplayFrameworkCacheReceiptV1,
     ReplayPatchedTreeReceiptV1,
     ReplaySourceAdmissionEvidenceV1,
     SourceManifestV1,
@@ -68,9 +70,17 @@ def smali_edit(final_value: str = "0x1") -> SmaliEdit:
 
 
 def apply_authority(
-    *, suffix: str = "main", final_value: str = "0x1"
+    *,
+    suffix: str = "main",
+    final_value: str = "0x1",
+    with_framework: bool = False,
 ) -> AdmittedReplayV3:
-    base = admit_v3(fixture_v3())
+    base = admit_v3(
+        fixture_v3(
+            with_framework,
+            framework_package_ids=(2, 10) if with_framework else None,
+        )
+    )
     manifest = SourceManifestV1(())
     resolution = replace(
         base.resolution,
@@ -390,13 +400,20 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
         runtime().ledger.record_admitted_replay_v3(admitted)
 
     def record_decode(
-        self, admitted: AdmittedReplayV3, *, status: str = "completed"
-    ) -> tuple[ArtifactRef, ReplayDecodedTreeReceiptV1]:
+        self,
+        admitted: AdmittedReplayV3,
+        *,
+        status: str = "completed",
+        completed_framework: ArtifactRef | None = None,
+        framework_receipt: ReplayFrameworkCacheReceiptV1 | None = None,
+    ) -> tuple[ArtifactRef, ReplayDecodedTreeReceiptV1 | ReplayDecodedTreeReceiptV2]:
         tree = self.root / f"decode-{admitted.run_spec.run_id}-{id(runtime().ledger)}"
         (tree / "smali/sample").mkdir(parents=True)
         (tree / "smali/sample/Worker.smali").write_bytes(WORKER_SMALI)
         (tree / "empty").mkdir()
-        key, input_sha256, request_sha256 = activities._replay_decode_operation_identity(admitted)
+        key, input_sha256, request_sha256 = activities._replay_decode_operation_identity(
+            admitted, completed_framework, framework_receipt
+        )
         plan = admitted.plan("decode")
         capability = admitted.capability("decode")
         tool = next(
@@ -404,7 +421,7 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
             for item in admitted.request.tools
             if item.tool_id == admitted.profile.tool_for_role("decode").tool_id
         )
-        execution_inputs = (
+        execution_inputs: tuple[str, ...] = (
             admitted.sha256,
             canonical_sha256(admitted.request.stock_apk),
             admitted.profile.sha256,
@@ -413,39 +430,147 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
             tool.artifact.sha256,
             request_sha256,
         )
+        if completed_framework is not None and framework_receipt is not None:
+            execution_inputs = (
+                *execution_inputs,
+                canonical_sha256(completed_framework),
+                canonical_sha256(framework_receipt.framework_cache_manifest),
+                framework_receipt.framework_cache_semantic_sha256,
+            )
         manifest_ref = capture_decoded_tree(runtime().store, tree, key, execution_inputs)
         manifest = load_decoded_tree(runtime().store, manifest_ref)
-        receipt = ReplayDecodedTreeReceiptV1(
-            1,
-            "stock_input",
-            admitted.sha256,
-            admitted.request.stock_apk,
-            admitted.profile.profile_id,
-            admitted.profile.sha256,
-            "decode",
-            plan.sha256,
-            capability.canonical_identity,
-            tool.artifact.sha256,
-            request_sha256,
-            manifest_ref,
-            manifest.decoded_tree_sha256,
-            key,
-            True,
-        )
+        if completed_framework is None or framework_receipt is None:
+            receipt: ReplayDecodedTreeReceiptV1 | ReplayDecodedTreeReceiptV2 = (
+                ReplayDecodedTreeReceiptV1(
+                    1,
+                    "stock_input",
+                    admitted.sha256,
+                    admitted.request.stock_apk,
+                    admitted.profile.profile_id,
+                    admitted.profile.sha256,
+                    "decode",
+                    plan.sha256,
+                    capability.canonical_identity,
+                    tool.artifact.sha256,
+                    request_sha256,
+                    manifest_ref,
+                    manifest.decoded_tree_sha256,
+                    key,
+                    True,
+                )
+            )
+        else:
+            receipt = ReplayDecodedTreeReceiptV2(
+                2,
+                "stock_input",
+                admitted.sha256,
+                admitted.request.stock_apk,
+                admitted.profile.profile_id,
+                admitted.profile.sha256,
+                "decode",
+                plan.sha256,
+                capability.canonical_identity,
+                tool.artifact.sha256,
+                request_sha256,
+                completed_framework,
+                framework_receipt.framework_cache_manifest,
+                framework_receipt.framework_cache_semantic_sha256,
+                manifest_ref,
+                manifest.decoded_tree_sha256,
+                key,
+                True,
+            )
         output = runtime().store.put_bytes(
-            kind="replay-decoded-tree-receipt-v1",
+            kind=(
+                "replay-decoded-tree-receipt-v2"
+                if isinstance(receipt, ReplayDecodedTreeReceiptV2)
+                else "replay-decoded-tree-receipt-v1"
+            ),
             data=canonical_json(receipt).encode("utf-8"),
             producer_operation_id=key,
             input_hashes=receipt.receipt_input_hashes,
         )
         if status != "unrecorded":
             runtime().ledger.begin_operation(
-                key, "replay_decode_tree_v1", input_sha256, "decode-owner", retry_safe=False
+                key,
+                (
+                    "replay_decode_tree_v2"
+                    if isinstance(receipt, ReplayDecodedTreeReceiptV2)
+                    else "replay_decode_tree_v1"
+                ),
+                input_sha256,
+                "decode-owner",
+                retry_safe=False,
             )
         if status in {"effect", "completed"}:
             runtime().ledger.record_effect(key, "decode-owner", output)
         if status == "completed":
             runtime().ledger.complete_operation(key, output)
+        return output, receipt
+
+    def record_framework(
+        self, admitted: AdmittedReplayV3
+    ) -> tuple[ArtifactRef, ReplayFrameworkCacheReceiptV1]:
+        key, input_sha256, installations, _ = (
+            activities._replay_framework_operation_identity(admitted)
+        )
+        tree = self.root / f"framework-{admitted.run_spec.run_id}-{id(runtime().ledger)}"
+        tree.mkdir(parents=True)
+        for installation in installations:
+            (tree / f"{installation.package_id}.apk").write_bytes(
+                next(
+                    admitted_framework.artifact.sha256.encode()
+                    for admitted_framework in admitted.request.frameworks
+                    if admitted_framework.package_id == installation.package_id
+                )
+            )
+        plan = admitted.plan("install_framework")
+        capability = admitted.capability("install_framework")
+        tool = next(
+            item
+            for item in admitted.request.tools
+            if item.tool_id == admitted.profile.tool_for_role("install_framework").tool_id
+        )
+        execution_inputs = (
+            admitted.sha256,
+            admitted.profile.sha256,
+            plan.sha256,
+            capability.canonical_identity,
+            tool.artifact.sha256,
+            *(canonical_sha256(item) for item in installations),
+        )
+        manifest_ref = capture_decoded_tree(runtime().store, tree, key, execution_inputs)
+        manifest = load_decoded_tree(runtime().store, manifest_ref)
+        receipt = ReplayFrameworkCacheReceiptV1(
+            1,
+            admitted.sha256,
+            admitted.profile.profile_id,
+            admitted.profile.sha256,
+            "install_framework",
+            plan.sha256,
+            capability.canonical_identity,
+            tool.artifact.sha256,
+            installations,
+            manifest_ref,
+            manifest.decoded_tree_sha256,
+            key,
+            True,
+        )
+        output = runtime().store.put_bytes(
+            kind="replay-framework-cache-receipt-v1",
+            data=canonical_json(receipt).encode("utf-8"),
+            producer_operation_id=key,
+            input_hashes=receipt.receipt_input_hashes,
+        )
+        runtime().ledger.begin_operation(
+            key,
+            "replay_install_frameworks_v1",
+            input_sha256,
+            "framework-owner",
+            retry_safe=False,
+        )
+        runtime().ledger.record_effect(key, "framework-owner", output)
+        runtime().ledger.complete_operation(key, output)
         return output, receipt
 
     async def invoke(
@@ -532,6 +657,50 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
                 begin.assert_not_called()
                 source.assert_not_called()
                 workspace.assert_not_called()
+
+    async def test_framework_authority_accepts_completed_v2_decode_and_rejects_wrong_predecessor(self) -> None:
+        framework_admitted = apply_authority(
+            suffix="framework", with_framework=True
+        )
+        self.admitted = framework_admitted
+        self.configure(self.root / "framework-apply")
+        self.record_authority(framework_admitted)
+        framework_output, framework_receipt = self.record_framework(
+            framework_admitted
+        )
+        self.decode_output, self.decoded_receipt = self.record_decode(
+            framework_admitted,
+            completed_framework=framework_output,
+            framework_receipt=framework_receipt,
+        )
+        self.assertIsInstance(self.decoded_receipt, ReplayDecodedTreeReceiptV2)
+        output = await self.invoke()
+        receipt = self.receipt(output)
+        self.assertEqual(receipt.completed_decode_receipt, self.decode_output)
+        self.assertEqual(
+            receipt.input_decoded_tree_manifest,
+            self.decoded_receipt.decoded_tree_manifest,
+        )
+        self.assertEqual(
+            runtime().ledger.operation_status(output.producer_operation_id), "completed"
+        )
+
+        wrong = apply_authority(
+            suffix="wrong-framework", with_framework=True
+        )
+        self.configure(self.root / "wrong-framework-apply")
+        self.record_authority(framework_admitted)
+        self.record_framework(wrong)
+        with (
+            mock.patch.object(runtime().ledger, "begin_operation") as begin,
+            mock.patch.object(activities, "admit_source_bundle_v2") as source,
+            mock.patch.object(activities, "materialize_decoded_tree") as workspace,
+        ):
+            with self.assertRaises(ValueError):
+                await self.invoke(framework_admitted)
+        begin.assert_not_called()
+        source.assert_not_called()
+        workspace.assert_not_called()
 
     async def test_authority_precedence_and_normalized_return_value(self) -> None:
         candidates = (
@@ -702,9 +871,9 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(runtime().ledger.operation_event_count(failed_key, "effect"), 0)
 
     async def test_post_effect_retry_adopts_and_revalidates_both_closures(self) -> None:
-        complete = runtime().ledger.complete_operation
+        complete = activities.Ledger.complete_operation
         with mock.patch.object(
-            runtime().ledger,
+            activities.Ledger,
             "complete_operation",
             side_effect=RuntimeError("completion unavailable"),
         ):
@@ -719,7 +888,7 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(activities, "apply_port") as apply,
             mock.patch.object(activities, "capture_decoded_tree_fd") as capture,
             mock.patch.object(activities, "load_decoded_tree", wraps=activities.load_decoded_tree) as load,
-            mock.patch.object(runtime().ledger, "complete_operation", wraps=complete),
+            mock.patch.object(activities.Ledger, "complete_operation", wraps=complete),
         ):
             output = await self.invoke(owner="retry-owner")
         workspace.assert_not_called()
@@ -730,6 +899,23 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(decode_manifest, loaded)
         self.assertIn(self.receipt(output).patched_tree_manifest, loaded)
         self.assertEqual(runtime().ledger.operation_status(key), "completed")
+
+    async def test_apply_lifecycle_methods_cannot_be_shadowed_on_ledger_instance(self) -> None:
+        shadows = {
+            name: mock.Mock(side_effect=AssertionError(f"{name} instance shadow called"))
+            for name in (
+                "begin_operation",
+                "record_effect",
+                "complete_operation",
+                "quarantine_operation",
+            )
+        }
+        for name, shadow in shadows.items():
+            setattr(runtime().ledger, name, shadow)
+        output = await self.invoke(owner="shadow-owner")
+        self.assertEqual(runtime().ledger.operation_status(output.producer_operation_id), "completed")
+        for shadow in shadows.values():
+            shadow.assert_not_called()
 
     async def test_representative_decode_and_output_layers_fail_closed(self) -> None:
         mutations = (

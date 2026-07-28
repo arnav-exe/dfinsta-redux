@@ -1690,6 +1690,139 @@ class ReplayDecodeCheckpointResultV1:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayFrameworkInstallationV1:
+    package_id: int
+    framework_apk: ArtifactRef
+    execution_request_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.package_id) is not int:
+            raise TypeError("Framework package id must be an integer")
+        if not 1 <= self.package_id <= 255:
+            raise ValueError("Framework package id must be between 1 and 255")
+        if type(self.framework_apk) is not ArtifactRef:
+            raise TypeError("Framework APK must be an exact ArtifactRef")
+        if self.framework_apk.kind != "framework-apk":
+            raise ValueError("Invalid framework APK kind")
+        _sha256(self.execution_request_sha256, "execution request SHA-256")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayFrameworkInstallationV1:
+        data = _keys(data, cls, "replay framework installation")
+        return cls(
+            data["package_id"],
+            ArtifactRef.from_dict(data["framework_apk"]),
+            data["execution_request_sha256"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayFrameworkCacheReceiptV1:
+    schema_version: int
+    admitted_replay_sha256: str
+    toolchain_profile_id: str
+    toolchain_profile_sha256: str
+    role: Literal["install_framework"]
+    execution_plan_sha256: str
+    executor_capability_sha256: str
+    tool_artifact_sha256: str
+    installations: tuple[ReplayFrameworkInstallationV1, ...]
+    framework_cache_manifest: ArtifactRef
+    framework_cache_semantic_sha256: str
+    operation_key: str
+    success: Literal[True]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay framework cache receipt schema")
+        _identifier(self.toolchain_profile_id, "toolchain profile id", lowercase=True)
+        for value, label in (
+            (self.admitted_replay_sha256, "admitted replay SHA-256"),
+            (self.toolchain_profile_sha256, "toolchain profile SHA-256"),
+            (self.execution_plan_sha256, "execution plan SHA-256"),
+            (self.executor_capability_sha256, "executor capability SHA-256"),
+            (self.tool_artifact_sha256, "tool artifact SHA-256"),
+            (self.framework_cache_semantic_sha256, "framework cache semantic SHA-256"),
+            (self.operation_key, "operation key"),
+        ):
+            _sha256(value, label)
+        if type(self.role) is not str or self.role != "install_framework":
+            raise ValueError("Replay framework cache receipt role must be install_framework")
+        if not isinstance(self.installations, tuple) or any(
+            type(item) is not ReplayFrameworkInstallationV1 for item in self.installations
+        ):
+            raise TypeError(
+                "Framework installations must be a tuple of exact installation records"
+            )
+        if not self.installations:
+            raise ValueError("Framework installations must not be empty")
+        _sorted_unique(
+            self.installations,
+            "framework installations",
+            key=lambda item: item.package_id,
+        )
+        if type(self.framework_cache_manifest) is not ArtifactRef:
+            raise TypeError("Framework cache manifest must be an exact ArtifactRef")
+        if self.framework_cache_manifest.kind != "decoded-tree-manifest-v1":
+            raise ValueError("Invalid framework cache manifest kind")
+        if self.framework_cache_manifest.producer_operation_id != self.operation_key:
+            raise ValueError("Framework cache manifest producer does not match operation")
+        if self.framework_cache_manifest.input_hashes != self.execution_input_hashes:
+            raise ValueError("Framework cache manifest input lineage is incomplete")
+        if type(self.success) is not bool or self.success is not True:
+            raise ValueError("Replay framework cache receipt requires success")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayFrameworkCacheReceiptV1:
+        data = _keys(data, cls, "replay framework cache receipt")
+        return cls(
+            data["schema_version"],
+            data["admitted_replay_sha256"],
+            data["toolchain_profile_id"],
+            data["toolchain_profile_sha256"],
+            data["role"],
+            data["execution_plan_sha256"],
+            data["executor_capability_sha256"],
+            data["tool_artifact_sha256"],
+            tuple(
+                ReplayFrameworkInstallationV1.from_dict(item)
+                for item in _array(data["installations"], "framework installations")
+            ),
+            ArtifactRef.from_dict(data["framework_cache_manifest"]),
+            data["framework_cache_semantic_sha256"],
+            data["operation_key"],
+            data["success"],
+        )
+
+    @property
+    def execution_input_hashes(self) -> tuple[str, ...]:
+        return (
+            self.admitted_replay_sha256,
+            self.toolchain_profile_sha256,
+            self.execution_plan_sha256,
+            self.executor_capability_sha256,
+            self.tool_artifact_sha256,
+            *(canonical_sha256(item) for item in self.installations),
+        )
+
+    @property
+    def receipt_input_hashes(self) -> tuple[str, ...]:
+        return (
+            *self.execution_input_hashes,
+            canonical_sha256(self.framework_cache_manifest),
+            self.framework_cache_semantic_sha256,
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayDecodedTreeReceiptV1:
     schema_version: int
     decoded_apk_role: Literal["stock_input", "final_output"]
@@ -1796,6 +1929,144 @@ class ReplayDecodedTreeReceiptV1:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayDecodedTreeReceiptV2:
+    schema_version: int
+    decoded_apk_role: Literal["stock_input", "final_output"]
+    admitted_replay_sha256: str
+    input_apk: ArtifactRef
+    toolchain_profile_id: str
+    toolchain_profile_sha256: str
+    role: Literal["decode"]
+    execution_plan_sha256: str
+    executor_capability_sha256: str
+    tool_artifact_sha256: str
+    execution_request_sha256: str
+    completed_framework_cache_receipt: ArtifactRef
+    framework_cache_manifest: ArtifactRef
+    framework_cache_semantic_sha256: str
+    decoded_tree_manifest: ArtifactRef
+    decoded_tree_semantic_sha256: str
+    operation_key: str
+    success: Literal[True]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise ValueError("Unsupported replay decoded-tree receipt schema")
+        if type(self.decoded_apk_role) is not str:
+            raise TypeError("Decoded APK role must be a string")
+        if self.decoded_apk_role not in {"stock_input", "final_output"}:
+            raise ValueError("Invalid decoded APK role")
+        if type(self.input_apk) is not ArtifactRef:
+            raise TypeError("Input APK must be an exact ArtifactRef")
+        allowed_input_kinds = {
+            "stock_input": {"stock-apk"},
+            "final_output": {"final-apk"},
+        }
+        if self.input_apk.kind not in allowed_input_kinds[self.decoded_apk_role]:
+            raise ValueError("Input APK kind does not match decoded APK role")
+        _identifier(self.toolchain_profile_id, "toolchain profile id", lowercase=True)
+        for value, label in (
+            (self.admitted_replay_sha256, "admitted replay SHA-256"),
+            (self.toolchain_profile_sha256, "toolchain profile SHA-256"),
+            (self.execution_plan_sha256, "execution plan SHA-256"),
+            (self.executor_capability_sha256, "executor capability SHA-256"),
+            (self.tool_artifact_sha256, "tool artifact SHA-256"),
+            (self.execution_request_sha256, "execution request SHA-256"),
+            (self.framework_cache_semantic_sha256, "framework cache semantic SHA-256"),
+            (self.decoded_tree_semantic_sha256, "decoded-tree semantic SHA-256"),
+            (self.operation_key, "operation key"),
+        ):
+            _sha256(value, label)
+        if type(self.role) is not str or self.role != "decode":
+            raise ValueError("Replay decoded-tree receipt role must be decode")
+        for value, kind, label in (
+            (
+                self.completed_framework_cache_receipt,
+                "replay-framework-cache-receipt-v1",
+                "completed framework cache receipt",
+            ),
+            (
+                self.framework_cache_manifest,
+                "decoded-tree-manifest-v1",
+                "framework cache manifest",
+            ),
+            (
+                self.decoded_tree_manifest,
+                "decoded-tree-manifest-v1",
+                "decoded-tree manifest",
+            ),
+        ):
+            if type(value) is not ArtifactRef:
+                raise TypeError(f"{label.capitalize()} must be an exact ArtifactRef")
+            if value.kind != kind:
+                raise ValueError(f"Invalid {label} kind")
+        if (
+            self.framework_cache_manifest.producer_operation_id
+            != self.completed_framework_cache_receipt.producer_operation_id
+        ):
+            raise ValueError(
+                "Framework cache manifest producer does not match completed receipt"
+            )
+        if self.decoded_tree_manifest.producer_operation_id != self.operation_key:
+            raise ValueError("Decoded-tree manifest producer does not match operation")
+        if self.decoded_tree_manifest.input_hashes != self.execution_input_hashes:
+            raise ValueError("Decoded-tree manifest input lineage is incomplete")
+        if type(self.success) is not bool or self.success is not True:
+            raise ValueError("Replay decoded-tree receipt requires success")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayDecodedTreeReceiptV2:
+        data = _keys(data, cls, "replay decoded-tree receipt")
+        return cls(
+            data["schema_version"],
+            data["decoded_apk_role"],
+            data["admitted_replay_sha256"],
+            ArtifactRef.from_dict(data["input_apk"]),
+            data["toolchain_profile_id"],
+            data["toolchain_profile_sha256"],
+            data["role"],
+            data["execution_plan_sha256"],
+            data["executor_capability_sha256"],
+            data["tool_artifact_sha256"],
+            data["execution_request_sha256"],
+            ArtifactRef.from_dict(data["completed_framework_cache_receipt"]),
+            ArtifactRef.from_dict(data["framework_cache_manifest"]),
+            data["framework_cache_semantic_sha256"],
+            ArtifactRef.from_dict(data["decoded_tree_manifest"]),
+            data["decoded_tree_semantic_sha256"],
+            data["operation_key"],
+            data["success"],
+        )
+
+    @property
+    def execution_input_hashes(self) -> tuple[str, ...]:
+        return (
+            self.admitted_replay_sha256,
+            canonical_sha256(self.input_apk),
+            self.toolchain_profile_sha256,
+            self.execution_plan_sha256,
+            self.executor_capability_sha256,
+            self.tool_artifact_sha256,
+            self.execution_request_sha256,
+            canonical_sha256(self.completed_framework_cache_receipt),
+            canonical_sha256(self.framework_cache_manifest),
+            self.framework_cache_semantic_sha256,
+        )
+
+    @property
+    def receipt_input_hashes(self) -> tuple[str, ...]:
+        return (
+            *self.execution_input_hashes,
+            canonical_sha256(self.decoded_tree_manifest),
+            self.decoded_tree_semantic_sha256,
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ReplaySourceAdmissionEvidenceV1:
     schema_version: int
     admitted_replay_sha256: str
@@ -1871,12 +2142,14 @@ class ReplayPatchedTreeReceiptV1:
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != 1:
             raise ValueError("Unsupported replay patched-tree receipt schema")
+        if type(self.completed_decode_receipt) is not ArtifactRef:
+            raise TypeError("Completed decode receipt must be an exact ArtifactRef")
+        if self.completed_decode_receipt.kind not in {
+            "replay-decoded-tree-receipt-v1",
+            "replay-decoded-tree-receipt-v2",
+        }:
+            raise ValueError("Invalid completed decode receipt kind")
         for value, kind, label in (
-            (
-                self.completed_decode_receipt,
-                "replay-decoded-tree-receipt-v1",
-                "completed decode receipt",
-            ),
             (
                 self.input_decoded_tree_manifest,
                 "decoded-tree-manifest-v1",
