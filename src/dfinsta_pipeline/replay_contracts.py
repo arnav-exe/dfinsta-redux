@@ -1795,6 +1795,192 @@ class ReplayDecodedTreeReceiptV1:
         return canonical_sha256(self)
 
 
+@dataclass(frozen=True, slots=True)
+class ReplaySourceAdmissionEvidenceV1:
+    schema_version: int
+    admitted_replay_sha256: str
+    source_manifest_sha256: str
+    staged_tree_sha256: str
+    file_count: int
+    relative_destination: str
+    passed: Literal[True]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise ValueError("Unsupported replay source admission evidence schema")
+        for value, label in (
+            (self.admitted_replay_sha256, "admitted replay SHA-256"),
+            (self.source_manifest_sha256, "source manifest SHA-256"),
+            (self.staged_tree_sha256, "staged tree SHA-256"),
+        ):
+            _sha256(value, label)
+        if type(self.file_count) is not int:
+            raise TypeError("Replay source admission file count must be an integer")
+        if self.file_count < 0:
+            raise ValueError("Replay source admission file count must be nonnegative")
+        if self.relative_destination != "admitted-source":
+            raise ValueError("Invalid replay source admission destination")
+        if type(self.passed) is not bool or self.passed is not True:
+            raise ValueError("Replay source admission evidence requires success")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplaySourceAdmissionEvidenceV1:
+        return cls(**_keys(data, cls, "replay source admission evidence"))
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayApplyOperationResultV1:
+    operation_id: str
+    status: Literal["applied", "already_applied"]
+
+    def __post_init__(self) -> None:
+        _identifier(self.operation_id, "replay apply operation id")
+        if type(self.status) is not str:
+            raise TypeError("Replay apply operation status must be a string")
+        if self.status not in {"applied", "already_applied"}:
+            raise ValueError("Invalid replay apply operation status")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayApplyOperationResultV1:
+        return cls(**_keys(data, cls, "replay apply operation result"))
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayPatchedTreeReceiptV1:
+    schema_version: int
+    admitted_replay_sha256: str
+    completed_decode_receipt: ArtifactRef
+    input_decoded_tree_manifest: ArtifactRef
+    input_decoded_tree_semantic_sha256: str
+    intent_sha256: str
+    resolution_sha256: str
+    source_manifest_sha256: str
+    target_port_spec_sha256: str
+    source_admission: ReplaySourceAdmissionEvidenceV1
+    operation_results: tuple[ReplayApplyOperationResultV1, ...]
+    apply_report_sha256: str
+    patched_tree_manifest: ArtifactRef
+    patched_tree_semantic_sha256: str
+    operation_key: str
+    success: Literal[True]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay patched-tree receipt schema")
+        for value, kind, label in (
+            (
+                self.completed_decode_receipt,
+                "replay-decoded-tree-receipt-v1",
+                "completed decode receipt",
+            ),
+            (
+                self.input_decoded_tree_manifest,
+                "decoded-tree-manifest-v1",
+                "input decoded-tree manifest",
+            ),
+            (
+                self.patched_tree_manifest,
+                "decoded-tree-manifest-v1",
+                "patched-tree manifest",
+            ),
+        ):
+            if type(value) is not ArtifactRef:
+                raise TypeError(f"{label.capitalize()} must be an exact ArtifactRef")
+            if value.kind != kind:
+                raise ValueError(f"Invalid {label} kind")
+        for value, label in (
+            (self.admitted_replay_sha256, "admitted replay SHA-256"),
+            (
+                self.input_decoded_tree_semantic_sha256,
+                "input decoded-tree semantic SHA-256",
+            ),
+            (self.intent_sha256, "intent SHA-256"),
+            (self.resolution_sha256, "resolution SHA-256"),
+            (self.source_manifest_sha256, "source manifest SHA-256"),
+            (self.target_port_spec_sha256, "target port specification SHA-256"),
+            (self.apply_report_sha256, "apply report SHA-256"),
+            (self.patched_tree_semantic_sha256, "patched-tree semantic SHA-256"),
+            (self.operation_key, "operation key"),
+        ):
+            _sha256(value, label)
+        if type(self.source_admission) is not ReplaySourceAdmissionEvidenceV1:
+            raise TypeError(
+                "Replay source admission must be exact source admission evidence"
+            )
+        if not isinstance(self.operation_results, tuple) or any(
+            type(result) is not ReplayApplyOperationResultV1
+            for result in self.operation_results
+        ):
+            raise TypeError(
+                "Replay apply operation results must be a tuple of exact result records"
+            )
+        operation_ids = tuple(result.operation_id for result in self.operation_results)
+        if len(operation_ids) != len(set(operation_ids)):
+            raise ValueError("Duplicate replay apply operation id")
+        if self.patched_tree_manifest.producer_operation_id != self.operation_key:
+            raise ValueError("Patched-tree manifest producer does not match operation")
+        if self.patched_tree_manifest.input_hashes != self.execution_input_hashes:
+            raise ValueError("Patched-tree manifest input lineage is incomplete")
+        if type(self.success) is not bool or self.success is not True:
+            raise ValueError("Replay patched-tree receipt requires success")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayPatchedTreeReceiptV1:
+        data = _keys(data, cls, "replay patched-tree receipt")
+        return cls(
+            data["schema_version"],
+            data["admitted_replay_sha256"],
+            ArtifactRef.from_dict(data["completed_decode_receipt"]),
+            ArtifactRef.from_dict(data["input_decoded_tree_manifest"]),
+            data["input_decoded_tree_semantic_sha256"],
+            data["intent_sha256"],
+            data["resolution_sha256"],
+            data["source_manifest_sha256"],
+            data["target_port_spec_sha256"],
+            ReplaySourceAdmissionEvidenceV1.from_dict(data["source_admission"]),
+            tuple(
+                ReplayApplyOperationResultV1.from_dict(item)
+                for item in _array(data["operation_results"], "replay apply operation results")
+            ),
+            data["apply_report_sha256"],
+            ArtifactRef.from_dict(data["patched_tree_manifest"]),
+            data["patched_tree_semantic_sha256"],
+            data["operation_key"],
+            data["success"],
+        )
+
+    @property
+    def execution_input_hashes(self) -> tuple[str, ...]:
+        return (
+            self.admitted_replay_sha256,
+            canonical_sha256(self.completed_decode_receipt),
+            canonical_sha256(self.input_decoded_tree_manifest),
+            self.input_decoded_tree_semantic_sha256,
+            self.intent_sha256,
+            self.resolution_sha256,
+            self.source_manifest_sha256,
+            self.target_port_spec_sha256,
+            self.source_admission.sha256,
+            self.apply_report_sha256,
+        )
+
+    @property
+    def receipt_input_hashes(self) -> tuple[str, ...]:
+        return (
+            *self.execution_input_hashes,
+            canonical_sha256(self.patched_tree_manifest),
+            self.patched_tree_semantic_sha256,
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
 def admit_replay_v3(
     run_spec: ReplayRunSpecV2,
     request: ReplayRequestV2,

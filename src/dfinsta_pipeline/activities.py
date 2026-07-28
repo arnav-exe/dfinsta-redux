@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -13,11 +13,24 @@ from typing import Mapping
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from .apply import ApplyReport, OperationResult, apply_port
+from .compiler import TargetPortSpecV2, compile_port
 from .contracts import ArtifactRef, GateDecision, RunSpec, StageInput, canonical_json, canonical_sha256
-from .decoded_artifact import capture_decoded_tree_fd, load_decoded_tree
+from .decoded_artifact import (
+    capture_decoded_tree_fd,
+    load_decoded_tree,
+    materialize_decoded_tree,
+)
 from .executor import ExecutionMetadata, ExecutionRequest, Launcher, execute
 from .ledger import Ledger
-from .replay_contracts import AdmittedReplayV3, ReplayDecodedTreeReceiptV1
+from .replay_contracts import (
+    AdmittedReplayV3,
+    ReplayApplyOperationResultV1,
+    ReplayDecodedTreeReceiptV1,
+    ReplayPatchedTreeReceiptV1,
+    ReplaySourceAdmissionEvidenceV1,
+)
+from .source_admission import admit_source_bundle_v2, verify_staged_source_v2
 from .store import ContentStore
 
 
@@ -26,6 +39,7 @@ class ActivityRuntime:
     store: ContentStore
     ledger: Ledger
     attempts_root: Path
+    source_root: Path | None
     executor_paths: Mapping[str, Path]
     launcher: Launcher | None
 
@@ -37,6 +51,7 @@ def configure_runtime(
     state_root: Path,
     *,
     attempts_root: Path | None = None,
+    source_root: Path | None = None,
     executor_paths: Mapping[str, Path] | None = None,
     launcher: Launcher | None = None,
 ) -> None:
@@ -48,6 +63,9 @@ def configure_runtime(
         os.path.abspath(attempts_root or state_root / "attempts")
     )
     resolved_attempts_root = configured_attempts_root.resolve()
+    if source_root is not None and not isinstance(source_root, Path):
+        raise TypeError("Source root must be a Path")
+    resolved_source_root = source_root.resolve() if source_root is not None else None
     copied_paths: dict[str, Path] = {}
     for digest, path in (executor_paths or {}).items():
         if (
@@ -72,10 +90,21 @@ def configure_runtime(
         for executable in copied_paths.values()
     ):
         raise ValueError("Attempts root must not overlap an executor path")
+    if resolved_source_root is not None:
+        protected_paths = (
+            state_root,
+            cas_root,
+            ledger_path,
+            resolved_attempts_root,
+            *copied_paths.values(),
+        )
+        if any(_paths_overlap(resolved_source_root, path) for path in protected_paths):
+            raise ValueError("Source root must not overlap runtime state or executable paths")
     _runtime = ActivityRuntime(
         store=ContentStore(cas_root),
         ledger=Ledger(ledger_path),
         attempts_root=resolved_attempts_root,
+        source_root=resolved_source_root,
         executor_paths=MappingProxyType(copied_paths),
         launcher=launcher,
     )
@@ -255,6 +284,166 @@ def _validate_replay_decoded_tree_receipt(
     return receipt
 
 
+def _replay_decode_operation_identity(admitted: AdmittedReplayV3) -> tuple[str, str, str]:
+    role = "decode"
+    plan = admitted.plan(role)
+    capability = admitted.capability(role)
+    requirement = admitted.profile.tool_for_role(role)
+    tool = next(
+        tool for tool in admitted.request.tools if tool.tool_id == requirement.tool_id
+    )
+    logical_paths = {
+        "tool": "tool",
+        "framework_dir": "framework",
+        "input_apk": "input.apk",
+        "decoded_tree": "output",
+    }
+    request = ExecutionRequest(
+        1,
+        capability.capability_id,
+        capability.canonical_identity,
+        admitted.request.stock_apk,
+        capability.output_kind,
+        tuple((name, logical_paths[slot]) for name, slot in plan.arguments),
+        (),
+        admitted.run_spec.apk_composition,
+    )
+    operation_input = {
+        "schema_version": 1,
+        "decoded_apk_role": "stock_input",
+        "admitted_replay_sha256": admitted.sha256,
+        "input_apk": admitted.request.stock_apk,
+        "toolchain_profile_id": admitted.profile.profile_id,
+        "toolchain_profile_sha256": admitted.profile.sha256,
+        "role": role,
+        "execution_plan_sha256": plan.sha256,
+        "executor_capability_sha256": capability.canonical_identity,
+        "tool_artifact_sha256": tool.artifact.sha256,
+        "execution_request_sha256": request.canonical_identity,
+    }
+    return (
+        operation_key("replay_decode_tree_v1", operation_input),
+        canonical_sha256(operation_input),
+        request.canonical_identity,
+    )
+
+
+def _strict_replay_patched_tree_receipt(data: bytes) -> ReplayPatchedTreeReceiptV1:
+    def object_pairs(value: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for name, item in value:
+            if name in result:
+                raise ValueError(f"Duplicate JSON key: {name}")
+            result[name] = item
+        return result
+
+    def reject_constant(constant: str) -> None:
+        raise ValueError(f"Invalid JSON constant: {constant}")
+
+    try:
+        text = data.decode("utf-8")
+        value = json.loads(
+            text,
+            object_pairs_hook=object_pairs,
+            parse_constant=reject_constant,
+        )
+        result = ReplayPatchedTreeReceiptV1.from_dict(value)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise ValueError("Invalid replay patched-tree receipt") from error
+    if canonical_json(result).encode("utf-8") != data:
+        raise ValueError("Replay patched-tree receipt is not canonical")
+    return result
+
+
+async def _await_apply_mutation(task: asyncio.Task[ApplyReport]) -> ApplyReport:
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            if task.done():
+                cancellation = cancellation or error
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    cancellation.add_note(
+                        "Replay apply mutation task was cancelled unexpectedly"
+                    )
+                except BaseException as apply_error:
+                    cancellation.add_note(
+                        "Replay apply failed while cancellation raced with mutation: "
+                        f"{type(apply_error).__name__}: {apply_error}"
+                    )
+                raise cancellation
+            if cancellation is None:
+                cancellation = error
+            else:
+                cancellation.add_note(
+                    "Repeated cancellation waited for replay apply mutation"
+                )
+            continue
+        except BaseException as error:
+            if cancellation is None:
+                raise
+            cancellation.add_note(
+                "Replay apply failed while cancellation waited for mutation: "
+                f"{type(error).__name__}: {error}"
+            )
+            raise cancellation
+        if cancellation is not None:
+            raise cancellation
+        return result
+
+
+def _validate_replay_patched_tree_receipt(
+    output: ArtifactRef,
+    key: str,
+    *,
+    admitted: AdmittedReplayV3,
+    completed_decode_receipt: ArtifactRef,
+    decoded_receipt: ReplayDecodedTreeReceiptV1,
+    compiled: TargetPortSpecV2,
+) -> ReplayPatchedTreeReceiptV1:
+    if (
+        output.kind != "replay-patched-tree-receipt-v1"
+        or output.producer_operation_id != key
+    ):
+        raise ValueError("Adopted replay patched-tree receipt does not match operation lineage")
+    receipt = _strict_replay_patched_tree_receipt(runtime().store.read_bytes(output))
+    if output.sha256 != receipt.sha256 or output.input_hashes != receipt.receipt_input_hashes:
+        raise ValueError("Adopted replay patched-tree receipt does not match operation lineage")
+    expected_ids = tuple(operation.operation_id for operation in compiled.operations)
+    result_ids = tuple(result.operation_id for result in receipt.operation_results)
+    apply_report = ApplyReport(
+        tuple(OperationResult(result.operation_id, result.status) for result in receipt.operation_results)
+    )
+    if (
+        receipt.admitted_replay_sha256 != admitted.sha256
+        or receipt.completed_decode_receipt != completed_decode_receipt
+        or receipt.input_decoded_tree_manifest != decoded_receipt.decoded_tree_manifest
+        or receipt.input_decoded_tree_semantic_sha256
+        != decoded_receipt.decoded_tree_semantic_sha256
+        or receipt.intent_sha256 != admitted.intent.sha256
+        or receipt.resolution_sha256 != admitted.resolution.sha256
+        or receipt.source_manifest_sha256 != admitted.source_manifest.sha256
+        or receipt.target_port_spec_sha256 != compiled.sha256
+        or receipt.source_admission.admitted_replay_sha256 != admitted.sha256
+        or receipt.source_admission.source_manifest_sha256
+        != admitted.source_manifest.sha256
+        or receipt.source_admission.file_count
+        != len(admitted.source_manifest.records)
+        or result_ids != expected_ids
+        or receipt.apply_report_sha256 != apply_report.sha256
+        or receipt.operation_key != key
+        or receipt.success is not True
+    ):
+        raise ValueError("Adopted replay patched-tree receipt does not match admitted execution")
+    manifest = load_decoded_tree(runtime().store, receipt.patched_tree_manifest)
+    if manifest.decoded_tree_sha256 != receipt.patched_tree_semantic_sha256:
+        raise ValueError("Patched-tree receipt semantic SHA-256 does not match manifest")
+    return receipt
+
+
 def _adopt_existing(
     key: str,
     existing: ArtifactRef | None,
@@ -277,7 +466,7 @@ def _adopt_existing(
 @activity.defn
 async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> ArtifactRef:
     configured = runtime()
-    admitted = configured.ledger.require_admitted_replay_v3(candidate)
+    admitted = Ledger.require_admitted_replay_v3(configured.ledger, candidate)
 
     role = "decode"
     plan = admitted.plan(role)
@@ -317,20 +506,7 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
         0,
     )
     tool_artifact_sha256 = tool.artifact.sha256
-    receipt_relationships = {
-        "decoded_apk_role": "stock_input",
-        "admitted_replay_sha256": admitted.sha256,
-        "input_apk": admitted.request.stock_apk,
-        "toolchain_profile_id": admitted.profile.profile_id,
-        "toolchain_profile_sha256": admitted.profile.sha256,
-        "role": role,
-        "execution_plan_sha256": plan.sha256,
-        "executor_capability_sha256": capability.canonical_identity,
-        "tool_artifact_sha256": tool_artifact_sha256,
-        "execution_request_sha256": request.canonical_identity,
-    }
-    operation_input = {"schema_version": 1, **receipt_relationships}
-    key = operation_key("replay_decode_tree_v1", operation_input)
+    key, operation_input_sha256, _ = _replay_decode_operation_identity(admitted)
     execution_input_hashes = (
         admitted.sha256,
         canonical_sha256(admitted.request.stock_apk),
@@ -345,7 +521,7 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
     existing = configured.ledger.begin_operation(
         key,
         "replay_decode_tree_v1",
-        canonical_sha256(operation_input),
+        operation_input_sha256,
         owner,
         retry_safe=False,
     )
@@ -461,6 +637,217 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
             tool_artifact_sha256=tool_artifact_sha256,
             execution_request_sha256=request.canonical_identity,
         )
+        configured.ledger.record_effect(key, owner, output)
+        effect_recorded = True
+        return configured.ledger.complete_operation(key, output)
+    except asyncio.CancelledError:
+        if not effect_recorded:
+            configured.ledger.quarantine_operation(key, owner)
+        raise
+    except BaseException as error:
+        if workspace_created and not effect_recorded:
+            configured.ledger.quarantine_operation(key, owner)
+        elif operation_claimed and not effect_recorded:
+            try:
+                Ledger.release_pending_operation(configured.ledger, key, owner)
+            except BaseException as release_error:
+                error.add_note(
+                    "Pending operation release failed: "
+                    f"{type(release_error).__name__}: {release_error}"
+                )
+        raise
+
+
+@activity.defn
+async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> ArtifactRef:
+    configured = runtime()
+    admitted = Ledger.require_admitted_replay_v3(configured.ledger, candidate)
+
+    (
+        decode_key,
+        decode_input_sha256,
+        decode_execution_request_sha256,
+    ) = _replay_decode_operation_identity(admitted)
+    completed_decode_receipt = Ledger.require_completed_operation(
+        configured.ledger,
+        decode_key,
+        "replay_decode_tree_v1",
+        decode_input_sha256,
+    )
+    decoded_receipt = _validate_replay_decoded_tree_receipt(
+        completed_decode_receipt,
+        decode_key,
+        admitted_replay_sha256=admitted.sha256,
+        input_apk=admitted.request.stock_apk,
+        toolchain_profile_id=admitted.profile.profile_id,
+        toolchain_profile_sha256=admitted.profile.sha256,
+        execution_plan_sha256=admitted.plan("decode").sha256,
+        executor_capability_sha256=admitted.capability("decode").canonical_identity,
+        tool_artifact_sha256=next(
+            tool.artifact.sha256
+            for tool in admitted.request.tools
+            if tool.tool_id == admitted.profile.tool_for_role("decode").tool_id
+        ),
+        execution_request_sha256=decode_execution_request_sha256,
+    )
+    compiled = compile_port(admitted.intent, admitted.resolution)
+    if type(compiled) is not TargetPortSpecV2:
+        raise TypeError("Replay apply requires an exact TargetPortSpecV2")
+
+    operation_input = {
+        "schema_version": 1,
+        "admitted_replay_sha256": admitted.sha256,
+        "completed_decode_receipt": completed_decode_receipt,
+        "input_decoded_tree_manifest": decoded_receipt.decoded_tree_manifest,
+        "input_decoded_tree_semantic_sha256": decoded_receipt.decoded_tree_semantic_sha256,
+        "intent_sha256": admitted.intent.sha256,
+        "resolution_sha256": admitted.resolution.sha256,
+        "source_manifest_sha256": admitted.source_manifest.sha256,
+        "target_port_spec_sha256": compiled.sha256,
+    }
+    key = operation_key("replay_apply_tree_v1", operation_input)
+    owner = _activity_owner()
+    operation_claimed = False
+    existing = configured.ledger.begin_operation(
+        key,
+        "replay_apply_tree_v1",
+        canonical_sha256(operation_input),
+        owner,
+        retry_safe=False,
+    )
+    if existing is not None:
+        _validate_replay_patched_tree_receipt(
+            existing,
+            key,
+            admitted=admitted,
+            completed_decode_receipt=completed_decode_receipt,
+            decoded_receipt=decoded_receipt,
+            compiled=compiled,
+        )
+        return configured.ledger.complete_operation(key, existing)
+    operation_claimed = True
+
+    workspace_created = False
+    effect_recorded = False
+    try:
+        if configured.source_root is None:
+            raise ValueError("Replay apply requires a configured source root")
+
+        attempts_fd = _open_or_create_directory(configured.attempts_root)
+        operation_fd: int | None = None
+        workspace_fd: int | None = None
+        work_tree_fd: int | None = None
+        try:
+            try:
+                os.mkdir(key, mode=0o700, dir_fd=attempts_fd)
+            except FileExistsError:
+                pass
+            operation_fd = _open_existing_directory(attempts_fd, key)
+            owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()
+            workspace_fd = _exclusive_directory(operation_fd, owner_hash)
+            workspace = configured.attempts_root / key / owner_hash
+            workspace_created = True
+            _verify_workspace_path(workspace, workspace_fd)
+
+            work_tree = materialize_decoded_tree(
+                configured.store,
+                decoded_receipt.decoded_tree_manifest,
+                workspace,
+                "work-tree",
+            )
+            work_tree_fd = _open_existing_directory(workspace_fd, "work-tree")
+            source_report = admit_source_bundle_v2(
+                admitted,
+                configured.source_root,
+                workspace,
+                configured.ledger,
+            )
+            staged_source = workspace / source_report.relative_destination
+            verify_staged_source_v2(
+                source_report,
+                admitted,
+                staged_source,
+                configured.ledger,
+            )
+            source_evidence = ReplaySourceAdmissionEvidenceV1.from_dict(
+                asdict(source_report)
+            )
+            _verify_workspace_path(workspace, workspace_fd)
+            _verify_workspace_path(work_tree, work_tree_fd)
+
+            apply_task = asyncio.create_task(
+                asyncio.to_thread(apply_port, compiled, work_tree, staged_source)
+            )
+            apply_report = await _await_apply_mutation(apply_task)
+            if type(apply_report) is not ApplyReport:
+                raise TypeError("Replay apply must return an exact ApplyReport")
+            expected_ids = tuple(operation.operation_id for operation in compiled.operations)
+            result_ids = tuple(result.operation_id for result in apply_report.results)
+            if result_ids != expected_ids:
+                raise ValueError("Replay apply results do not match compiled operation order")
+            _verify_workspace_path(workspace, workspace_fd)
+            _verify_workspace_path(work_tree, work_tree_fd)
+
+            operation_results = tuple(
+                ReplayApplyOperationResultV1(result.operation_id, result.status)
+                for result in apply_report.results
+            )
+            execution_input_hashes = (
+                admitted.sha256,
+                canonical_sha256(completed_decode_receipt),
+                canonical_sha256(decoded_receipt.decoded_tree_manifest),
+                decoded_receipt.decoded_tree_semantic_sha256,
+                admitted.intent.sha256,
+                admitted.resolution.sha256,
+                admitted.source_manifest.sha256,
+                compiled.sha256,
+                source_report.sha256,
+                apply_report.sha256,
+            )
+            await asyncio.sleep(0)
+            manifest_ref = capture_decoded_tree_fd(
+                configured.store,
+                work_tree_fd,
+                key,
+                execution_input_hashes,
+            )
+        finally:
+            _close_descriptors(work_tree_fd, workspace_fd, operation_fd, attempts_fd)
+
+        manifest = load_decoded_tree(configured.store, manifest_ref)
+        receipt = ReplayPatchedTreeReceiptV1(
+            1,
+            admitted.sha256,
+            completed_decode_receipt,
+            decoded_receipt.decoded_tree_manifest,
+            decoded_receipt.decoded_tree_semantic_sha256,
+            admitted.intent.sha256,
+            admitted.resolution.sha256,
+            admitted.source_manifest.sha256,
+            compiled.sha256,
+            source_evidence,
+            operation_results,
+            apply_report.sha256,
+            manifest_ref,
+            manifest.decoded_tree_sha256,
+            key,
+            True,
+        )
+        output = configured.store.put_bytes(
+            kind="replay-patched-tree-receipt-v1",
+            data=canonical_json(receipt).encode("utf-8"),
+            producer_operation_id=key,
+            input_hashes=receipt.receipt_input_hashes,
+        )
+        _validate_replay_patched_tree_receipt(
+            output,
+            key,
+            admitted=admitted,
+            completed_decode_receipt=completed_decode_receipt,
+            decoded_receipt=decoded_receipt,
+            compiled=compiled,
+        )
+        await asyncio.sleep(0)
         configured.ledger.record_effect(key, owner, output)
         effect_recorded = True
         return configured.ledger.complete_operation(key, output)

@@ -404,12 +404,19 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
                 kind="fixture", data=payload, producer_operation_id="fixture-producer", input_hashes=()
             )
         with mock.patch.object(
-            runtime().ledger, "require_admitted_replay_v3", return_value=normalized
+            activities.Ledger, "require_admitted_replay_v3", return_value=normalized
         ):
             output = await self.invoke(self.admitted)
         decoded = self.receipt(output)
         self.assertEqual(decoded.admitted_replay_sha256, normalized.sha256)
         self.assertNotEqual(decoded.admitted_replay_sha256, self.admitted.sha256)
+
+    async def test_authority_lookup_cannot_be_shadowed_on_ledger_instance(self) -> None:
+        shadow = mock.Mock(side_effect=AssertionError("instance shadow called"))
+        runtime().ledger.require_admitted_replay_v3 = shadow  # type: ignore[method-assign]
+        output = await self.invoke()
+        shadow.assert_not_called()
+        self.assertEqual(self.receipt(output).admitted_replay_sha256, self.admitted.sha256)
 
     async def test_roots_and_owners_do_not_change_operation_or_result_bytes(self) -> None:
         first_process = self.process

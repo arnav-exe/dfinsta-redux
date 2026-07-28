@@ -287,6 +287,38 @@ class Ledger:
             )
         return output
 
+    def require_completed_operation(
+        self, operation_key: str, kind: str, input_sha256: str
+    ) -> ArtifactRef:
+        for value, label in (
+            (operation_key, "Operation key"),
+            (kind, "Operation kind"),
+            (input_sha256, "Operation input SHA-256"),
+        ):
+            if type(value) is not str or not value:
+                raise ValueError(f"{label} must be a non-empty string")
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT kind, input_sha256, status, output_json FROM operation_claims "
+                "WHERE operation_key = ?",
+                (operation_key,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Required completed operation is not recorded")
+        if row[0] != kind or row[1] != input_sha256:
+            raise ValueError("Required completed operation does not match exact claim")
+        if row[2] != "completed" or row[3] is None:
+            raise ValueError("Required operation is not completed")
+        try:
+            output = ArtifactRef.from_dict(json.loads(row[3]))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("Completed operation output is corrupt") from error
+        if canonical_json(output) != row[3]:
+            raise ValueError("Completed operation output is not canonical")
+        if output.producer_operation_id != operation_key:
+            raise ValueError("Completed operation producer does not match operation")
+        return output
+
     def quarantine_operation(self, operation_key: str, owner_token: str) -> None:
         if type(owner_token) is not str or not owner_token:
             raise ValueError("Operation owner token must be a non-empty string")
