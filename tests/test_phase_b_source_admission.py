@@ -382,6 +382,26 @@ class SourceAdmissionTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((destination / "z.txt").stat().st_mode), 0o444)
         verify_staged_source_v2(report, replay, destination, ledger)
 
+    def test_windows_device_names_admit_on_linux_v1_and_v2(self) -> None:
+        record = self.write("smali/X/AUX.smali", b".class public LX/AUX;\n")
+        v1_attempt = self.attempt / "v1"
+        v2_attempt = self.attempt / "v2"
+        v1_attempt.mkdir()
+        v2_attempt.mkdir()
+
+        replay_v1 = admitted((record,))
+        report_v1 = admit_source_bundle(
+            replay_v1, self.source, v1_attempt, recorded(replay_v1)
+        )
+        verify_staged_source(report_v1, replay_v1, v1_attempt / "admitted-source")
+
+        replay_v2 = admitted_v3((record,))
+        ledger = self.ledger_for(replay_v2)
+        report_v2 = admit_source_bundle_v2(replay_v2, self.source, v2_attempt, ledger)
+        verify_staged_source_v2(
+            report_v2, replay_v2, v2_attempt / "admitted-source", ledger
+        )
+
     def test_v2_missing_authority_precedes_runtime_paths_and_filesystem(self) -> None:
         replay = admitted_v3((SourceFile("missing", digest(b"missing")),))
         ledger = Ledger(self.base / "unrecorded.sqlite3")
@@ -814,11 +834,10 @@ class SourceAdmissionTests(unittest.TestCase):
             (self.attempt / "admitted-source/file").read_bytes(), b"source"
         )
 
-    def test_portable_path_conflicts_fail_before_reads_or_temp_creation(self) -> None:
+    def test_unsafe_path_conflicts_fail_before_reads_or_temp_creation(self) -> None:
         manifests = (
             (SourceFile("A", "0" * 64), SourceFile("a", "0" * 64)),
             (SourceFile("A", "0" * 64), SourceFile("a/child", "0" * 64)),
-            (SourceFile("CON.txt", "0" * 64),),
             (SourceFile("trailing. ", "0" * 64),),
             (SourceFile("control\x7f", "0" * 64),),
             *((SourceFile(f"invalid{character}", "0" * 64),) for character in '<>"|?*'),

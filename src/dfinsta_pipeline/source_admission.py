@@ -19,16 +19,6 @@ from .replay_contracts import AdmittedReplay, AdmittedReplayV3, SourceManifestV1
 
 
 DESTINATION_NAME = "admitted-source"
-WINDOWS_RESERVED_NAMES = {
-    "aux",
-    "con",
-    "conin$",
-    "conout$",
-    "nul",
-    "prn",
-    *(f"com{number}" for number in range(1, 10)),
-    *(f"lpt{number}" for number in range(1, 10)),
-}
 
 
 class SourceAdmissionError(ValueError):
@@ -357,19 +347,17 @@ def _relative_path(value: object) -> PurePosixPath:
         or value.endswith("/")
         or "//" in value
         or any(part in {"", ".", ".."} for part in parts)
-        or any(not _portable_component(part) for part in parts)
+        or any(not _safe_component(part) for part in parts)
         or path.as_posix() != value
     ):
         raise SourceAdmissionError(f"Unsafe or noncanonical source file path: {value}")
     return path
 
 
-def _portable_component(component: str) -> bool:
-    device_name = component.split(".", 1)[0].rstrip(" .").casefold()
+def _safe_component(component: str) -> bool:
     return not (
         any(character in '<>:"|?*' for character in component)
         or component.endswith((".", " "))
-        or device_name in WINDOWS_RESERVED_NAMES
         or any(unicodedata.category(character) == "Cc" for character in component)
     )
 

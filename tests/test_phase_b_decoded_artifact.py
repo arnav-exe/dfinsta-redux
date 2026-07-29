@@ -113,7 +113,7 @@ class DecodedArtifactTests(unittest.TestCase):
                 ),
             )
 
-    def test_portable_path_policy(self) -> None:
+    def test_linux_worker_path_policy(self) -> None:
         invalid = (
             "",
             "/absolute",
@@ -125,28 +125,34 @@ class DecodedArtifactTests(unittest.TestCase):
             "bad:name",
             "bad.",
             "bad ",
-            "CON",
-            "com1.txt",
-            "COM¹.txt",
-            "com²",
-            "Com³.log",
-            "LPT¹.txt",
-            "lpt²",
-            "Lpt³.log",
             "control\x00name",
             "e\u0301",
-            "clock$.txt",
         )
         for path in invalid:
             with self.subTest(path=path), self.assertRaises((TypeError, ValueError)):
                 DecodedTreeEntryV1(path, "directory", None, None)
         DecodedTreeEntryV1("é/valid.bin", "file", 0, EMPTY_SHA256)
 
+    def test_windows_device_names_roundtrip_as_linux_tree_entries(self) -> None:
+        root = self.base / "device-names"
+        root.mkdir()
+        (root / "AUX.smali").write_bytes(b".class public LAUX;\n")
+        (root / "CON.txt").write_bytes(b"content")
+
+        reference = self.capture(root)
+        parent = self.base / "materialized"
+        parent.mkdir()
+        destination = materialize_decoded_tree(self.store, reference, parent, "tree")
+
+        self.assertEqual((destination / "AUX.smali").read_bytes(), b".class public LAUX;\n")
+        self.assertEqual((destination / "CON.txt").read_bytes(), b"content")
+        verify_materialized_decoded_tree(load_decoded_tree(self.store, reference), destination)
+
     def test_materialization_name_is_one_safe_component(self) -> None:
         reference = self.capture(self.make_tree())
         parent = self.base / "names"
         parent.mkdir()
-        for name in ("a/b", "a\\b", ".", "..", "NUL", "bad "):
+        for name in ("a/b", "a\\b", ".", "..", "NUL", "AUX.smali", "bad "):
             with self.subTest(name=name), self.assertRaises((OSError, ValueError)):
                 materialize_decoded_tree(self.store, reference, parent, name)
 

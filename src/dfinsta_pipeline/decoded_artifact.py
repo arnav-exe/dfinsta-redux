@@ -94,7 +94,6 @@ def _validate_component(component: object) -> str:
     if type(component) is not str:
         raise TypeError("Decoded-tree path components must be strings")
     encoded = _component_bytes(component)
-    device_name = component.split(".", 1)[0].rstrip(" .").casefold()
     if (
         not component
         or component in {".", ".."}
@@ -104,11 +103,20 @@ def _validate_component(component: object) -> str:
         or len(encoded) > MAX_COMPONENT_BYTES
         or any(character in _WINDOWS_FORBIDDEN for character in component)
         or component.endswith((".", " "))
-        or device_name in _WINDOWS_RESERVED_NAMES
         or any(unicodedata.category(character) == "Cc" for character in component)
     ):
         raise DecodedArtifactError(f"Unsafe or noncanonical decoded-tree component: {component!r}")
     return component
+
+
+def _validate_destination_component(component: object) -> str:
+    validated = _validate_component(component)
+    device_name = validated.split(".", 1)[0].rstrip(" .").casefold()
+    if device_name in _WINDOWS_RESERVED_NAMES:
+        raise DecodedArtifactError(
+            f"Unsafe or noncanonical decoded-tree component: {validated!r}"
+        )
+    return validated
 
 
 def _path_parts(value: object) -> tuple[str, ...]:
@@ -786,7 +794,7 @@ def materialize_decoded_tree(
     manifest = load_decoded_tree(store, manifest_ref)
     if not isinstance(parent, Path):
         raise TypeError("parent must be a Path")
-    _validate_component(name)
+    _validate_destination_component(name)
     parent_fd, parent_identity = _open_absolute_directory(parent)
     root_fd = -1
     directory_paths = [""]
