@@ -14,6 +14,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from .apply import ApplyReport, OperationResult, apply_port
+from .backend import BackendReport, compose_apk, validate_composed_apk_bytes
 from .compiler import TargetPortSpecV2, compile_port
 from .contracts import ArtifactRef, GateDecision, RunSpec, StageInput, canonical_json, canonical_sha256
 from .decoded_artifact import (
@@ -27,11 +28,13 @@ from .ledger import Ledger
 from .replay_contracts import (
     AdmittedReplayV3,
     ReplayApplyOperationResultV1,
+    ReplayBackendCompositionV1,
     ReplayDecodedTreeReceiptV2,
     ReplayDecodedTreeReceiptV1,
     ReplayFrameworkCacheReceiptV1,
     ReplayFrameworkInstallationV1,
     ReplayPatchedTreeReceiptV1,
+    ReplayPatchedApkReceiptV1,
     ReplaySourceAdmissionEvidenceV1,
 )
 from .source_admission import admit_source_bundle_v2, verify_staged_source_v2
@@ -214,6 +217,17 @@ def _verify_workspace_path(workspace: Path, workspace_fd: int) -> None:
         or workspace.resolve(strict=True) != workspace
     ):
         raise ValueError("Replay workspace path changed after secure creation")
+
+
+def _validate_private_directory(descriptor: int, label: str) -> None:
+    # Parent-path and hostile same-UID mutation remain outside this checkpoint's scope.
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+    ):
+        raise ValueError(f"Unsafe {label} directory")
 
 
 def _validate_runtime_executable(path: Path, expected_sha256: str) -> None:
@@ -649,6 +663,12 @@ def _strict_replay_patched_tree_receipt(data: bytes) -> ReplayPatchedTreeReceipt
     return result
 
 
+def _strict_replay_patched_apk_receipt(data: bytes) -> ReplayPatchedApkReceiptV1:
+    return _strict_receipt_json(
+        data, ReplayPatchedApkReceiptV1, "replay patched APK receipt"
+    )  # type: ignore[return-value]
+
+
 async def _await_apply_mutation(task: asyncio.Task[ApplyReport]) -> ApplyReport:
     cancellation: asyncio.CancelledError | None = None
     while True:
@@ -687,6 +707,104 @@ async def _await_apply_mutation(task: asyncio.Task[ApplyReport]) -> ApplyReport:
         if cancellation is not None:
             raise cancellation
         return result
+
+
+async def _await_backend_composition(task: asyncio.Task[BackendReport]) -> BackendReport:
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            if task.done():
+                cancellation = cancellation or error
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    cancellation.add_note(
+                        "Replay backend composition task was cancelled unexpectedly"
+                    )
+                except BaseException as composition_error:
+                    cancellation.add_note(
+                        "Replay backend composition failed while cancellation raced with "
+                        f"composition: {type(composition_error).__name__}: {composition_error}"
+                    )
+                raise cancellation
+            if cancellation is None:
+                cancellation = error
+            else:
+                cancellation.add_note(
+                    "Repeated cancellation waited for replay backend composition"
+                )
+            continue
+        except BaseException as error:
+            if cancellation is None:
+                raise
+            cancellation.add_note(
+                "Replay backend composition failed while cancellation waited for "
+                f"composition: {type(error).__name__}: {error}"
+            )
+            raise cancellation
+        if cancellation is not None:
+            raise cancellation
+        return result
+
+
+def _open_pinned_regular(parent_fd: int, name: str, label: str) -> tuple[int, os.stat_result]:
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=parent_fd,
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError(f"{label} must be a singly linked regular file")
+        return descriptor, metadata
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_pinned_regular(
+    parent_fd: int,
+    name: str,
+    descriptor: int,
+    initial: os.stat_result,
+    label: str,
+) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    final = os.fstat(descriptor)
+    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+
+    def identity(value: os.stat_result) -> tuple[int, ...]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or initial.st_nlink != 1
+        or final.st_nlink != 1
+        or current.st_nlink != 1
+        or identity(initial) != identity(final)
+        or identity(initial) != identity(current)
+    ):
+        raise ValueError(f"{label} changed while being captured")
+    data = b"".join(chunks)
+    if len(data) != initial.st_size:
+        raise ValueError(f"{label} changed while being captured")
+    return data
 
 
 def _validate_replay_patched_tree_receipt(
@@ -735,6 +853,283 @@ def _validate_replay_patched_tree_receipt(
     manifest = load_decoded_tree(runtime().store, receipt.patched_tree_manifest)
     if manifest.decoded_tree_sha256 != receipt.patched_tree_semantic_sha256:
         raise ValueError("Patched-tree receipt semantic SHA-256 does not match manifest")
+    return receipt
+
+
+def _replay_build_predecessors(
+    admitted: AdmittedReplayV3,
+) -> tuple[
+    ArtifactRef | None,
+    ReplayFrameworkCacheReceiptV1 | None,
+    ArtifactRef,
+    ReplayPatchedTreeReceiptV1,
+    TargetPortSpecV2,
+]:
+    configured = runtime()
+    completed_framework: ArtifactRef | None = None
+    framework_receipt: ReplayFrameworkCacheReceiptV1 | None = None
+    if admitted.request.frameworks:
+        framework_key, framework_input, installations, _ = (
+            _replay_framework_operation_identity(admitted)
+        )
+        completed_framework = Ledger.require_completed_operation(
+            configured.ledger,
+            framework_key,
+            "replay_install_frameworks_v1",
+            framework_input,
+        )
+        framework_receipt = _validate_replay_framework_cache_receipt(
+            completed_framework,
+            framework_key,
+            admitted=admitted,
+            installations=installations,
+        )
+
+    decode_key, decode_input, decode_request = _replay_decode_operation_identity(
+        admitted, completed_framework, framework_receipt
+    )
+    completed_decode = Ledger.require_completed_operation(
+        configured.ledger,
+        decode_key,
+        "replay_decode_tree_v2" if framework_receipt is not None else "replay_decode_tree_v1",
+        decode_input,
+    )
+    if framework_receipt is None or completed_framework is None:
+        decoded_receipt: ReplayDecodedTreeReceiptV1 | ReplayDecodedTreeReceiptV2 = (
+            _validate_replay_decoded_tree_receipt(
+                completed_decode,
+                decode_key,
+                admitted_replay_sha256=admitted.sha256,
+                input_apk=admitted.request.stock_apk,
+                toolchain_profile_id=admitted.profile.profile_id,
+                toolchain_profile_sha256=admitted.profile.sha256,
+                execution_plan_sha256=admitted.plan("decode").sha256,
+                executor_capability_sha256=admitted.capability("decode").canonical_identity,
+                tool_artifact_sha256=next(
+                    item.artifact.sha256
+                    for item in admitted.request.tools
+                    if item.tool_id == admitted.profile.tool_for_role("decode").tool_id
+                ),
+                execution_request_sha256=decode_request,
+            )
+        )
+    else:
+        decoded_receipt = _validate_replay_decoded_tree_receipt_v2(
+            completed_decode,
+            decode_key,
+            admitted=admitted,
+            execution_request_sha256=decode_request,
+            completed_framework_cache_receipt=completed_framework,
+            framework_receipt=framework_receipt,
+        )
+
+    compiled = compile_port(admitted.intent, admitted.resolution)
+    if type(compiled) is not TargetPortSpecV2:
+        raise TypeError("Replay build requires an exact TargetPortSpecV2")
+    apply_input = {
+        "schema_version": 1,
+        "admitted_replay_sha256": admitted.sha256,
+        "completed_decode_receipt": completed_decode,
+        "input_decoded_tree_manifest": decoded_receipt.decoded_tree_manifest,
+        "input_decoded_tree_semantic_sha256": decoded_receipt.decoded_tree_semantic_sha256,
+        "intent_sha256": admitted.intent.sha256,
+        "resolution_sha256": admitted.resolution.sha256,
+        "source_manifest_sha256": admitted.source_manifest.sha256,
+        "target_port_spec_sha256": compiled.sha256,
+    }
+    apply_key = operation_key("replay_apply_tree_v1", apply_input)
+    completed_apply = Ledger.require_completed_operation(
+        configured.ledger,
+        apply_key,
+        "replay_apply_tree_v1",
+        canonical_sha256(apply_input),
+    )
+    patched_receipt = _validate_replay_patched_tree_receipt(
+        completed_apply,
+        apply_key,
+        admitted=admitted,
+        completed_decode_receipt=completed_decode,
+        decoded_receipt=decoded_receipt,
+        compiled=compiled,
+    )
+    return completed_framework, framework_receipt, completed_apply, patched_receipt, compiled
+
+
+def _replay_build_operation_identity(
+    admitted: AdmittedReplayV3,
+    completed_patched_tree_receipt: ArtifactRef,
+    patched_receipt: ReplayPatchedTreeReceiptV1,
+    compiled: TargetPortSpecV2,
+    completed_framework_cache_receipt: ArtifactRef | None,
+    framework_receipt: ReplayFrameworkCacheReceiptV1 | None,
+) -> tuple[str, str, ExecutionRequest]:
+    plan = admitted.plan("build")
+    capability = admitted.capability("build")
+    if capability.output_kind != "intermediate-apk":
+        raise ValueError("Replay build capability must produce an intermediate APK")
+    tool = next(
+        item
+        for item in admitted.request.tools
+        if item.tool_id == admitted.profile.tool_for_role("build").tool_id
+    )
+    logical_paths = {
+        "tool": "tool",
+        "framework_dir": "framework",
+        "decoded_tree": "patched-tree",
+        "intermediate_apk": "intermediate.apk",
+    }
+    request = ExecutionRequest(
+        1,
+        capability.capability_id,
+        capability.canonical_identity,
+        patched_receipt.patched_tree_manifest,
+        "intermediate-apk",
+        tuple((name, logical_paths[slot]) for name, slot in plan.arguments),
+        (),
+        admitted.run_spec.apk_composition,
+    )
+    operation_input: dict[str, object] = {
+        "schema_version": 1,
+        "admitted_replay_sha256": admitted.sha256,
+        "completed_patched_tree_receipt": completed_patched_tree_receipt,
+        "patched_tree_manifest": patched_receipt.patched_tree_manifest,
+        "patched_tree_semantic_sha256": patched_receipt.patched_tree_semantic_sha256,
+        "target_port_spec_sha256": compiled.sha256,
+        "backend_kind": compiled.backend.kind,
+        "backend_profile_id": compiled.backend.profile_id,
+        "backend_sha256": canonical_sha256(compiled.backend),
+        "stock_apk": admitted.request.stock_apk,
+        "toolchain_profile_id": admitted.profile.profile_id,
+        "toolchain_profile_sha256": admitted.profile.sha256,
+        "role": "build",
+        "execution_plan_sha256": plan.sha256,
+        "executor_capability_sha256": capability.canonical_identity,
+        "tool_artifact_sha256": tool.artifact.sha256,
+        "execution_request_sha256": request.canonical_identity,
+    }
+    if completed_framework_cache_receipt is not None and framework_receipt is not None:
+        operation_input.update(
+            {
+                "completed_framework_cache_receipt": completed_framework_cache_receipt,
+                "framework_cache_manifest": framework_receipt.framework_cache_manifest,
+                "framework_cache_semantic_sha256": framework_receipt.framework_cache_semantic_sha256,
+            }
+        )
+    return (
+        operation_key("replay_build_patched_apk_v1", operation_input),
+        canonical_sha256(operation_input),
+        request,
+    )
+
+
+def _replay_backend_composition(
+    report: BackendReport, compiled: TargetPortSpecV2
+) -> ReplayBackendCompositionV1:
+    if type(report) is not BackendReport:
+        raise TypeError("Replay backend validation must return an exact BackendReport")
+    backend = compiled.backend
+    expected_replaced = getattr(backend, "replace_dex_entries", ())
+    expected_added = getattr(backend, "add_dex_entries", ())
+    if (
+        report.kind != backend.kind
+        or report.final_dex_entries != backend.final_dex_entries
+        or report.replaced_entries != expected_replaced
+        or report.added_entries != expected_added
+        or report.passed is not True
+    ):
+        raise ValueError("Backend report does not exactly match the compiled backend")
+    return ReplayBackendCompositionV1(
+        1,
+        backend.kind,
+        backend.profile_id,
+        canonical_sha256(backend),
+        report.stock_sha256,
+        report.intermediate_sha256,
+        report.output_sha256,
+        report.final_dex_entries,
+        report.replaced_entries,
+        report.added_entries,
+        report.retained_entry_count,
+        report.stripped_signature_entries,
+        True,
+    )
+
+
+def _validate_replay_patched_apk_receipt(
+    output: ArtifactRef,
+    key: str,
+    *,
+    admitted: AdmittedReplayV3,
+    completed_patched_tree_receipt: ArtifactRef,
+    patched_receipt: ReplayPatchedTreeReceiptV1,
+    compiled: TargetPortSpecV2,
+    execution_request: ExecutionRequest,
+    completed_framework_cache_receipt: ArtifactRef | None,
+    framework_receipt: ReplayFrameworkCacheReceiptV1 | None,
+) -> ReplayPatchedApkReceiptV1:
+    configured = runtime()
+    if output.kind != "replay-patched-apk-receipt-v1" or output.producer_operation_id != key:
+        raise ValueError("Adopted replay patched APK receipt does not match operation lineage")
+    receipt = _strict_replay_patched_apk_receipt(configured.store.read_bytes(output))
+    plan = admitted.plan("build")
+    capability = admitted.capability("build")
+    tool = next(
+        item
+        for item in admitted.request.tools
+        if item.tool_id == admitted.profile.tool_for_role("build").tool_id
+    )
+    expected_framework = (
+        completed_framework_cache_receipt,
+        None if framework_receipt is None else framework_receipt.framework_cache_manifest,
+        None if framework_receipt is None else framework_receipt.framework_cache_semantic_sha256,
+    )
+    actual_framework = (
+        receipt.completed_framework_cache_receipt,
+        receipt.framework_cache_manifest,
+        receipt.framework_cache_semantic_sha256,
+    )
+    if (
+        output.sha256 != receipt.sha256
+        or output.input_hashes != receipt.receipt_input_hashes
+        or receipt.admitted_replay_sha256 != admitted.sha256
+        or receipt.completed_patched_tree_receipt != completed_patched_tree_receipt
+        or receipt.patched_tree_manifest != patched_receipt.patched_tree_manifest
+        or receipt.patched_tree_semantic_sha256 != patched_receipt.patched_tree_semantic_sha256
+        or receipt.target_port_spec_sha256 != compiled.sha256
+        or receipt.stock_apk != admitted.request.stock_apk
+        or receipt.toolchain_profile_id != admitted.profile.profile_id
+        or receipt.toolchain_profile_sha256 != admitted.profile.sha256
+        or receipt.role != "build"
+        or receipt.execution_plan_sha256 != plan.sha256
+        or receipt.executor_capability_sha256 != capability.canonical_identity
+        or receipt.tool_artifact_sha256 != tool.artifact.sha256
+        or receipt.execution_request_sha256 != execution_request.canonical_identity
+        or actual_framework != expected_framework
+        or receipt.operation_key != key
+        or receipt.success is not True
+    ):
+        raise ValueError("Adopted replay patched APK receipt does not match admitted execution")
+    if (
+        receipt.composition.backend_kind != compiled.backend.kind
+        or receipt.composition.backend_profile_id != compiled.backend.profile_id
+        or receipt.composition.backend_sha256 != canonical_sha256(compiled.backend)
+        or receipt.composition.final_dex_entries != compiled.backend.final_dex_entries
+        or receipt.composition.replaced_entries
+        != getattr(compiled.backend, "replace_dex_entries", ())
+        or receipt.composition.added_entries
+        != getattr(compiled.backend, "add_dex_entries", ())
+    ):
+        raise ValueError("Adopted backend composition does not match compiled backend")
+
+    stock_bytes = configured.store.read_bytes(receipt.stock_apk)
+    intermediate_bytes = configured.store.read_bytes(receipt.intermediate_apk)
+    final_bytes = configured.store.read_bytes(receipt.patched_apk)
+    report = validate_composed_apk_bytes(
+        compiled.backend, stock_bytes, intermediate_bytes, final_bytes
+    )
+    composition = _replay_backend_composition(report, compiled)
+    if composition != receipt.composition:
+        raise ValueError("Adopted backend composition is not independently reproducible")
     return receipt
 
 
@@ -1494,6 +1889,329 @@ async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> 
     except asyncio.CancelledError:
         if not effect_recorded:
             Ledger.quarantine_operation(configured.ledger, key, owner)
+        raise
+    except BaseException as error:
+        if workspace_created and not effect_recorded:
+            Ledger.quarantine_operation(configured.ledger, key, owner)
+        elif operation_claimed and not effect_recorded:
+            try:
+                Ledger.release_pending_operation(configured.ledger, key, owner)
+            except BaseException as release_error:
+                error.add_note(
+                    "Pending operation release failed: "
+                    f"{type(release_error).__name__}: {release_error}"
+                )
+        raise
+
+
+@activity.defn
+async def replay_build_patched_apk_checkpoint_activity(
+    candidate: AdmittedReplayV3,
+) -> ArtifactRef:
+    configured = runtime()
+    admitted = Ledger.require_admitted_replay_v3(configured.ledger, candidate)
+    (
+        completed_framework,
+        framework_receipt,
+        completed_apply,
+        patched_receipt,
+        compiled,
+    ) = _replay_build_predecessors(admitted)
+    capability = admitted.capability("build")
+    if capability.allowed_mutation_paths != ("intermediate.apk",):
+        raise ValueError(
+            "Replay build capability must allow exactly the intermediate APK mutation"
+        )
+    key, operation_input_sha256, request = _replay_build_operation_identity(
+        admitted,
+        completed_apply,
+        patched_receipt,
+        compiled,
+        completed_framework,
+        framework_receipt,
+    )
+    plan = admitted.plan("build")
+    uses_tool_path = any(slot == "tool" for _, slot in plan.arguments)
+    tool = next(
+        item
+        for item in admitted.request.tools
+        if item.tool_id == admitted.profile.tool_for_role("build").tool_id
+    )
+    admitted_spec = RunSpec(
+        1,
+        admitted.run_spec.run_id,
+        admitted.run_spec.subject_sha256,
+        admitted.run_spec.intent_sha256,
+        admitted.run_spec.resolution_sha256,
+        capability.canonical_identity,
+        admitted.run_spec.policy_revision,
+        admitted.run_spec.allowed_actor,
+        1,
+        admitted.run_spec.apk_composition,
+        False,
+        0,
+    )
+    owner = _activity_owner()
+    operation_claimed = False
+    existing = Ledger.begin_operation(
+        configured.ledger,
+        key,
+        "replay_build_patched_apk_v1",
+        operation_input_sha256,
+        owner,
+        retry_safe=False,
+    )
+    if existing is not None:
+        _validate_replay_patched_apk_receipt(
+            existing,
+            key,
+            admitted=admitted,
+            completed_patched_tree_receipt=completed_apply,
+            patched_receipt=patched_receipt,
+            compiled=compiled,
+            execution_request=request,
+            completed_framework_cache_receipt=completed_framework,
+            framework_receipt=framework_receipt,
+        )
+        return Ledger.complete_operation(configured.ledger, key, existing)
+    operation_claimed = True
+
+    workspace_created = False
+    effect_recorded = False
+    try:
+        try:
+            executable = configured.executor_paths[capability.executable_sha256]
+        except KeyError as error:
+            raise ValueError("No runtime executable for admitted capability") from error
+        _validate_runtime_executable(executable, capability.executable_sha256)
+        stock_bytes = configured.store.read_bytes(admitted.request.stock_apk)
+        tool_bytes = configured.store.read_bytes(tool.artifact) if uses_tool_path else None
+        load_decoded_tree(configured.store, patched_receipt.patched_tree_manifest)
+        if framework_receipt is not None:
+            load_decoded_tree(configured.store, framework_receipt.framework_cache_manifest)
+
+        attempts_fd = _open_or_create_directory(configured.attempts_root)
+        operation_fd: int | None = None
+        workspace_fd: int | None = None
+        patched_tree_fd: int | None = None
+        framework_fd: int | None = None
+        intermediate_fd: int | None = None
+        final_fd: int | None = None
+        try:
+            _validate_private_directory(attempts_fd, "attempts root")
+            try:
+                os.mkdir(key, mode=0o700, dir_fd=attempts_fd)
+            except FileExistsError:
+                pass
+            operation_fd = _open_existing_directory(attempts_fd, key)
+            _validate_private_directory(operation_fd, "operation")
+            owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()
+            workspace_fd = _exclusive_directory(operation_fd, owner_hash)
+            workspace_created = True
+            _validate_private_directory(workspace_fd, "owner workspace")
+            workspace = configured.attempts_root / key / owner_hash
+            _exclusive_file(workspace_fd, "stock.apk", stock_bytes)
+            if tool_bytes is not None:
+                _exclusive_file(workspace_fd, "tool", tool_bytes)
+            materialize_decoded_tree(
+                configured.store,
+                patched_receipt.patched_tree_manifest,
+                workspace,
+                "patched-tree",
+            )
+            patched_tree_fd = _open_existing_directory(workspace_fd, "patched-tree")
+            if any(slot == "framework_dir" for _, slot in plan.arguments):
+                if framework_receipt is None:
+                    os.mkdir("framework", mode=0o700, dir_fd=workspace_fd)
+                else:
+                    materialize_decoded_tree(
+                        configured.store,
+                        framework_receipt.framework_cache_manifest,
+                        workspace,
+                        "framework",
+                    )
+                framework_fd = _open_existing_directory(workspace_fd, "framework")
+            for output_name in ("intermediate.apk", "patched.apk"):
+                try:
+                    os.stat(output_name, dir_fd=workspace_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ValueError("Replay build output must be absent before launch")
+            _verify_workspace_path(workspace, workspace_fd)
+            _verify_workspace_path(workspace / "patched-tree", patched_tree_fd)
+            if framework_fd is not None:
+                _verify_workspace_path(workspace / "framework", framework_fd)
+
+            execution = await execute(
+                capability,
+                request,
+                ExecutionMetadata(executable, workspace, workspace),
+                admitted_spec=admitted_spec,
+                timeout_seconds=plan.timeout_seconds,
+                launcher=configured.launcher,
+            )
+            if execution.returncode != 0:
+                raise RuntimeError(
+                    f"Replay patched APK build failed with exit code {execution.returncode}"
+                )
+            _verify_workspace_path(workspace, workspace_fd)
+            _verify_workspace_path(workspace / "patched-tree", patched_tree_fd)
+            patched_manifest = load_decoded_tree(
+                configured.store, patched_receipt.patched_tree_manifest
+            )
+            verify_materialized_decoded_tree(patched_manifest, workspace / "patched-tree")
+            if framework_fd is not None:
+                assert framework_fd is not None
+                _verify_workspace_path(workspace / "framework", framework_fd)
+                if framework_receipt is None:
+                    if _framework_cache_snapshot(framework_fd):
+                        raise ValueError("Empty framework directory was mutated by replay build")
+                else:
+                    framework_manifest = load_decoded_tree(
+                        configured.store, framework_receipt.framework_cache_manifest
+                    )
+                    verify_materialized_decoded_tree(
+                        framework_manifest, workspace / "framework"
+                    )
+
+            intermediate_fd, intermediate_stat = _open_pinned_regular(
+                workspace_fd, "intermediate.apk", "Intermediate APK"
+            )
+            composition_task = asyncio.create_task(
+                asyncio.to_thread(
+                    compose_apk,
+                    compiled.backend,
+                    workspace / "stock.apk",
+                    workspace / "intermediate.apk",
+                    workspace / "patched.apk",
+                )
+            )
+            composed_report = await _await_backend_composition(composition_task)
+            final_fd, final_stat = _open_pinned_regular(
+                workspace_fd, "patched.apk", "Patched APK"
+            )
+            intermediate_bytes = _read_pinned_regular(
+                workspace_fd,
+                "intermediate.apk",
+                intermediate_fd,
+                intermediate_stat,
+                "Intermediate APK",
+            )
+            final_bytes = _read_pinned_regular(
+                workspace_fd,
+                "patched.apk",
+                final_fd,
+                final_stat,
+                "Patched APK",
+            )
+            validated_report = validate_composed_apk_bytes(
+                compiled.backend, stock_bytes, intermediate_bytes, final_bytes
+            )
+            if composed_report != validated_report:
+                raise ValueError("Composed APK report does not match independent validation")
+            composition = _replay_backend_composition(validated_report, compiled)
+        finally:
+            _close_descriptors(
+                final_fd,
+                intermediate_fd,
+                framework_fd,
+                patched_tree_fd,
+                workspace_fd,
+                operation_fd,
+                attempts_fd,
+            )
+
+        execution_input_hashes: tuple[str, ...] = (
+            admitted.sha256,
+            canonical_sha256(completed_apply),
+            canonical_sha256(patched_receipt.patched_tree_manifest),
+            patched_receipt.patched_tree_semantic_sha256,
+            compiled.sha256,
+            canonical_sha256(admitted.request.stock_apk),
+            admitted.profile.sha256,
+            plan.sha256,
+            capability.canonical_identity,
+            tool.artifact.sha256,
+            request.canonical_identity,
+        )
+        if completed_framework is not None and framework_receipt is not None:
+            execution_input_hashes = (
+                *execution_input_hashes,
+                canonical_sha256(completed_framework),
+                canonical_sha256(framework_receipt.framework_cache_manifest),
+                framework_receipt.framework_cache_semantic_sha256,
+            )
+        intermediate_ref = configured.store.put_bytes(
+            kind="intermediate-apk",
+            data=intermediate_bytes,
+            producer_operation_id=key,
+            input_hashes=execution_input_hashes,
+        )
+        if (
+            intermediate_ref.sha256 != composition.intermediate_sha256
+            or hashlib.sha256(final_bytes).hexdigest() != composition.output_sha256
+        ):
+            raise ValueError("Captured APK bytes do not match backend composition")
+        patched_ref = configured.store.put_bytes(
+            kind="final-apk",
+            data=final_bytes,
+            producer_operation_id=key,
+            input_hashes=(
+                *execution_input_hashes,
+                canonical_sha256(intermediate_ref),
+                composition.sha256,
+            ),
+        )
+        receipt = ReplayPatchedApkReceiptV1(
+            1,
+            admitted.sha256,
+            completed_apply,
+            patched_receipt.patched_tree_manifest,
+            patched_receipt.patched_tree_semantic_sha256,
+            compiled.sha256,
+            admitted.request.stock_apk,
+            admitted.profile.profile_id,
+            admitted.profile.sha256,
+            "build",
+            plan.sha256,
+            capability.canonical_identity,
+            tool.artifact.sha256,
+            request.canonical_identity,
+            completed_framework,
+            None if framework_receipt is None else framework_receipt.framework_cache_manifest,
+            None if framework_receipt is None else framework_receipt.framework_cache_semantic_sha256,
+            intermediate_ref,
+            composition,
+            patched_ref,
+            key,
+            True,
+        )
+        output = configured.store.put_bytes(
+            kind="replay-patched-apk-receipt-v1",
+            data=canonical_json(receipt).encode("utf-8"),
+            producer_operation_id=key,
+            input_hashes=receipt.receipt_input_hashes,
+        )
+        _validate_replay_patched_apk_receipt(
+            output,
+            key,
+            admitted=admitted,
+            completed_patched_tree_receipt=completed_apply,
+            patched_receipt=patched_receipt,
+            compiled=compiled,
+            execution_request=request,
+            completed_framework_cache_receipt=completed_framework,
+            framework_receipt=framework_receipt,
+        )
+        Ledger.record_effect(configured.ledger, key, owner, output)
+        effect_recorded = True
+        return Ledger.complete_operation(configured.ledger, key, output)
+    except asyncio.CancelledError:
+        if workspace_created and not effect_recorded:
+            Ledger.quarantine_operation(configured.ledger, key, owner)
+        elif operation_claimed and not effect_recorded:
+            Ledger.release_pending_operation(configured.ledger, key, owner)
         raise
     except BaseException as error:
         if workspace_created and not effect_recorded:
