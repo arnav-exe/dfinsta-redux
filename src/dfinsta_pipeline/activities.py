@@ -807,6 +807,114 @@ def _read_pinned_regular(
     return data
 
 
+def _stable_file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _node_identity(metadata: os.stat_result) -> tuple[int, int, int]:
+    return metadata.st_dev, metadata.st_ino, metadata.st_mode
+
+
+def _secure_remove_tree_entry(
+    parent_fd: int,
+    name: str,
+    label: str,
+    *,
+    expected: os.stat_result | None = None,
+) -> None:
+    initial = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if expected is not None and _stable_file_identity(initial) != _stable_file_identity(
+        expected
+    ):
+        raise ValueError(f"{label} changed before cleanup")
+    if stat.S_ISDIR(initial.st_mode):
+        child_fd = _open_existing_directory(parent_fd, name)
+        try:
+            if _stable_file_identity(os.fstat(child_fd)) != _stable_file_identity(initial):
+                raise ValueError(f"{label} changed while being opened")
+            with os.scandir(child_fd) as entries:
+                names = sorted(
+                    (entry.name for entry in entries), key=lambda value: value.encode("utf-8")
+                )
+            for child_name in names:
+                _secure_remove_tree_entry(child_fd, child_name, label)
+            with os.scandir(child_fd) as entries:
+                if next(entries, None) is not None:
+                    raise ValueError(f"{label} changed during cleanup")
+            final = os.fstat(child_fd)
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                _node_identity(final) != _node_identity(initial)
+                or _node_identity(current) != _node_identity(initial)
+            ):
+                raise ValueError(f"{label} changed during cleanup")
+        finally:
+            os.close(child_fd)
+        os.rmdir(name, dir_fd=parent_fd)
+        return
+    if stat.S_ISLNK(initial.st_mode):
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if _stable_file_identity(current) != _stable_file_identity(initial):
+            raise ValueError(f"{label} changed during cleanup")
+        os.unlink(name, dir_fd=parent_fd)
+        return
+    if not stat.S_ISREG(initial.st_mode) or initial.st_nlink != 1:
+        raise ValueError(f"{label} contains an unsafe entry")
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=parent_fd,
+    )
+    try:
+        if _stable_file_identity(os.fstat(descriptor)) != _stable_file_identity(initial):
+            raise ValueError(f"{label} changed while being opened")
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if _stable_file_identity(current) != _stable_file_identity(initial):
+            raise ValueError(f"{label} changed during cleanup")
+        os.unlink(name, dir_fd=parent_fd)
+    finally:
+        os.close(descriptor)
+
+
+def _secure_remove_optional_build_tree(patched_tree_fd: int) -> None:
+    try:
+        initial = os.stat("build", dir_fd=patched_tree_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    _secure_remove_tree_entry(
+        patched_tree_fd,
+        "build",
+        "Patched-tree build output",
+        expected=initial,
+    )
+
+
+def _secure_unlink_framework_one(framework_fd: int) -> None:
+    expected = os.stat("1.apk", dir_fd=framework_fd, follow_symlinks=False)
+    descriptor, initial = _open_pinned_regular(
+        framework_fd, "1.apk", "Generated framework APK"
+    )
+    try:
+        current = os.stat("1.apk", dir_fd=framework_fd, follow_symlinks=False)
+        if (
+            _stable_file_identity(initial) != _stable_file_identity(expected)
+            or _stable_file_identity(os.fstat(descriptor)) != _stable_file_identity(initial)
+            or _stable_file_identity(current) != _stable_file_identity(initial)
+        ):
+            raise ValueError("Generated framework APK changed during cleanup")
+        os.unlink("1.apk", dir_fd=framework_fd)
+    finally:
+        os.close(descriptor)
+
+
 def _validate_replay_patched_tree_receipt(
     output: ArtifactRef,
     key: str,
@@ -1019,6 +1127,16 @@ def _replay_build_operation_identity(
         operation_key("replay_build_patched_apk_v1", operation_input),
         canonical_sha256(operation_input),
         request,
+    )
+
+
+def _expected_replay_build_mutation_paths(
+    admitted: AdmittedReplayV3,
+) -> tuple[str, ...]:
+    return (
+        ("intermediate.apk", "patched-tree/build")
+        if admitted.request.frameworks
+        else ("framework/1.apk", "intermediate.apk", "patched-tree/build")
     )
 
 
@@ -1918,9 +2036,10 @@ async def replay_build_patched_apk_checkpoint_activity(
         compiled,
     ) = _replay_build_predecessors(admitted)
     capability = admitted.capability("build")
-    if capability.allowed_mutation_paths != ("intermediate.apk",):
+    expected_mutations = _expected_replay_build_mutation_paths(admitted)
+    if capability.allowed_mutation_paths != expected_mutations:
         raise ValueError(
-            "Replay build capability must allow exactly the intermediate APK mutation"
+            "Replay build capability mutation paths do not match framework policy"
         )
     key, operation_input_sha256, request = _replay_build_operation_identity(
         admitted,
@@ -2031,6 +2150,17 @@ async def replay_build_patched_apk_checkpoint_activity(
                         "framework",
                     )
                 framework_fd = _open_existing_directory(workspace_fd, "framework")
+            try:
+                os.stat("build", dir_fd=patched_tree_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError("Patched-tree build output must be absent before launch")
+            if framework_receipt is None:
+                if framework_fd is None:
+                    raise ValueError("Framework-aware build plan requires an empty framework directory")
+                if _framework_cache_snapshot(framework_fd):
+                    raise ValueError("No-framework build requires an empty framework directory")
             for output_name in ("intermediate.apk", "patched.apk"):
                 try:
                     os.stat(output_name, dir_fd=workspace_fd, follow_symlinks=False)
@@ -2057,14 +2187,11 @@ async def replay_build_patched_apk_checkpoint_activity(
                 )
             _verify_workspace_path(workspace, workspace_fd)
             _verify_workspace_path(workspace / "patched-tree", patched_tree_fd)
-            patched_manifest = load_decoded_tree(
-                configured.store, patched_receipt.patched_tree_manifest
-            )
-            verify_materialized_decoded_tree(patched_manifest, workspace / "patched-tree")
+            _secure_remove_optional_build_tree(patched_tree_fd)
             if framework_fd is not None:
-                assert framework_fd is not None
                 _verify_workspace_path(workspace / "framework", framework_fd)
                 if framework_receipt is None:
+                    _secure_unlink_framework_one(framework_fd)
                     if _framework_cache_snapshot(framework_fd):
                         raise ValueError("Empty framework directory was mutated by replay build")
                 else:
@@ -2074,6 +2201,10 @@ async def replay_build_patched_apk_checkpoint_activity(
                     verify_materialized_decoded_tree(
                         framework_manifest, workspace / "framework"
                     )
+            patched_manifest = load_decoded_tree(
+                configured.store, patched_receipt.patched_tree_manifest
+            )
+            verify_materialized_decoded_tree(patched_manifest, workspace / "patched-tree")
 
             intermediate_fd, intermediate_stat = _open_pinned_regular(
                 workspace_fd, "intermediate.apk", "Intermediate APK"

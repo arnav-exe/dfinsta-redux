@@ -58,7 +58,15 @@ class RealReplayHarnessFastTests(unittest.TestCase):
                     if binding.role == "build":
                         self.assertEqual(
                             capability.allowed_mutation_paths,
-                            ("intermediate.apk",),
+                            (
+                                ("intermediate.apk", "patched-tree/build")
+                                if target == 430
+                                else (
+                                    "framework/1.apk",
+                                    "intermediate.apk",
+                                    "patched-tree/build",
+                                )
+                            ),
                         )
                 if target == 430:
                     self.assertEqual(profile.frameworks[0].package_id, 1)

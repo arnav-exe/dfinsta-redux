@@ -197,6 +197,11 @@ def _capability(
             ("framework",),
         )
     if role == "build":
+        allowed_mutations = (
+            ("intermediate.apk", "patched-tree/build")
+            if TARGETS[target].framework_sha256 is not None
+            else ("framework/1.apk", "intermediate.apk", "patched-tree/build")
+        )
         return ExecutorCapability(
             1,
             f"real-replay-{target}-apktool-build-java-provisional",
@@ -217,7 +222,7 @@ def _capability(
             "intermediate-apk",
             (),
             (),
-            ("intermediate.apk",),
+            allowed_mutations,
         )
     raise ValueError(f"Unsupported role: {role}")
 

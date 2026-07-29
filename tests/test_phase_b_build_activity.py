@@ -89,10 +89,16 @@ def build_case(
     *,
     stock_payload: bytes | None = None,
     backend: StockDexGraftBackend | None = None,
-    allowed_mutation_paths: tuple[str, ...] = ("intermediate.apk",),
+    allowed_mutation_paths: tuple[str, ...] | None = None,
     uses_tool_path: bool = True,
 ):
     base = fixture_v2(with_framework)
+    if allowed_mutation_paths is None:
+        allowed_mutation_paths = (
+            ("intermediate.apk", "patched-tree/build")
+            if with_framework
+            else ("framework/1.apk", "intermediate.apk", "patched-tree/build")
+        )
     admitted_v2 = admit_v2(base)
     stock_ref = (
         base.request.stock_apk
@@ -325,6 +331,12 @@ class FakeBuildProcess:
                         else zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
                     )
                     archive.writestr(info, payload)
+            build = self.cwd / "patched-tree/build/generated/nested"
+            build.mkdir(parents=True)
+            (build / "artifact.bin").write_bytes(b"generated")
+            framework = self.cwd / "framework"
+            if framework.is_dir() and not any(framework.iterdir()):
+                (framework / "1.apk").write_bytes(b"generated framework")
         self.reaped = True
         return b"built", b""
 
@@ -369,6 +381,7 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
             )
         runtime().ledger.record_decision(self.admitted.decision)
         runtime().ledger.record_admitted_replay_v3(self.admitted)
+        self.fixture_suffix = "initial"
         self.framework_output, self.framework_receipt = self.record_framework()
         self.decode_output, self.decode_receipt = self.record_decode()
         self.apply_output, self.apply_receipt = self.record_apply()
@@ -386,7 +399,7 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         key, input_sha256, installations, _ = activities._replay_framework_operation_identity(
             self.admitted
         )
-        tree = self.root / f"framework-tree-{id(runtime().ledger)}"
+        tree = self.root / f"framework-tree-{self.fixture_suffix}"
         tree.mkdir()
         for installation in installations:
             (tree / f"{installation.package_id}.apk").write_bytes(
@@ -439,7 +452,7 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         key, input_sha256, request_sha256 = activities._replay_decode_operation_identity(
             self.admitted, self.framework_output, self.framework_receipt
         )
-        tree = self.root / f"decoded-tree-{id(runtime().ledger)}"
+        tree = self.root / f"decoded-tree-{self.fixture_suffix}"
         (tree / "smali").mkdir(parents=True)
         (tree / "smali/Example.smali").write_text(
             ".class public LExample;\n", encoding="utf-8"
@@ -544,11 +557,14 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
             source.sha256,
             report.sha256,
         )
-        patched_tree = self.root / f"patched-tree-{id(runtime().ledger)}"
+        patched_tree = self.root / f"patched-tree-{self.fixture_suffix}"
         (patched_tree / "smali").mkdir(parents=True)
         (patched_tree / "smali/Example.smali").write_text(
             ".class public LExample;\n", encoding="utf-8"
         )
+        if getattr(self, "preexisting_build", False):
+            (patched_tree / "build").mkdir()
+            (patched_tree / "build/preexisting.bin").write_bytes(b"preexisting")
         manifest_ref = capture_decoded_tree(runtime().store, patched_tree, key, inputs)
         manifest = load_decoded_tree(runtime().store, manifest_ref)
         receipt = ReplayPatchedTreeReceiptV1(
@@ -597,6 +613,7 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
             )
         runtime().ledger.record_decision(self.admitted.decision)
         runtime().ledger.record_admitted_replay_v3(self.admitted)
+        self.fixture_suffix = name.replace("/", "_")
         self.framework_output, self.framework_receipt = self.record_framework()
         self.decode_output, self.decode_receipt = self.record_decode()
         self.apply_output, self.apply_receipt = self.record_apply()
@@ -628,6 +645,11 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((workspace / "stock.apk").read_bytes(), self.case.resolve(self.admitted.request.stock_apk))
         self.assertTrue((workspace / "framework").is_dir())
         self.assertEqual(tuple((workspace / "framework").iterdir()), ())
+        self.assertFalse((workspace / "patched-tree/build").exists())
+        self.assertEqual(
+            (workspace / "patched-tree/smali/Example.smali").read_text(encoding="utf-8"),
+            ".class public LExample;\n",
+        )
         self.assertEqual(receipt.composition.backend_kind, "apktool_full_rebuild")
         self.assertEqual(runtime().store.read_bytes(receipt.intermediate_apk), runtime().store.read_bytes(receipt.patched_apk))
         canonical = canonical_json(receipt).encode()
@@ -649,6 +671,7 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
             runtime().store.put_bytes(kind=reference.kind, data=self.case.resolve(reference), producer_operation_id="fixture", input_hashes=())
         runtime().ledger.record_decision(self.admitted.decision)
         runtime().ledger.record_admitted_replay_v3(self.admitted)
+        self.fixture_suffix = "framework-run"
         self.framework_output, self.framework_receipt = self.record_framework()
         self.decode_output, self.decode_receipt = self.record_decode()
         self.apply_output, self.apply_receipt = self.record_apply()
@@ -661,6 +684,12 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
             sorted(path.name for path in (workspace / "framework").iterdir()),
             [f"{item.package_id}.apk" for item in self.admitted.request.frameworks],
         )
+        self.assertFalse((workspace / "patched-tree/build").exists())
+        for framework in self.admitted.request.frameworks:
+            self.assertEqual(
+                (workspace / "framework" / f"{framework.package_id}.apk").read_bytes(),
+                self.case.resolve(framework.artifact),
+            )
 
     async def test_graft_execution_and_post_effect_adoption_preserve_archive_contract(self) -> None:
         stock_entries = (
@@ -770,6 +799,13 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(receipt.intermediate_apk.input_hashes, receipt.execution_input_hashes)
         self.assertEqual(receipt.patched_apk.input_hashes, receipt.patched_apk_input_hashes)
+        graft_workspace = (
+            runtime().attempts_root
+            / receipt.operation_key
+            / digest(b"graft-first")
+        )
+        self.assertFalse((graft_workspace / "patched-tree/build").exists())
+        self.assertEqual(tuple((graft_workspace / "framework").iterdir()), ())
         launches = len(self.launches)
         with (
             mock.patch.object(activities, "execute", side_effect=AssertionError("launch")),
@@ -792,7 +828,10 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
     async def test_mutation_scope_rejected_before_claim_or_workspace(self) -> None:
         for mutation_paths in (
             (),
-            ("intermediate.apk", "patched-tree"),
+            ("framework", "intermediate.apk", "patched-tree/build"),
+            ("framework/1.apk", "intermediate.apk", "patched-tree"),
+            ("intermediate.apk",),
+            ("intermediate.apk", "patched-tree/build"),
             ("output",),
         ):
             with self.subTest(mutation_paths=mutation_paths):
@@ -806,11 +845,59 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(activities.Ledger, "begin_operation") as begin,
                     mock.patch.object(activities, "materialize_decoded_tree") as materialize,
                 ):
-                    with self.assertRaisesRegex(ValueError, "allow exactly"):
+                    with self.assertRaisesRegex(ValueError, "framework policy"):
                         await self.invoke("scope")
                 begin.assert_not_called()
                 materialize.assert_not_called()
                 self.assertFalse(runtime().attempts_root.exists())
+
+        self.case = build_case(
+            digest(self.executable.read_bytes()),
+            with_framework=True,
+            allowed_mutation_paths=(
+                "framework/1.apk",
+                "intermediate.apk",
+                "patched-tree/build",
+            ),
+        )
+        self.admitted = admit_v3(self.case)
+        self.configure_fresh("wrong-declared-framework-scope")
+        with mock.patch.object(activities.Ledger, "begin_operation") as begin:
+            with self.assertRaisesRegex(ValueError, "framework policy"):
+                await self.invoke("wrong-framework-scope")
+        begin.assert_not_called()
+
+    async def test_reviewed_capability_hashes_and_operation_keys_replace_old_policy(self) -> None:
+        old_case = build_case(
+            digest(self.executable.read_bytes()),
+            allowed_mutation_paths=("intermediate.apk",),
+        )
+        new_case = build_case(digest(self.executable.read_bytes()))
+        old = admit_v3(old_case)
+        new = admit_v3(new_case)
+        self.assertNotEqual(
+            old.capability("build").canonical_identity,
+            new.capability("build").canonical_identity,
+        )
+
+        def operation_key_for(admitted: AdmittedReplayV3, name: str) -> str:
+            self.case = old_case if admitted is old else new_case
+            self.admitted = admitted
+            self.configure_fresh(name)
+            predecessors = activities._replay_build_predecessors(admitted)
+            return activities._replay_build_operation_identity(
+                admitted,
+                predecessors[2],
+                predecessors[3],
+                predecessors[4],
+                predecessors[0],
+                predecessors[1],
+            )[0]
+
+        self.assertNotEqual(
+            operation_key_for(old, "old-policy-key"),
+            operation_key_for(new, "new-policy-key"),
+        )
 
     async def test_private_directory_modes_reject_insecure_attempts_and_operation(self) -> None:
         for layer in ("attempts", "operation"):
@@ -900,6 +987,209 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         begin.assert_not_called()
         materialize.assert_not_called()
         self.assertFalse(runtime().attempts_root.exists())
+
+    async def test_preexisting_patched_tree_build_rejects_before_launch(self) -> None:
+        self.preexisting_build = True
+        self.configure_fresh("preexisting-build")
+        with self.assertRaisesRegex(ValueError, "must be absent before launch"):
+            await self.invoke("preexisting-build-owner")
+        self.assertEqual(self.launches, [])
+        with runtime().ledger._connection() as connection:
+            key, status = connection.execute(
+                "SELECT operation_key, status FROM operation_claims "
+                "WHERE kind = 'replay_build_patched_apk_v1'"
+            ).fetchone()
+        self.assertEqual(status, "quarantined")
+        self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+
+    async def test_nested_build_symlink_cleanup_never_touches_target(self) -> None:
+        target = self.root / "symlink-target"
+        target.write_bytes(b"preserve me")
+        original = self.process.communicate
+
+        async def add_symlink() -> tuple[bytes, bytes]:
+            result = await original()
+            assert self.process.cwd is not None
+            link = self.process.cwd / "patched-tree/build/generated/target-link"
+            link.symlink_to(target)
+            return result
+
+        self.process.communicate = add_symlink  # type: ignore[method-assign]
+        output = await self.invoke("symlink-cleanup")
+        workspace = (
+            runtime().attempts_root / output.producer_operation_id / digest(b"symlink-cleanup")
+        )
+        self.assertEqual(target.read_bytes(), b"preserve me")
+        self.assertFalse((workspace / "patched-tree/build").exists())
+
+    async def test_cleanup_nonregular_replacement_and_unlink_failure_quarantine(self) -> None:
+        for variant in ("nonregular", "replacement", "unlink-failure"):
+            with self.subTest(variant=variant):
+                self.configure_fresh(f"cleanup-{variant}")
+                boundary: Any = contextlib.nullcontext()
+                if variant == "nonregular":
+                    original = self.process.communicate
+
+                    async def add_fifo() -> tuple[bytes, bytes]:
+                        result = await original()
+                        assert self.process.cwd is not None
+                        os.mkfifo(self.process.cwd / "patched-tree/build/generated/fifo")
+                        return result
+
+                    self.process.communicate = add_fifo  # type: ignore[method-assign]
+                elif variant == "replacement":
+                    real_open = activities._open_existing_directory
+
+                    def replace_before_open(parent_fd: int, name: str) -> int:
+                        if name == "build":
+                            os.rename(
+                                "build",
+                                "build-replaced",
+                                src_dir_fd=parent_fd,
+                                dst_dir_fd=parent_fd,
+                            )
+                            os.mkdir("build", mode=0o700, dir_fd=parent_fd)
+                        return real_open(parent_fd, name)
+
+                    boundary = mock.patch.object(
+                        activities,
+                        "_open_existing_directory",
+                        side_effect=replace_before_open,
+                    )
+                else:
+                    real_unlink = activities.os.unlink
+
+                    def fail_generated_unlink(path: Any, *args: Any, **kwargs: Any) -> None:
+                        if path == "artifact.bin":
+                            raise OSError("cleanup unlink failed")
+                        real_unlink(path, *args, **kwargs)
+
+                    boundary = mock.patch.object(
+                        activities.os, "unlink", side_effect=fail_generated_unlink
+                    )
+                with boundary:
+                    with self.assertRaises((OSError, PermissionError, ValueError)):
+                        await self.invoke(f"cleanup-{variant}-owner")
+                with runtime().ledger._connection() as connection:
+                    key, status = connection.execute(
+                        "SELECT operation_key, status FROM operation_claims "
+                        "WHERE kind = 'replay_build_patched_apk_v1'"
+                    ).fetchone()
+                self.assertEqual(status, "quarantined")
+                self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+
+    async def test_cleanup_rejects_build_replaced_after_initial_observation(self) -> None:
+        real_remove = activities._secure_remove_tree_entry
+
+        def replace_before_remove(
+            parent_fd: int,
+            name: str,
+            label: str,
+            *,
+            expected: os.stat_result | None = None,
+        ) -> None:
+            if name == "build":
+                os.rename(
+                    "build",
+                    "build-replaced",
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                os.mkdir("build", mode=0o700, dir_fd=parent_fd)
+            real_remove(parent_fd, name, label, expected=expected)
+
+        with mock.patch.object(
+            activities, "_secure_remove_tree_entry", side_effect=replace_before_remove
+        ):
+            with self.assertRaisesRegex(ValueError, "changed before cleanup"):
+                await self.invoke("build-observation-replacement")
+        with runtime().ledger._connection() as connection:
+            key, status = connection.execute(
+                "SELECT operation_key, status FROM operation_claims "
+                "WHERE kind = 'replay_build_patched_apk_v1'"
+            ).fetchone()
+        self.assertEqual(status, "quarantined")
+        self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+
+    async def test_cleanup_rejects_framework_replaced_before_open(self) -> None:
+        real_open = activities._open_pinned_regular
+
+        def replace_before_open(
+            parent_fd: int, name: str, label: str
+        ) -> tuple[int, os.stat_result]:
+            if label == "Generated framework APK":
+                os.rename(
+                    "1.apk",
+                    "1-replaced.apk",
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                replacement = os.open(
+                    "1.apk",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+                os.write(replacement, b"replacement")
+                os.close(replacement)
+            return real_open(parent_fd, name, label)
+
+        with mock.patch.object(
+            activities, "_open_pinned_regular", side_effect=replace_before_open
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during cleanup"):
+                await self.invoke("framework-observation-replacement")
+        with runtime().ledger._connection() as connection:
+            key, status = connection.execute(
+                "SELECT operation_key, status FROM operation_claims "
+                "WHERE kind = 'replay_build_patched_apk_v1'"
+            ).fetchone()
+        self.assertEqual(status, "quarantined")
+        self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+
+    async def test_undeclared_framework_name_and_declared_framework_mutation_reject(self) -> None:
+        original = self.process.communicate
+
+        async def add_extra_framework() -> tuple[bytes, bytes]:
+            result = await original()
+            assert self.process.cwd is not None
+            (self.process.cwd / "framework/extra.apk").write_bytes(b"undeclared")
+            return result
+
+        self.process.communicate = add_extra_framework  # type: ignore[method-assign]
+        with self.assertRaises(PermissionError):
+            await self.invoke("extra-framework")
+        with runtime().ledger._connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT status FROM operation_claims "
+                    "WHERE kind = 'replay_build_patched_apk_v1'"
+                ).fetchone()[0],
+                "quarantined",
+            )
+
+        self.case = build_case(digest(self.executable.read_bytes()), with_framework=True)
+        self.admitted = admit_v3(self.case)
+        self.configure_fresh("declared-framework-mutation")
+        original = self.process.communicate
+
+        async def mutate_declared_framework() -> tuple[bytes, bytes]:
+            result = await original()
+            assert self.process.cwd is not None
+            (self.process.cwd / "framework/1.apk").write_bytes(b"mutated")
+            return result
+
+        self.process.communicate = mutate_declared_framework  # type: ignore[method-assign]
+        with self.assertRaises(PermissionError):
+            await self.invoke("declared-framework-mutation")
+        with runtime().ledger._connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT status FROM operation_claims "
+                    "WHERE kind = 'replay_build_patched_apk_v1'"
+                ).fetchone()[0],
+                "quarantined",
+            )
 
     async def test_preclaim_patched_tree_child_tamper_rejects_without_build_work(self) -> None:
         manifest = load_decoded_tree(
@@ -993,6 +1283,7 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
                     runtime().store.put_bytes(kind=reference.kind, data=self.case.resolve(reference), producer_operation_id="fixture", input_hashes=())
                 runtime().ledger.record_decision(self.admitted.decision)
                 runtime().ledger.record_admitted_replay_v3(self.admitted)
+                self.fixture_suffix = f"failure-{name}"
                 self.framework_output, self.framework_receipt = self.record_framework()
                 self.decode_output, self.decode_receipt = self.record_decode()
                 self.apply_output, self.apply_receipt = self.record_apply()
@@ -1064,6 +1355,10 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
             with zipfile.ZipFile(cwd / "intermediate.apk", "w") as archive:
                 archive.writestr("classes.dex", b"rebuilt-dex")
             (cwd / "framework/injected.apk").write_bytes(b"unexpected")
+            (cwd / "framework/1.apk").write_bytes(b"generated framework")
+            build = cwd / "patched-tree/build/generated"
+            build.mkdir(parents=True)
+            (build / "artifact").write_bytes(b"generated")
             return ExecutionResult(0, "built", "")
 
         real_snapshot = activities._framework_cache_snapshot
@@ -1077,7 +1372,7 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(ValueError, "Empty framework directory was mutated"):
                 await self.invoke("empty-framework-mutation")
-        snapshot.assert_called_once()
+        self.assertEqual(snapshot.call_count, 2)
         with runtime().ledger._connection() as connection:
             key, status = connection.execute(
                 "SELECT operation_key, status FROM operation_claims "
