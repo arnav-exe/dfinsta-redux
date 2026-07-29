@@ -107,10 +107,6 @@ def _load_archive(path: Path, label: str) -> tuple[_Archive, str]:
         raise BackendError(f"Could not read {label} archive {path}: {exc}") from exc
 
 
-def _read_archive(path: Path, label: str) -> _Archive:
-    return _load_archive(path, label)[0]
-
-
 def _is_signature(name: str) -> bool:
     parts = name.upper().split("/")
     return len(parts) == 2 and parts[0] == "META-INF" and (
@@ -134,7 +130,12 @@ def _require_exact_dex(
         )
 
 
-def _validate_paths(stock: object, intermediate: object, output: object) -> tuple[Path, Path, Path]:
+def _require_backend(backend: object) -> None:
+    if not isinstance(backend, (ApktoolFullRebuildBackend, StockDexGraftBackend)):
+        raise TypeError("backend must be a supported Backend contract")
+
+
+def _validate_path_types(stock: object, intermediate: object, output: object) -> tuple[Path, Path, Path]:
     for value, label in (
         (stock, "stock APK"),
         (intermediate, "intermediate APK"),
@@ -143,12 +144,21 @@ def _validate_paths(stock: object, intermediate: object, output: object) -> tupl
         if not isinstance(value, Path):
             raise TypeError(f"{label} path must be a pathlib.Path")
     assert isinstance(stock, Path) and isinstance(intermediate, Path) and isinstance(output, Path)
-    for path in (stock, intermediate, output.parent):
+    return stock, intermediate, output
+
+
+def _reject_linked_components(*paths: Path) -> None:
+    for path in paths:
         for component in (path.absolute(), *path.absolute().parents):
             if component.is_symlink() or (
                 hasattr(component, "is_junction") and component.is_junction()
             ):
                 raise BackendError(f"Path contains a symlink or junction: {path}")
+
+
+def _validate_paths(stock: object, intermediate: object, output: object) -> tuple[Path, Path, Path]:
+    stock, intermediate, output = _validate_path_types(stock, intermediate, output)
+    _reject_linked_components(stock, intermediate, output.parent)
     for path, label in ((stock, "stock APK"), (intermediate, "intermediate APK")):
         if path.is_symlink() or not path.is_file():
             raise BackendError(f"{label} must be an existing regular non-symlink file: {path}")
@@ -160,11 +170,47 @@ def _validate_paths(stock: object, intermediate: object, output: object) -> tupl
     return stock, intermediate, output
 
 
+def _validate_existing_paths(
+    stock: object, intermediate: object, output: object
+) -> tuple[Path, Path, Path]:
+    stock, intermediate, output = _validate_path_types(stock, intermediate, output)
+    _reject_linked_components(stock, intermediate, output)
+    for path, label in (
+        (stock, "stock APK"),
+        (intermediate, "intermediate APK"),
+        (output, "output APK"),
+    ):
+        if path.is_symlink() or not path.is_file():
+            raise BackendError(f"{label} must be an existing regular non-symlink file: {path}")
+    return stock, intermediate, output
+
+
 def _publish_temp(temp_path: Path, output: Path) -> None:
     try:
         os.link(temp_path, output)
     except OSError as exc:
         raise BackendError(f"Could not publish output APK {output}: {exc}") from exc
+
+
+def _regular_identity(path: Path, label: str) -> tuple[int, int, int]:
+    try:
+        status = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise BackendError(f"Could not inspect {label} {path}: {exc}") from exc
+    file_type = stat.S_IFMT(status.st_mode)
+    if file_type != stat.S_IFREG:
+        raise BackendError(f"{label} is not a regular file: {path}")
+    return file_type, status.st_dev, status.st_ino
+
+
+def _unlink_if_identity(path: Path, expected: tuple[int, int, int]) -> None:
+    try:
+        status = os.stat(path, follow_symlinks=False)
+        identity = stat.S_IFMT(status.st_mode), status.st_dev, status.st_ino
+        if identity == expected:
+            path.unlink()
+    except OSError:
+        pass
 
 
 def _copy_to_temp(source: Path, output: Path) -> Path:
@@ -262,69 +308,153 @@ def _metadata(info: zipfile.ZipInfo) -> tuple[object, ...]:
     )
 
 
+def _validate_graft_inputs(
+    stock: _Archive, intermediate: _Archive, backend: StockDexGraftBackend
+) -> None:
+    _require_exact_dex(stock, backend.stock_dex_entries, "Stock")
+    stock_names = set(stock.by_name)
+    intermediate_names = set(intermediate.by_name)
+    for name in backend.replace_dex_entries:
+        if name not in stock_names or name not in intermediate_names:
+            raise BackendError(f"Replacement entry must exist in both archives: {name}")
+    for name in backend.add_dex_entries:
+        if name in stock_names:
+            raise BackendError(f"Added entry collides with stock archive: {name}")
+        if name not in intermediate_names:
+            raise BackendError(f"Added entry is missing from intermediate archive: {name}")
+
+
+def _load_composition_inputs(
+    backend: Backend,
+    stock_apk: Path,
+    intermediate_apk: Path,
+) -> tuple[_Archive | None, str, _Archive, str]:
+    intermediate, intermediate_sha256 = _load_archive(intermediate_apk, "intermediate")
+    if isinstance(backend, ApktoolFullRebuildBackend):
+        stock_sha256 = _sha256(stock_apk)
+        _require_exact_dex(intermediate, backend.final_dex_entries, "Intermediate")
+        stock = None
+    else:
+        stock, stock_sha256 = _load_archive(stock_apk, "stock")
+        _validate_graft_inputs(stock, intermediate, backend)
+    return stock, stock_sha256, intermediate, intermediate_sha256
+
+
+def _validate_composed_apk(
+    backend: Backend,
+    stock: _Archive | None,
+    stock_sha256: str,
+    intermediate: _Archive,
+    intermediate_sha256: str,
+    output_apk: Path,
+    *,
+    output_label: str = "output",
+) -> BackendReport:
+    output, output_sha256 = _load_archive(output_apk, output_label.lower())
+    if isinstance(backend, ApktoolFullRebuildBackend):
+        _require_exact_dex(output, backend.final_dex_entries, "Output")
+        if output_sha256 != intermediate_sha256:
+            raise BackendError(f"{output_label} does not match the intermediate APK")
+        replaced_entries: tuple[str, ...] = ()
+        added_entries: tuple[str, ...] = ()
+        stripped_signatures: tuple[str, ...] = ()
+        retained_count = 0
+    else:
+        assert stock is not None
+        _verify_graft(output, stock, intermediate, backend)
+        replaced_entries = backend.replace_dex_entries
+        added_entries = backend.add_dex_entries
+        stripped_signatures = tuple(
+            entry.info.filename for entry in stock.entries if _is_signature(entry.info.filename)
+        )
+        replacements = set(backend.replace_dex_entries)
+        retained_count = sum(
+            not _is_signature(entry.info.filename) and entry.info.filename not in replacements
+            for entry in stock.entries
+        )
+    return BackendReport(
+        kind=backend.kind,
+        stock_sha256=stock_sha256,
+        intermediate_sha256=intermediate_sha256,
+        output_sha256=output_sha256,
+        final_dex_entries=backend.final_dex_entries,
+        replaced_entries=replaced_entries,
+        added_entries=added_entries,
+        retained_entry_count=retained_count,
+        stripped_signature_entries=stripped_signatures,
+        passed=True,
+    )
+
+
+def validate_composed_apk(
+    backend: Backend, stock_apk: Path, intermediate_apk: Path, output_apk: Path
+) -> BackendReport:
+    """Validate an existing composed APK without modifying any of its paths."""
+    _require_backend(backend)
+    stock_apk, intermediate_apk, output_apk = _validate_existing_paths(
+        stock_apk, intermediate_apk, output_apk
+    )
+    stock, stock_sha256, intermediate, intermediate_sha256 = _load_composition_inputs(
+        backend, stock_apk, intermediate_apk
+    )
+    return _validate_composed_apk(
+        backend,
+        stock,
+        stock_sha256,
+        intermediate,
+        intermediate_sha256,
+        output_apk,
+    )
+
+
 def compose_apk(
     backend: Backend, stock_apk: Path, intermediate_apk: Path, output_apk: Path
 ) -> BackendReport:
-    if not isinstance(backend, (ApktoolFullRebuildBackend, StockDexGraftBackend)):
-        raise TypeError("backend must be a supported Backend contract")
+    _require_backend(backend)
     stock_apk, intermediate_apk, output_apk = _validate_paths(
         stock_apk, intermediate_apk, output_apk
     )
-    intermediate, intermediate_sha256 = _load_archive(intermediate_apk, "intermediate")
+    stock, stock_sha256, intermediate, intermediate_sha256 = _load_composition_inputs(
+        backend, stock_apk, intermediate_apk
+    )
     temp_path: Path | None = None
     try:
         if isinstance(backend, ApktoolFullRebuildBackend):
-            stock_sha256 = _sha256(stock_apk)
-            _require_exact_dex(intermediate, backend.final_dex_entries, "Intermediate")
             temp_path = _copy_to_temp(intermediate_apk, output_apk)
-            staged = _read_archive(temp_path, "staged output")
-            _require_exact_dex(staged, backend.final_dex_entries, "Output")
-            if _sha256(temp_path) != intermediate_sha256:
-                raise BackendError("Staged output does not match the intermediate APK")
-            replaced_entries: tuple[str, ...] = ()
-            added_entries: tuple[str, ...] = ()
-            stripped_signatures: tuple[str, ...] = ()
-            retained_count = 0
         else:
-            stock, stock_sha256 = _load_archive(stock_apk, "stock")
-            _require_exact_dex(stock, backend.stock_dex_entries, "Stock")
-            stock_names = set(stock.by_name)
-            intermediate_names = set(intermediate.by_name)
-            for name in backend.replace_dex_entries:
-                if name not in stock_names or name not in intermediate_names:
-                    raise BackendError(f"Replacement entry must exist in both archives: {name}")
-            for name in backend.add_dex_entries:
-                if name in stock_names:
-                    raise BackendError(f"Added entry collides with stock archive: {name}")
-                if name not in intermediate_names:
-                    raise BackendError(f"Added entry is missing from intermediate archive: {name}")
+            assert stock is not None
             temp_path = _write_graft(stock, intermediate, backend, output_apk)
-            staged = _read_archive(temp_path, "staged output")
-            _verify_graft(staged, stock, intermediate, backend)
-            replaced_entries = backend.replace_dex_entries
-            added_entries = backend.add_dex_entries
-            stripped_signatures = tuple(
-                entry.info.filename for entry in stock.entries if _is_signature(entry.info.filename)
-            )
-            retained_count = sum(
-                not _is_signature(entry.info.filename)
-                and entry.info.filename not in set(backend.replace_dex_entries)
-                for entry in stock.entries
-            )
-        output_sha256 = _sha256(temp_path)
-        _publish_temp(temp_path, output_apk)
-        return BackendReport(
-            kind=backend.kind,
-            stock_sha256=stock_sha256,
-            intermediate_sha256=intermediate_sha256,
-            output_sha256=output_sha256,
-            final_dex_entries=backend.final_dex_entries,
-            replaced_entries=replaced_entries,
-            added_entries=added_entries,
-            retained_entry_count=retained_count,
-            stripped_signature_entries=stripped_signatures,
-            passed=True,
+        report = _validate_composed_apk(
+            backend,
+            stock,
+            stock_sha256,
+            intermediate,
+            intermediate_sha256,
+            temp_path,
+            output_label="Staged output",
         )
+        staged_identity = _regular_identity(temp_path, "staged output")
+        _publish_temp(temp_path, output_apk)
+        try:
+            linked_staged_identity = _regular_identity(temp_path, "staged output")
+            output_identity = _regular_identity(output_apk, "published output")
+            if linked_staged_identity != staged_identity or output_identity != staged_identity:
+                raise BackendError("Published output does not match the staged file identity")
+            linked_report = _validate_composed_apk(
+                backend,
+                stock,
+                stock_sha256,
+                intermediate,
+                intermediate_sha256,
+                output_apk,
+            )
+            if linked_report != report:
+                raise BackendError("Published output report does not match the staged report")
+        except BaseException:
+            # This cleanup guard does not claim protection from hostile same-UID mutation.
+            _unlink_if_identity(output_apk, staged_identity)
+            raise
+        return report
     finally:
         if temp_path is not None:
             try:

@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import hashlib
 import os
@@ -5,8 +6,15 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
-from dfinsta_pipeline.backend import BackendError, BackendReport, compose_apk
+import dfinsta_pipeline.backend as backend_module
+from dfinsta_pipeline.backend import (
+    BackendError,
+    BackendReport,
+    compose_apk,
+    validate_composed_apk,
+)
 from dfinsta_pipeline.contracts import canonical_sha256
 from dfinsta_pipeline.port_contracts import ApktoolFullRebuildBackend, StockDexGraftBackend
 
@@ -30,6 +38,39 @@ def info(name: str, compression: int, marker: int) -> zipfile.ZipInfo:
 def names_and_data(path: Path) -> list[tuple[str, bytes]]:
     with zipfile.ZipFile(path) as archive:
         return [(entry.filename, archive.read(entry)) for entry in archive.infolist()]
+
+
+def rewrite_zip(
+    source: Path,
+    target: Path,
+    *,
+    payloads: dict[str, bytes] | None = None,
+    drop: set[str] | None = None,
+    append: list[tuple[zipfile.ZipInfo | str, bytes]] | None = None,
+    reverse: bool = False,
+    comment: bytes | None = None,
+    change_metadata: str | None = None,
+) -> None:
+    payloads = payloads or {}
+    drop = drop or set()
+    append = append or []
+    with zipfile.ZipFile(source) as archive:
+        entries = [
+            (copy.copy(entry), payloads.get(entry.filename, archive.read(entry)))
+            for entry in archive.infolist()
+            if entry.filename not in drop
+        ]
+        archive_comment = archive.comment
+    if reverse:
+        entries.reverse()
+    with zipfile.ZipFile(target, "w") as archive:
+        archive.comment = archive_comment if comment is None else comment
+        for entry, payload in entries:
+            if entry.filename == change_metadata:
+                entry.external_attr ^= 1 << 16
+            archive.writestr(entry, payload)
+        for entry, payload in append:
+            archive.writestr(entry, payload)
 
 
 class PhaseBBackendTests(unittest.TestCase):
@@ -78,6 +119,11 @@ class PhaseBBackendTests(unittest.TestCase):
             ],
         )
 
+    def assert_no_staged_temps(self) -> None:
+        self.assertFalse(
+            any(path.name.startswith(f".{self.output.name}.") for path in self.root.iterdir())
+        )
+
     def test_full_rebuild_adopts_intermediate_bytes_and_reports(self) -> None:
         self.basic_full_archives()
         report = compose_apk(self.full, self.stock, self.intermediate, self.output)
@@ -104,6 +150,10 @@ class PhaseBBackendTests(unittest.TestCase):
             hashlib.sha256(b"opaque-stock-provenance").hexdigest(),
         )
         self.assertEqual(self.output.read_bytes(), self.intermediate.read_bytes())
+        self.assertEqual(
+            validate_composed_apk(self.full, self.stock, self.intermediate, self.output),
+            report,
+        )
 
     def test_full_rebuild_refuses_overwrite(self) -> None:
         self.basic_full_archives()
@@ -149,6 +199,264 @@ class PhaseBBackendTests(unittest.TestCase):
         )
         self.assertEqual(report.retained_entry_count, 3)
         self.assertEqual(report.output_sha256, hashlib.sha256(self.output.read_bytes()).hexdigest())
+
+    def test_read_only_validation_matches_compose_for_full_and_graft(self) -> None:
+        self.basic_full_archives()
+        with zipfile.ZipFile(self.intermediate, "a") as archive:
+            archive.writestr("META-INF/CERT.RSA", b"full-rebuild-signature")
+        full_report = compose_apk(self.full, self.stock, self.intermediate, self.output)
+        self.assertEqual(
+            validate_composed_apk(self.full, self.stock, self.intermediate, self.output),
+            full_report,
+        )
+        self.assertEqual(full_report.stripped_signature_entries, ())
+
+        stock = self.root / "graft-stock.apk"
+        intermediate = self.root / "graft-intermediate.apk"
+        output = self.root / "graft-output.apk"
+        self.stock, self.intermediate = stock, intermediate
+        self.basic_graft_archives()
+        graft_report = compose_apk(self.graft, stock, intermediate, output)
+        self.assertEqual(
+            validate_composed_apk(self.graft, stock, intermediate, output),
+            graft_report,
+        )
+        self.assertEqual(
+            graft_report.stripped_signature_entries,
+            ("META-INF/MANIFEST.MF", "meta-inf/CERT.sf", "META-INF/SIG-CUSTOM"),
+        )
+
+    def test_validation_does_not_mutate_filesystem_or_modes(self) -> None:
+        self.basic_graft_archives()
+        compose_apk(self.graft, self.stock, self.intermediate, self.output)
+
+        def snapshot() -> dict[str, tuple[bytes, int, int]]:
+            return {
+                path.name: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)
+                for path in self.root.iterdir()
+                if path.is_file()
+            }
+
+        before = snapshot()
+        parent_mode = self.root.stat().st_mode
+        with (
+            mock.patch.object(backend_module.tempfile, "mkstemp", side_effect=AssertionError),
+            mock.patch.object(backend_module.shutil, "copyfile", side_effect=AssertionError),
+            mock.patch.object(backend_module.os, "chmod", side_effect=AssertionError),
+            mock.patch.object(backend_module.os, "link", side_effect=AssertionError),
+            mock.patch.object(Path, "unlink", side_effect=AssertionError),
+        ):
+            validate_composed_apk(self.graft, self.stock, self.intermediate, self.output)
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(self.root.stat().st_mode, parent_mode)
+
+    def test_validation_rejects_invalid_full_outputs_and_paths(self) -> None:
+        self.basic_full_archives()
+        compose_apk(self.full, self.stock, self.intermediate, self.output)
+        corrupt = self.root / "corrupt-output.apk"
+        corrupt.write_bytes(b"not a zip")
+        forged = self.root / "forged-output.apk"
+        write_zip(forged, [("res/a", b"forged"), ("classes.dex", b"rebuilt")])
+        topology = self.root / "topology-output.apk"
+        write_zip(topology, [("classes.dex", b"rebuilt"), ("classes2.dex", b"extra")])
+        duplicate = self.root / "duplicate-output.apk"
+        with zipfile.ZipFile(duplicate, "w") as archive:
+            with self.assertWarns(UserWarning):
+                archive.writestr("classes.dex", b"first")
+                archive.writestr("classes.dex", b"second")
+        for candidate in (corrupt, forged, topology, duplicate):
+            with self.subTest(candidate=candidate.name), self.assertRaises(BackendError):
+                validate_composed_apk(self.full, self.stock, self.intermediate, candidate)
+
+        missing = self.root / "missing-output.apk"
+        with self.assertRaises(BackendError):
+            validate_composed_apk(self.full, self.stock, self.intermediate, missing)
+        output_link = self.root / "output-link.apk"
+        output_link.symlink_to(self.output)
+        with self.assertRaises(BackendError):
+            validate_composed_apk(self.full, self.stock, self.intermediate, output_link)
+        with self.assertRaises(TypeError):
+            validate_composed_apk(self.full, self.stock, self.intermediate, str(self.output))
+
+    def test_validation_rejects_every_protected_graft_property(self) -> None:
+        self.basic_graft_archives()
+        compose_apk(self.graft, self.stock, self.intermediate, self.output)
+        variants = (
+            ("retained-bytes", {"payloads": {"res/raw/value": b"changed"}}),
+            ("replacement", {"payloads": {"classes2.dex": b"forged"}}),
+            ("addition", {"payloads": {"classes3.dex": b"forged"}}),
+            ("missing", {"drop": {"res/raw/value"}}),
+            ("metadata", {"change_metadata": "res/raw/value"}),
+            ("order", {"reverse": True}),
+            ("comment", {"comment": b"changed-comment"}),
+            ("signature", {"append": [("META-INF/CERT.RSA", b"signature")]}),
+        )
+        for name, changes in variants:
+            candidate = self.root / f"bad-{name}.apk"
+            rewrite_zip(self.output, candidate, **changes)
+            with self.subTest(name=name), self.assertRaises(BackendError):
+                validate_composed_apk(self.graft, self.stock, self.intermediate, candidate)
+
+        wrong_topology = self.root / "bad-topology.apk"
+        rewrite_zip(self.output, wrong_topology, drop={"classes3.dex"})
+        with self.assertRaisesRegex(BackendError, "topology"):
+            validate_composed_apk(self.graft, self.stock, self.intermediate, wrong_topology)
+
+    def test_compose_does_not_publish_when_shared_validation_fails(self) -> None:
+        self.basic_full_archives()
+        staged = self.root / "forced-corrupt-stage.tmp"
+
+        def corrupt_stage(_source: Path, _output: Path) -> Path:
+            staged.write_bytes(b"not a zip")
+            return staged
+
+        with mock.patch.object(backend_module, "_copy_to_temp", side_effect=corrupt_stage):
+            with self.assertRaises(BackendError):
+                compose_apk(self.full, self.stock, self.intermediate, self.output)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(staged.exists())
+
+    def test_link_collision_preserves_competitor_and_cleans_temp(self) -> None:
+        self.basic_full_archives()
+        competitor = b"competitor"
+        real_link = os.link
+
+        def collide(source: Path, output: Path) -> None:
+            Path(output).write_bytes(competitor)
+            real_link(source, output)
+
+        with mock.patch.object(backend_module.os, "link", side_effect=collide):
+            with self.assertRaisesRegex(BackendError, "publish"):
+                compose_apk(self.full, self.stock, self.intermediate, self.output)
+        self.assertEqual(self.output.read_bytes(), competitor)
+        self.assert_no_staged_temps()
+
+    def test_published_inode_mismatch_preserves_replacement_and_cleans_temp(self) -> None:
+        self.basic_full_archives()
+        competitor = b"replacement"
+        real_publish = backend_module._publish_temp
+
+        def replace_after_link(temp_path: Path, output: Path) -> None:
+            real_publish(temp_path, output)
+            output.unlink()
+            output.write_bytes(competitor)
+
+        with mock.patch.object(backend_module, "_publish_temp", side_effect=replace_after_link):
+            with self.assertRaisesRegex(BackendError, "identity"):
+                compose_apk(self.full, self.stock, self.intermediate, self.output)
+        self.assertEqual(self.output.read_bytes(), competitor)
+        self.assert_no_staged_temps()
+
+    def test_post_link_identity_failure_removes_published_inode(self) -> None:
+        self.basic_full_archives()
+        real_identity = backend_module._regular_identity
+        staged_checks = 0
+
+        def fail_post_link_check(path: Path, label: str):
+            nonlocal staged_checks
+            if label == "staged output":
+                staged_checks += 1
+                if staged_checks == 2:
+                    raise BackendError("forced post-link identity failure")
+            return real_identity(path, label)
+
+        with mock.patch.object(
+            backend_module, "_regular_identity", side_effect=fail_post_link_check
+        ):
+            with self.assertRaisesRegex(BackendError, "post-link identity failure"):
+                compose_apk(self.full, self.stock, self.intermediate, self.output)
+        self.assertFalse(self.output.exists())
+        self.assert_no_staged_temps()
+
+    def test_linked_output_validation_failure_removes_only_published_inode(self) -> None:
+        self.basic_full_archives()
+        real_validate = backend_module._validate_composed_apk
+
+        def fail_linked(*args, **kwargs):
+            if args[5] == self.output:
+                raise BackendError("forced linked-output failure")
+            return real_validate(*args, **kwargs)
+
+        with mock.patch.object(backend_module, "_validate_composed_apk", side_effect=fail_linked):
+            with self.assertRaisesRegex(BackendError, "linked-output failure"):
+                compose_apk(self.full, self.stock, self.intermediate, self.output)
+        self.assertFalse(self.output.exists())
+        self.assert_no_staged_temps()
+
+    def test_guarded_cleanup_does_not_unlink_post_validation_replacement(self) -> None:
+        self.basic_full_archives()
+        competitor = b"post-link replacement"
+        real_validate = backend_module._validate_composed_apk
+
+        def replace_and_fail(*args, **kwargs):
+            if args[5] == self.output:
+                self.output.unlink()
+                self.output.write_bytes(competitor)
+                raise BackendError("forced replacement failure")
+            return real_validate(*args, **kwargs)
+
+        with mock.patch.object(
+            backend_module, "_validate_composed_apk", side_effect=replace_and_fail
+        ):
+            with self.assertRaisesRegex(BackendError, "replacement failure"):
+                compose_apk(self.full, self.stock, self.intermediate, self.output)
+        self.assertEqual(self.output.read_bytes(), competitor)
+        self.assert_no_staged_temps()
+
+    def test_linked_output_report_mismatch_removes_published_inode(self) -> None:
+        self.basic_full_archives()
+        real_validate = backend_module._validate_composed_apk
+
+        def mismatch_linked(*args, **kwargs):
+            report = real_validate(*args, **kwargs)
+            return dataclasses.replace(report, passed=False) if args[5] == self.output else report
+
+        with mock.patch.object(backend_module, "_validate_composed_apk", side_effect=mismatch_linked):
+            with self.assertRaisesRegex(BackendError, "report"):
+                compose_apk(self.full, self.stock, self.intermediate, self.output)
+        self.assertFalse(self.output.exists())
+        self.assert_no_staged_temps()
+
+    def test_validation_rejects_non_regular_paths(self) -> None:
+        self.basic_full_archives()
+        compose_apk(self.full, self.stock, self.intermediate, self.output)
+        stock_directory = self.root / "stock-directory"
+        intermediate_directory = self.root / "intermediate-directory"
+        output_directory = self.root / "output-directory"
+        stock_directory.mkdir()
+        intermediate_directory.mkdir()
+        output_directory.mkdir()
+        for paths in (
+            (stock_directory, self.intermediate, self.output),
+            (self.stock, intermediate_directory, self.output),
+            (self.stock, self.intermediate, output_directory),
+        ):
+            with self.subTest(path=paths), self.assertRaises(BackendError):
+                validate_composed_apk(self.full, *paths)
+
+    def test_validation_rejects_duplicate_stock_and_intermediate(self) -> None:
+        self.basic_graft_archives()
+        compose_apk(self.graft, self.stock, self.intermediate, self.output)
+        duplicate_stock = self.root / "duplicate-stock.apk"
+        duplicate_intermediate = self.root / "duplicate-intermediate.apk"
+        for path, entries in (
+            (
+                duplicate_stock,
+                (("classes.dex", b"one"), ("classes.dex", b"two"), ("classes2.dex", b"two")),
+            ),
+            (
+                duplicate_intermediate,
+                (("classes2.dex", b"one"), ("classes2.dex", b"two"), ("classes3.dex", b"three")),
+            ),
+        ):
+            with zipfile.ZipFile(path, "w") as archive:
+                with self.assertWarns(UserWarning):
+                    for name, payload in entries:
+                        archive.writestr(name, payload)
+        with self.assertRaisesRegex(BackendError, "stock archive contains duplicate"):
+            validate_composed_apk(self.graft, duplicate_stock, self.intermediate, self.output)
+        with self.assertRaisesRegex(BackendError, "intermediate archive contains duplicate"):
+            validate_composed_apk(self.graft, self.stock, duplicate_intermediate, self.output)
 
     def test_wrong_topology_missing_entries_and_add_collision_leave_no_output(self) -> None:
         cases = []
