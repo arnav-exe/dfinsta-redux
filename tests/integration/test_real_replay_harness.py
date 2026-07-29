@@ -26,6 +26,7 @@ from dfinsta_pipeline import activities
 from dfinsta_pipeline.activities import (
     configure_runtime,
     replay_apply_tree_checkpoint_activity,
+    replay_build_patched_apk_checkpoint_activity,
     replay_decode_checkpoint_activity,
     replay_install_frameworks_checkpoint_activity,
     runtime,
@@ -50,6 +51,7 @@ from dfinsta_pipeline.replay_contracts import (
     ReplayDecodedTreeReceiptV2,
     ReplayFrameworkCacheReceiptV1,
     ReplayPatchedTreeReceiptV1,
+    ReplayPatchedApkReceiptV1,
     ReplayRequestV2,
     ReplayRunSpecV2,
     RoleExecutionPlan,
@@ -798,6 +800,7 @@ async def _invoke(stage: str, admitted: AdmittedReplayV3, owner: str) -> Artifac
         "framework": replay_install_frameworks_checkpoint_activity,
         "decode": replay_decode_checkpoint_activity,
         "apply": replay_apply_tree_checkpoint_activity,
+        "build": replay_build_patched_apk_checkpoint_activity,
     }[stage]
     with mock.patch.object(activities, "_activity_owner", return_value=owner):
         return await function(admitted)
@@ -823,11 +826,15 @@ async def _run_target(
     )
     inputs = _load_target_inputs(config)
     admitted, authority_refs = _create_authority(config, inputs)
-    stages = ("framework", "decode", "apply") if config.target == 430 else ("decode", "apply")
+    stages = (
+        ("framework", "decode", "apply", "build")
+        if config.target == 430
+        else ("decode", "apply", "build")
+    )
     outcomes: list[dict[str, Any]] = []
     receipt_refs: dict[str, ArtifactRef] = {}
     adoption: list[dict[str, Any]] = []
-    expected_launches = {"framework": 1, "decode": 1, "apply": 0}
+    expected_launches = {"framework": 1, "decode": 1, "apply": 0, "build": 1}
     for stage in stages:
         first_owner = f"real-replay-{config.target}-{stage}-primary"
         adopted_owner = f"real-replay-{config.target}-{stage}-adopt"
@@ -885,8 +892,24 @@ async def _run_target(
             "-p",
             "framework",
         ),
+        "build": (
+            str(java),
+            "-jar",
+            "tool",
+            "b",
+            "patched-tree",
+            "-o",
+            "intermediate.apk",
+            "-p",
+            "framework",
+            "--use-aapt1",
+        ),
     }
-    expected_process_stages = ("framework", "decode") if config.target == 430 else ("decode",)
+    expected_process_stages = (
+        ("framework", "decode", "build")
+        if config.target == 430
+        else ("decode", "build")
+    )
     if len(launcher.records) != len(expected_process_stages):
         raise AssertionError("Unexpected total replay process count")
     for stage, record in zip(expected_process_stages, launcher.records, strict=True):
@@ -924,6 +947,9 @@ async def _run_target(
     apply_receipt = ReplayPatchedTreeReceiptV1.from_dict(
         strict_json_bytes(runtime().store.read_bytes(receipt_refs["apply"]))
     )
+    build_receipt = ReplayPatchedApkReceiptV1.from_dict(
+        strict_json_bytes(runtime().store.read_bytes(receipt_refs["build"]))
+    )
     if len(apply_receipt.operation_results) != config.operation_count:
         raise AssertionError("Apply receipt operation count does not match the target table")
     if any(result.status != "applied" for result in apply_receipt.operation_results):
@@ -932,7 +958,15 @@ async def _run_target(
         raise AssertionError("Apply source evidence file count does not match the target table")
     producer_claims = _require_completed_producers(
         runtime().ledger,
-        (admitted, authority_refs, receipt_refs, framework_receipt, decode_receipt, apply_receipt),
+        (
+            admitted,
+            authority_refs,
+            receipt_refs,
+            framework_receipt,
+            decode_receipt,
+            apply_receipt,
+            build_receipt,
+        ),
     )
     ledger = _ledger_evidence(runtime().ledger)
     if any(claim["status"] != "completed" for claim in ledger["claims"]):
@@ -948,7 +982,7 @@ async def _run_target(
         },
         "profile": asdict(admitted.profile),
         "capabilities": [asdict(capability) for capability in admitted.executor_capabilities],
-        "build_capability_status": "provisional-structurally-admitted-not-executed",
+        "build_capability_status": "mechanically-executed-test-only-not-production-authority",
         "admission_scope": "self-issued-test-only-mechanical-not-authenticated",
         "admitted_replay_sha256": admitted.sha256,
         "self_issued_test_authority_refs": {name: asdict(authority_refs[name]) for name in ("gate_admission", "gate_prepared", "run_spec", "request", "decision", "admitted")},
@@ -960,6 +994,11 @@ async def _run_target(
         },
         "source_evidence": asdict(apply_receipt.source_admission),
         "operation_results": [asdict(result) for result in apply_receipt.operation_results],
+        "patched_apk": {
+            "intermediate": asdict(build_receipt.intermediate_apk),
+            "final": asdict(build_receipt.patched_apk),
+            "composition": asdict(build_receipt.composition),
+        },
         "ordered_outcomes": outcomes,
         "adoption_proof": adoption,
         "ledger": ledger,

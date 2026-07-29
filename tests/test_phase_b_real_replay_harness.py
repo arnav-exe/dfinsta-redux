@@ -46,6 +46,7 @@ class RealReplayHarnessFastTests(unittest.TestCase):
                 self.assertEqual(roles, tuple(sorted(roles)))
                 self.assertEqual(tuple(plan.role for plan in profile.execution_plans), roles)
                 self.assertEqual(profile.plan("decode").timeout_seconds, 600)
+                self.assertEqual(profile.plan("build").timeout_seconds, 600)
                 self.assertEqual(profile.plan("decode").arguments, (
                     ("decoded_tree", "decoded_tree"),
                     ("framework_dir", "framework_dir"),
@@ -54,6 +55,11 @@ class RealReplayHarnessFastTests(unittest.TestCase):
                 ))
                 for binding, capability in zip(profile.capability_bindings, capabilities, strict=True):
                     profile.validate_capability(binding.role, capability)
+                    if binding.role == "build":
+                        self.assertEqual(
+                            capability.allowed_mutation_paths,
+                            ("intermediate.apk",),
+                        )
                 if target == 430:
                     self.assertEqual(profile.frameworks[0].package_id, 1)
                     self.assertEqual(profile.plan("install_framework").timeout_seconds, 300)
