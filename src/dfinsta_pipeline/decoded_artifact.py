@@ -200,14 +200,8 @@ class DecodedTreeManifestV1:
             raise DecodedArtifactError("Decoded-tree entry paths must be unique")
 
         by_path = {entry.path: entry for entry in self.entries}
-        folded: dict[str, str] = {}
         for entry in self.entries:
             parts = _path_parts(entry.path)
-            folded_path = "/".join(part.casefold() for part in parts)
-            previous = folded.get(folded_path)
-            if previous is not None and previous != entry.path:
-                raise DecodedArtifactError("Decoded-tree paths have a casefold collision")
-            folded[folded_path] = entry.path
             for depth in range(1, len(parts)):
                 parent = "/".join(parts[:depth])
                 parent_entry = by_path.get(parent)
@@ -215,12 +209,6 @@ class DecodedTreeManifestV1:
                     raise DecodedArtifactError("Decoded-tree entries require explicit parent directories")
                 if parent_entry.kind != "directory":
                     raise DecodedArtifactError("Decoded-tree file is an ancestor of another entry")
-
-        folded_kinds = {path.casefold(): entry.kind for path, entry in by_path.items()}
-        for folded_path, kind in folded_kinds.items():
-            parts = folded_path.split("/")
-            if any(folded_kinds.get("/".join(parts[:depth])) == "file" for depth in range(1, len(parts))):
-                raise DecodedArtifactError("Decoded-tree paths have a casefold ancestor conflict")
 
     @classmethod
     def from_dict(cls, data: object) -> DecodedTreeManifestV1:

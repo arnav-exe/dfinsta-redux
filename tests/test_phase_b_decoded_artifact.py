@@ -94,13 +94,13 @@ class DecodedArtifactTests(unittest.TestCase):
             DecodedTreeManifestV1(1, "a" * 64, (child, directory))
         with self.assertRaisesRegex(DecodedArtifactError, "parent"):
             DecodedTreeManifestV1(1, "a" * 64, (child,))
-        with self.assertRaisesRegex(DecodedArtifactError, "casefold"):
+        with self.assertRaisesRegex(DecodedArtifactError, "unique"):
             DecodedTreeManifestV1(
                 1,
                 "a" * 64,
                 (
                     DecodedTreeEntryV1("A", "directory", None, None),
-                    DecodedTreeEntryV1("a", "directory", None, None),
+                    DecodedTreeEntryV1("A", "directory", None, None),
                 ),
             )
         with self.assertRaisesRegex(DecodedArtifactError, "ancestor"):
@@ -147,6 +147,27 @@ class DecodedArtifactTests(unittest.TestCase):
         self.assertEqual((destination / "AUX.smali").read_bytes(), b".class public LAUX;\n")
         self.assertEqual((destination / "CON.txt").read_bytes(), b"content")
         verify_materialized_decoded_tree(load_decoded_tree(self.store, reference), destination)
+
+    def test_case_distinct_paths_roundtrip_exactly(self) -> None:
+        root = self.base / "case-distinct"
+        directory = root / "smali_classes10" / "X"
+        directory.mkdir(parents=True)
+        (directory / "QeB.smali").write_bytes(b"upper")
+        (directory / "Qeb.smali").write_bytes(b"lower")
+        (root / "A").mkdir()
+        (root / "A" / "A.smali").write_bytes(b"child")
+        (root / "a").write_bytes(b"sibling")
+
+        first = self.capture(root)
+        parent = self.base / "case-materialized"
+        parent.mkdir()
+        destination = materialize_decoded_tree(self.store, first, parent, "tree")
+        second = self.capture(destination)
+
+        self.assertEqual(first.sha256, second.sha256)
+        self.assertEqual((destination / "smali_classes10/X/QeB.smali").read_bytes(), b"upper")
+        self.assertEqual((destination / "smali_classes10/X/Qeb.smali").read_bytes(), b"lower")
+        verify_materialized_decoded_tree(load_decoded_tree(self.store, first), destination)
 
     def test_materialization_name_is_one_safe_component(self) -> None:
         reference = self.capture(self.make_tree())

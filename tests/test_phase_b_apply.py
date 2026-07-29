@@ -106,6 +106,44 @@ class ApplyFixture(unittest.TestCase):
 
 
 class SmaliApplyTests(ApplyFixture):
+    def test_case_distinct_filenames_are_selected_by_exact_descriptor(self) -> None:
+        template = (
+            ".class public {descriptor}\n"
+            ".super Ljava/lang/Object;\n\n"
+            ".method public run()V\n"
+            ".registers 2\n"
+            "    const/4 v0, 0x0\n"
+            "    return-void\n"
+            ".end method\n"
+        )
+        upper = self.write(
+            "smali_classes10/X/QeB.smali", template.format(descriptor="LX/QeB;")
+        )
+        lower = self.write(
+            "smali_classes10/X/Qeb.smali", template.format(descriptor="LX/Qeb;")
+        )
+
+        report = self.apply(
+            smali_edit(
+                "upper",
+                descriptor="LX/QeB;",
+                payload=("const/4 v0, 0x1",),
+                final=("const/4 v0, 0x1",),
+            ),
+            smali_edit(
+                "lower",
+                descriptor="LX/Qeb;",
+                payload=("const/4 v0, 0x2",),
+                final=("const/4 v0, 0x2",),
+            ),
+        )
+
+        self.assertEqual(
+            tuple(result.status for result in report.results), ("applied", "applied")
+        )
+        self.assertIn("const/4 v0, 0x1", upper.read_text(encoding="utf-8"))
+        self.assertIn("const/4 v0, 0x2", lower.read_text(encoding="utf-8"))
+
     def test_retained_anchor_replace_shapes_are_idempotent(self) -> None:
         cases = (
             (
