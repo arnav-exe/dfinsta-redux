@@ -81,10 +81,8 @@ def _open_regular(path: Path):
         raise
 
 
-def _load_archive(path: Path, label: str) -> tuple[_Archive, str]:
+def _parse_archive(data: bytes, label: str, source: str) -> tuple[_Archive, str]:
     try:
-        with _open_regular(path) as stream:
-            data = stream.read()
         digest = hashlib.sha256(data).hexdigest()
         with zipfile.ZipFile(io.BytesIO(data), "r") as archive:
             infos = archive.infolist()
@@ -104,7 +102,18 @@ def _load_archive(path: Path, label: str) -> tuple[_Archive, str]:
         zipfile.BadZipFile,
         zipfile.LargeZipFile,
     ) as exc:
+        raise BackendError(f"Could not read {label} archive {source}: {exc}") from exc
+
+
+def _load_archive(path: Path, label: str) -> tuple[_Archive, str]:
+    try:
+        with _open_regular(path) as stream:
+            data = stream.read()
+    except BackendError:
+        raise
+    except OSError as exc:
         raise BackendError(f"Could not read {label} archive {path}: {exc}") from exc
+    return _parse_archive(data, label, str(path))
 
 
 def _is_signature(name: str) -> bool:
@@ -332,10 +341,25 @@ def _load_composition_inputs(
     intermediate, intermediate_sha256 = _load_archive(intermediate_apk, "intermediate")
     if isinstance(backend, ApktoolFullRebuildBackend):
         stock_sha256 = _sha256(stock_apk)
-        _require_exact_dex(intermediate, backend.final_dex_entries, "Intermediate")
         stock = None
     else:
         stock, stock_sha256 = _load_archive(stock_apk, "stock")
+    return _validate_composition_inputs(
+        backend, stock, stock_sha256, intermediate, intermediate_sha256
+    )
+
+
+def _validate_composition_inputs(
+    backend: Backend,
+    stock: _Archive | None,
+    stock_sha256: str,
+    intermediate: _Archive,
+    intermediate_sha256: str,
+) -> tuple[_Archive | None, str, _Archive, str]:
+    if isinstance(backend, ApktoolFullRebuildBackend):
+        _require_exact_dex(intermediate, backend.final_dex_entries, "Intermediate")
+    else:
+        assert stock is not None
         _validate_graft_inputs(stock, intermediate, backend)
     return stock, stock_sha256, intermediate, intermediate_sha256
 
@@ -351,6 +375,29 @@ def _validate_composed_apk(
     output_label: str = "output",
 ) -> BackendReport:
     output, output_sha256 = _load_archive(output_apk, output_label.lower())
+    return _validate_composed_archive(
+        backend,
+        stock,
+        stock_sha256,
+        intermediate,
+        intermediate_sha256,
+        output,
+        output_sha256,
+        output_label=output_label,
+    )
+
+
+def _validate_composed_archive(
+    backend: Backend,
+    stock: _Archive | None,
+    stock_sha256: str,
+    intermediate: _Archive,
+    intermediate_sha256: str,
+    output: _Archive,
+    output_sha256: str,
+    *,
+    output_label: str = "Output",
+) -> BackendReport:
     if isinstance(backend, ApktoolFullRebuildBackend):
         _require_exact_dex(output, backend.final_dex_entries, "Output")
         if output_sha256 != intermediate_sha256:
@@ -404,6 +451,44 @@ def validate_composed_apk(
         intermediate,
         intermediate_sha256,
         output_apk,
+    )
+
+
+def validate_composed_apk_bytes(
+    backend: Backend,
+    stock_bytes: bytes,
+    intermediate_bytes: bytes,
+    output_bytes: bytes,
+) -> BackendReport:
+    """Validate composed APK bytes without accessing the filesystem."""
+    _require_backend(backend)
+    for value, label in (
+        (stock_bytes, "stock APK"),
+        (intermediate_bytes, "intermediate APK"),
+        (output_bytes, "output APK"),
+    ):
+        if type(value) is not bytes:
+            raise TypeError(f"{label} data must be bytes")
+    intermediate, intermediate_sha256 = _parse_archive(
+        intermediate_bytes, "intermediate", "bytes"
+    )
+    if isinstance(backend, ApktoolFullRebuildBackend):
+        stock = None
+        stock_sha256 = hashlib.sha256(stock_bytes).hexdigest()
+    else:
+        stock, stock_sha256 = _parse_archive(stock_bytes, "stock", "bytes")
+    stock, stock_sha256, intermediate, intermediate_sha256 = _validate_composition_inputs(
+        backend, stock, stock_sha256, intermediate, intermediate_sha256
+    )
+    output, output_sha256 = _parse_archive(output_bytes, "output", "bytes")
+    return _validate_composed_archive(
+        backend,
+        stock,
+        stock_sha256,
+        intermediate,
+        intermediate_sha256,
+        output,
+        output_sha256,
     )
 
 

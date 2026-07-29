@@ -1,6 +1,7 @@
 import copy
 import dataclasses
 import hashlib
+import io
 import os
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from dfinsta_pipeline.backend import (
     BackendReport,
     compose_apk,
     validate_composed_apk,
+    validate_composed_apk_bytes,
 )
 from dfinsta_pipeline.contracts import canonical_sha256
 from dfinsta_pipeline.port_contracts import ApktoolFullRebuildBackend, StockDexGraftBackend
@@ -24,6 +26,15 @@ def write_zip(path: Path, entries: list[tuple[zipfile.ZipInfo | str, bytes]]) ->
         archive.comment = b"archive-comment"
         for info, payload in entries:
             archive.writestr(info, payload)
+
+
+def zip_bytes(entries: list[tuple[zipfile.ZipInfo | str, bytes]]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.comment = b"archive-comment"
+        for entry, payload in entries:
+            archive.writestr(entry, payload)
+    return buffer.getvalue()
 
 
 def info(name: str, compression: int, marker: int) -> zipfile.ZipInfo:
@@ -154,6 +165,15 @@ class PhaseBBackendTests(unittest.TestCase):
             validate_composed_apk(self.full, self.stock, self.intermediate, self.output),
             report,
         )
+        self.assertEqual(
+            validate_composed_apk_bytes(
+                self.full,
+                self.stock.read_bytes(),
+                self.intermediate.read_bytes(),
+                self.output.read_bytes(),
+            ),
+            report,
+        )
 
     def test_full_rebuild_refuses_overwrite(self) -> None:
         self.basic_full_archives()
@@ -209,6 +229,15 @@ class PhaseBBackendTests(unittest.TestCase):
             validate_composed_apk(self.full, self.stock, self.intermediate, self.output),
             full_report,
         )
+        self.assertEqual(
+            validate_composed_apk_bytes(
+                self.full,
+                self.stock.read_bytes(),
+                self.intermediate.read_bytes(),
+                self.output.read_bytes(),
+            ),
+            full_report,
+        )
         self.assertEqual(full_report.stripped_signature_entries, ())
 
         stock = self.root / "graft-stock.apk"
@@ -219,6 +248,15 @@ class PhaseBBackendTests(unittest.TestCase):
         graft_report = compose_apk(self.graft, stock, intermediate, output)
         self.assertEqual(
             validate_composed_apk(self.graft, stock, intermediate, output),
+            graft_report,
+        )
+        self.assertEqual(
+            validate_composed_apk_bytes(
+                self.graft,
+                stock.read_bytes(),
+                intermediate.read_bytes(),
+                output.read_bytes(),
+            ),
             graft_report,
         )
         self.assertEqual(
@@ -249,6 +287,121 @@ class PhaseBBackendTests(unittest.TestCase):
             validate_composed_apk(self.graft, self.stock, self.intermediate, self.output)
         self.assertEqual(snapshot(), before)
         self.assertEqual(self.root.stat().st_mode, parent_mode)
+
+    def test_byte_validation_makes_no_filesystem_calls(self) -> None:
+        self.basic_graft_archives()
+        compose_apk(self.graft, self.stock, self.intermediate, self.output)
+        values = (
+            self.stock.read_bytes(),
+            self.intermediate.read_bytes(),
+            self.output.read_bytes(),
+        )
+        forbidden = AssertionError("byte validation accessed the filesystem")
+        with (
+            mock.patch.object(backend_module.os, "open", side_effect=forbidden),
+            mock.patch.object(backend_module.os, "stat", side_effect=forbidden),
+            mock.patch.object(backend_module.os, "link", side_effect=forbidden),
+            mock.patch.object(backend_module.os, "chmod", side_effect=forbidden),
+            mock.patch.object(backend_module.os, "unlink", side_effect=forbidden),
+            mock.patch.object(backend_module.tempfile, "mkstemp", side_effect=forbidden),
+            mock.patch.object(backend_module.shutil, "copyfile", side_effect=forbidden),
+            mock.patch.object(Path, "unlink", side_effect=forbidden),
+        ):
+            report = validate_composed_apk_bytes(self.graft, *values)
+        self.assertEqual(report.output_sha256, hashlib.sha256(values[2]).hexdigest())
+
+    def test_byte_validation_requires_exact_bytes(self) -> None:
+        self.basic_full_archives()
+        compose_apk(self.full, self.stock, self.intermediate, self.output)
+        values = [self.stock.read_bytes(), self.intermediate.read_bytes(), self.output.read_bytes()]
+
+        class BytesSubclass(bytes):
+            pass
+
+        for index in range(3):
+            for invalid in (
+                bytearray(values[index]),
+                memoryview(values[index]),
+                BytesSubclass(values[index]),
+            ):
+                candidates = values.copy()
+                candidates[index] = invalid
+                with self.subTest(index=index, type=type(invalid)), self.assertRaises(TypeError):
+                    validate_composed_apk_bytes(self.full, *candidates)
+
+    def test_byte_validation_rejects_malformed_duplicate_and_topology(self) -> None:
+        self.basic_full_archives()
+        compose_apk(self.full, self.stock, self.intermediate, self.output)
+        stock = self.stock.read_bytes()
+        intermediate = self.intermediate.read_bytes()
+        duplicate = io.BytesIO()
+        with zipfile.ZipFile(duplicate, "w") as archive:
+            with self.assertWarns(UserWarning):
+                archive.writestr("classes.dex", b"first")
+                archive.writestr("classes.dex", b"second")
+        candidates = (
+            b"not-a-zip",
+            duplicate.getvalue(),
+            zip_bytes([("classes.dex", b"one"), ("classes2.dex", b"extra")]),
+        )
+        for output in candidates:
+            with self.subTest(output=output[:16]), self.assertRaises(BackendError):
+                validate_composed_apk_bytes(self.full, stock, intermediate, output)
+
+    def test_byte_validation_rejects_duplicate_stock_and_intermediate(self) -> None:
+        self.basic_graft_archives()
+        compose_apk(self.graft, self.stock, self.intermediate, self.output)
+        duplicate_stock = io.BytesIO()
+        duplicate_intermediate = io.BytesIO()
+        for buffer, entries in (
+            (
+                duplicate_stock,
+                (("classes.dex", b"one"), ("classes.dex", b"two"), ("classes2.dex", b"two")),
+            ),
+            (
+                duplicate_intermediate,
+                (("classes2.dex", b"one"), ("classes2.dex", b"two"), ("classes3.dex", b"three")),
+            ),
+        ):
+            with zipfile.ZipFile(buffer, "w") as archive:
+                with self.assertWarns(UserWarning):
+                    for name, payload in entries:
+                        archive.writestr(name, payload)
+        output = self.output.read_bytes()
+        with self.assertRaisesRegex(BackendError, "stock archive contains duplicate"):
+            validate_composed_apk_bytes(
+                self.graft,
+                duplicate_stock.getvalue(),
+                self.intermediate.read_bytes(),
+                output,
+            )
+        with self.assertRaisesRegex(BackendError, "intermediate archive contains duplicate"):
+            validate_composed_apk_bytes(
+                self.graft,
+                self.stock.read_bytes(),
+                duplicate_intermediate.getvalue(),
+                output,
+            )
+
+    def test_byte_validation_rejects_graft_signature_metadata_and_payload(self) -> None:
+        self.basic_graft_archives()
+        compose_apk(self.graft, self.stock, self.intermediate, self.output)
+        variants = (
+            ("signature", {"append": [("meta-inf/CERT.ec", b"signature")]}),
+            ("metadata", {"change_metadata": "res/raw/value"}),
+            ("replacement", {"payloads": {"classes2.dex": b"forged"}}),
+            ("addition", {"payloads": {"classes3.dex": b"forged"}}),
+        )
+        for name, changes in variants:
+            candidate = self.root / f"byte-bad-{name}.apk"
+            rewrite_zip(self.output, candidate, **changes)
+            with self.subTest(name=name), self.assertRaises(BackendError):
+                validate_composed_apk_bytes(
+                    self.graft,
+                    self.stock.read_bytes(),
+                    self.intermediate.read_bytes(),
+                    candidate.read_bytes(),
+                )
 
     def test_validation_rejects_invalid_full_outputs_and_paths(self) -> None:
         self.basic_full_archives()
