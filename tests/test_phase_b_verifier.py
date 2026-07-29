@@ -635,6 +635,25 @@ class PhaseBVerifierTests(VerifierFixture):
         self.assertFalse(present.passed)
         self.assertIn("Worker", present.detail)
 
+    def test_descriptor_lookup_survives_dex_relocation_but_placement_fails(self) -> None:
+        original = self.decoded / "smali/sample/Worker.smali"
+        moved = self.decoded / "smali_classes2/sample/Worker.smali"
+        moved.parent.mkdir(parents=True)
+        original.replace(moved)
+
+        report = self.verify()
+        results = {result.assertion_id: result for result in report.assertion_results}
+
+        self.assertEqual(
+            {result.assertion_id for result in report.assertion_results if not result.passed},
+            {"descriptor-set", "descriptors-present"},
+        )
+        self.assertTrue(results["proof-edit"].passed)
+        self.assertTrue(results["smali-count"].passed)
+        self.assertFalse(results["descriptor-set"].passed)
+        self.assertFalse(results["descriptors-present"].passed)
+        self.assertIn("Worker", results["descriptors-present"].detail)
+
     def test_operation_proofs_are_exhaustive_bound_and_known(self) -> None:
         assertions = self.spec.assertions
         missing = dataclasses.replace(self.spec, assertions=assertions[1:])

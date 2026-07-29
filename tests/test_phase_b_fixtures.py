@@ -25,6 +25,7 @@ from dfinsta_pipeline.port_contracts import (
     ResolutionSpecV3,
     SmaliEdit,
 )
+from tools.phase_b.generate_specs import anchored_operations_340, resolve_classes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -379,6 +380,55 @@ class PhaseBFixtureTests(unittest.TestCase):
                 if isinstance(assertion, OperationPostcondition)
             }
             self.assertEqual(proofs, set(operation_ids), target)
+
+    def test_generator_anchor_cardinality_mutations_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="phase-b-anchor-") as directory:
+            path = Path(directory) / "Worker.smali"
+            descriptor = "Lsample/Worker;"
+            manifest = {
+                "operations": [
+                    {
+                        "id": "mutated-anchor",
+                        "descriptor": descriptor,
+                        "anchor": ["const/4 v0, 0x0"],
+                        "expected_anchor_count": 1,
+                    }
+                ]
+            }
+            bodies = (
+                "    const/4 v0, 0x1\n",
+                "    const/4 v0, 0x0\n    const/4 v0, 0x0\n",
+            )
+            for body in bodies:
+                with self.subTest(body=body):
+                    path.write_text(
+                        ".class public Lsample/Worker;\n"
+                        ".method public run()V\n"
+                        f"{body}"
+                        "    return-void\n"
+                        ".end method\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(ValueError, "Anchor cardinality drift"):
+                        anchored_operations_340(manifest, {descriptor: path})
+
+    def test_generator_resolves_moved_descriptor_and_rejects_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="phase-b-descriptor-") as directory:
+            decode = Path(directory)
+            wanted = decode / "smali_classes3/X/QeB.smali"
+            decoy = decode / "smali/X/QeB.2.smali"
+            wanted.parent.mkdir(parents=True)
+            decoy.parent.mkdir(parents=True)
+            wanted.write_text(".class public LX/QeB;\n", encoding="utf-8")
+            decoy.write_text(".class public LX/Qeb;\n", encoding="utf-8")
+
+            self.assertEqual(resolve_classes(decode, {"LX/QeB;"}), {"LX/QeB;": wanted})
+
+            duplicate = decode / "smali_classes4/X/QeB.3.smali"
+            duplicate.parent.mkdir(parents=True)
+            duplicate.write_text(".class public LX/QeB;\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "resolved to 2 files"):
+                resolve_classes(decode, {"LX/QeB;"})
 
     def test_generic_compiler_contains_no_target_literals(self) -> None:
         source = inspect.getsource(__import__("dfinsta_pipeline.compiler", fromlist=["*"]))
