@@ -10,7 +10,13 @@ from typing import Any, Callable, Literal
 
 from .contracts import ArtifactRef, GateDecision, canonical_sha256
 from .executor import ExecutorCapability
-from .port_contracts import IntentSpecV2, ResolutionSpecV3, SourceFile
+from .port_contracts import (
+    IntentSpecV2,
+    ResolutionSpecV3,
+    SourceFile,
+    _archive_path,
+    _dex_entries,
+)
 
 
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -2248,6 +2254,311 @@ class ReplayPatchedTreeReceiptV1:
             canonical_sha256(self.patched_tree_manifest),
             self.patched_tree_semantic_sha256,
         )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayBackendCompositionV1:
+    schema_version: int
+    backend_kind: BackendKind
+    backend_profile_id: str
+    backend_sha256: str
+    stock_sha256: str
+    intermediate_sha256: str
+    output_sha256: str
+    final_dex_entries: tuple[str, ...]
+    replaced_entries: tuple[str, ...]
+    added_entries: tuple[str, ...]
+    retained_entry_count: int
+    stripped_signature_entries: tuple[str, ...]
+    passed: Literal[True]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay backend composition schema")
+        if type(self.backend_kind) is not str or self.backend_kind not in {
+            "apktool_full_rebuild",
+            "stock_dex_graft",
+        }:
+            raise ValueError("Invalid replay backend composition kind")
+        _identifier(self.backend_profile_id, "backend profile id", lowercase=True)
+        for value, label in (
+            (self.backend_sha256, "backend SHA-256"),
+            (self.stock_sha256, "stock APK SHA-256"),
+            (self.intermediate_sha256, "intermediate APK SHA-256"),
+            (self.output_sha256, "output APK SHA-256"),
+        ):
+            _sha256(value, label)
+        _dex_entries(self.final_dex_entries, "final DEX entries", nonempty=True)
+        _dex_entries(self.replaced_entries, "replaced DEX entries")
+        _dex_entries(self.added_entries, "added DEX entries")
+        if not isinstance(self.stripped_signature_entries, tuple) or any(
+            type(value) is not str for value in self.stripped_signature_entries
+        ):
+            raise TypeError("Stripped signature entries must be a tuple of strings")
+        if len(self.stripped_signature_entries) != len(set(self.stripped_signature_entries)):
+            raise ValueError("Stripped signature entries must be unique")
+        for value in self.stripped_signature_entries:
+            _archive_path(value, "stripped signature entry")
+            parts = value.upper().split("/")
+            if not (
+                len(parts) == 2
+                and parts[0] == "META-INF"
+                and (
+                    parts[1] == "MANIFEST.MF"
+                    or parts[1].startswith("SIG-")
+                    or parts[1].endswith((".SF", ".RSA", ".DSA", ".EC"))
+                )
+            ):
+                raise ValueError("Stripped entry is not a recognized signature artifact")
+        if type(self.retained_entry_count) is not int:
+            raise TypeError("Retained entry count must be an integer")
+        if self.retained_entry_count < 0:
+            raise ValueError("Retained entry count must be nonnegative")
+        if type(self.passed) is not bool or self.passed is not True:
+            raise ValueError("Replay backend composition requires success")
+
+        if self.backend_kind == "apktool_full_rebuild":
+            if self.output_sha256 != self.intermediate_sha256:
+                raise ValueError("Full rebuild output must match the intermediate APK")
+            if (
+                self.replaced_entries
+                or self.added_entries
+                or self.stripped_signature_entries
+                or self.retained_entry_count != 0
+            ):
+                raise ValueError("Full rebuild composition contains graft report data")
+        else:
+            final_entries = set(self.final_dex_entries)
+            replaced_entries = set(self.replaced_entries)
+            added_entries = set(self.added_entries)
+            if not replaced_entries <= final_entries:
+                raise ValueError("Replaced DEX entries must exist in the final topology")
+            if not added_entries <= final_entries:
+                raise ValueError("Added DEX entries must exist in the final topology")
+            if replaced_entries & added_entries:
+                raise ValueError("Replaced and added DEX entries must be disjoint")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayBackendCompositionV1:
+        data = _keys(data, cls, "replay backend composition")
+        return cls(
+            data["schema_version"],
+            data["backend_kind"],
+            data["backend_profile_id"],
+            data["backend_sha256"],
+            data["stock_sha256"],
+            data["intermediate_sha256"],
+            data["output_sha256"],
+            tuple(_array(data["final_dex_entries"], "final DEX entries")),
+            tuple(_array(data["replaced_entries"], "replaced entries")),
+            tuple(_array(data["added_entries"], "added entries")),
+            data["retained_entry_count"],
+            tuple(
+                _array(
+                    data["stripped_signature_entries"],
+                    "stripped signature entries",
+                )
+            ),
+            data["passed"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayPatchedApkReceiptV1:
+    schema_version: int
+    admitted_replay_sha256: str
+    completed_patched_tree_receipt: ArtifactRef
+    patched_tree_manifest: ArtifactRef
+    patched_tree_semantic_sha256: str
+    target_port_spec_sha256: str
+    stock_apk: ArtifactRef
+    toolchain_profile_id: str
+    toolchain_profile_sha256: str
+    role: Literal["build"]
+    execution_plan_sha256: str
+    executor_capability_sha256: str
+    tool_artifact_sha256: str
+    execution_request_sha256: str
+    completed_framework_cache_receipt: ArtifactRef | None
+    framework_cache_manifest: ArtifactRef | None
+    framework_cache_semantic_sha256: str | None
+    intermediate_apk: ArtifactRef
+    composition: ReplayBackendCompositionV1
+    patched_apk: ArtifactRef
+    operation_key: str
+    success: Literal[True]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay patched APK receipt schema")
+        for value, kind, label in (
+            (
+                self.completed_patched_tree_receipt,
+                "replay-patched-tree-receipt-v1",
+                "completed patched-tree receipt",
+            ),
+            (
+                self.patched_tree_manifest,
+                "decoded-tree-manifest-v1",
+                "patched-tree manifest",
+            ),
+            (self.stock_apk, "stock-apk", "stock APK"),
+            (self.intermediate_apk, "intermediate-apk", "intermediate APK"),
+            (self.patched_apk, "final-apk", "patched APK"),
+        ):
+            if type(value) is not ArtifactRef:
+                raise TypeError(f"{label.capitalize()} must be an exact ArtifactRef")
+            if value.kind != kind:
+                raise ValueError(f"Invalid {label} kind")
+        _identifier(self.toolchain_profile_id, "toolchain profile id", lowercase=True)
+        for value, label in (
+            (self.admitted_replay_sha256, "admitted replay SHA-256"),
+            (self.patched_tree_semantic_sha256, "patched-tree semantic SHA-256"),
+            (self.target_port_spec_sha256, "target port specification SHA-256"),
+            (self.toolchain_profile_sha256, "toolchain profile SHA-256"),
+            (self.execution_plan_sha256, "execution plan SHA-256"),
+            (self.executor_capability_sha256, "executor capability SHA-256"),
+            (self.tool_artifact_sha256, "tool artifact SHA-256"),
+            (self.execution_request_sha256, "execution request SHA-256"),
+            (self.operation_key, "operation key"),
+        ):
+            _sha256(value, label)
+        if type(self.role) is not str or self.role != "build":
+            raise ValueError("Replay patched APK receipt role must be build")
+        framework_values = (
+            self.completed_framework_cache_receipt,
+            self.framework_cache_manifest,
+            self.framework_cache_semantic_sha256,
+        )
+        if any(value is None for value in framework_values) != all(
+            value is None for value in framework_values
+        ):
+            raise ValueError("Framework build lineage must be wholly present or absent")
+        if self.completed_framework_cache_receipt is not None:
+            if type(self.completed_framework_cache_receipt) is not ArtifactRef:
+                raise TypeError("Completed framework cache receipt must be an exact ArtifactRef")
+            if self.completed_framework_cache_receipt.kind != "replay-framework-cache-receipt-v1":
+                raise ValueError("Invalid completed framework cache receipt kind")
+            if type(self.framework_cache_manifest) is not ArtifactRef:
+                raise TypeError("Framework cache manifest must be an exact ArtifactRef")
+            if self.framework_cache_manifest.kind != "decoded-tree-manifest-v1":
+                raise ValueError("Invalid framework cache manifest kind")
+            if (
+                self.framework_cache_manifest.producer_operation_id
+                != self.completed_framework_cache_receipt.producer_operation_id
+            ):
+                raise ValueError("Framework cache manifest producer does not match completed receipt")
+            _sha256(
+                self.framework_cache_semantic_sha256,
+                "framework cache semantic SHA-256",
+            )
+        if type(self.composition) is not ReplayBackendCompositionV1:
+            raise TypeError("Composition must be an exact replay backend composition")
+        if (
+            self.patched_tree_manifest.producer_operation_id
+            != self.completed_patched_tree_receipt.producer_operation_id
+        ):
+            raise ValueError("Patched-tree manifest producer does not match completed receipt")
+        if self.intermediate_apk.producer_operation_id != self.operation_key:
+            raise ValueError("Intermediate APK producer does not match operation")
+        if self.patched_apk.producer_operation_id != self.operation_key:
+            raise ValueError("Patched APK producer does not match operation")
+        if self.intermediate_apk.input_hashes != self.execution_input_hashes:
+            raise ValueError("Intermediate APK input lineage is incomplete")
+        if self.patched_apk.input_hashes != self.patched_apk_input_hashes:
+            raise ValueError("Patched APK input lineage is incomplete")
+        if self.composition.backend_profile_id != self.toolchain_profile_id:
+            raise ValueError("Backend composition profile does not match toolchain profile")
+        if self.composition.stock_sha256 != self.stock_apk.sha256:
+            raise ValueError("Backend report stock hash does not match stock APK")
+        if self.composition.intermediate_sha256 != self.intermediate_apk.sha256:
+            raise ValueError("Backend report intermediate hash does not match intermediate APK")
+        if self.composition.output_sha256 != self.patched_apk.sha256:
+            raise ValueError("Backend report output hash does not match patched APK")
+        if type(self.success) is not bool or self.success is not True:
+            raise ValueError("Replay patched APK receipt requires success")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayPatchedApkReceiptV1:
+        data = _keys(data, cls, "replay patched APK receipt")
+        return cls(
+            data["schema_version"],
+            data["admitted_replay_sha256"],
+            ArtifactRef.from_dict(data["completed_patched_tree_receipt"]),
+            ArtifactRef.from_dict(data["patched_tree_manifest"]),
+            data["patched_tree_semantic_sha256"],
+            data["target_port_spec_sha256"],
+            ArtifactRef.from_dict(data["stock_apk"]),
+            data["toolchain_profile_id"],
+            data["toolchain_profile_sha256"],
+            data["role"],
+            data["execution_plan_sha256"],
+            data["executor_capability_sha256"],
+            data["tool_artifact_sha256"],
+            data["execution_request_sha256"],
+            (
+                None
+                if data["completed_framework_cache_receipt"] is None
+                else ArtifactRef.from_dict(data["completed_framework_cache_receipt"])
+            ),
+            (
+                None
+                if data["framework_cache_manifest"] is None
+                else ArtifactRef.from_dict(data["framework_cache_manifest"])
+            ),
+            data["framework_cache_semantic_sha256"],
+            ArtifactRef.from_dict(data["intermediate_apk"]),
+            ReplayBackendCompositionV1.from_dict(data["composition"]),
+            ArtifactRef.from_dict(data["patched_apk"]),
+            data["operation_key"],
+            data["success"],
+        )
+
+    @property
+    def execution_input_hashes(self) -> tuple[str, ...]:
+        framework_hashes: tuple[str, ...] = ()
+        if self.completed_framework_cache_receipt is not None:
+            assert self.framework_cache_manifest is not None
+            assert self.framework_cache_semantic_sha256 is not None
+            framework_hashes = (
+                canonical_sha256(self.completed_framework_cache_receipt),
+                canonical_sha256(self.framework_cache_manifest),
+                self.framework_cache_semantic_sha256,
+            )
+        return (
+            self.admitted_replay_sha256,
+            canonical_sha256(self.completed_patched_tree_receipt),
+            canonical_sha256(self.patched_tree_manifest),
+            self.patched_tree_semantic_sha256,
+            self.target_port_spec_sha256,
+            canonical_sha256(self.stock_apk),
+            self.toolchain_profile_sha256,
+            self.execution_plan_sha256,
+            self.executor_capability_sha256,
+            self.tool_artifact_sha256,
+            self.execution_request_sha256,
+            *framework_hashes,
+        )
+
+    @property
+    def patched_apk_input_hashes(self) -> tuple[str, ...]:
+        return (
+            *self.execution_input_hashes,
+            canonical_sha256(self.intermediate_apk),
+            self.composition.sha256,
+        )
+
+    @property
+    def receipt_input_hashes(self) -> tuple[str, ...]:
+        return (*self.patched_apk_input_hashes, canonical_sha256(self.patched_apk))
 
     @property
     def sha256(self) -> str:
