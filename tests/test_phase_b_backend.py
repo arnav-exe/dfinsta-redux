@@ -3,6 +3,7 @@ import dataclasses
 import hashlib
 import io
 import os
+import struct
 import tempfile
 import unittest
 import zipfile
@@ -82,6 +83,44 @@ def rewrite_zip(
             archive.writestr(entry, payload)
         for entry, payload in append:
             archive.writestr(entry, payload)
+
+
+def patch_entry_metadata(
+    path: Path,
+    name: str,
+    *,
+    flag_bits: int | None = None,
+    local_flag_bits: int | None = None,
+    central_flag_bits: int | None = None,
+    external_attr: int | None = None,
+) -> None:
+    data = bytearray(path.read_bytes())
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        local_offset = archive.getinfo(name).header_offset
+    local_flags = flag_bits if local_flag_bits is None else local_flag_bits
+    central_flags = flag_bits if central_flag_bits is None else central_flag_bits
+    if local_flags is not None:
+        struct.pack_into("<H", data, local_offset + 6, local_flags)
+    eocd_offset = data.rfind(b"PK\x05\x06")
+    if eocd_offset < 0:
+        raise AssertionError("End of central directory not found")
+    central_offset = struct.unpack_from("<I", data, eocd_offset + 16)[0]
+    encoded_name = name.encode("utf-8")
+    while True:
+        if data[central_offset : central_offset + 4] != b"PK\x01\x02":
+            raise AssertionError(f"Central directory entry not found: {name}")
+        name_length = struct.unpack_from("<H", data, central_offset + 28)[0]
+        extra_length = struct.unpack_from("<H", data, central_offset + 30)[0]
+        comment_length = struct.unpack_from("<H", data, central_offset + 32)[0]
+        candidate = bytes(data[central_offset + 46 : central_offset + 46 + name_length])
+        if candidate == encoded_name:
+            break
+        central_offset += 46 + name_length + extra_length + comment_length
+    if central_flags is not None:
+        struct.pack_into("<H", data, central_offset + 8, central_flags)
+    if external_attr is not None:
+        struct.pack_into("<I", data, central_offset + 38, external_attr)
+    path.write_bytes(data)
 
 
 class PhaseBBackendTests(unittest.TestCase):
@@ -219,6 +258,122 @@ class PhaseBBackendTests(unittest.TestCase):
         )
         self.assertEqual(report.retained_entry_count, 3)
         self.assertEqual(report.output_sha256, hashlib.sha256(self.output.read_bytes()).hexdigest())
+
+    def test_added_dex_metadata_is_canonicalized_and_strictly_validated(self) -> None:
+        self.basic_graft_archives()
+        patch_entry_metadata(
+            self.intermediate,
+            "classes3.dex",
+            flag_bits=0x808,
+            external_attr=0,
+        )
+        with zipfile.ZipFile(self.intermediate) as archive:
+            added = archive.getinfo("classes3.dex")
+            self.assertEqual(added.flag_bits, 0x808)
+            self.assertEqual(added.external_attr, 0)
+
+        report = compose_apk(self.graft, self.stock, self.intermediate, self.output)
+        with zipfile.ZipFile(self.output) as archive:
+            added = archive.getinfo("classes3.dex")
+            self.assertEqual(added.flag_bits, 0)
+            self.assertEqual(added.external_attr, 0o600 << 16)
+        self.assertEqual(
+            validate_composed_apk(self.graft, self.stock, self.intermediate, self.output),
+            report,
+        )
+        self.assertEqual(
+            validate_composed_apk_bytes(
+                self.graft,
+                self.stock.read_bytes(),
+                self.intermediate.read_bytes(),
+                self.output.read_bytes(),
+            ),
+            report,
+        )
+
+        for variant, changes in (
+            ("flags", {"flag_bits": 0x800}),
+            ("local-flags", {"local_flag_bits": 0x800}),
+            ("attributes", {"external_attr": 0}),
+        ):
+            candidate = self.root / f"bad-added-{variant}.apk"
+            candidate.write_bytes(self.output.read_bytes())
+            patch_entry_metadata(candidate, "classes3.dex", **changes)
+            with self.subTest(variant=variant):
+                with self.assertRaisesRegex(BackendError, "metadata changed|local flags changed"):
+                    validate_composed_apk(
+                        self.graft, self.stock, self.intermediate, candidate
+                    )
+                with self.assertRaisesRegex(BackendError, "metadata changed|local flags changed"):
+                    validate_composed_apk_bytes(
+                        self.graft,
+                        self.stock.read_bytes(),
+                        self.intermediate.read_bytes(),
+                        candidate.read_bytes(),
+                    )
+
+    def test_added_dex_rejects_unsupported_compression_and_flags(self) -> None:
+        for variant in ("compression", "flags", "local-flags"):
+            with self.subTest(variant=variant):
+                self.basic_graft_archives()
+                if variant == "compression":
+                    with zipfile.ZipFile(self.intermediate, "w") as archive:
+                        archive.writestr(
+                            info("classes2.dex", zipfile.ZIP_STORED, 8), b"replacement"
+                        )
+                        archive.writestr(
+                            info("classes3.dex", zipfile.ZIP_BZIP2, 10), b"addition"
+                        )
+                else:
+                    patch_entry_metadata(
+                        self.intermediate,
+                        "classes3.dex",
+                        **(
+                            {"local_flag_bits": 0x4}
+                            if variant == "local-flags"
+                            else {"flag_bits": 0x4}
+                        ),
+                    )
+                with self.assertRaisesRegex(BackendError, "unsupported"):
+                    compose_apk(self.graft, self.stock, self.intermediate, self.output)
+                with self.assertRaisesRegex(BackendError, "unsupported"):
+                    validate_composed_apk(
+                        self.graft, self.stock, self.intermediate, self.stock
+                    )
+                with self.assertRaisesRegex(BackendError, "unsupported"):
+                    validate_composed_apk_bytes(
+                        self.graft,
+                        self.stock.read_bytes(),
+                        self.intermediate.read_bytes(),
+                        zip_bytes(
+                            [
+                                ("classes.dex", b"stock"),
+                                ("classes2.dex", b"replacement"),
+                                ("classes3.dex", b"addition"),
+                            ]
+                        ),
+                    )
+
+    def test_validation_rejects_retained_and_replacement_local_flag_changes(self) -> None:
+        for name in ("res/raw/value", "classes2.dex"):
+            with self.subTest(name=name):
+                self.basic_graft_archives()
+                compose_apk(self.graft, self.stock, self.intermediate, self.output)
+                candidate = self.root / f"bad-local-{name.replace('/', '-')}.apk"
+                candidate.write_bytes(self.output.read_bytes())
+                patch_entry_metadata(candidate, name, local_flag_bits=0x8)
+                with self.assertRaisesRegex(BackendError, "local flags changed"):
+                    validate_composed_apk(
+                        self.graft, self.stock, self.intermediate, candidate
+                    )
+                with self.assertRaisesRegex(BackendError, "local flags changed"):
+                    validate_composed_apk_bytes(
+                        self.graft,
+                        self.stock.read_bytes(),
+                        self.intermediate.read_bytes(),
+                        candidate.read_bytes(),
+                    )
+                self.output.unlink()
 
     def test_read_only_validation_matches_compose_for_full_and_graft(self) -> None:
         self.basic_full_archives()

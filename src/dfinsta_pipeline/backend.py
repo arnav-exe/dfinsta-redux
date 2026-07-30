@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import tempfile
 import zipfile
 import zlib
@@ -43,6 +44,7 @@ class BackendReport:
 class _Entry:
     info: zipfile.ZipInfo
     data: bytes
+    local_flag_bits: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +91,10 @@ def _parse_archive(data: bytes, label: str, source: str) -> tuple[_Archive, str]
             names = [info.filename for info in infos]
             if len(names) != len(set(names)):
                 raise BackendError(f"{label} archive contains duplicate entry names")
-            entries = tuple(_Entry(info, archive.read(info)) for info in infos)
+            entries = tuple(
+                _Entry(info, archive.read(info), _local_flag_bits(data, info, label))
+                for info in infos
+            )
             return _Archive(entries, archive.comment), digest
     except BackendError:
         raise
@@ -103,6 +108,13 @@ def _parse_archive(data: bytes, label: str, source: str) -> tuple[_Archive, str]
         zipfile.LargeZipFile,
     ) as exc:
         raise BackendError(f"Could not read {label} archive {source}: {exc}") from exc
+
+
+def _local_flag_bits(data: bytes, info: zipfile.ZipInfo, label: str) -> int:
+    offset = info.header_offset
+    if offset < 0 or offset + 30 > len(data) or data[offset : offset + 4] != b"PK\x03\x04":
+        raise BackendError(f"{label} archive has an invalid local header: {info.filename}")
+    return struct.unpack_from("<H", data, offset + 6)[0]
 
 
 def _load_archive(path: Path, label: str) -> tuple[_Archive, str]:
@@ -253,7 +265,7 @@ def _write_graft(stock: _Archive, intermediate: _Archive, backend: StockDexGraft
                 archive.writestr(copy.copy(entry.info), payload)
             for name in backend.add_dex_entries:
                 entry = intermediate_by_name[name]
-                archive.writestr(copy.copy(entry.info), entry.data)
+                archive.writestr(_added_dex_output_info(entry.info), entry.data)
         os.chmod(temp_path, 0o644)
         return temp_path
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
@@ -296,9 +308,16 @@ def _verify_graft(
         if output_by_name[name].data != intermediate_by_name[name].data:
             raise BackendError(f"Output payload does not match intermediate entry: {name}")
     for name, entry in output_by_name.items():
-        expected = intermediate_by_name[name] if name in backend.add_dex_entries else stock_by_name[name]
-        if _metadata(entry.info) != _metadata(expected.info):
+        added = name in backend.add_dex_entries
+        expected_entry = intermediate_by_name[name] if added else stock_by_name[name]
+        expected_info = (
+            _added_dex_output_info(expected_entry.info) if added else expected_entry.info
+        )
+        if _metadata(entry.info) != _metadata(expected_info):
             raise BackendError(f"Output entry metadata changed: {name}")
+        expected_local_flags = 0 if added else expected_entry.local_flag_bits
+        if entry.local_flag_bits != expected_local_flags:
+            raise BackendError(f"Output entry local flags changed: {name}")
 
 
 def _metadata(info: zipfile.ZipInfo) -> tuple[object, ...]:
@@ -317,12 +336,31 @@ def _metadata(info: zipfile.ZipInfo) -> tuple[object, ...]:
     )
 
 
+def _added_dex_output_info(info: zipfile.ZipInfo) -> zipfile.ZipInfo:
+    if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+        raise BackendError(f"Added DEX uses unsupported compression: {info.filename}")
+    if info.flag_bits & ~0x808:
+        raise BackendError(f"Added DEX uses unsupported ZIP flags: {info.filename}")
+    output = copy.copy(info)
+    output.flag_bits = 0
+    if output.external_attr == 0:
+        output.external_attr = 0o600 << 16
+    return output
+
+
+def _validate_added_dex_input(entry: _Entry) -> None:
+    _added_dex_output_info(entry.info)
+    if entry.local_flag_bits & ~0x808 or entry.local_flag_bits != entry.info.flag_bits:
+        raise BackendError(f"Added DEX uses unsupported local ZIP flags: {entry.info.filename}")
+
+
 def _validate_graft_inputs(
     stock: _Archive, intermediate: _Archive, backend: StockDexGraftBackend
 ) -> None:
     _require_exact_dex(stock, backend.stock_dex_entries, "Stock")
     stock_names = set(stock.by_name)
-    intermediate_names = set(intermediate.by_name)
+    intermediate_by_name = intermediate.by_name
+    intermediate_names = set(intermediate_by_name)
     for name in backend.replace_dex_entries:
         if name not in stock_names or name not in intermediate_names:
             raise BackendError(f"Replacement entry must exist in both archives: {name}")
@@ -331,6 +369,7 @@ def _validate_graft_inputs(
             raise BackendError(f"Added entry collides with stock archive: {name}")
         if name not in intermediate_names:
             raise BackendError(f"Added entry is missing from intermediate archive: {name}")
+        _validate_added_dex_input(intermediate_by_name[name])
 
 
 def _load_composition_inputs(
