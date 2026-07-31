@@ -3020,9 +3020,16 @@ async def replay_verify_final_apk_checkpoint_activity(
                 verifier_tree_sha256,
                 report,
             ) = verification_result
-            assertion_results = _verification_report_results(report)
             if getattr(report, "passed", None) is not True:
-                raise ValueError("Final APK verification assertions did not all pass")
+                failed_ids = ", ".join(
+                    result.assertion_id
+                    for result in getattr(report, "assertion_results", ())
+                    if getattr(result, "passed", None) is False
+                )
+                raise ValueError(
+                    f"Final APK verification assertions did not all pass: {failed_ids}"
+                )
+            assertion_results = _verification_report_results(report)
         finally:
             _close_descriptors(
                 final_fd,

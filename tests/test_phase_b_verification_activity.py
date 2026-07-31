@@ -624,7 +624,12 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
 
         def fail_assertion(*args: Any, **kwargs: Any) -> VerificationReport:
             report = real_verify(*args, **kwargs)
-            failed = replace(report.assertion_results[0], passed=False, detail="failed")
+            failed = replace(
+                report.assertion_results[0],
+                assertion_id="forced.failure",
+                passed=False,
+                detail="failed",
+            )
             return replace(
                 report,
                 assertion_results=(failed, *report.assertion_results[1:]),
@@ -632,7 +637,10 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
             )
 
         with mock.patch.object(activities, "verify_apk", side_effect=fail_assertion):
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(
+                ValueError,
+                "Final APK verification assertions did not all pass: forced.failure",
+            ):
                 await self.invoke("assertion-failure")
         self.assert_quarantined()
 

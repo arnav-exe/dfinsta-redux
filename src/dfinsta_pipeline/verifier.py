@@ -403,9 +403,11 @@ def _verify_operation(
             target_data = target.read_bytes()
             suffix = source_file.relative_path.rsplit(".", 1)[-1].lower()
             if suffix == "smali":
-                equal = _canonicalize_labels(
+                equal = _canonicalize_smali_file(
                     _significant_text(source_data, source_relative)
-                ) == _canonicalize_labels(_significant_text(target_data, target_relative))
+                ) == _canonicalize_smali_file(
+                    _significant_text(target_data, target_relative)
+                )
             elif suffix == "xml":
                 equal = _xml_semantics(source_data, source_relative) == _xml_semantics(
                     target_data, target_relative
@@ -631,6 +633,81 @@ def _canonicalize_labels(lines: list[str]) -> list[str]:
 
     result = []
     for line in lines:
+        rendered = []
+        start = 0
+        quoted = False
+        escaped = False
+        for index, character in enumerate(line):
+            if character == '"' and not escaped:
+                if not quoted:
+                    rendered.append(replace_segment(line[start:index]))
+                    start = index
+                else:
+                    rendered.append(line[start : index + 1])
+                    start = index + 1
+                quoted = not quoted
+            escaped = character == "\\" and not escaped
+            if character != "\\":
+                escaped = False
+        rendered.append(line[start:] if quoted else replace_segment(line[start:]))
+        result.append("".join(rendered))
+    return result
+
+
+def _canonicalize_smali_file(lines: list[str]) -> list[str]:
+    result = []
+    method: list[str] | None = None
+    for line in lines:
+        if method is None:
+            if line.startswith(".method "):
+                method = [line]
+            else:
+                result.append(line)
+        else:
+            method.append(line)
+            if line == ".end method":
+                result.extend(_canonicalize_smali_method(method))
+                method = None
+    if method is not None:
+        raise VerificationError("Unterminated smali method")
+    return result
+
+
+def _canonicalize_smali_method(lines: list[str]) -> list[str]:
+    label_pattern = re.compile(r"(?<![A-Za-z0-9_.$;/><-]):[A-Za-z0-9_.$-]+")
+    positions: dict[str, int] = {}
+    definitions: set[int] = set()
+    instruction_index = 0
+    switch_payload = False
+    for index, line in enumerate(lines):
+        if line.startswith((".packed-switch ", ".sparse-switch")):
+            switch_payload = True
+            instruction_index += 1
+        elif line in (".end packed-switch", ".end sparse-switch"):
+            switch_payload = False
+            instruction_index += 1
+        elif not switch_payload and label_pattern.fullmatch(line):
+            if line in positions:
+                raise VerificationError(f"Duplicate smali label: {line}")
+            positions[line] = instruction_index
+            definitions.add(index)
+        else:
+            instruction_index += 1
+
+    def replace_segment(segment: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            label = match.group(0)
+            position = positions.get(label)
+            if position is None:
+                return label
+            return f"<canonical-label-target-{position}>"
+
+        return label_pattern.sub(replace, segment)
+
+    result = []
+    for index, line in enumerate(lines):
+        if index in definitions:
+            continue
         rendered = []
         start = 0
         quoted = False
