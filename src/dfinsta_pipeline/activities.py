@@ -26,6 +26,7 @@ from .decoded_artifact import (
 from .executor import ExecutionMetadata, ExecutionRequest, Launcher, execute
 from .ledger import Ledger
 from .replay_contracts import (
+    AdmittedReplayVerificationGrantV1,
     AdmittedReplayV3,
     ReplayApplyOperationResultV1,
     ReplayBackendCompositionV1,
@@ -35,10 +36,19 @@ from .replay_contracts import (
     ReplayFrameworkInstallationV1,
     ReplayPatchedTreeReceiptV1,
     ReplayPatchedApkReceiptV1,
+    ReplayFinalApkVerificationReceiptV1,
     ReplaySourceAdmissionEvidenceV1,
+    ReplayVerificationAssertionResultV1,
 )
 from .source_admission import admit_source_bundle_v2, verify_staged_source_v2
 from .store import ContentStore
+from .verifier import (
+    AssertionResult,
+    DecodedArtifactReceipt,
+    VerificationReport,
+    decoded_tree_sha256,
+    verify_apk,
+)
 
 
 @dataclass
@@ -669,6 +679,16 @@ def _strict_replay_patched_apk_receipt(data: bytes) -> ReplayPatchedApkReceiptV1
     )  # type: ignore[return-value]
 
 
+def _strict_replay_final_apk_verification_receipt(
+    data: bytes,
+) -> ReplayFinalApkVerificationReceiptV1:
+    return _strict_receipt_json(
+        data,
+        ReplayFinalApkVerificationReceiptV1,
+        "replay final APK verification receipt",
+    )  # type: ignore[return-value]
+
+
 async def _await_apply_mutation(task: asyncio.Task[ApplyReport]) -> ApplyReport:
     cancellation: asyncio.CancelledError | None = None
     while True:
@@ -742,6 +762,80 @@ async def _await_backend_composition(task: asyncio.Task[BackendReport]) -> Backe
             cancellation.add_note(
                 "Replay backend composition failed while cancellation waited for "
                 f"composition: {type(error).__name__}: {error}"
+            )
+            raise cancellation
+        if cancellation is not None:
+            raise cancellation
+        return result
+
+
+async def _await_verification_work(task: asyncio.Task[object]) -> object:
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            if task.done():
+                cancellation = cancellation or error
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    cancellation.add_note("Replay verification work was cancelled unexpectedly")
+                except BaseException as work_error:
+                    cancellation.add_note(
+                        "Replay verification failed while cancellation raced with work: "
+                        f"{type(work_error).__name__}: {work_error}"
+                    )
+                raise cancellation
+            if cancellation is None:
+                cancellation = error
+            else:
+                cancellation.add_note("Repeated cancellation waited for replay verification work")
+            continue
+        except BaseException as error:
+            if cancellation is None:
+                raise
+            cancellation.add_note(
+                "Replay verification failed while cancellation waited for work: "
+                f"{type(error).__name__}: {error}"
+            )
+            raise cancellation
+        if cancellation is not None:
+            raise cancellation
+        return result
+
+
+async def _await_verification_execution(task: asyncio.Task[object]) -> object:
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            if cancellation is None:
+                cancellation = error
+                task.cancel()
+            else:
+                cancellation.add_note(
+                    "Repeated cancellation waited for replay verification decoder cleanup"
+                )
+            if not task.done():
+                continue
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except BaseException as execution_error:
+                cancellation.add_note(
+                    "Replay verification decoder failed while cancellation waited for cleanup: "
+                    f"{type(execution_error).__name__}: {execution_error}"
+                )
+            raise cancellation
+        except BaseException as error:
+            if cancellation is None:
+                raise
+            cancellation.add_note(
+                "Replay verification decoder failed while cancellation waited for cleanup: "
+                f"{type(error).__name__}: {error}"
             )
             raise cancellation
         if cancellation is not None:
@@ -2335,6 +2429,666 @@ async def replay_build_patched_apk_checkpoint_activity(
             completed_framework_cache_receipt=completed_framework,
             framework_receipt=framework_receipt,
         )
+        Ledger.record_effect(configured.ledger, key, owner, output)
+        effect_recorded = True
+        return Ledger.complete_operation(configured.ledger, key, output)
+    except asyncio.CancelledError:
+        if workspace_created and not effect_recorded:
+            Ledger.quarantine_operation(configured.ledger, key, owner)
+        elif operation_claimed and not effect_recorded:
+            Ledger.release_pending_operation(configured.ledger, key, owner)
+        raise
+    except BaseException as error:
+        if workspace_created and not effect_recorded:
+            Ledger.quarantine_operation(configured.ledger, key, owner)
+        elif operation_claimed and not effect_recorded:
+            try:
+                Ledger.release_pending_operation(configured.ledger, key, owner)
+            except BaseException as release_error:
+                error.add_note(
+                    "Pending operation release failed: "
+                    f"{type(release_error).__name__}: {release_error}"
+                )
+        raise
+
+
+def _replay_verification_predecessors(
+    grant: AdmittedReplayVerificationGrantV1,
+) -> tuple[
+    AdmittedReplayV3,
+    ArtifactRef | None,
+    ReplayFrameworkCacheReceiptV1 | None,
+    ArtifactRef,
+    ReplayPatchedApkReceiptV1,
+    TargetPortSpecV2,
+]:
+    configured = runtime()
+    admitted = Ledger.require_admitted_replay_v3(
+        configured.ledger, grant.admitted_replay
+    )
+    if admitted != grant.admitted_replay:
+        raise ValueError("Verification grant admitted replay is not exact")
+    (
+        completed_framework,
+        framework_receipt,
+        completed_apply,
+        patched_tree_receipt,
+        compiled,
+    ) = _replay_build_predecessors(admitted)
+    build_key, build_input, build_request = _replay_build_operation_identity(
+        admitted,
+        completed_apply,
+        patched_tree_receipt,
+        compiled,
+        completed_framework,
+        framework_receipt,
+    )
+    completed_build = Ledger.require_completed_operation(
+        configured.ledger,
+        build_key,
+        "replay_build_patched_apk_v1",
+        build_input,
+    )
+    build_receipt = _validate_replay_patched_apk_receipt(
+        completed_build,
+        build_key,
+        admitted=admitted,
+        completed_patched_tree_receipt=completed_apply,
+        patched_receipt=patched_tree_receipt,
+        compiled=compiled,
+        execution_request=build_request,
+        completed_framework_cache_receipt=completed_framework,
+        framework_receipt=framework_receipt,
+    )
+    if (
+        completed_build != grant.request.completed_patched_apk_receipt
+        or build_receipt != grant.patched_apk_receipt
+        or build_receipt.patched_apk != grant.request.patched_apk
+    ):
+        raise ValueError("Verification grant does not match the exact completed build")
+    return (
+        admitted,
+        completed_framework,
+        framework_receipt,
+        completed_build,
+        build_receipt,
+        compiled,
+    )
+
+
+def _replay_verification_operation_identity(
+    grant: AdmittedReplayVerificationGrantV1,
+    admitted: AdmittedReplayV3,
+    completed_build: ArtifactRef,
+    build_receipt: ReplayPatchedApkReceiptV1,
+    compiled: TargetPortSpecV2,
+    completed_framework: ArtifactRef | None,
+    framework_receipt: ReplayFrameworkCacheReceiptV1 | None,
+) -> tuple[str, str, ExecutionRequest, tuple[str, ...]]:
+    capability = grant.request.executor_capability
+    tool = next(
+        item
+        for item in admitted.request.tools
+        if item.tool_id == admitted.profile.tool_for_role("decode").tool_id
+    )
+    request = ExecutionRequest(
+        1,
+        capability.capability_id,
+        capability.canonical_identity,
+        build_receipt.patched_apk,
+        "decoded-tree",
+        (
+            ("decoded_tree", "output"),
+            ("framework_dir", "framework"),
+            ("input_apk", "input.apk"),
+            ("tool", "tool"),
+        ),
+        (),
+        admitted.run_spec.apk_composition,
+    )
+    operation_input: dict[str, object] = {
+        "schema_version": 1,
+        "admitted_verification_grant_sha256": grant.sha256,
+        "admitted_replay_sha256": admitted.sha256,
+        "completed_patched_apk_receipt": completed_build,
+        "patched_apk": build_receipt.patched_apk,
+        "target_port_spec_sha256": compiled.sha256,
+        "stock_apk": admitted.request.stock_apk,
+        "decoder_profile_id": grant.request.decoder_profile_id,
+        "role": "final_decode",
+        "executor_capability_sha256": capability.canonical_identity,
+        "tool_artifact_sha256": tool.artifact.sha256,
+        "execution_request_sha256": request.canonical_identity,
+    }
+    framework_hashes: tuple[str, ...] = ()
+    if completed_framework is not None and framework_receipt is not None:
+        operation_input.update(
+            {
+                "completed_framework_cache_receipt": completed_framework,
+                "framework_cache_manifest": framework_receipt.framework_cache_manifest,
+                "framework_cache_semantic_sha256": framework_receipt.framework_cache_semantic_sha256,
+            }
+        )
+        framework_hashes = (
+            canonical_sha256(completed_framework),
+            canonical_sha256(framework_receipt.framework_cache_manifest),
+            framework_receipt.framework_cache_semantic_sha256,
+        )
+    execution_input_hashes = (
+        grant.sha256,
+        admitted.sha256,
+        canonical_sha256(completed_build),
+        canonical_sha256(build_receipt.patched_apk),
+        compiled.sha256,
+        canonical_sha256(admitted.request.stock_apk),
+        canonical_sha256(grant.request.decoder_profile_id),
+        capability.canonical_identity,
+        tool.artifact.sha256,
+        request.canonical_identity,
+        *framework_hashes,
+    )
+    return (
+        operation_key("replay_verify_final_apk_v1", operation_input),
+        canonical_sha256(operation_input),
+        request,
+        execution_input_hashes,
+    )
+
+
+def _verification_report_results(
+    report: VerificationReport,
+) -> tuple[ReplayVerificationAssertionResultV1, ...]:
+    if type(report) is not VerificationReport or any(
+        type(result) is not AssertionResult for result in report.assertion_results
+    ):
+        raise TypeError("Verifier must return an exact VerificationReport")
+    return tuple(
+        ReplayVerificationAssertionResultV1(
+            result.assertion_id,
+            result.kind,
+            result.passed,
+            result.detail,
+        )
+        for result in report.assertion_results
+    )
+
+
+def _remove_private_workspace(operation_fd: int, name: str) -> None:
+    _secure_remove_tree_entry(operation_fd, name, "Verification validation workspace")
+
+
+def _validate_replay_final_apk_verification_receipt(
+    output: ArtifactRef,
+    key: str,
+    *,
+    grant: AdmittedReplayVerificationGrantV1,
+    admitted: AdmittedReplayV3,
+    completed_build: ArtifactRef,
+    build_receipt: ReplayPatchedApkReceiptV1,
+    compiled: TargetPortSpecV2,
+    execution_request: ExecutionRequest,
+    completed_framework: ArtifactRef | None,
+    framework_receipt: ReplayFrameworkCacheReceiptV1 | None,
+    owner: str,
+) -> ReplayFinalApkVerificationReceiptV1:
+    configured = runtime()
+    if (
+        output.kind != "replay-final-apk-verification-receipt-v1"
+        or output.producer_operation_id != key
+    ):
+        raise ValueError("Adopted final APK verification receipt has invalid lineage")
+    receipt = _strict_replay_final_apk_verification_receipt(
+        configured.store.read_bytes(output)
+    )
+    expected_framework = (
+        completed_framework,
+        None if framework_receipt is None else framework_receipt.framework_cache_manifest,
+        None
+        if framework_receipt is None
+        else framework_receipt.framework_cache_semantic_sha256,
+    )
+    actual_framework = (
+        receipt.completed_framework_cache_receipt,
+        receipt.framework_cache_manifest,
+        receipt.framework_cache_semantic_sha256,
+    )
+    tool = next(
+        item
+        for item in admitted.request.tools
+        if item.tool_id == admitted.profile.tool_for_role("decode").tool_id
+    )
+    if (
+        output.sha256 != receipt.sha256
+        or output.input_hashes != receipt.receipt_input_hashes
+        or receipt.admitted_verification_grant_sha256 != grant.sha256
+        or receipt.admitted_replay_sha256 != admitted.sha256
+        or receipt.completed_patched_apk_receipt != completed_build
+        or receipt.patched_apk != build_receipt.patched_apk
+        or receipt.target_port_spec_sha256 != compiled.sha256
+        or receipt.stock_apk != admitted.request.stock_apk
+        or receipt.decoder_profile_id != grant.request.decoder_profile_id
+        or receipt.executor_capability_sha256
+        != grant.request.executor_capability.canonical_identity
+        or receipt.tool_artifact_sha256 != tool.artifact.sha256
+        or receipt.execution_request_sha256 != execution_request.canonical_identity
+        or actual_framework != expected_framework
+        or receipt.operation_key != key
+        or receipt.expected_operation_key != key
+        or receipt.success is not True
+    ):
+        raise ValueError("Adopted final APK verification receipt does not match grant")
+    final_manifest = load_decoded_tree(configured.store, receipt.final_decoded_manifest)
+    source_manifest = load_decoded_tree(configured.store, receipt.source_manifest)
+    if (
+        final_manifest.decoded_tree_sha256 != receipt.final_decoded_semantic_sha256
+        or source_manifest.decoded_tree_sha256 != receipt.source_semantic_sha256
+    ):
+        raise ValueError("Verification closure semantic hash mismatch")
+
+    stock_bytes = configured.store.read_bytes(receipt.stock_apk)
+    intermediate_bytes = configured.store.read_bytes(build_receipt.intermediate_apk)
+    final_bytes = configured.store.read_bytes(receipt.patched_apk)
+    composition = _replay_backend_composition(
+        validate_composed_apk_bytes(
+            compiled.backend, stock_bytes, intermediate_bytes, final_bytes
+        ),
+        compiled,
+    )
+    if composition != build_receipt.composition:
+        raise ValueError("Completed build composition is not independently reproducible")
+
+    attempts_fd = _open_or_create_directory(configured.attempts_root)
+    operation_fd: int | None = None
+    workspace_fd: int | None = None
+    workspace_created = False
+    workspace_name = "validate-" + hashlib.sha256(owner.encode("utf-8")).hexdigest()
+    try:
+        _validate_private_directory(attempts_fd, "attempts root")
+        try:
+            os.mkdir(key, mode=0o700, dir_fd=attempts_fd)
+        except FileExistsError:
+            pass
+        operation_fd = _open_existing_directory(attempts_fd, key)
+        _validate_private_directory(operation_fd, "operation")
+        workspace_fd = _exclusive_directory(operation_fd, workspace_name)
+        workspace_created = True
+        _validate_private_directory(workspace_fd, "verification validation workspace")
+        workspace = configured.attempts_root / key / workspace_name
+        _exclusive_file(workspace_fd, "stock.apk", stock_bytes)
+        _exclusive_file(workspace_fd, "final.apk", final_bytes)
+        decoded = materialize_decoded_tree(
+            configured.store, receipt.final_decoded_manifest, workspace, "decoded"
+        )
+        source = materialize_decoded_tree(
+            configured.store, receipt.source_manifest, workspace, "source"
+        )
+        verifier_tree_hash = decoded_tree_sha256(decoded)
+        if verifier_tree_hash != receipt.verifier_decoded_tree_sha256:
+            raise ValueError("Verifier decoded-tree hash is not independently reproducible")
+        decoded_receipt = DecodedArtifactReceipt(
+            receipt.patched_apk.sha256,
+            verifier_tree_hash,
+            receipt.decoder_profile_id,
+            receipt.executor_capability_sha256,
+        )
+        report = verify_apk(
+            compiled,
+            workspace / "stock.apk",
+            workspace / "final.apk",
+            decoded,
+            source,
+            decoded_receipt,
+        )
+        if (
+            report.sha256 != receipt.verifier_report_sha256
+            or _verification_report_results(report) != receipt.assertion_results
+            or report.operation_proof_count != receipt.operation_proof_count
+            or report.passed is not True
+        ):
+            raise ValueError("Verifier report is not exactly reproducible")
+    finally:
+        _close_descriptors(workspace_fd)
+        try:
+            if operation_fd is not None and workspace_created:
+                _remove_private_workspace(operation_fd, workspace_name)
+        finally:
+            _close_descriptors(operation_fd, attempts_fd)
+    return receipt
+
+
+@activity.defn
+async def replay_verify_final_apk_checkpoint_activity(
+    candidate: AdmittedReplayVerificationGrantV1,
+) -> ArtifactRef:
+    configured = runtime()
+    grant = Ledger.require_admitted_replay_verification_grant_v1(
+        configured.ledger, candidate
+    )
+    (
+        admitted,
+        completed_framework,
+        framework_receipt,
+        completed_build,
+        build_receipt,
+        compiled,
+    ) = _replay_verification_predecessors(grant)
+    key, operation_input_sha256, request, execution_input_hashes = (
+        _replay_verification_operation_identity(
+            grant,
+            admitted,
+            completed_build,
+            build_receipt,
+            compiled,
+            completed_framework,
+            framework_receipt,
+        )
+    )
+    capability = grant.request.executor_capability
+    tool = next(
+        item
+        for item in admitted.request.tools
+        if item.tool_id == admitted.profile.tool_for_role("decode").tool_id
+    )
+    admitted_spec = RunSpec(
+        1,
+        admitted.run_spec.run_id,
+        admitted.run_spec.subject_sha256,
+        admitted.run_spec.intent_sha256,
+        admitted.run_spec.resolution_sha256,
+        capability.canonical_identity,
+        admitted.run_spec.policy_revision,
+        admitted.run_spec.allowed_actor,
+        1,
+        admitted.run_spec.apk_composition,
+        False,
+        0,
+    )
+    owner = _activity_owner()
+    operation_claimed = False
+    existing = Ledger.begin_operation(
+        configured.ledger,
+        key,
+        "replay_verify_final_apk_v1",
+        operation_input_sha256,
+        owner,
+        retry_safe=False,
+    )
+    if existing is not None:
+        validation_task = asyncio.create_task(
+            asyncio.to_thread(
+                _validate_replay_final_apk_verification_receipt,
+                existing,
+                key,
+                grant=grant,
+                admitted=admitted,
+                completed_build=completed_build,
+                build_receipt=build_receipt,
+                compiled=compiled,
+                execution_request=request,
+                completed_framework=completed_framework,
+                framework_receipt=framework_receipt,
+                owner=owner,
+            )
+        )
+        await _await_verification_work(validation_task)
+        return Ledger.complete_operation(configured.ledger, key, existing)
+    operation_claimed = True
+
+    workspace_created = False
+    effect_recorded = False
+    try:
+        if configured.source_root is None:
+            raise ValueError("Replay final APK verification requires a configured source root")
+        try:
+            executable = configured.executor_paths[capability.executable_sha256]
+        except KeyError as error:
+            raise ValueError("No runtime executable for admitted capability") from error
+        _validate_runtime_executable(executable, capability.executable_sha256)
+        stock_bytes = configured.store.read_bytes(admitted.request.stock_apk)
+        final_bytes = configured.store.read_bytes(build_receipt.patched_apk)
+        tool_bytes = configured.store.read_bytes(tool.artifact)
+        if hashlib.sha256(final_bytes).hexdigest() != build_receipt.patched_apk.sha256:
+            raise ValueError("Final APK bytes do not match completed build")
+
+        attempts_fd = _open_or_create_directory(configured.attempts_root)
+        operation_fd: int | None = None
+        workspace_fd: int | None = None
+        framework_fd: int | None = None
+        source_fd: int | None = None
+        final_fd: int | None = None
+        try:
+            _validate_private_directory(attempts_fd, "attempts root")
+            try:
+                os.mkdir(key, mode=0o700, dir_fd=attempts_fd)
+            except FileExistsError:
+                pass
+            operation_fd = _open_existing_directory(attempts_fd, key)
+            _validate_private_directory(operation_fd, "operation")
+            owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()
+            workspace_fd = _exclusive_directory(operation_fd, owner_hash)
+            workspace_created = True
+            _validate_private_directory(workspace_fd, "owner workspace")
+            workspace = configured.attempts_root / key / owner_hash
+            _exclusive_file(workspace_fd, "stock.apk", stock_bytes)
+            _exclusive_file(workspace_fd, "input.apk", final_bytes)
+            _exclusive_file(workspace_fd, "tool", tool_bytes)
+            final_fd, final_stat = _open_pinned_regular(
+                workspace_fd, "input.apk", "Final APK"
+            )
+            if framework_receipt is None:
+                os.mkdir("framework", mode=0o700, dir_fd=workspace_fd)
+            else:
+                materialize_decoded_tree(
+                    configured.store,
+                    framework_receipt.framework_cache_manifest,
+                    workspace,
+                    "framework",
+                )
+            framework_fd = _open_existing_directory(workspace_fd, "framework")
+            if framework_receipt is None and _framework_cache_snapshot(framework_fd):
+                raise ValueError("No-framework verification requires an empty framework directory")
+            source_report = admit_source_bundle_v2(
+                admitted,
+                configured.source_root,
+                workspace,
+                configured.ledger,
+            )
+            staged_source = workspace / source_report.relative_destination
+            verify_staged_source_v2(
+                source_report,
+                admitted,
+                staged_source,
+                configured.ledger,
+            )
+            source_fd = _open_existing_directory(workspace_fd, source_report.relative_destination)
+            source_capture_task = asyncio.create_task(
+                asyncio.to_thread(
+                    capture_decoded_tree_fd,
+                    configured.store,
+                    source_fd,
+                    key,
+                    execution_input_hashes,
+                )
+            )
+            source_manifest_ref = await _await_verification_work(source_capture_task)
+            if type(source_manifest_ref) is not ArtifactRef:
+                raise TypeError("Source capture must return an exact ArtifactRef")
+            try:
+                os.stat("output", dir_fd=workspace_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError("Final decoded output must be absent before launch")
+            _verify_workspace_path(workspace, workspace_fd)
+            _verify_workspace_path(workspace / "framework", framework_fd)
+            _verify_workspace_path(staged_source, source_fd)
+
+            execution_task = asyncio.create_task(
+                execute(
+                    capability,
+                    request,
+                    ExecutionMetadata(executable, workspace, workspace),
+                    admitted_spec=admitted_spec,
+                    timeout_seconds=grant.request.timeout_seconds,
+                    launcher=configured.launcher,
+                )
+            )
+            execution = await _await_verification_execution(execution_task)
+            if execution.returncode != 0:
+                raise RuntimeError(
+                    f"Replay final APK decode failed with exit code {execution.returncode}"
+                )
+
+            def capture_and_verify() -> tuple[ArtifactRef, str, str, object]:
+                _verify_workspace_path(workspace, workspace_fd)
+                _verify_workspace_path(workspace / "framework", framework_fd)
+                _verify_workspace_path(staged_source, source_fd)
+                captured_final = _read_pinned_regular(
+                    workspace_fd,
+                    "input.apk",
+                    final_fd,
+                    final_stat,
+                    "Final APK",
+                )
+                if captured_final != final_bytes:
+                    raise ValueError("Final APK changed during decode")
+                if framework_receipt is None:
+                    if _framework_cache_snapshot(framework_fd):
+                        raise ValueError(
+                            "No-framework verification mutated the framework directory"
+                        )
+                else:
+                    framework_manifest = load_decoded_tree(
+                        configured.store, framework_receipt.framework_cache_manifest
+                    )
+                    verify_materialized_decoded_tree(
+                        framework_manifest, workspace / "framework"
+                    )
+                source_manifest = load_decoded_tree(
+                    configured.store, source_manifest_ref
+                )
+                verify_materialized_decoded_tree(source_manifest, staged_source)
+                output_descriptor = _open_existing_directory(workspace_fd, "output")
+                try:
+                    _verify_workspace_path(workspace / "output", output_descriptor)
+                    final_manifest_ref = capture_decoded_tree_fd(
+                        configured.store,
+                        output_descriptor,
+                        key,
+                        execution_input_hashes,
+                    )
+                    _verify_workspace_path(workspace / "output", output_descriptor)
+                    final_manifest = load_decoded_tree(
+                        configured.store, final_manifest_ref
+                    )
+                    os.mkdir("clean", mode=0o700, dir_fd=workspace_fd)
+                    clean = workspace / "clean"
+                    clean_decoded = materialize_decoded_tree(
+                        configured.store, final_manifest_ref, clean, "decoded"
+                    )
+                    clean_source = materialize_decoded_tree(
+                        configured.store, source_manifest_ref, clean, "source"
+                    )
+                    verifier_tree_hash = decoded_tree_sha256(clean_decoded)
+                    decoded_receipt = DecodedArtifactReceipt(
+                        build_receipt.patched_apk.sha256,
+                        verifier_tree_hash,
+                        grant.request.decoder_profile_id,
+                        capability.canonical_identity,
+                    )
+                    report = verify_apk(
+                        compiled,
+                        workspace / "stock.apk",
+                        workspace / "input.apk",
+                        clean_decoded,
+                        clean_source,
+                        decoded_receipt,
+                    )
+                    return (
+                        final_manifest_ref,
+                        final_manifest.decoded_tree_sha256,
+                        verifier_tree_hash,
+                        report,
+                    )
+                finally:
+                    os.close(output_descriptor)
+
+            verification_task = asyncio.create_task(asyncio.to_thread(capture_and_verify))
+            verification_result = await _await_verification_work(verification_task)
+            if type(verification_result) is not tuple or len(verification_result) != 4:
+                raise TypeError("Verification work returned an invalid result")
+            (
+                final_manifest_ref,
+                final_semantic_sha256,
+                verifier_tree_sha256,
+                report,
+            ) = verification_result
+            assertion_results = _verification_report_results(report)
+            if getattr(report, "passed", None) is not True:
+                raise ValueError("Final APK verification assertions did not all pass")
+        finally:
+            _close_descriptors(
+                final_fd,
+                source_fd,
+                framework_fd,
+                workspace_fd,
+                operation_fd,
+                attempts_fd,
+            )
+
+        source_manifest = load_decoded_tree(configured.store, source_manifest_ref)
+        receipt = ReplayFinalApkVerificationReceiptV1(
+            1,
+            grant.sha256,
+            admitted.sha256,
+            completed_build,
+            build_receipt.patched_apk,
+            compiled.sha256,
+            admitted.request.stock_apk,
+            grant.request.decoder_profile_id,
+            "final_decode",
+            capability.canonical_identity,
+            tool.artifact.sha256,
+            request.canonical_identity,
+            completed_framework,
+            None if framework_receipt is None else framework_receipt.framework_cache_manifest,
+            None
+            if framework_receipt is None
+            else framework_receipt.framework_cache_semantic_sha256,
+            final_manifest_ref,
+            final_semantic_sha256,
+            verifier_tree_sha256,
+            source_manifest_ref,
+            source_manifest.decoded_tree_sha256,
+            assertion_results,
+            report.operation_proof_count,
+            report.sha256,
+            key,
+            True,
+        )
+        output = configured.store.put_bytes(
+            kind="replay-final-apk-verification-receipt-v1",
+            data=canonical_json(receipt).encode("utf-8"),
+            producer_operation_id=key,
+            input_hashes=receipt.receipt_input_hashes,
+        )
+        validation_task = asyncio.create_task(
+            asyncio.to_thread(
+                _validate_replay_final_apk_verification_receipt,
+                output,
+                key,
+                grant=grant,
+                admitted=admitted,
+                completed_build=completed_build,
+                build_receipt=build_receipt,
+                compiled=compiled,
+                execution_request=request,
+                completed_framework=completed_framework,
+                framework_receipt=framework_receipt,
+                owner=owner,
+            )
+        )
+        await _await_verification_work(validation_task)
         Ledger.record_effect(configured.ledger, key, owner, output)
         effect_recorded = True
         return Ledger.complete_operation(configured.ledger, key, output)

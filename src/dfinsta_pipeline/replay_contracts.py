@@ -2902,6 +2902,279 @@ class AdmittedReplayVerificationGrantV1:
         return canonical_sha256(self)
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayVerificationAssertionResultV1:
+    assertion_id: str
+    kind: str
+    passed: Literal[True]
+    detail: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.assertion_id, "verification assertion id")
+        _identifier(self.kind, "verification assertion kind", lowercase=True)
+        if type(self.passed) is not bool or self.passed is not True:
+            raise ValueError("Replay verification assertion must pass")
+        if type(self.detail) is not str:
+            raise TypeError("Verification assertion detail must be a string")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayVerificationAssertionResultV1:
+        return cls(**_keys(data, cls, "replay verification assertion result"))
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayFinalApkVerificationReceiptV1:
+    schema_version: int
+    admitted_verification_grant_sha256: str
+    admitted_replay_sha256: str
+    completed_patched_apk_receipt: ArtifactRef
+    patched_apk: ArtifactRef
+    target_port_spec_sha256: str
+    stock_apk: ArtifactRef
+    decoder_profile_id: str
+    role: Literal["final_decode"]
+    executor_capability_sha256: str
+    tool_artifact_sha256: str
+    execution_request_sha256: str
+    completed_framework_cache_receipt: ArtifactRef | None
+    framework_cache_manifest: ArtifactRef | None
+    framework_cache_semantic_sha256: str | None
+    final_decoded_manifest: ArtifactRef
+    final_decoded_semantic_sha256: str
+    verifier_decoded_tree_sha256: str
+    source_manifest: ArtifactRef
+    source_semantic_sha256: str
+    assertion_results: tuple[ReplayVerificationAssertionResultV1, ...]
+    operation_proof_count: int
+    verifier_report_sha256: str
+    operation_key: str
+    success: Literal[True]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay final APK verification receipt schema")
+        for value, kind, label in (
+            (
+                self.completed_patched_apk_receipt,
+                "replay-patched-apk-receipt-v1",
+                "completed patched APK receipt",
+            ),
+            (self.patched_apk, "final-apk", "patched APK"),
+            (self.stock_apk, "stock-apk", "stock APK"),
+            (
+                self.final_decoded_manifest,
+                "decoded-tree-manifest-v1",
+                "final decoded manifest",
+            ),
+            (self.source_manifest, "decoded-tree-manifest-v1", "source manifest"),
+        ):
+            if type(value) is not ArtifactRef:
+                raise TypeError(f"{label.capitalize()} must be an exact ArtifactRef")
+            if value.kind != kind:
+                raise ValueError(f"Invalid {label} kind")
+        for value, label in (
+            (self.admitted_verification_grant_sha256, "verification grant SHA-256"),
+            (self.admitted_replay_sha256, "admitted replay SHA-256"),
+            (self.target_port_spec_sha256, "target port specification SHA-256"),
+            (self.executor_capability_sha256, "executor capability SHA-256"),
+            (self.tool_artifact_sha256, "tool artifact SHA-256"),
+            (self.execution_request_sha256, "execution request SHA-256"),
+            (self.final_decoded_semantic_sha256, "final decoded semantic SHA-256"),
+            (self.verifier_decoded_tree_sha256, "verifier decoded-tree SHA-256"),
+            (self.source_semantic_sha256, "source semantic SHA-256"),
+            (self.verifier_report_sha256, "verifier report SHA-256"),
+            (self.operation_key, "operation key"),
+        ):
+            _sha256(value, label)
+        _identifier(self.decoder_profile_id, "decoder profile id", lowercase=True)
+        if self.role != "final_decode":
+            raise ValueError("Replay final APK verification role must be final_decode")
+        framework_values = (
+            self.completed_framework_cache_receipt,
+            self.framework_cache_manifest,
+            self.framework_cache_semantic_sha256,
+        )
+        if any(value is None for value in framework_values) != all(
+            value is None for value in framework_values
+        ):
+            raise ValueError("Framework verification lineage must be wholly present or absent")
+        if self.completed_framework_cache_receipt is not None:
+            if type(self.completed_framework_cache_receipt) is not ArtifactRef:
+                raise TypeError("Completed framework cache receipt must be an exact ArtifactRef")
+            if self.completed_framework_cache_receipt.kind != "replay-framework-cache-receipt-v1":
+                raise ValueError("Invalid completed framework cache receipt kind")
+            if type(self.framework_cache_manifest) is not ArtifactRef:
+                raise TypeError("Framework cache manifest must be an exact ArtifactRef")
+            if self.framework_cache_manifest.kind != "decoded-tree-manifest-v1":
+                raise ValueError("Invalid framework cache manifest kind")
+            if (
+                self.framework_cache_manifest.producer_operation_id
+                != self.completed_framework_cache_receipt.producer_operation_id
+            ):
+                raise ValueError("Framework cache manifest producer does not match receipt")
+            _sha256(
+                self.framework_cache_semantic_sha256,
+                "framework cache semantic SHA-256",
+            )
+        if (
+            self.completed_patched_apk_receipt.producer_operation_id
+            != self.patched_apk.producer_operation_id
+        ):
+            raise ValueError("Completed build receipt and final APK producers do not match")
+        if self.operation_key != self.expected_operation_key:
+            raise ValueError("Replay final APK verification operation identity is invalid")
+        if self.final_decoded_manifest.producer_operation_id != self.operation_key:
+            raise ValueError("Final decoded manifest producer does not match operation")
+        if self.source_manifest.producer_operation_id != self.operation_key:
+            raise ValueError("Source manifest producer does not match operation")
+        if self.final_decoded_manifest.input_hashes != self.execution_input_hashes:
+            raise ValueError("Final decoded manifest input lineage is incomplete")
+        if self.source_manifest.input_hashes != self.execution_input_hashes:
+            raise ValueError("Source manifest input lineage is incomplete")
+        if not isinstance(self.assertion_results, tuple) or any(
+            type(result) is not ReplayVerificationAssertionResultV1
+            for result in self.assertion_results
+        ):
+            raise TypeError("Assertion results must be exact replay verification results")
+        if not self.assertion_results:
+            raise ValueError("Assertion results must not be empty")
+        assertion_ids = tuple(result.assertion_id for result in self.assertion_results)
+        if len(assertion_ids) != len(set(assertion_ids)):
+            raise ValueError("Verification assertion ids must be unique")
+        if type(self.operation_proof_count) is not int or self.operation_proof_count < 0:
+            raise ValueError("Operation proof count must be a nonnegative integer")
+        if type(self.success) is not bool or self.success is not True:
+            raise ValueError("Replay final APK verification receipt requires success")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayFinalApkVerificationReceiptV1:
+        data = _keys(data, cls, "replay final APK verification receipt")
+        return cls(
+            data["schema_version"],
+            data["admitted_verification_grant_sha256"],
+            data["admitted_replay_sha256"],
+            ArtifactRef.from_dict(data["completed_patched_apk_receipt"]),
+            ArtifactRef.from_dict(data["patched_apk"]),
+            data["target_port_spec_sha256"],
+            ArtifactRef.from_dict(data["stock_apk"]),
+            data["decoder_profile_id"],
+            data["role"],
+            data["executor_capability_sha256"],
+            data["tool_artifact_sha256"],
+            data["execution_request_sha256"],
+            (
+                None
+                if data["completed_framework_cache_receipt"] is None
+                else ArtifactRef.from_dict(data["completed_framework_cache_receipt"])
+            ),
+            (
+                None
+                if data["framework_cache_manifest"] is None
+                else ArtifactRef.from_dict(data["framework_cache_manifest"])
+            ),
+            data["framework_cache_semantic_sha256"],
+            ArtifactRef.from_dict(data["final_decoded_manifest"]),
+            data["final_decoded_semantic_sha256"],
+            data["verifier_decoded_tree_sha256"],
+            ArtifactRef.from_dict(data["source_manifest"]),
+            data["source_semantic_sha256"],
+            tuple(
+                ReplayVerificationAssertionResultV1.from_dict(item)
+                for item in _array(data["assertion_results"], "assertion results")
+            ),
+            data["operation_proof_count"],
+            data["verifier_report_sha256"],
+            data["operation_key"],
+            data["success"],
+        )
+
+    @property
+    def framework_input_hashes(self) -> tuple[str, ...]:
+        if self.completed_framework_cache_receipt is None:
+            return ()
+        assert self.framework_cache_manifest is not None
+        assert self.framework_cache_semantic_sha256 is not None
+        return (
+            canonical_sha256(self.completed_framework_cache_receipt),
+            canonical_sha256(self.framework_cache_manifest),
+            self.framework_cache_semantic_sha256,
+        )
+
+    @property
+    def execution_input_hashes(self) -> tuple[str, ...]:
+        return (
+            self.admitted_verification_grant_sha256,
+            self.admitted_replay_sha256,
+            canonical_sha256(self.completed_patched_apk_receipt),
+            canonical_sha256(self.patched_apk),
+            self.target_port_spec_sha256,
+            canonical_sha256(self.stock_apk),
+            canonical_sha256(self.decoder_profile_id),
+            self.executor_capability_sha256,
+            self.tool_artifact_sha256,
+            self.execution_request_sha256,
+            *self.framework_input_hashes,
+        )
+
+    @property
+    def receipt_input_hashes(self) -> tuple[str, ...]:
+        return (
+            *self.execution_input_hashes,
+            canonical_sha256(self.final_decoded_manifest),
+            self.final_decoded_semantic_sha256,
+            self.verifier_decoded_tree_sha256,
+            canonical_sha256(self.source_manifest),
+            self.source_semantic_sha256,
+            *(result.sha256 for result in self.assertion_results),
+            canonical_sha256(self.operation_proof_count),
+            self.verifier_report_sha256,
+        )
+
+    @property
+    def operation_input(self) -> dict[str, object]:
+        value: dict[str, object] = {
+            "schema_version": 1,
+            "admitted_verification_grant_sha256": self.admitted_verification_grant_sha256,
+            "admitted_replay_sha256": self.admitted_replay_sha256,
+            "completed_patched_apk_receipt": self.completed_patched_apk_receipt,
+            "patched_apk": self.patched_apk,
+            "target_port_spec_sha256": self.target_port_spec_sha256,
+            "stock_apk": self.stock_apk,
+            "decoder_profile_id": self.decoder_profile_id,
+            "role": self.role,
+            "executor_capability_sha256": self.executor_capability_sha256,
+            "tool_artifact_sha256": self.tool_artifact_sha256,
+            "execution_request_sha256": self.execution_request_sha256,
+        }
+        if self.completed_framework_cache_receipt is not None:
+            value.update(
+                {
+                    "completed_framework_cache_receipt": self.completed_framework_cache_receipt,
+                    "framework_cache_manifest": self.framework_cache_manifest,
+                    "framework_cache_semantic_sha256": self.framework_cache_semantic_sha256,
+                }
+            )
+        return value
+
+    @property
+    def expected_operation_input_sha256(self) -> str:
+        return canonical_sha256(self.operation_input)
+
+    @property
+    def expected_operation_key(self) -> str:
+        return canonical_sha256(
+            {"kind": "replay_verify_final_apk_v1", "input": self.operation_input}
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
 def admit_replay_verification_grant_v1(
     request: ReplayVerificationGrantRequestV1,
     decision: GateDecision,

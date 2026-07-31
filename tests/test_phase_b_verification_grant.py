@@ -11,8 +11,10 @@ from dfinsta_pipeline.ledger import Ledger
 from dfinsta_pipeline.replay_contracts import (
     AdmittedReplayVerificationGrantV1,
     ReplayBackendCompositionV1,
+    ReplayFinalApkVerificationReceiptV1,
     ReplayPatchedApkReceiptV1,
     ReplayVerificationGrantRequestV1,
+    ReplayVerificationAssertionResultV1,
     admit_replay_verification_grant_v1,
 )
 from tests.test_phase_b_build_contracts import receipt as base_build_receipt
@@ -296,6 +298,189 @@ class ReplayVerificationGrantContractTests(unittest.TestCase):
         for changes in mutations:
             with self.subTest(changes=changes), self.assertRaises((TypeError, ValueError)):
                 replace(self.case.request, executor_capability=replace(capability, **changes))
+
+
+class ReplayFinalApkVerificationReceiptContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.case = VerificationFixture()
+        self.grant = self.case.admit()
+
+    def receipt(self, *, with_framework: bool = False) -> ReplayFinalApkVerificationReceiptV1:
+        completed_framework = None
+        framework_manifest = None
+        framework_semantic = None
+        framework_hashes: tuple[str, ...] = ()
+        if with_framework:
+            framework_key = "6" * 64
+            completed_framework = ArtifactRef(
+                1,
+                "replay-framework-cache-receipt-v1",
+                "7" * 64,
+                1,
+                f"cas://sha256/{'7' * 64}",
+                framework_key,
+                (),
+            )
+            framework_manifest = ArtifactRef(
+                1,
+                "decoded-tree-manifest-v1",
+                "8" * 64,
+                1,
+                f"cas://sha256/{'8' * 64}",
+                framework_key,
+                (),
+            )
+            framework_semantic = "9" * 64
+            framework_hashes = (
+                canonical_sha256(completed_framework),
+                canonical_sha256(framework_manifest),
+                framework_semantic,
+            )
+        result = ReplayVerificationAssertionResultV1(
+            "backend.final-dex-entries", "dex_entry_set_equality", True, "matched"
+        )
+        operation_input = {
+            "schema_version": 1,
+            "admitted_verification_grant_sha256": self.grant.sha256,
+            "admitted_replay_sha256": self.grant.admitted_replay.sha256,
+            "completed_patched_apk_receipt": self.case.completed_receipt,
+            "patched_apk": self.case.receipt.patched_apk,
+            "target_port_spec_sha256": "a" * 64,
+            "stock_apk": self.grant.admitted_replay.request.stock_apk,
+            "decoder_profile_id": self.case.request.decoder_profile_id,
+            "role": "final_decode",
+            "executor_capability_sha256": self.case.request.executor_capability.canonical_identity,
+            "tool_artifact_sha256": self.case.request.tool_artifact_sha256,
+            "execution_request_sha256": "b" * 64,
+        }
+        if with_framework:
+            operation_input.update(
+                {
+                    "completed_framework_cache_receipt": completed_framework,
+                    "framework_cache_manifest": framework_manifest,
+                    "framework_cache_semantic_sha256": framework_semantic,
+                }
+            )
+        key = canonical_sha256(
+            {"kind": "replay_verify_final_apk_v1", "input": operation_input}
+        )
+        inputs = (
+            self.grant.sha256,
+            self.grant.admitted_replay.sha256,
+            canonical_sha256(self.case.completed_receipt),
+            canonical_sha256(self.case.receipt.patched_apk),
+            "a" * 64,
+            canonical_sha256(self.grant.admitted_replay.request.stock_apk),
+            canonical_sha256(self.case.request.decoder_profile_id),
+            self.case.request.executor_capability.canonical_identity,
+            self.case.request.tool_artifact_sha256,
+            "b" * 64,
+            *framework_hashes,
+        )
+        final_manifest = ArtifactRef(
+            1,
+            "decoded-tree-manifest-v1",
+            "c" * 64,
+            1,
+            f"cas://sha256/{'c' * 64}",
+            key,
+            inputs,
+        )
+        source_manifest = replace(final_manifest, sha256="d" * 64, uri=f"cas://sha256/{'d' * 64}")
+        return ReplayFinalApkVerificationReceiptV1(
+            1,
+            self.grant.sha256,
+            self.grant.admitted_replay.sha256,
+            self.case.completed_receipt,
+            self.case.receipt.patched_apk,
+            "a" * 64,
+            self.grant.admitted_replay.request.stock_apk,
+            self.case.request.decoder_profile_id,
+            "final_decode",
+            self.case.request.executor_capability.canonical_identity,
+            self.case.request.tool_artifact_sha256,
+            "b" * 64,
+            completed_framework,
+            framework_manifest,
+            framework_semantic,
+            final_manifest,
+            "e" * 64,
+            "f" * 64,
+            source_manifest,
+            "0" * 64,
+            (result,),
+            1,
+            "1" * 64,
+            key,
+            True,
+        )
+
+    def test_roundtrip_hash_lineage_and_operation_identity(self) -> None:
+        for with_framework in (False, True):
+            value = self.receipt(with_framework=with_framework)
+            with self.subTest(with_framework=with_framework):
+                self.assertEqual(
+                    ReplayFinalApkVerificationReceiptV1.from_dict(asdict(value)), value
+                )
+                self.assertEqual(value.sha256, canonical_sha256(value))
+                self.assertEqual(value.operation_key, value.expected_operation_key)
+                self.assertEqual(
+                    value.final_decoded_manifest.input_hashes,
+                    value.execution_input_hashes,
+                )
+                self.assertEqual(value.source_manifest.input_hashes, value.execution_input_hashes)
+
+    def test_strict_fields_results_framework_and_lineage(self) -> None:
+        value = asdict(self.receipt(with_framework=True))
+        mutations = (
+            {key: item for key, item in value.items() if key != "success"},
+            {**value, "unknown": 1},
+            {**value, "schema_version": True},
+            {**value, "role": "decode"},
+            {**value, "success": 1},
+            {**value, "operation_proof_count": True},
+            {**value, "completed_framework_cache_receipt": None},
+            {**value, "framework_cache_manifest": None},
+            {**value, "framework_cache_semantic_sha256": None},
+            {**value, "assertion_results": []},
+            {
+                **value,
+                "assertion_results": [
+                    {**value["assertion_results"][0], "passed": False}
+                ],
+            },
+            {
+                **value,
+                "source_manifest": {
+                    **value["source_manifest"],
+                    "producer_operation_id": "2" * 64,
+                },
+            },
+            {
+                **value,
+                "final_decoded_manifest": {
+                    **value["final_decoded_manifest"],
+                    "input_hashes": value["final_decoded_manifest"]["input_hashes"][:-1],
+                },
+            },
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises((TypeError, ValueError)):
+                ReplayFinalApkVerificationReceiptV1.from_dict(mutation)
+
+    def test_operation_key_substitution_fails_even_with_matching_manifest_producers(self) -> None:
+        value = asdict(self.receipt())
+        substituted = "2" * 64
+        value["operation_key"] = substituted
+        value["final_decoded_manifest"]["producer_operation_id"] = substituted
+        value["source_manifest"]["producer_operation_id"] = substituted
+        with self.assertRaisesRegex(ValueError, "operation identity"):
+            ReplayFinalApkVerificationReceiptV1.from_dict(value)
+
+
+class ReplayVerificationGrantContractContinuationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.case = VerificationFixture()
 
     def test_all_request_and_decision_relationship_substitutions_fail(self) -> None:
         request_changes = (
