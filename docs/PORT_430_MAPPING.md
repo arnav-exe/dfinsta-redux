@@ -1,6 +1,8 @@
 # Instagram 430 Port State and Mapping
 
-Status: v7 resource-free test DEX graft built, structurally verified as a signed artifact, matched byte-for-byte to the installed base APK, startup-tested, settings-validated, and observed with restart-bounded Feed, Explore, Reels, and Stories differences on the Nothing Phone. Controlled feature verification, release signing, and eligible profile-ad validation remain pending.
+Status: resource-free DEX graft built, structurally verified as a signed artifact, matched byte-for-byte to the installed base APK, startup-tested, settings-validated, and observed with restart-bounded Feed, Explore, Reels, and Stories differences on the Nothing Phone. Release signing has since completed; see "Exact Current Build" below and `dfinsta_source_430/behavior_contract.json`. Controlled feature verification and eligible profile-ad validation remain pending.
+
+This document is the historical 340-to-430 mapping record. For current implementation state use `dfinsta_source_430/` plus its tests; for current orchestration status use `HANDOVER.md` and `docs/SESSION_HANDOFF.md`. The "Next Deterministic Work" list below predates the completed release finalizer and the mechanical Phase B verifier.
 
 Current branch: `port-430`; the relevant implementation and validation commits are listed below.
 
@@ -39,13 +41,17 @@ Apktool emitted resource string-chunk warnings but baksmaled all DEX files succe
 
 ## Exact Current Build
 
+`dfinsta_source_430/behavior_contract.json` is the authority for the current artifact; this section records mapping history and is not updated on every release. As of 2026-07-31 that contract names `current_artifact` `8006a9079eee1a127ef150cef05e3b5591bb8690448650543af532c89b7c0f19` at source commit `1237de8`, signed by `DFInsta Release` certificate `798cda9135bed36ff7d0e3ba8eaf021e883c7dfe55559186c9fdce480345e877`. Release signing is therefore no longer pending.
+
+The v7 build below is retained as mapping evidence. The behavior contract classifies it as `predecessor_artifact`, and the `309d08c` clean-stock build as `reproducibility_build`.
+
 - Artifact: `work/430-graft-v7/dfinsta_430-graft-v7-test.apk`
 - SHA-256: `0aa8acf3a5bd97ad63dc5264b7fa9ddeeec373360c47f6e9ff6b37f8dc768fe4`
 - Installed successfully as an in-place update.
 - Package/version preflight: passed for `430.0.0.53.80` / `383611248`.
 - Static verification: passed.
 - Signed final report: `work/430-graft-v7/dfinsta_430-graft-v7-test.approved-verification.json`, SHA-256 `f8a94b9a3b16a9f4efb559978de2f39426e248ef8dec091ceba5737f284fcd8c`.
-- Signature: v3 with Android Debug certificate SHA-256 `d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1`; release signing remains pending.
+- Signature: v3 with Android Debug certificate SHA-256 `d36892747bf6bafc848f78939746bb856290f9d2cca50dd34adc0c7e133064f1`. Superseded by the release-signed artifact above.
 - Clean-stock reproducibility: `work/430-clean-build/dfinsta_430-clean-unsigned.build.json`, SHA-256 `8e458bee210995389a1fcab69ed6bf9ab404c643d9608459ce5d4dbba1204078`, passed from source commit `309d08c` with six applied operations and zero pre-existing operations.
 
 The signed-artifact verifier proves:
@@ -254,9 +260,12 @@ The current-user 430 Options action appears immediately after Profile navigation
 1. Attempt eligible profile-ad observation without claiming success from ad absence.
 2. Keep the restart/cached-content caveat; no safe full 430 cache invalidator was found.
 3. Repeat core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol.
-4. Integrate zipalign/sign/final verification into the clean-stock refuse-overwrite report.
-5. Establish an approved release-signing policy; the current artifact uses Android Debug.
-6. Add the proven mechanical flow to the durable agentic orchestration layer.
-7. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
+4. Do not reintroduce custom resources or manifest components unless a non-lossy resource packaging method is independently proven.
+
+Completed since this list was written:
+
+- Zipalign/sign/final verification are integrated in `tools/release/finalize.py` under a separate release gate.
+- An approved release-signing policy exists at `release/signing_policy.json`, and the current artifact is release-signed rather than debug-signed.
+- The mechanical flow is implemented as ledger-owned Activities in `src/dfinsta_pipeline/activities.py`; durable Workflow registration is tracked separately in `HANDOVER.md`.
 
 Generated detailed evidence remains under ignored `work/430-port/`.

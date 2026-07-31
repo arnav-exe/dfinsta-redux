@@ -141,3 +141,6 @@ crashlytics-build.properties
 fabric.properties
 
 !/gradle/wrapper/gradle-wrapper.jar
+
+# Generated decoded evidence trees (see AGENTS.md: never patch source)
+/TESTING-PLAYGROUND/

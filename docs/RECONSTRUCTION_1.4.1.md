@@ -49,7 +49,7 @@ The result should describe the intentional 1.4.1 delta, not preserve complete mo
 - Zip-aligned and test-signed the reconstructed APK with the standard Android debug key. `apksigner` verifies v3 signing; test-signed SHA-256 is `ae1f2dc896b709dd013e2ca695e6710407542d850a326283080c2f84b335d1cc`.
 - At this stage, `adb` was available but no device was connected; later entries below record completed installation and behavioral checks.
 - Comparing oracle and delta-generated build trees semantically found zero added, removed, or changed `res/values*` entries.
-- Replaced the complete oracle host overlays with 30 endpoint operations and eight significant-instruction anchored operations. Both manifests apply once and report fully already-applied on a second run.
+- Replaced the complete oracle host overlays with 30 endpoint operations and seven significant-instruction anchored operations. Both manifests apply once and report fully already-applied on a second run.
 - The delta-driven tree, containing target-native stock host classes plus only manifest operations, assembled successfully in 1 minute 56.47 seconds (about 3.17 GB peak RSS). Its unsigned SHA-256 is `a3f607d4ab2937eb7273cc2f295e1e13d92d3a42eef2a26f711dd15ac9a7a8d1` and it passes the same DEX contract as the oracle.
 - Added five fast unit tests covering endpoint replacement/wrapping, significant-instruction matching across debug directives, idempotency, and anchor-count failure. All pass.
 - Consolidated prepare, apply, apktool build, and DEX verification into `tools/reconstruction/rebuild.py`. It deliberately stops at an unsigned artifact and refuses to overwrite outputs.
