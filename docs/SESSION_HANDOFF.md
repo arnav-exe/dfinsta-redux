@@ -1,6 +1,6 @@
 # Session Handoff
 
-Last updated: 2026-07-28
+Last updated: 2026-07-31
 
 ## End Goal
 
@@ -57,6 +57,10 @@ Instagram 340 and 430 are proof fixtures only. They establish reconstruction, ma
 - `5440f73 record tightened verification` (records the final v7 verification evidence)
 - `ca71c63 add reusable apk release finalizer` (adds public signing policy and generic release finalization)
 - `1237de8 bind apk release provenance` (binds versioned prerequisite reports and hardens no-clobber publication)
+- `6bbe173 Extend real replay through final verification` (separate verifier authority, evidence, and adoption harness)
+- `ee70d0b Allow safe generated verification frameworks` (admits safety-scanned apktool scratch cache output)
+- `a07c8d4 Normalize final smali control-flow labels` (semantic final-decode label verification)
+- `609bacf Normalize final 430 smali verification` (removes no-op 430 anchors and verifies reordered methods)
 
 Current branch: `port-430`. It is based on `master` commit `6f1efa7` and contains the implementation/validation commits listed above. The validated `harden-1.4.1` branch was previously fast-forwarded into `master` through `fa90270`.
 
@@ -272,13 +276,17 @@ The first approved 430 attempt from commit `1950343` completed framework/decode/
 
 The fresh 430 replay from commit `5388d8062cb986fd2cb455082a9cbc720e0cc940` succeeded in 1,457.7 seconds. Canonical evidence is `/home/arnav/AI/dfinsta-real-build-430-2/success.json`, SHA-256 `ba16388d7876f5c207694f8fa4e49473d9bcf2f5c479f67d97770857b3fdda78`, in a 7.5 GB root. Framework/decode-v2/apply/build completed on attempt one; all seven operations applied; build receipt is `752994ff2e0a1652a071c804cec1df2e6e6f65f25c809a98d87413ed987205f5`. The final graft is SHA-256 `e2aac4af7c08f7e7d024a9bc477929c5cc4edc447e4d0f28777c4528b66643af`, 135,648,088 bytes, with exact 20-DEX topology, four replacements, one addition, 16,396 retained stock entries, and three stripped signatures. Independent audit verified all 27 reachable producers and `classes20.dex` metadata. All four second calls adopted the same receipts with zero launches and absent retry workspaces. This remains self-issued mechanical evidence, not final re-decode/static verification, signing, publication, authenticated authority, or runtime behavior.
 
-Final verification authority is now separate from replay-v3 so the canonical build receipts remain valid. `AdmittedReplayVerificationGrantV1` embeds the exact admitted replay/build receipt and a second hash-bound gate decision for a final-APK-only decoder capability; ledger recording requires the canonical completed build claim and append-only event history. The unregistered verifier checkpoint descriptor-pins the final APK, captures final-decoded and exact-source CAS closures, runs all compiled static assertions, and emits `ReplayFinalApkVerificationReceiptV1`. Adoption may create a private CAS-rematerialization workspace but launches no subprocess and does not access the repository source. Cancellation waits for decoder cleanup or supervised verification before quarantine. The authority and Activity slices received independent GO; 435 warning-strict tests pass with one expected skip. Real 340/430 verifier evidence remains pending.
+Final verification authority is separate from replay-v3 so the canonical build receipts remain valid. `AdmittedReplayVerificationGrantV1` embeds the exact admitted replay/build receipt and a second hash-bound gate decision for a final-APK-only decoder capability; ledger recording requires the canonical completed build claim and append-only event history. The unregistered verifier checkpoint descriptor-pins the final APK, captures final-decoded and exact-source CAS closures, runs all compiled static assertions, and emits `ReplayFinalApkVerificationReceiptV1`. Adoption rematerializes immutable CAS closures, invokes the production receipt validator exactly once, launches no subprocess, and does not access repository source. The authority, Activity, harness, and final normalization changes received independent GO; 440 warning-strict tests pass with one expected skip.
+
+The first real 340 verifier run failed closed because apktool legitimately generated an isolated `framework/1.apk`; the reviewed fix safety-scans that declared scratch cache without treating it as framework authority. The second failed closed because baksmali renamed/merged control-flow labels and dropped unused aliases; method-scoped target-position normalization accepts those semantic round trips while rejecting changed branch targets. The fresh run from commit `a07c8d46d2504db41eeb94dfad755af8a8f270db` succeeded in 1,619.6 seconds. Canonical evidence `/home/arnav/AI/dfinsta-real-final-verify-340-3/success.json` has SHA-256 `de879d41f8bab0537ee85343e4f1d427c9c31a35b988ceb20291c268c8c4e1da`. Final APK SHA-256 is `998850606965a4b167d859469a35583da3a7756717b07cc94401ec33c8c55aa2`; verification receipt SHA-256 is `c45ce3476bcc387d629ff96ed07487caad967506c104e188527f789bc5037f36`; all 65 assertions and 59 operation proofs passed. Adoption returned the same artifact, called the production validator once, launched zero processes, and left no retry workspace.
+
+The first real 430 verifier run failed closed on two no-op synthetic endpoint labels removed by baksmali and `SettingsWrapper` method reordering. The reviewed target-specific fix replaced those source idempotence labels with comment markers, regenerated all source/resolution hashes, and canonicalized complete smali methods before sorting them by declaration. The fresh run from commit `609bacfa35808947644cde904d2cd6b91d83f076` succeeded in 2,448.3 seconds. Canonical evidence `/home/arnav/AI/dfinsta-real-final-verify-430-2/success.json` has SHA-256 `9179519362038c0f410dacbfdffc670a8987447022f522c4eb17fd818b729a0e`. Final APK SHA-256 is `c18ed84e091e40863f020ad4781e06bd9df10741b22af200445169c7412c3d27`; verification receipt SHA-256 is `bedc94f9652b11bdcd768ff64c968733f921548bc3879c245c75868411b712d6`; all 15 assertions and seven operation proofs passed. Adoption again used one production-validator call, zero launches, the same artifact, and no retry workspace. Both evidence files include exact decisions, replay-v3 authority, separate verification grants, operation claims/events, referenced producer claims, and manifest CAS children. They remain self-issued mechanical direct-Activity evidence, not authenticated production authority, signing, publication, or runtime behavior.
 
 ## Immediate Next Actions
 
-1. Extend the opt-in harness through the separately granted final verifier and prove canonical 340 and 430 re-decode/static-verification receipts plus zero-launch adoption.
+1. Register the reviewed admitted framework/decode/apply/build/verify sequence in the durable Workflow without changing the proven Activity identities.
 2. Complete Phase A authority/deployment evidence with an authenticated trusted-client process, hard process-loss test, and saved replay corpus. Normal Current-version rollout is proven.
-3. Add final-output re-decode/static verifier orchestration, then register the admitted decode/apply/build/verify sequence in the durable Workflow only after the complete effect chain and adoption rules are reviewed.
+3. Keep signing, publication, and runtime behavior behind their separate human gates; the new evidence proves only mechanical direct-Activity execution.
 4. Add Google ADK as bounded read-only Temporal Activities only after deterministic generalization passes; specialist topology follows measured failure clusters.
 5. Use strict 340/430 contrasts to validate fixture and device-executor behavior. Demonstrate promotion on an accepted future release and use that promoted bundle as the next rolling baseline.
 6. Treat profile-ad runtime validation as inventory-dependent and non-blocking for pipeline implementation.
