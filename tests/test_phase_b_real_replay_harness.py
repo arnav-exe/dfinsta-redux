@@ -1,24 +1,36 @@
 import os
+import sys
 import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
 
-from dfinsta_pipeline.replay_contracts import ToolchainProfileV3
+from dfinsta_pipeline.contracts import canonical_sha256
+from dfinsta_pipeline.replay_contracts import (
+    ToolchainProfileV3,
+    admit_replay_verification_grant_v1,
+)
 from tests.integration import test_real_replay_harness as harness
 from tests.integration.test_real_replay_harness import (
     API36_FRAMEWORK_SHA256,
     APKTOOL_SHA256,
     JAVA_SHA256,
     REPOSITORY_ROOT,
+    TARGET_EVIDENCE_KEYS,
     TARGETS,
     _put,
+    _verification_request_and_decision,
     admit_and_record,
     build_profile,
+    final_decode_capability,
+    process_stage_order,
     select_targets,
+    stage_launch_expectations,
+    stage_order,
     validate_run_root,
 )
 from tests.test_phase_b_replay_contracts import fixture_v3
+from tests.test_phase_b_verification_grant import VerificationFixture
 
 
 class RealReplayHarnessFastTests(unittest.TestCase):
@@ -74,6 +86,134 @@ class RealReplayHarnessFastTests(unittest.TestCase):
                 else:
                     self.assertEqual(profile.frameworks, ())
 
+    def test_final_decode_capability_is_exact_for_both_targets(self) -> None:
+        for target in (340, 430):
+            with self.subTest(target=target):
+                capability = final_decode_capability(JAVA_SHA256, target)
+                self.assertEqual(
+                    capability.capability_id,
+                    f"real-replay-{target}-final-apk-decode-java",
+                )
+                self.assertEqual(capability.executable_sha256, JAVA_SHA256)
+                self.assertEqual(
+                    capability.argv_template,
+                    (
+                        "-jar",
+                        "{tool}",
+                        "d",
+                        "-f",
+                        "{input_apk}",
+                        "-o",
+                        "{decoded_tree}",
+                        "-p",
+                        "{framework_dir}",
+                    ),
+                )
+                self.assertEqual(
+                    capability.path_arguments,
+                    ("decoded_tree", "framework_dir", "input_apk", "tool"),
+                )
+                self.assertEqual(capability.input_kinds, ("final-apk",))
+                self.assertEqual(capability.output_kind, "decoded-tree")
+                self.assertEqual(capability.allowed_environment, ())
+                self.assertEqual(capability.fixed_environment, ())
+                self.assertEqual(
+                    capability.allowed_mutation_paths, ("framework", "output")
+                )
+
+    def test_verification_decision_and_grant_bind_exact_completed_build(self) -> None:
+        case = VerificationFixture()
+        for target in (340, 430):
+            with self.subTest(target=target):
+                request, decision = _verification_request_and_decision(
+                    TARGETS[target],
+                    case.admitted,
+                    case.completed_receipt,
+                    case.receipt,
+                )
+                grant = admit_replay_verification_grant_v1(
+                    request,
+                    decision,
+                    case.admitted,
+                    case.receipt,
+                    lambda candidate: candidate == decision,
+                    case.resolve,
+                )
+                self.assertEqual(request.admitted_replay_sha256, case.admitted.sha256)
+                self.assertEqual(
+                    request.completed_patched_apk_receipt, case.completed_receipt
+                )
+                self.assertEqual(request.patched_apk, case.receipt.patched_apk)
+                self.assertEqual(
+                    request.tool_artifact_sha256,
+                    case.admitted.profile.tool_for_role("decode").artifact_sha256,
+                )
+                self.assertEqual(request.timeout_seconds, 300)
+                self.assertNotEqual(request.gate_id, case.admitted.run_spec.gate_id)
+                self.assertNotEqual(decision.decision_id, case.admitted.decision.decision_id)
+                self.assertEqual(decision.gate_id, request.gate_id)
+                self.assertEqual(
+                    (decision.subject_sha256, decision.admission_sha256, decision.prepared_sha256),
+                    (request.sha256, request.sha256, request.sha256),
+                )
+                self.assertEqual(grant.request, request)
+                self.assertEqual(grant.decision, decision)
+                self.assertEqual(grant.admitted_replay, case.admitted)
+                self.assertEqual(grant.patched_apk_receipt, case.receipt)
+                self.assertEqual(grant.sha256, canonical_sha256(grant))
+
+    def test_stage_order_launch_expectations_and_evidence_schema(self) -> None:
+        self.assertEqual(stage_order(TARGETS[340]), ("decode", "apply", "build", "verify"))
+        self.assertEqual(
+            stage_order(TARGETS[430]),
+            ("framework", "decode", "apply", "build", "verify"),
+        )
+        self.assertEqual(process_stage_order(TARGETS[340]), ("decode", "build", "verify"))
+        self.assertEqual(
+            process_stage_order(TARGETS[430]),
+            ("framework", "decode", "build", "verify"),
+        )
+        self.assertEqual(
+            stage_launch_expectations(TARGETS[340]),
+            {"decode": 1, "apply": 0, "build": 1, "verify": 1},
+        )
+        self.assertEqual(
+            stage_launch_expectations(TARGETS[430]),
+            {"framework": 1, "decode": 1, "apply": 0, "build": 1, "verify": 1},
+        )
+        self.assertEqual(
+            TARGET_EVIDENCE_KEYS,
+            frozenset(
+                {
+                    "target",
+                    "artifact_identities",
+                    "semantic_hashes",
+                    "profile",
+                    "capabilities",
+                    "build_capability_status",
+                    "verification_capability_status",
+                    "admission_scope",
+                    "verification_admission_scope",
+                    "admitted_replay_sha256",
+                    "self_issued_test_authority_refs",
+                    "verification_authority",
+                    "receipt_refs",
+                    "manifests",
+                    "source_evidence",
+                    "operation_results",
+                    "patched_apk",
+                    "final_verification",
+                    "ordered_outcomes",
+                    "adoption_proof",
+                    "ledger",
+                    "verification_operation_claim",
+                    "referenced_artifact_producer_claims",
+                    "referenced_manifest_cas_children",
+                    "process_records",
+                }
+            ),
+        )
+
     def test_authority_round_trip_records_admit_replay_v3_result(self) -> None:
         case = fixture_v3(with_framework=True, framework_package_ids=(1,))
         with tempfile.TemporaryDirectory() as temporary:
@@ -125,6 +265,8 @@ class RealReplayHarnessFastTests(unittest.TestCase):
             validate_run_root("relative/path")
         with self.assertRaises(ValueError):
             validate_run_root(str(REPOSITORY_ROOT / "real-replay-output"))
+        with self.assertRaises(ValueError):
+            validate_run_root(str(REPOSITORY_ROOT.parent))
         with tempfile.TemporaryDirectory() as temporary:
             existing = Path(temporary) / "existing"
             existing.mkdir()
@@ -138,6 +280,31 @@ class RealReplayHarnessFastTests(unittest.TestCase):
             getattr(harness.RealReplayIntegrationTests, "__unittest_skip__", False),
             os.environ.get("DFINSTA_RUN_REAL_REPLAY") != "1",
         )
+
+    def test_outcome_markers_are_atomic_and_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_root = Path(temporary)
+            success = harness._publish_outcome(run_root, "success.json", {"ok": True})
+            with self.assertRaises(FileExistsError):
+                harness._publish_outcome(run_root, "failure.json", {"ok": False})
+            self.assertTrue(success.is_file())
+            self.assertFalse((run_root / "failure.json").exists())
+            self.assertEqual(
+                tuple(run_root.glob(".*.tmp")),
+                (),
+            )
+
+    def test_integration_module_alias_prevents_duplicate_unittest_discovery(self) -> None:
+        self.assertIs(
+            sys.modules["integration.test_real_replay_harness"],
+            sys.modules["tests.integration.test_real_replay_harness"],
+        )
+        self.assertIs(
+            sys.modules["test_real_replay_harness"],
+            sys.modules["tests.integration.test_real_replay_harness"],
+        )
+        suite = unittest.defaultTestLoader.loadTestsFromModule(harness)
+        self.assertEqual(suite.countTestCases(), 1)
 
 
 if __name__ == "__main__":

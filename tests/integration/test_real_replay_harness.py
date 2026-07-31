@@ -17,10 +17,12 @@ from typing import Any, Callable
 from unittest import mock
 
 
-if __name__ == "integration.test_real_replay_harness":
-    sys.modules.setdefault("tests.integration.test_real_replay_harness", sys.modules[__name__])
-elif __name__ == "tests.integration.test_real_replay_harness":
-    sys.modules.setdefault("integration.test_real_replay_harness", sys.modules[__name__])
+for _module_alias in (
+    "test_real_replay_harness",
+    "integration.test_real_replay_harness",
+    "tests.integration.test_real_replay_harness",
+):
+    sys.modules.setdefault(_module_alias, sys.modules[__name__])
 
 from dfinsta_pipeline import activities
 from dfinsta_pipeline.activities import (
@@ -29,6 +31,7 @@ from dfinsta_pipeline.activities import (
     replay_build_patched_apk_checkpoint_activity,
     replay_decode_checkpoint_activity,
     replay_install_frameworks_checkpoint_activity,
+    replay_verify_final_apk_checkpoint_activity,
     runtime,
 )
 from dfinsta_pipeline.contracts import (
@@ -42,6 +45,7 @@ from dfinsta_pipeline.executor import ExecutorCapability
 from dfinsta_pipeline.ledger import Ledger
 from dfinsta_pipeline.port_contracts import IntentSpecV2, ResolutionSpecV3
 from dfinsta_pipeline.replay_contracts import (
+    AdmittedReplayVerificationGrantV1,
     AdmittedReplayV3,
     CapabilityBinding,
     FrameworkArtifact,
@@ -49,16 +53,19 @@ from dfinsta_pipeline.replay_contracts import (
     GatePreparedEnvelopeV2,
     ReplayDecodedTreeReceiptV1,
     ReplayDecodedTreeReceiptV2,
+    ReplayFinalApkVerificationReceiptV1,
     ReplayFrameworkCacheReceiptV1,
     ReplayPatchedTreeReceiptV1,
     ReplayPatchedApkReceiptV1,
     ReplayRequestV2,
     ReplayRunSpecV2,
+    ReplayVerificationGrantRequestV1,
     RoleExecutionPlan,
     SourceManifestV1,
     ToolArtifact,
     ToolRequirement,
     ToolchainProfileV3,
+    admit_replay_verification_grant_v1,
     admit_replay_v3,
 )
 
@@ -110,6 +117,36 @@ TARGETS = {
         API36_FRAMEWORK_SHA256,
     ),
 }
+
+TARGET_EVIDENCE_KEYS = frozenset(
+    {
+        "target",
+        "artifact_identities",
+        "semantic_hashes",
+        "profile",
+        "capabilities",
+        "build_capability_status",
+        "verification_capability_status",
+        "admission_scope",
+        "verification_admission_scope",
+        "admitted_replay_sha256",
+        "self_issued_test_authority_refs",
+        "verification_authority",
+        "receipt_refs",
+        "manifests",
+        "source_evidence",
+        "operation_results",
+        "patched_apk",
+        "final_verification",
+        "ordered_outcomes",
+        "adoption_proof",
+        "ledger",
+        "verification_operation_claim",
+        "referenced_artifact_producer_claims",
+        "referenced_manifest_cas_children",
+        "process_records",
+    }
+)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -225,6 +262,45 @@ def _capability(
             allowed_mutations,
         )
     raise ValueError(f"Unsupported role: {role}")
+
+
+def final_decode_capability(java_sha256: str, target: int) -> ExecutorCapability:
+    return ExecutorCapability(
+        1,
+        f"real-replay-{target}-final-apk-decode-java",
+        java_sha256,
+        (
+            "-jar",
+            "{tool}",
+            "d",
+            "-f",
+            "{input_apk}",
+            "-o",
+            "{decoded_tree}",
+            "-p",
+            "{framework_dir}",
+        ),
+        ("decoded_tree", "framework_dir", "input_apk", "tool"),
+        ("final-apk",),
+        "decoded-tree",
+        (),
+        (),
+        ("framework", "output"),
+    )
+
+
+def stage_order(config: TargetConfig) -> tuple[str, ...]:
+    prefix = ("framework",) if config.framework_sha256 is not None else ()
+    return (*prefix, "decode", "apply", "build", "verify")
+
+
+def process_stage_order(config: TargetConfig) -> tuple[str, ...]:
+    prefix = ("framework",) if config.framework_sha256 is not None else ()
+    return (*prefix, "decode", "build", "verify")
+
+
+def stage_launch_expectations(config: TargetConfig) -> dict[str, int]:
+    return {stage: int(stage in process_stage_order(config)) for stage in stage_order(config)}
 
 
 def build_profile(
@@ -484,24 +560,20 @@ def _manifest_evidence(reference: ArtifactRef) -> dict[str, Any]:
 
 def _ledger_evidence(ledger: Ledger) -> dict[str, Any]:
     with ledger._connection() as connection:
-        claims = connection.execute(
-            "SELECT operation_key, kind, input_sha256, owner_token, owner_attempt, status, output_json "
-            "FROM operation_claims ORDER BY operation_key"
-        ).fetchall()
-        events = connection.execute(
-            "SELECT event_id, operation_key, kind, input_sha256, status, output_json "
-            "FROM operation_events ORDER BY event_id"
-        ).fetchall()
-    return {
-        "claims": [
-            dict(zip(("operation_key", "kind", "input_sha256", "owner", "owner_attempt", "status", "output_json"), row))
-            for row in claims
-        ],
-        "events": [
-            dict(zip(("event_id", "operation_key", "kind", "input_sha256", "status", "output_json"), row))
-            for row in events
-        ],
-    }
+        def rows(table: str, order_by: str) -> list[dict[str, Any]]:
+            cursor = connection.execute(f"SELECT * FROM {table} ORDER BY {order_by}")
+            columns = tuple(column[0] for column in cursor.description)
+            return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+
+        return {
+            "claims": rows("operation_claims", "operation_key"),
+            "events": rows("operation_events", "event_id"),
+            "decisions": rows("decisions", "decision_id"),
+            "admitted_replays_v3": rows("admitted_replays_v3", "run_id"),
+            "admitted_replay_verification_grants_v1": rows(
+                "admitted_replay_verification_grants_v1", "grant_id"
+            ),
+        }
 
 
 def _artifact_refs(value: object) -> tuple[ArtifactRef, ...]:
@@ -524,7 +596,9 @@ def _artifact_refs(value: object) -> tuple[ArtifactRef, ...]:
     return tuple(dict.fromkeys(found))
 
 
-def _require_completed_producers(ledger: Ledger, values: object) -> list[dict[str, str]]:
+def _require_completed_referenced_artifact_producers(
+    ledger: Ledger, values: object
+) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
     references = _artifact_refs(values)
     with ledger._connection() as connection:
         claims = {
@@ -534,6 +608,7 @@ def _require_completed_producers(ledger: Ledger, values: object) -> list[dict[st
             ).fetchall()
         }
     evidence = []
+    cas_children: list[dict[str, object]] = []
     for reference in references:
         status = claims.get(reference.producer_operation_id)
         if status != "completed":
@@ -548,14 +623,141 @@ def _require_completed_producers(ledger: Ledger, values: object) -> list[dict[st
                 "status": status,
             }
         )
-    return sorted(
-        evidence,
-        key=lambda item: (item["producer_operation_id"], item["artifact_sha256"]),
+        if reference.kind == "decoded-tree-manifest-v1":
+            manifest = load_decoded_tree(runtime().store, reference)
+            for entry in manifest.entries:
+                if entry.kind != "file":
+                    continue
+                assert entry.sha256 is not None and entry.size is not None
+                runtime().store.read_blob(entry.sha256, entry.size)
+                cas_children.append(
+                    {
+                        "manifest_sha256": reference.sha256,
+                        "manifest_producer_operation_id": reference.producer_operation_id,
+                        "manifest_producer_status": status,
+                        "path": entry.path,
+                        "sha256": entry.sha256,
+                        "size": entry.size,
+                    }
+                )
+    return (
+        sorted(
+            evidence,
+            key=lambda item: (item["producer_operation_id"], item["artifact_sha256"]),
+        ),
+        sorted(
+            cas_children,
+            key=lambda item: (
+                str(item["manifest_sha256"]),
+                str(item["path"]).encode("utf-8"),
+            ),
+        ),
     )
 
 
 def _authority_timestamp(target: int) -> str:
     return {340: "2026-01-01T03:40:00Z", 430: "2026-01-01T04:30:00Z"}[target]
+
+
+def _verification_request_and_decision(
+    config: TargetConfig,
+    admitted: AdmittedReplayV3,
+    completed_build: ArtifactRef,
+    build_receipt: ReplayPatchedApkReceiptV1,
+) -> tuple[ReplayVerificationGrantRequestV1, GateDecision]:
+    request = ReplayVerificationGrantRequestV1(
+        1,
+        f"real-replay-{config.target}-final-verification-grant",
+        admitted.run_spec.run_id,
+        f"real-replay-{config.target}-final-verification-gate",
+        admitted.run_spec.allowed_actor,
+        admitted.run_spec.policy_revision,
+        admitted.sha256,
+        completed_build,
+        build_receipt.patched_apk,
+        admitted.profile.profile_id,
+        admitted.profile.tool_for_role("decode").artifact_sha256,
+        admitted.plan("decode").timeout_seconds,
+        final_decode_capability(JAVA_SHA256, config.target),
+    )
+    decision = GateDecision(
+        1,
+        f"real-replay-{config.target}-final-verification-decision",
+        f"real-replay-{config.target}-final-verification-decision-attempt",
+        request.allowed_actor,
+        request.run_id,
+        request.gate_id,
+        request.sha256,
+        request.sha256,
+        request.sha256,
+        request.policy_revision,
+        "approve",
+        (
+            "Separately gate-approved self-issued test-only final APK mechanical "
+            "verification; not authenticated, production, signing, or runtime authority"
+        ),
+        _authority_timestamp(config.target),
+    )
+    return request, decision
+
+
+def _create_verification_authority(
+    config: TargetConfig,
+    admitted: AdmittedReplayV3,
+    completed_build: ArtifactRef,
+    build_receipt: ReplayPatchedApkReceiptV1,
+) -> tuple[AdmittedReplayVerificationGrantV1, dict[str, ArtifactRef]]:
+    ledger = runtime().ledger
+    exact_completed_build = ledger.require_completed_operation(
+        build_receipt.operation_key,
+        "replay_build_patched_apk_v1",
+        build_receipt.expected_operation_input_sha256,
+    )
+    if exact_completed_build != completed_build:
+        raise AssertionError("Verification authority requires the exact completed build claim")
+    request, decision = _verification_request_and_decision(
+        config, admitted, completed_build, build_receipt
+    )
+    prefix = f"real-replay-{config.target}-final-verification"
+    request_ref = _canonical_artifact(
+        "replay-verification-grant-request-v1",
+        request,
+        f"{prefix}-request",
+        (
+            admitted.sha256,
+            canonical_sha256(completed_build),
+            canonical_sha256(build_receipt.patched_apk),
+            request.executor_capability.canonical_identity,
+        ),
+    )
+    decision_ref = _canonical_artifact(
+        "gate-decision",
+        decision,
+        f"{prefix}-decision",
+        (request.sha256,),
+    )
+    ledger.record_decision(decision)
+    grant = admit_replay_verification_grant_v1(
+        request,
+        decision,
+        admitted,
+        build_receipt,
+        ledger.has_decision,
+        runtime().store.read_bytes,
+    )
+    grant_ref = _canonical_artifact(
+        "admitted-replay-verification-grant-v1",
+        grant,
+        f"{prefix}-grant",
+        (request_ref.sha256, decision_ref.sha256, completed_build.sha256),
+    )
+    ledger.record_admitted_replay_verification_grant_v1(grant)
+    grant = ledger.require_admitted_replay_verification_grant_v1(grant)
+    return grant, {
+        "verification_request": request_ref,
+        "verification_decision": decision_ref,
+        "verification_grant": grant_ref,
+    }
 
 
 def _load_target_inputs(config: TargetConfig) -> dict[str, Any]:
@@ -800,15 +1002,20 @@ def _create_authority(config: TargetConfig, inputs: dict[str, Any]) -> tuple[Adm
     return admitted, refs
 
 
-async def _invoke(stage: str, admitted: AdmittedReplayV3, owner: str) -> ArtifactRef:
+async def _invoke(
+    stage: str,
+    authority: AdmittedReplayV3 | AdmittedReplayVerificationGrantV1,
+    owner: str,
+) -> ArtifactRef:
     function = {
         "framework": replay_install_frameworks_checkpoint_activity,
         "decode": replay_decode_checkpoint_activity,
         "apply": replay_apply_tree_checkpoint_activity,
         "build": replay_build_patched_apk_checkpoint_activity,
+        "verify": replay_verify_final_apk_checkpoint_activity,
     }[stage]
     with mock.patch.object(activities, "_activity_owner", return_value=owner):
-        return await function(admitted)
+        return await function(authority)
 
 
 async def _run_target(
@@ -831,20 +1038,31 @@ async def _run_target(
     )
     inputs = _load_target_inputs(config)
     admitted, authority_refs = _create_authority(config, inputs)
-    stages = (
-        ("framework", "decode", "apply", "build")
-        if config.target == 430
-        else ("decode", "apply", "build")
-    )
+    stages = stage_order(config)
     outcomes: list[dict[str, Any]] = []
     receipt_refs: dict[str, ArtifactRef] = {}
     adoption: list[dict[str, Any]] = []
-    expected_launches = {"framework": 1, "decode": 1, "apply": 0, "build": 1}
+    expected_launches = stage_launch_expectations(config)
+    verification_grant: AdmittedReplayVerificationGrantV1 | None = None
+    verification_authority_refs: dict[str, ArtifactRef] = {}
+    build_receipt: ReplayPatchedApkReceiptV1 | None = None
     for stage in stages:
+        authority: AdmittedReplayV3 | AdmittedReplayVerificationGrantV1 = admitted
+        if stage == "verify":
+            build_receipt = ReplayPatchedApkReceiptV1.from_dict(
+                strict_json_bytes(runtime().store.read_bytes(receipt_refs["build"]))
+            )
+            verification_grant, verification_authority_refs = (
+                _create_verification_authority(
+                    config, admitted, receipt_refs["build"], build_receipt
+                )
+            )
+            authority_refs.update(verification_authority_refs)
+            authority = verification_grant
         first_owner = f"real-replay-{config.target}-{stage}-primary"
         adopted_owner = f"real-replay-{config.target}-{stage}-adopt"
         before_launches = len(launcher.records)
-        first = await _invoke(stage, admitted, first_owner)
+        first = await _invoke(stage, authority, first_owner)
         primary_launches = len(launcher.records) - before_launches
         if primary_launches != expected_launches[stage]:
             raise AssertionError(
@@ -852,11 +1070,35 @@ async def _run_target(
                 f"expected {expected_launches[stage]}"
             )
         operation_dir = runtime().attempts_root / first.producer_operation_id
-        retry_workspace = operation_dir / hashlib.sha256(adopted_owner.encode("utf-8")).hexdigest()
+        workspace_name = hashlib.sha256(adopted_owner.encode("utf-8")).hexdigest()
+        if stage == "verify":
+            workspace_name = f"validate-{workspace_name}"
+        retry_workspace = operation_dir / workspace_name
         before_adoption_launches = len(launcher.records)
-        second = await _invoke(stage, admitted, adopted_owner)
+        validation_calls = 0
+        if stage == "verify":
+            validator = activities._validate_replay_final_apk_verification_receipt
+
+            def validate_adoption(*args: object, **kwargs: object) -> object:
+                nonlocal validation_calls
+                validation_calls += 1
+                return validator(*args, **kwargs)
+
+            with mock.patch.object(
+                activities,
+                "_validate_replay_final_apk_verification_receipt",
+                side_effect=validate_adoption,
+            ):
+                second = await _invoke(stage, authority, adopted_owner)
+        else:
+            second = await _invoke(stage, authority, adopted_owner)
         adoption_launches = len(launcher.records) - before_adoption_launches
-        if first != second or adoption_launches != 0 or retry_workspace.exists():
+        if (
+            first != second
+            or adoption_launches != 0
+            or retry_workspace.exists()
+            or (stage == "verify" and validation_calls != 1)
+        ):
             raise AssertionError(f"{stage} did not adopt its completed artifact cleanly")
         receipt_refs[stage] = first
         outcomes.extend(
@@ -872,6 +1114,8 @@ async def _run_target(
                 "new_process_launches": adoption_launches,
                 "retry_workspace": str(retry_workspace),
                 "retry_workspace_absent": not retry_workspace.exists(),
+                "private_validation_workspace_permitted": stage == "verify",
+                "production_receipt_validation_calls": validation_calls,
             }
         )
 
@@ -909,12 +1153,20 @@ async def _run_target(
             "framework",
             "--use-aapt1",
         ),
+        "verify": (
+            str(java),
+            "-jar",
+            "tool",
+            "d",
+            "-f",
+            "input.apk",
+            "-o",
+            "output",
+            "-p",
+            "framework",
+        ),
     }
-    expected_process_stages = (
-        ("framework", "decode", "build")
-        if config.target == 430
-        else ("decode", "build")
-    )
+    expected_process_stages = process_stage_order(config)
     if len(launcher.records) != len(expected_process_stages):
         raise AssertionError("Unexpected total replay process count")
     for stage, record in zip(expected_process_stages, launcher.records, strict=True):
@@ -952,8 +1204,10 @@ async def _run_target(
     apply_receipt = ReplayPatchedTreeReceiptV1.from_dict(
         strict_json_bytes(runtime().store.read_bytes(receipt_refs["apply"]))
     )
-    build_receipt = ReplayPatchedApkReceiptV1.from_dict(
-        strict_json_bytes(runtime().store.read_bytes(receipt_refs["build"]))
+    if build_receipt is None or verification_grant is None:
+        raise AssertionError("Final verification authority was not constructed")
+    verification_receipt = ReplayFinalApkVerificationReceiptV1.from_dict(
+        strict_json_bytes(runtime().store.read_bytes(receipt_refs["verify"]))
     )
     if len(apply_receipt.operation_results) != config.operation_count:
         raise AssertionError("Apply receipt operation count does not match the target table")
@@ -961,7 +1215,7 @@ async def _run_target(
         raise AssertionError("Real replay did not apply every operation")
     if apply_receipt.source_admission.file_count != config.source_file_count:
         raise AssertionError("Apply source evidence file count does not match the target table")
-    producer_claims = _require_completed_producers(
+    producer_claims, cas_child_evidence = _require_completed_referenced_artifact_producers(
         runtime().ledger,
         (
             admitted,
@@ -971,12 +1225,19 @@ async def _run_target(
             decode_receipt,
             apply_receipt,
             build_receipt,
+            verification_grant,
+            verification_receipt,
         ),
     )
     ledger = _ledger_evidence(runtime().ledger)
     if any(claim["status"] != "completed" for claim in ledger["claims"]):
         raise AssertionError("Not every replay operation completed")
-    return {
+    verification_claim = next(
+        claim
+        for claim in ledger["claims"]
+        if claim["operation_key"] == verification_receipt.operation_key
+    )
+    evidence = {
         "target": config.target,
         "artifact_identities": {name: asdict(reference) for name, reference in sorted(authority_refs.items())},
         "semantic_hashes": {
@@ -988,14 +1249,29 @@ async def _run_target(
         "profile": asdict(admitted.profile),
         "capabilities": [asdict(capability) for capability in admitted.executor_capabilities],
         "build_capability_status": "mechanically-executed-test-only-not-production-authority",
+        "verification_capability_status": "mechanical-final-apk-direct-activity-test-only-not-signing-or-runtime-authority",
         "admission_scope": "self-issued-test-only-mechanical-not-authenticated",
+        "verification_admission_scope": "separately-gate-approved-self-issued-test-only-mechanical-not-authenticated-or-production",
         "admitted_replay_sha256": admitted.sha256,
         "self_issued_test_authority_refs": {name: asdict(authority_refs[name]) for name in ("gate_admission", "gate_prepared", "run_spec", "request", "decision", "admitted")},
+        "verification_authority": {
+            "request_sha256": verification_grant.request.sha256,
+            "decision_sha256": canonical_sha256(verification_grant.decision),
+            "grant_sha256": verification_grant.sha256,
+            "gate_id": verification_grant.request.gate_id,
+            "decision_id": verification_grant.decision.decision_id,
+            "refs": {
+                name: asdict(reference)
+                for name, reference in sorted(verification_authority_refs.items())
+            },
+        },
         "receipt_refs": {name: asdict(reference) for name, reference in receipt_refs.items()},
         "manifests": {
             "framework": framework_manifest,
             "decoded": _manifest_evidence(decode_receipt.decoded_tree_manifest),
             "patched": _manifest_evidence(apply_receipt.patched_tree_manifest),
+            "final_decoded": _manifest_evidence(verification_receipt.final_decoded_manifest),
+            "verification_source": _manifest_evidence(verification_receipt.source_manifest),
         },
         "source_evidence": asdict(apply_receipt.source_admission),
         "operation_results": [asdict(result) for result in apply_receipt.operation_results],
@@ -1004,12 +1280,31 @@ async def _run_target(
             "final": asdict(build_receipt.patched_apk),
             "composition": asdict(build_receipt.composition),
         },
+        "final_verification": {
+            "completed_build_receipt": asdict(verification_receipt.completed_patched_apk_receipt),
+            "final_apk": asdict(verification_receipt.patched_apk),
+            "admitted_replay_sha256": verification_receipt.admitted_replay_sha256,
+            "verification_grant_sha256": verification_receipt.admitted_verification_grant_sha256,
+            "verification_request_sha256": verification_grant.request.sha256,
+            "verification_decision_sha256": canonical_sha256(verification_grant.decision),
+            "assertion_results": [asdict(result) for result in verification_receipt.assertion_results],
+            "assertion_count": len(verification_receipt.assertion_results),
+            "operation_proof_count": verification_receipt.operation_proof_count,
+            "verifier_report_sha256": verification_receipt.verifier_report_sha256,
+            "operation_key": verification_receipt.operation_key,
+            "success": verification_receipt.success,
+        },
         "ordered_outcomes": outcomes,
         "adoption_proof": adoption,
         "ledger": ledger,
-        "artifact_producer_claims": producer_claims,
+        "verification_operation_claim": verification_claim,
+        "referenced_artifact_producer_claims": producer_claims,
+        "referenced_manifest_cas_children": cas_child_evidence,
         "process_records": launcher.records,
     }
+    if frozenset(evidence) != TARGET_EVIDENCE_KEYS:
+        raise AssertionError("Target evidence schema drifted")
+    return evidence
 
 
 def _write_exclusive(path: Path, value: object) -> None:
@@ -1018,6 +1313,19 @@ def _write_exclusive(path: Path, value: object) -> None:
         stream.write(data)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def _publish_outcome(run_root: Path, marker_name: str, value: object) -> Path:
+    path = run_root / marker_name
+    temporary = run_root / f".{marker_name}.{os.getpid()}.{time.time_ns()}.tmp"
+    claim = run_root / ".outcome-claimed"
+    try:
+        _write_exclusive(temporary, value)
+        _write_exclusive(claim, {"marker": marker_name})
+        os.link(temporary, path)
+        return path
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 async def run_real_replay() -> Path:
@@ -1047,6 +1355,7 @@ async def run_real_replay() -> Path:
             "schema_version": 1,
             "status": "mechanical-direct-activity-success-not-production-authority",
             "admission_scope": "self-issued-test-only-mechanical-not-authenticated",
+            "verification_scope": "separately-gate-approved-self-issued-test-only-mechanical-direct-activity-not-authenticated-production-signing-or-runtime-authority",
             "targets": list(selected),
             "authority_timestamps": {str(target): _authority_timestamp(target) for target in selected},
             "tool_versions": versions,
@@ -1059,8 +1368,7 @@ async def run_real_replay() -> Path:
             "git": {"head": git_head, "status_short": git_status},
             "target_evidence": target_evidence,
         }
-        summary_path = run_root / "success.json"
-        _write_exclusive(summary_path, summary)
+        summary_path = _publish_outcome(run_root, "success.json", summary)
         return summary_path
     except BaseException as error:
         try:
@@ -1079,7 +1387,7 @@ async def run_real_replay() -> Path:
             "diagnostics": diagnostics,
         }
         try:
-            _write_exclusive(run_root / "failure.json", failure)
+            _publish_outcome(run_root, "failure.json", failure)
         except BaseException as write_error:
             error.add_note(f"Could not write exclusive failure marker: {write_error}")
         raise
