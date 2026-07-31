@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 import tempfile
@@ -8,6 +9,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+from temporalio import activity
 
 from dfinsta_pipeline import activities
 from dfinsta_pipeline.activities import (
@@ -1243,6 +1246,51 @@ class FrameworkReplayDecodeActivityTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 activities._strict_replay_decoded_tree_receipt_v2(payload)
+
+
+class ReplayDecodeRegistrationTests(unittest.TestCase):
+    """The decode checkpoint is the only replay Activity that lacked this tripwire.
+
+    The other four assert exclusion from worker.py and workflow.py, so registering
+    any of them fails loudly. Without this test, decode could be registered silently
+    and the deliberate registration gap would be inconsistently enforced.
+    """
+
+    def test_temporal_metadata_exists_but_worker_and_workflow_exclude_activity(self) -> None:
+        definition = activity._Definition.from_callable(  # type: ignore[attr-defined]
+            replay_decode_checkpoint_activity
+        )
+        self.assertIsNotNone(definition)
+        self.assertEqual(definition.name, "replay_decode_checkpoint_activity")
+        root = Path(__file__).resolve().parents[1]
+        for relative in ("src/dfinsta_pipeline/worker.py", "src/dfinsta_pipeline/workflow.py"):
+            self.assertNotIn(
+                "replay_decode_checkpoint_activity",
+                (root / relative).read_text(encoding="utf-8"),
+            )
+        self.assertEqual(
+            tuple(inspect.signature(replay_decode_checkpoint_activity).parameters),
+            ("candidate",),
+        )
+
+    def test_every_replay_checkpoint_activity_has_an_exclusion_tripwire(self) -> None:
+        """Guards the guard: all five checkpoints must be covered symmetrically."""
+        root = Path(__file__).resolve().parents[1]
+        expected = {
+            "replay_install_frameworks_checkpoint_activity",
+            "replay_decode_checkpoint_activity",
+            "replay_apply_tree_checkpoint_activity",
+            "replay_build_patched_apk_checkpoint_activity",
+            "replay_verify_final_apk_checkpoint_activity",
+        }
+        covered = {
+            name
+            for name in expected
+            for path in (root / "tests").glob("test_phase_b_*.py")
+            if f'assertNotIn(\n                "{name}"' in path.read_text(encoding="utf-8")
+            or f'assertNotIn("{name}"' in path.read_text(encoding="utf-8")
+        }
+        self.assertEqual(covered, expected, f"missing exclusion tripwire for {expected - covered}")
 
 
 if __name__ == "__main__":
