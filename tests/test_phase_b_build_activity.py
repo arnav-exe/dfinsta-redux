@@ -1791,12 +1791,14 @@ class ReplayBuildRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(
             activity._Definition.from_callable(replay_build_patched_apk_checkpoint_activity)  # type: ignore[attr-defined]
         )
-        root = Path(__file__).resolve().parents[1]
-        for relative in ("src/dfinsta_pipeline/worker.py", "src/dfinsta_pipeline/workflow.py"):
-            self.assertNotIn(
-                "replay_build_patched_apk_checkpoint_activity",
-                (root / relative).read_text(encoding="utf-8"),
-            )
+        from dfinsta_pipeline import worker
+
+        registered = {
+            activity._Definition.from_callable(fn).name  # type: ignore[attr-defined]
+            for fn in worker.REGISTERED_ACTIVITIES
+        }
+        self.assertIn("replay_build_patched_apk_stage_activity", registered)
+        self.assertNotIn("replay_build_patched_apk_checkpoint_activity", registered)
 
 
 if __name__ == "__main__":

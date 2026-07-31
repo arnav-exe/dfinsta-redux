@@ -1249,48 +1249,34 @@ class FrameworkReplayDecodeActivityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReplayDecodeRegistrationTests(unittest.TestCase):
-    """The decode checkpoint is the only replay Activity that lacked this tripwire.
+    """The decode checkpoint runs through a wrapper, never registered directly.
 
-    The other four assert exclusion from worker.py and workflow.py, so registering
-    any of them fails loudly. Without this test, decode could be registered silently
-    and the deliberate registration gap would be inconsistently enforced.
+    Registering the checkpoint itself would take a full AdmittedReplayV3 as the
+    Activity argument, putting the whole port recipe and every source path into
+    Temporal History. The wrapper takes a hash-pinned handle and loads the same
+    authority from the ledger.
     """
 
-    def test_temporal_metadata_exists_but_worker_and_workflow_exclude_activity(self) -> None:
+    def test_checkpoint_keeps_its_metadata_and_proven_signature(self) -> None:
         definition = activity._Definition.from_callable(  # type: ignore[attr-defined]
             replay_decode_checkpoint_activity
         )
         self.assertIsNotNone(definition)
         self.assertEqual(definition.name, "replay_decode_checkpoint_activity")
-        root = Path(__file__).resolve().parents[1]
-        for relative in ("src/dfinsta_pipeline/worker.py", "src/dfinsta_pipeline/workflow.py"):
-            self.assertNotIn(
-                "replay_decode_checkpoint_activity",
-                (root / relative).read_text(encoding="utf-8"),
-            )
         self.assertEqual(
             tuple(inspect.signature(replay_decode_checkpoint_activity).parameters),
             ("candidate",),
         )
 
-    def test_every_replay_checkpoint_activity_has_an_exclusion_tripwire(self) -> None:
-        """Guards the guard: all five checkpoints must be covered symmetrically."""
-        root = Path(__file__).resolve().parents[1]
-        expected = {
-            "replay_install_frameworks_checkpoint_activity",
-            "replay_decode_checkpoint_activity",
-            "replay_apply_tree_checkpoint_activity",
-            "replay_build_patched_apk_checkpoint_activity",
-            "replay_verify_final_apk_checkpoint_activity",
+    def test_the_wrapper_is_registered_and_the_checkpoint_is_not(self) -> None:
+        from dfinsta_pipeline import worker
+
+        registered = {
+            activity._Definition.from_callable(fn).name  # type: ignore[attr-defined]
+            for fn in worker.REGISTERED_ACTIVITIES
         }
-        covered = {
-            name
-            for name in expected
-            for path in (root / "tests").glob("test_phase_b_*.py")
-            if f'assertNotIn(\n                "{name}"' in path.read_text(encoding="utf-8")
-            or f'assertNotIn("{name}"' in path.read_text(encoding="utf-8")
-        }
-        self.assertEqual(covered, expected, f"missing exclusion tripwire for {expected - covered}")
+        self.assertIn("replay_decode_stage_activity", registered)
+        self.assertNotIn("replay_decode_checkpoint_activity", registered)
 
 
 if __name__ == "__main__":

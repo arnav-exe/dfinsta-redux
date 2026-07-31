@@ -24,6 +24,7 @@ from .decoded_artifact import (
     verify_materialized_decoded_tree,
 )
 from .executor import ExecutionMetadata, ExecutionRequest, Launcher, execute
+from . import replay_gate
 from .ledger import Ledger
 from .replay_contracts import (
     REPLAY_STAGES_WITHOUT_FRAMEWORK,
@@ -33,7 +34,10 @@ from .replay_contracts import (
     AdmittedReplayV3,
     ReplayApplyOperationResultV1,
     ReplayExecutionPlanV1,
+    ReplayVerificationAdmissionV1,
+    ReplayVerificationGateV1,
     ReplayVerificationGrantHandleV1,
+    admit_replay_verification_grant_v1,
     ReplayBackendCompositionV1,
     ReplayDecodedTreeReceiptV2,
     ReplayDecodedTreeReceiptV1,
@@ -3324,3 +3328,64 @@ async def replay_verify_final_apk_stage_activity(
     configured = runtime()
     grant = Ledger.load_admitted_replay_verification_grant_v1(configured.ledger, handle)
     return await replay_verify_final_apk_checkpoint_activity(grant)
+
+
+@activity.defn
+async def prepare_replay_verification_gate_activity(
+    handle: AdmittedReplayHandleV1,
+) -> ReplayVerificationGateV1:
+    """Publish only the hash of the final-verification gate subject.
+
+    The subject binds a build receipt that does not exist when the run is
+    admitted, so it is derived here from recorded state after the build stage.
+    The Workflow never sees the request body; it binds the human decision to
+    this hash, and the admitting Activity re-derives the request independently.
+    """
+    configured = runtime()
+    admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
+    completed_build, build_receipt = replay_gate.resolve_admitted_build(admitted)
+    request = replay_gate.derive_verification_request(admitted, completed_build, build_receipt)
+    return ReplayVerificationGateV1(
+        1,
+        admitted.run_spec.run_id,
+        request.gate_id,
+        request.sha256,
+        request.allowed_actor,
+        request.policy_revision,
+    )
+
+
+@activity.defn
+async def admit_replay_verification_grant_activity(
+    admission: ReplayVerificationAdmissionV1,
+) -> ReplayVerificationGrantHandleV1:
+    """Re-derive the gate subject and admit the grant the decision authorized.
+
+    Derivation is repeated rather than carried through the Workflow: a subject
+    that arrived as Workflow state would be a caller assertion, and the whole
+    authority model rests on not accepting those. Because derivation is pure,
+    the re-derived request must hash to exactly what the decision bound.
+    """
+    configured = runtime()
+    admitted = Ledger.load_admitted_replay_v3(configured.ledger, admission.handle)
+    completed_build, build_receipt = replay_gate.resolve_admitted_build(admitted)
+    request = replay_gate.derive_verification_request(admitted, completed_build, build_receipt)
+    decision = admission.decision
+    if (
+        decision.subject_sha256 != request.sha256
+        or decision.admission_sha256 != request.sha256
+        or decision.prepared_sha256 != request.sha256
+    ):
+        raise ValueError("Verification decision does not bind the derived request")
+    Ledger.record_decision(configured.ledger, decision)
+    grant = admit_replay_verification_grant_v1(
+        request,
+        decision,
+        admitted,
+        build_receipt,
+        lambda candidate: Ledger.has_decision(configured.ledger, candidate),
+        configured.store.read_bytes,
+    )
+    Ledger.record_admitted_replay_verification_grant_v1(configured.ledger, grant)
+    recorded = Ledger.require_admitted_replay_verification_grant_v1(configured.ledger, grant)
+    return ReplayVerificationGrantHandleV1(1, recorded.request.grant_id, recorded.sha256)

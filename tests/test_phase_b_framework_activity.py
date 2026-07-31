@@ -512,13 +512,14 @@ class ReplayFrameworkActivityTests(unittest.IsolatedAsyncioTestCase):
                 replay_install_frameworks_checkpoint_activity
             )
         )
-        root = Path(__file__).resolve().parents[1]
-        for relative in (
-            "src/dfinsta_pipeline/worker.py",
-            "src/dfinsta_pipeline/workflow.py",
-        ):
-            source = (root / relative).read_text(encoding="utf-8")
-            self.assertNotIn("replay_install_frameworks_checkpoint_activity", source)
+        from dfinsta_pipeline import worker
+
+        registered = {
+            activity._Definition.from_callable(fn).name  # type: ignore[attr-defined]
+            for fn in worker.REGISTERED_ACTIVITIES
+        }
+        self.assertIn("replay_install_frameworks_stage_activity", registered)
+        self.assertNotIn("replay_install_frameworks_checkpoint_activity", registered)
 
 
 if __name__ == "__main__":

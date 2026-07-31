@@ -836,12 +836,14 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
             replay_verify_final_apk_checkpoint_activity
         )
         self.assertEqual(definition.name, "replay_verify_final_apk_checkpoint_activity")
-        root = Path(__file__).resolve().parents[1]
-        for relative in ("src/dfinsta_pipeline/worker.py", "src/dfinsta_pipeline/workflow.py"):
-            self.assertNotIn(
-                "replay_verify_final_apk_checkpoint_activity",
-                (root / relative).read_text(encoding="utf-8"),
-            )
+        from dfinsta_pipeline import worker
+
+        registered = {
+            activity._Definition.from_callable(fn).name  # type: ignore[attr-defined]
+            for fn in worker.REGISTERED_ACTIVITIES
+        }
+        self.assertIn("replay_verify_final_apk_stage_activity", registered)
+        self.assertNotIn("replay_verify_final_apk_checkpoint_activity", registered)
         self.assertEqual(
             tuple(inspect.signature(replay_verify_final_apk_checkpoint_activity).parameters),
             ("candidate",),
