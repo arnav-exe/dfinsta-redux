@@ -635,6 +635,15 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(activities, "execute", side_effect=observed):
             output = await self.invoke()
         receipt = self.receipt(output)
+        self.assertEqual(receipt.operation_key, receipt.expected_operation_key)
+        with runtime().ledger._connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT input_sha256 FROM operation_claims WHERE operation_key = ?",
+                    (receipt.operation_key,),
+                ).fetchone()[0],
+                receipt.expected_operation_input_sha256,
+            )
         workspace = runtime().attempts_root / output.producer_operation_id / digest(b"build-owner")
         self.assertEqual(self.launches[0]["argv"][1:], ("patched-tree", "framework", "intermediate.apk", "tool"))
         self.assertEqual(calls[0]["kwargs"]["timeout_seconds"], self.admitted.plan("build").timeout_seconds)
@@ -677,6 +686,15 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         self.apply_output, self.apply_receipt = self.record_apply()
         output = await self.invoke("framework-owner")
         receipt = self.receipt(output)
+        self.assertEqual(receipt.operation_key, receipt.expected_operation_key)
+        with runtime().ledger._connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT input_sha256 FROM operation_claims WHERE operation_key = ?",
+                    (receipt.operation_key,),
+                ).fetchone()[0],
+                receipt.expected_operation_input_sha256,
+            )
         workspace = runtime().attempts_root / output.producer_operation_id / digest(b"framework-owner")
         assert self.framework_receipt is not None
         self.assertEqual(receipt.completed_framework_cache_receipt, self.framework_output)

@@ -7,10 +7,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
-from .contracts import ArtifactRef, GateDecision, canonical_json
+from .contracts import ArtifactRef, GateDecision, canonical_json, canonical_sha256
 
 if TYPE_CHECKING:
-    from .replay_contracts import AdmittedReplayV3
+    from .replay_contracts import (
+        AdmittedReplayV3,
+        AdmittedReplayVerificationGrantV1,
+    )
 
 
 class Ledger:
@@ -65,6 +68,23 @@ class Ledger:
                     admitted_json TEXT NOT NULL,
                     FOREIGN KEY (decision_id) REFERENCES decisions(decision_id)
                 )""",
+                """CREATE TABLE IF NOT EXISTS admitted_replay_verification_grants_v1 (
+                    grant_id TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                    grant_sha256 TEXT NOT NULL UNIQUE,
+                    request_sha256 TEXT NOT NULL UNIQUE,
+                    decision_id TEXT NOT NULL UNIQUE,
+                    decision_sha256 TEXT NOT NULL,
+                    admitted_replay_sha256 TEXT NOT NULL UNIQUE,
+                    build_operation_key TEXT NOT NULL UNIQUE,
+                    build_input_sha256 TEXT NOT NULL,
+                    completed_receipt_ref_sha256 TEXT NOT NULL,
+                    patched_apk_ref_sha256 TEXT NOT NULL,
+                    grant_json TEXT NOT NULL,
+                    FOREIGN KEY (decision_id) REFERENCES decisions(decision_id),
+                    FOREIGN KEY (admitted_replay_sha256)
+                        REFERENCES admitted_replays_v3(admitted_replay_sha256)
+                )""",
                 """CREATE TRIGGER IF NOT EXISTS operation_events_no_update
                     BEFORE UPDATE ON operation_events BEGIN
                     SELECT RAISE(ABORT, 'operation events are append-only'); END""",
@@ -83,6 +103,12 @@ class Ledger:
                 """CREATE TRIGGER IF NOT EXISTS admitted_replays_v3_no_delete
                     BEFORE DELETE ON admitted_replays_v3 BEGIN
                     SELECT RAISE(ABORT, 'admitted replays v3 are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS admitted_replay_verification_grants_v1_no_update
+                    BEFORE UPDATE ON admitted_replay_verification_grants_v1 BEGIN
+                    SELECT RAISE(ABORT, 'admitted replay verification grants v1 are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS admitted_replay_verification_grants_v1_no_delete
+                    BEFORE DELETE ON admitted_replay_verification_grants_v1 BEGIN
+                    SELECT RAISE(ABORT, 'admitted replay verification grants v1 are append-only'); END""",
             )
             for statement in statements:
                 connection.execute(statement)
@@ -485,6 +511,206 @@ class Ledger:
             if row != reconstructed_values or row != candidate_values or reconstructed != candidate:
                 raise ValueError("Admitted replay authority does not match candidate")
             self._require_decision_row(connection, reconstructed.decision)
+        return reconstructed
+
+    @staticmethod
+    def _verification_grant_values(
+        grant: AdmittedReplayVerificationGrantV1,
+        grant_json: str,
+        build_input_sha256: str,
+    ) -> tuple[object, ...]:
+        return (
+            grant.request.grant_id,
+            grant.schema_version,
+            grant.sha256,
+            grant.request.sha256,
+            grant.decision.decision_id,
+            canonical_sha256(grant.decision),
+            grant.admitted_replay.sha256,
+            grant.request.completed_patched_apk_receipt.producer_operation_id,
+            build_input_sha256,
+            canonical_sha256(grant.request.completed_patched_apk_receipt),
+            canonical_sha256(grant.request.patched_apk),
+            grant_json,
+        )
+
+    @staticmethod
+    def _require_completed_build_claim(
+        connection: sqlite3.Connection,
+        grant: AdmittedReplayVerificationGrantV1,
+    ) -> str:
+        completed_receipt = grant.request.completed_patched_apk_receipt
+        receipt = grant.patched_apk_receipt
+        if (
+            receipt.operation_key != receipt.expected_operation_key
+            or completed_receipt.producer_operation_id != receipt.expected_operation_key
+        ):
+            raise ValueError("Replay build receipt operation identity is invalid")
+        row = connection.execute(
+            "SELECT kind, input_sha256, status, output_json FROM operation_claims "
+            "WHERE operation_key = ?",
+            (completed_receipt.producer_operation_id,),
+        ).fetchone()
+        if row is None or row[0] != "replay_build_patched_apk_v1":
+            raise ValueError("Completed replay build claim is not recorded")
+        if row[1] != receipt.expected_operation_input_sha256:
+            raise ValueError("Replay build claim input does not match receipt")
+        if row[2] != "completed" or row[3] is None:
+            raise ValueError("Replay build claim is not completed")
+        try:
+            output = ArtifactRef.from_dict(json.loads(row[3]))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("Completed replay build claim is corrupt") from error
+        if canonical_json(output) != row[3] or output != completed_receipt:
+            raise ValueError("Completed replay build claim output does not match grant")
+        events = connection.execute(
+            "SELECT kind, input_sha256, status, output_json FROM operation_events "
+            "WHERE operation_key = ? ORDER BY event_id",
+            (receipt.expected_operation_key,),
+        ).fetchall()
+        if not events or events[-1] != row:
+            raise ValueError("Replay build claim does not match append-only events")
+        statuses = tuple(event[2] for event in events)
+        if (
+            len(statuses) < 3
+            or any(status != "pending" for status in statuses[:-2])
+            or statuses[-2:] != ("effect", "completed")
+        ):
+            raise ValueError("Replay build event history is invalid")
+        if any(
+            event[0] != row[0]
+            or event[1] != row[1]
+            or (event[2] == "pending") != (event[3] is None)
+            or (event[2] != "pending" and event[3] != row[3])
+            for event in events
+        ):
+            raise ValueError("Replay build event history does not match claim")
+        return row[1]
+
+    @classmethod
+    def _require_admitted_replay_v3_row(
+        cls,
+        connection: sqlite3.Connection,
+        candidate: AdmittedReplayV3,
+    ) -> None:
+        admitted_json = canonical_json(candidate)
+        row = connection.execute(
+            "SELECT run_id, schema_version, admitted_replay_sha256, run_spec_sha256, "
+            "replay_request_sha256, decision_id, decision_sha256, "
+            "toolchain_profile_sha256, admitted_json FROM admitted_replays_v3 "
+            "WHERE admitted_replay_sha256 = ?",
+            (candidate.sha256,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Admitted replay authority is not recorded")
+        values = cls._admitted_replay_v3_values(candidate, admitted_json)
+        if row != values:
+            raise ValueError("Admitted replay authority does not match verification grant")
+        cls._require_decision_row(connection, candidate.decision)
+
+    def record_admitted_replay_verification_grant_v1(
+        self, grant: AdmittedReplayVerificationGrantV1
+    ) -> None:
+        from .replay_contracts import AdmittedReplayVerificationGrantV1
+
+        if type(grant) is not AdmittedReplayVerificationGrantV1:
+            raise TypeError(
+                "Verification grant must be an exact AdmittedReplayVerificationGrantV1"
+            )
+        grant_json = canonical_json(grant)
+        try:
+            normalized = AdmittedReplayVerificationGrantV1.from_dict(
+                json.loads(grant_json)
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("Verification grant is not canonical") from error
+        if canonical_json(normalized) != grant_json or normalized != grant:
+            raise ValueError("Verification grant is not an exact canonical value")
+
+        with Ledger._connection(self) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            Ledger._require_decision_row(connection, normalized.decision)
+            Ledger._require_admitted_replay_v3_row(
+                connection, normalized.admitted_replay
+            )
+            build_input_sha256 = Ledger._require_completed_build_claim(
+                connection, normalized
+            )
+            values = Ledger._verification_grant_values(
+                normalized, grant_json, build_input_sha256
+            )
+            try:
+                connection.execute(
+                    "INSERT INTO admitted_replay_verification_grants_v1 "
+                    "(grant_id, schema_version, grant_sha256, request_sha256, decision_id, "
+                    "decision_sha256, admitted_replay_sha256, build_operation_key, "
+                    "build_input_sha256, completed_receipt_ref_sha256, "
+                    "patched_apk_ref_sha256, grant_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+            except sqlite3.IntegrityError:
+                row = connection.execute(
+                    "SELECT grant_id, schema_version, grant_sha256, request_sha256, "
+                    "decision_id, decision_sha256, admitted_replay_sha256, "
+                    "build_operation_key, build_input_sha256, completed_receipt_ref_sha256, "
+                    "patched_apk_ref_sha256, grant_json "
+                    "FROM admitted_replay_verification_grants_v1 "
+                    "WHERE grant_id = ? OR grant_sha256 = ? OR request_sha256 = ? "
+                    "OR decision_id = ? OR admitted_replay_sha256 = ? "
+                    "OR build_operation_key = ?",
+                    (values[0], values[2], values[3], values[4], values[6], values[7]),
+                ).fetchone()
+                if row != values:
+                    raise ValueError("Verification grant identity collision") from None
+
+    def require_admitted_replay_verification_grant_v1(
+        self, candidate: AdmittedReplayVerificationGrantV1
+    ) -> AdmittedReplayVerificationGrantV1:
+        from .replay_contracts import AdmittedReplayVerificationGrantV1
+
+        if type(candidate) is not AdmittedReplayVerificationGrantV1:
+            raise TypeError(
+                "Verification grant must be an exact AdmittedReplayVerificationGrantV1"
+            )
+        with Ledger._connection(self) as connection:
+            row = connection.execute(
+                "SELECT grant_id, schema_version, grant_sha256, request_sha256, "
+                "decision_id, decision_sha256, admitted_replay_sha256, "
+                "build_operation_key, build_input_sha256, completed_receipt_ref_sha256, "
+                "patched_apk_ref_sha256, grant_json "
+                "FROM admitted_replay_verification_grants_v1 WHERE grant_id = ?",
+                (candidate.request.grant_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Replay verification grant authority is not recorded")
+            try:
+                reconstructed = AdmittedReplayVerificationGrantV1.from_dict(
+                    json.loads(row[11])
+                )
+                if canonical_json(reconstructed) != row[11]:
+                    raise ValueError("Stored verification grant is not canonical")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError("Stored verification grant is corrupt") from error
+            Ledger._require_decision_row(connection, reconstructed.decision)
+            Ledger._require_admitted_replay_v3_row(
+                connection, reconstructed.admitted_replay
+            )
+            build_input_sha256 = Ledger._require_completed_build_claim(
+                connection, reconstructed
+            )
+            reconstructed_values = Ledger._verification_grant_values(
+                reconstructed, row[11], build_input_sha256
+            )
+            candidate_values = Ledger._verification_grant_values(
+                candidate, canonical_json(candidate), build_input_sha256
+            )
+            if (
+                row != reconstructed_values
+                or row != candidate_values
+                or reconstructed != candidate
+            ):
+                raise ValueError("Replay verification grant authority does not match candidate")
         return reconstructed
 
     def operation_status(self, operation_key: str) -> str | None:

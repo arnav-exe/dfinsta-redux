@@ -8,7 +8,7 @@ import string
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
-from .contracts import ArtifactRef, GateDecision, canonical_sha256
+from .contracts import ArtifactRef, GateDecision, canonical_json, canonical_sha256
 from .executor import ExecutorCapability
 from .port_contracts import (
     IntentSpecV2,
@@ -2561,6 +2561,47 @@ class ReplayPatchedApkReceiptV1:
         return (*self.patched_apk_input_hashes, canonical_sha256(self.patched_apk))
 
     @property
+    def operation_input(self) -> dict[str, object]:
+        value: dict[str, object] = {
+            "schema_version": 1,
+            "admitted_replay_sha256": self.admitted_replay_sha256,
+            "completed_patched_tree_receipt": self.completed_patched_tree_receipt,
+            "patched_tree_manifest": self.patched_tree_manifest,
+            "patched_tree_semantic_sha256": self.patched_tree_semantic_sha256,
+            "target_port_spec_sha256": self.target_port_spec_sha256,
+            "backend_kind": self.composition.backend_kind,
+            "backend_profile_id": self.composition.backend_profile_id,
+            "backend_sha256": self.composition.backend_sha256,
+            "stock_apk": self.stock_apk,
+            "toolchain_profile_id": self.toolchain_profile_id,
+            "toolchain_profile_sha256": self.toolchain_profile_sha256,
+            "role": self.role,
+            "execution_plan_sha256": self.execution_plan_sha256,
+            "executor_capability_sha256": self.executor_capability_sha256,
+            "tool_artifact_sha256": self.tool_artifact_sha256,
+            "execution_request_sha256": self.execution_request_sha256,
+        }
+        if self.completed_framework_cache_receipt is not None:
+            value.update(
+                {
+                    "completed_framework_cache_receipt": self.completed_framework_cache_receipt,
+                    "framework_cache_manifest": self.framework_cache_manifest,
+                    "framework_cache_semantic_sha256": self.framework_cache_semantic_sha256,
+                }
+            )
+        return value
+
+    @property
+    def expected_operation_input_sha256(self) -> str:
+        return canonical_sha256(self.operation_input)
+
+    @property
+    def expected_operation_key(self) -> str:
+        return canonical_sha256(
+            {"kind": "replay_build_patched_apk_v1", "input": self.operation_input}
+        )
+
+    @property
     def sha256(self) -> str:
         return canonical_sha256(self)
 
@@ -2659,3 +2700,250 @@ def admit_replay_v3(
         gate_prepared,
         tuple(capabilities),
     )
+
+
+_FINAL_DECODE_ARGV = (
+    "-jar",
+    "{tool}",
+    "d",
+    "-f",
+    "{input_apk}",
+    "-o",
+    "{decoded_tree}",
+    "-p",
+    "{framework_dir}",
+)
+_FINAL_DECODE_PATH_ARGUMENTS = (
+    "decoded_tree",
+    "framework_dir",
+    "input_apk",
+    "tool",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayVerificationGrantRequestV1:
+    schema_version: int
+    grant_id: str
+    run_id: str
+    gate_id: str
+    allowed_actor: str
+    policy_revision: str
+    admitted_replay_sha256: str
+    completed_patched_apk_receipt: ArtifactRef
+    patched_apk: ArtifactRef
+    decoder_profile_id: str
+    tool_artifact_sha256: str
+    timeout_seconds: int
+    executor_capability: ExecutorCapability
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay verification grant request schema")
+        _identifier(self.grant_id, "verification grant id")
+        _identifier(self.run_id, "verification run id")
+        _identifier(self.gate_id, "verification gate id")
+        _identifier(self.allowed_actor, "verification allowed actor")
+        if type(self.policy_revision) is not str:
+            raise TypeError("Verification policy revision must be a string")
+        if not self.policy_revision.strip() or len(self.policy_revision) > 128:
+            raise ValueError("Invalid verification policy revision")
+        _sha256(self.admitted_replay_sha256, "admitted replay SHA-256")
+        _sha256(self.tool_artifact_sha256, "verification tool artifact SHA-256")
+        for artifact, kind, label in (
+            (
+                self.completed_patched_apk_receipt,
+                "replay-patched-apk-receipt-v1",
+                "completed patched APK receipt",
+            ),
+            (self.patched_apk, "final-apk", "patched APK"),
+        ):
+            if type(artifact) is not ArtifactRef:
+                raise TypeError(f"{label.capitalize()} must be an exact ArtifactRef")
+            if artifact.kind != kind:
+                raise ValueError(f"Invalid {label} kind")
+        if (
+            self.completed_patched_apk_receipt.producer_operation_id
+            != self.patched_apk.producer_operation_id
+        ):
+            raise ValueError("Patched APK receipt and APK producers do not match")
+        if not self.completed_patched_apk_receipt.input_hashes or (
+            self.completed_patched_apk_receipt.input_hashes[-1]
+            != canonical_sha256(self.patched_apk)
+        ):
+            raise ValueError("Completed patched APK receipt does not bind the patched APK")
+        _identifier(self.decoder_profile_id, "decoder profile id", lowercase=True)
+        if type(self.timeout_seconds) is not int:
+            raise TypeError("Verification timeout must be an integer")
+        if not 1 <= self.timeout_seconds <= 3600:
+            raise ValueError("Verification timeout must be between 1 and 3600 seconds")
+        if type(self.executor_capability) is not ExecutorCapability:
+            raise TypeError("Verification capability must be an exact ExecutorCapability")
+        capability = self.executor_capability
+        if capability.argv_template != _FINAL_DECODE_ARGV:
+            raise ValueError("Verification capability argv is not final-decode only")
+        if capability.path_arguments != _FINAL_DECODE_PATH_ARGUMENTS:
+            raise ValueError("Verification capability path arguments are not final-decode only")
+        if capability.input_kinds != ("final-apk",):
+            raise ValueError("Verification capability input kind is not final-apk only")
+        if capability.output_kind != "decoded-tree":
+            raise ValueError("Verification capability output kind is not decoded-tree")
+        if capability.allowed_environment or capability.fixed_environment:
+            raise ValueError("Verification capability must not permit environment variables")
+        if capability.allowed_mutation_paths != ("framework", "output"):
+            raise ValueError("Verification capability mutations are not final-decode only")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayVerificationGrantRequestV1:
+        data = _keys(data, cls, "replay verification grant request")
+        return cls(
+            data["schema_version"],
+            data["grant_id"],
+            data["run_id"],
+            data["gate_id"],
+            data["allowed_actor"],
+            data["policy_revision"],
+            data["admitted_replay_sha256"],
+            ArtifactRef.from_dict(data["completed_patched_apk_receipt"]),
+            ArtifactRef.from_dict(data["patched_apk"]),
+            data["decoder_profile_id"],
+            data["tool_artifact_sha256"],
+            data["timeout_seconds"],
+            ExecutorCapability.from_dict(data["executor_capability"]),
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedReplayVerificationGrantV1:
+    schema_version: int
+    request: ReplayVerificationGrantRequestV1
+    decision: GateDecision
+    admitted_replay: AdmittedReplayV3
+    patched_apk_receipt: ReplayPatchedApkReceiptV1
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported admitted replay verification grant schema")
+        if type(self.request) is not ReplayVerificationGrantRequestV1:
+            raise TypeError("Request must be an exact ReplayVerificationGrantRequestV1")
+        if type(self.decision) is not GateDecision:
+            raise TypeError("Decision must be an exact GateDecision")
+        if type(self.admitted_replay) is not AdmittedReplayV3:
+            raise TypeError("Admitted replay must be an exact AdmittedReplayV3")
+        if type(self.patched_apk_receipt) is not ReplayPatchedApkReceiptV1:
+            raise TypeError("Patched APK receipt must be an exact ReplayPatchedApkReceiptV1")
+
+        request = self.request
+        admitted = self.admitted_replay
+        receipt = self.patched_apk_receipt
+        if request.admitted_replay_sha256 != admitted.sha256:
+            raise ValueError("Verification request does not bind the admitted replay")
+        if request.run_id != admitted.run_spec.run_id:
+            raise ValueError("Verification request run does not bind the admitted replay")
+        if request.allowed_actor != admitted.run_spec.allowed_actor:
+            raise ValueError("Verification request actor does not bind the admitted replay")
+        if request.policy_revision != admitted.run_spec.policy_revision:
+            raise ValueError("Verification request policy does not bind the admitted replay")
+        if receipt.admitted_replay_sha256 != admitted.sha256:
+            raise ValueError("Build receipt does not bind the admitted replay")
+        if receipt.toolchain_profile_id != admitted.profile.profile_id or (
+            receipt.toolchain_profile_sha256 != admitted.profile.sha256
+        ):
+            raise ValueError("Build receipt does not bind the admitted toolchain profile")
+        if request.completed_patched_apk_receipt.sha256 != receipt.sha256 or (
+            request.completed_patched_apk_receipt.producer_operation_id
+            != receipt.operation_key
+        ) or request.completed_patched_apk_receipt.input_hashes != receipt.receipt_input_hashes:
+            raise ValueError("Verification request does not bind the completed build receipt")
+        if request.patched_apk != receipt.patched_apk:
+            raise ValueError("Verification request patched APK does not match the build receipt")
+        decode_tool = admitted.profile.tool_for_role("decode")
+        if request.tool_artifact_sha256 != decode_tool.artifact_sha256:
+            raise ValueError("Verification request does not bind the admitted decode tool")
+        if request.decoder_profile_id != admitted.profile.profile_id:
+            raise ValueError("Verification decoder profile does not bind the admitted profile")
+
+        decision = self.decision
+        if decision.decision != "approve":
+            raise ValueError("Replay verification requires an approval decision")
+        if decision.run_id != request.run_id:
+            raise ValueError("Verification decision run does not bind the request")
+        if decision.gate_id != request.gate_id:
+            raise ValueError("Verification decision gate does not bind the request")
+        if decision.actor != request.allowed_actor:
+            raise ValueError("Verification decision actor does not bind the request")
+        if decision.policy_revision != request.policy_revision:
+            raise ValueError("Verification decision policy does not bind the request")
+        if not (
+            decision.subject_sha256
+            == decision.admission_sha256
+            == decision.prepared_sha256
+            == request.sha256
+        ):
+            raise ValueError("Verification decision does not exactly bind the request")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AdmittedReplayVerificationGrantV1:
+        data = _keys(data, cls, "admitted replay verification grant")
+        return cls(
+            data["schema_version"],
+            ReplayVerificationGrantRequestV1.from_dict(data["request"]),
+            GateDecision.from_dict(data["decision"]),
+            AdmittedReplayV3.from_dict(data["admitted_replay"]),
+            ReplayPatchedApkReceiptV1.from_dict(data["patched_apk_receipt"]),
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+def admit_replay_verification_grant_v1(
+    request: ReplayVerificationGrantRequestV1,
+    decision: GateDecision,
+    admitted_replay: AdmittedReplayV3,
+    patched_apk_receipt: ReplayPatchedApkReceiptV1,
+    decision_is_recorded: Callable[[GateDecision], bool],
+    artifact_resolver: Callable[[ArtifactRef], bytes],
+) -> AdmittedReplayVerificationGrantV1:
+    if type(request) is not ReplayVerificationGrantRequestV1:
+        raise TypeError("Verification request must be exact")
+    if type(decision) is not GateDecision:
+        raise TypeError("Verification decision must be exact")
+    if type(admitted_replay) is not AdmittedReplayV3:
+        raise TypeError("Admitted replay must be exact")
+    if type(patched_apk_receipt) is not ReplayPatchedApkReceiptV1:
+        raise TypeError("Patched APK receipt must be exact")
+    if not callable(decision_is_recorded):
+        raise TypeError("Decision recording predicate must be callable")
+    if not callable(artifact_resolver):
+        raise TypeError("Artifact resolver must be callable")
+
+    grant = AdmittedReplayVerificationGrantV1(
+        1, request, decision, admitted_replay, patched_apk_receipt
+    )
+    try:
+        recorded = decision_is_recorded(decision)
+    except Exception as error:
+        raise ValueError("Unable to verify recorded verification decision") from error
+    if type(recorded) is not bool:
+        raise TypeError("Decision recording predicate must return a boolean")
+    if not recorded:
+        raise ValueError("Verification decision is not recorded")
+
+    receipt_bytes = _resolve_artifact(
+        artifact_resolver, request.completed_patched_apk_receipt
+    )
+    parsed_receipt = ReplayPatchedApkReceiptV1.from_dict(
+        _decode_json(receipt_bytes, "replay patched APK receipt")
+    )
+    if receipt_bytes != canonical_json(parsed_receipt).encode("utf-8"):
+        raise ValueError("Replay patched APK receipt bytes are not canonical")
+    if parsed_receipt != patched_apk_receipt:
+        raise ValueError("Resolved replay patched APK receipt does not match supplied receipt")
+    _resolve_artifact(artifact_resolver, request.patched_apk)
+    return grant
