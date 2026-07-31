@@ -11,8 +11,10 @@ from .contracts import ArtifactRef, GateDecision, canonical_json, canonical_sha2
 
 if TYPE_CHECKING:
     from .replay_contracts import (
+        AdmittedReplayHandleV1,
         AdmittedReplayV3,
         AdmittedReplayVerificationGrantV1,
+        ReplayVerificationGrantHandleV1,
     )
 
 
@@ -513,6 +515,40 @@ class Ledger:
             self._require_decision_row(connection, reconstructed.decision)
         return reconstructed
 
+    def load_admitted_replay_v3(
+        self, handle: AdmittedReplayHandleV1
+    ) -> AdmittedReplayV3:
+        from .replay_contracts import AdmittedReplayHandleV1, AdmittedReplayV3
+
+        if type(handle) is not AdmittedReplayHandleV1:
+            raise TypeError("Admitted replay handle must be an exact AdmittedReplayHandleV1")
+        with Ledger._connection(self) as connection:
+            row = connection.execute(
+                "SELECT run_id, schema_version, admitted_replay_sha256, run_spec_sha256, "
+                "replay_request_sha256, decision_id, decision_sha256, "
+                "toolchain_profile_sha256, admitted_json FROM admitted_replays_v3 "
+                "WHERE run_id = ?",
+                (handle.run_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Admitted replay authority is not recorded")
+            try:
+                decoded = json.loads(row[8])
+                reconstructed = AdmittedReplayV3.from_dict(decoded)
+                if canonical_json(reconstructed) != row[8]:
+                    raise ValueError("Stored admitted replay is not canonical")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError("Stored admitted replay is corrupt") from error
+            reconstructed_values = self._admitted_replay_v3_values(reconstructed, row[8])
+            if row != reconstructed_values:
+                raise ValueError("Admitted replay authority does not match its recorded row")
+            if row[2] != handle.admitted_replay_sha256:
+                raise ValueError("Admitted replay authority does not match handle")
+            if reconstructed.sha256 != handle.admitted_replay_sha256:
+                raise ValueError("Stored admitted replay does not match handle")
+            self._require_decision_row(connection, reconstructed.decision)
+        return reconstructed
+
     @staticmethod
     def _verification_grant_values(
         grant: AdmittedReplayVerificationGrantV1,
@@ -629,14 +665,14 @@ class Ledger:
 
         with Ledger._connection(self) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            Ledger._require_decision_row(connection, normalized.decision)
-            Ledger._require_admitted_replay_v3_row(
+            self._require_decision_row(connection, normalized.decision)
+            self._require_admitted_replay_v3_row(
                 connection, normalized.admitted_replay
             )
-            build_input_sha256 = Ledger._require_completed_build_claim(
+            build_input_sha256 = self._require_completed_build_claim(
                 connection, normalized
             )
-            values = Ledger._verification_grant_values(
+            values = self._verification_grant_values(
                 normalized, grant_json, build_input_sha256
             )
             try:
@@ -692,17 +728,17 @@ class Ledger:
                     raise ValueError("Stored verification grant is not canonical")
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 raise ValueError("Stored verification grant is corrupt") from error
-            Ledger._require_decision_row(connection, reconstructed.decision)
-            Ledger._require_admitted_replay_v3_row(
+            self._require_decision_row(connection, reconstructed.decision)
+            self._require_admitted_replay_v3_row(
                 connection, reconstructed.admitted_replay
             )
-            build_input_sha256 = Ledger._require_completed_build_claim(
+            build_input_sha256 = self._require_completed_build_claim(
                 connection, reconstructed
             )
-            reconstructed_values = Ledger._verification_grant_values(
+            reconstructed_values = self._verification_grant_values(
                 reconstructed, row[11], build_input_sha256
             )
-            candidate_values = Ledger._verification_grant_values(
+            candidate_values = self._verification_grant_values(
                 candidate, canonical_json(candidate), build_input_sha256
             )
             if (
@@ -711,6 +747,57 @@ class Ledger:
                 or reconstructed != candidate
             ):
                 raise ValueError("Replay verification grant authority does not match candidate")
+        return reconstructed
+
+    def load_admitted_replay_verification_grant_v1(
+        self, handle: ReplayVerificationGrantHandleV1
+    ) -> AdmittedReplayVerificationGrantV1:
+        from .replay_contracts import (
+            AdmittedReplayVerificationGrantV1,
+            ReplayVerificationGrantHandleV1,
+        )
+
+        if type(handle) is not ReplayVerificationGrantHandleV1:
+            raise TypeError(
+                "Verification grant handle must be an exact ReplayVerificationGrantHandleV1"
+            )
+        with Ledger._connection(self) as connection:
+            row = connection.execute(
+                "SELECT grant_id, schema_version, grant_sha256, request_sha256, "
+                "decision_id, decision_sha256, admitted_replay_sha256, "
+                "build_operation_key, build_input_sha256, completed_receipt_ref_sha256, "
+                "patched_apk_ref_sha256, grant_json "
+                "FROM admitted_replay_verification_grants_v1 WHERE grant_id = ?",
+                (handle.grant_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Replay verification grant authority is not recorded")
+            try:
+                reconstructed = AdmittedReplayVerificationGrantV1.from_dict(
+                    json.loads(row[11])
+                )
+                if canonical_json(reconstructed) != row[11]:
+                    raise ValueError("Stored verification grant is not canonical")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError("Stored verification grant is corrupt") from error
+            self._require_decision_row(connection, reconstructed.decision)
+            self._require_admitted_replay_v3_row(
+                connection, reconstructed.admitted_replay
+            )
+            build_input_sha256 = self._require_completed_build_claim(
+                connection, reconstructed
+            )
+            reconstructed_values = self._verification_grant_values(
+                reconstructed, row[11], build_input_sha256
+            )
+            if row != reconstructed_values:
+                raise ValueError(
+                    "Replay verification grant authority does not match its recorded row"
+                )
+            if row[2] != handle.grant_sha256:
+                raise ValueError("Replay verification grant authority does not match handle")
+            if reconstructed.sha256 != handle.grant_sha256:
+                raise ValueError("Stored verification grant does not match handle")
         return reconstructed
 
     def operation_status(self, operation_key: str) -> str | None:

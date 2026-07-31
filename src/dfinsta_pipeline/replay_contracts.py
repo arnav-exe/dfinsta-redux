@@ -3220,3 +3220,278 @@ def admit_replay_verification_grant_v1(
         raise ValueError("Resolved replay patched APK receipt does not match supplied receipt")
     _resolve_artifact(artifact_resolver, request.patched_apk)
     return grant
+
+
+REPLAY_STAGE_ORDER = ("install_framework", "decode", "apply", "build", "verify")
+REPLAY_STAGES_WITHOUT_FRAMEWORK = ("decode", "apply", "build", "verify")
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedReplayHandleV1:
+    """Compact Workflow-to-Activity reference to recorded replay authority.
+
+    The Workflow never carries `AdmittedReplayV3` itself: it embeds the intent,
+    resolution and source manifest by value, which is over 100 KB for the 340
+    target and includes every source path. The ledger already stores that object
+    keyed by `run_id`, so a stage only needs to name it. `admitted_replay_sha256`
+    is not decoration: it preserves the "caller's view equals the ledger's view"
+    property that passing the whole object provided.
+    """
+
+    schema_version: int
+    run_id: str
+    admitted_replay_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported admitted replay handle schema")
+        _identifier(self.run_id, "admitted replay handle run id")
+        _sha256(self.admitted_replay_sha256, "admitted replay handle SHA-256")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AdmittedReplayHandleV1:
+        data = _keys(data, cls, "admitted replay handle")
+        return cls(
+            data["schema_version"],
+            data["run_id"],
+            data["admitted_replay_sha256"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayVerificationGrantHandleV1:
+    """Compact reference to a recorded final-verification grant."""
+
+    schema_version: int
+    grant_id: str
+    grant_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay verification grant handle schema")
+        _identifier(self.grant_id, "replay verification grant handle id")
+        _sha256(self.grant_sha256, "replay verification grant handle SHA-256")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayVerificationGrantHandleV1:
+        data = _keys(data, cls, "replay verification grant handle")
+        return cls(
+            data["schema_version"],
+            data["grant_id"],
+            data["grant_sha256"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayExecutionPlanV1:
+    """The stage sequence a Workflow must run, derived from admitted authority.
+
+    Stage membership is target-dependent but never target-conditional: a profile
+    that declares frameworks needs the install stage and one that does not never
+    does. Exactly two stage sets are legal, so an unexpected sequence fails here
+    rather than surfacing as a confusing refusal several stages later.
+    """
+
+    schema_version: int
+    run_id: str
+    admitted_replay_sha256: str
+    stages: tuple[str, ...]
+    stage_budget_seconds: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay execution plan schema")
+        _identifier(self.run_id, "replay execution plan run id")
+        _sha256(self.admitted_replay_sha256, "replay execution plan SHA-256")
+        if type(self.stages) is not tuple or type(self.stage_budget_seconds) is not tuple:
+            raise TypeError("Replay execution plan sequences must be tuples")
+        if self.stages not in (REPLAY_STAGE_ORDER, REPLAY_STAGES_WITHOUT_FRAMEWORK):
+            raise ValueError("Replay execution plan stages are not an approved sequence")
+        if len(self.stage_budget_seconds) != len(self.stages):
+            raise ValueError("Replay execution plan budgets do not match its stages")
+        for budget in self.stage_budget_seconds:
+            if type(budget) is not int or budget <= 0 or budget > 86_400:
+                raise ValueError("Invalid replay execution plan stage budget")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayExecutionPlanV1:
+        data = _keys(data, cls, "replay execution plan")
+        return cls(
+            data["schema_version"],
+            data["run_id"],
+            data["admitted_replay_sha256"],
+            tuple(_array(data["stages"], "replay execution plan stages")),
+            tuple(_array(data["stage_budget_seconds"], "replay execution plan budgets")),
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayVerificationGateV1:
+    """Gate-two subject, derived after the build completes.
+
+    The final-verification grant binds a build receipt that does not exist when
+    the run starts, so this gate cannot be raised up front. An Activity derives
+    the request from recorded authority and returns only its hash; the Workflow
+    never sees the request body, and the validator binds the decision to this
+    hash alone.
+    """
+
+    schema_version: int
+    run_id: str
+    gate_id: str
+    request_sha256: str
+    allowed_actor: str
+    policy_revision: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay verification gate schema")
+        _identifier(self.run_id, "replay verification gate run id")
+        _identifier(self.gate_id, "replay verification gate id")
+        _sha256(self.request_sha256, "replay verification gate request SHA-256")
+        _identifier(self.allowed_actor, "replay verification gate allowed actor")
+        if type(self.policy_revision) is not str:
+            raise TypeError("Replay verification gate policy revision must be a string")
+        if not self.policy_revision.strip() or len(self.policy_revision) > 128:
+            raise ValueError("Invalid replay verification gate policy revision")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayVerificationGateV1:
+        data = _keys(data, cls, "replay verification gate")
+        return cls(
+            data["schema_version"],
+            data["run_id"],
+            data["gate_id"],
+            data["request_sha256"],
+            data["allowed_actor"],
+            data["policy_revision"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayVerificationAdmissionV1:
+    """Workflow-to-Activity input that admits the final-verification grant."""
+
+    schema_version: int
+    handle: AdmittedReplayHandleV1
+    decision: GateDecision
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay verification admission schema")
+        if type(self.handle) is not AdmittedReplayHandleV1:
+            raise TypeError("Admission handle must be an exact AdmittedReplayHandleV1")
+        if type(self.decision) is not GateDecision:
+            raise TypeError("Admission decision must be an exact GateDecision")
+        if self.decision.run_id != self.handle.run_id:
+            raise ValueError("Admission decision does not bind the handle run")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayVerificationAdmissionV1:
+        data = _keys(data, cls, "replay verification admission")
+        return cls(
+            data["schema_version"],
+            AdmittedReplayHandleV1.from_dict(data["handle"]),
+            GateDecision.from_dict(data["decision"]),
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayRunRequestV1:
+    """Workflow input. Admission already happened; this only names it."""
+
+    schema_version: int
+    handle: AdmittedReplayHandleV1
+    verification_gate_timeout_seconds: int
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay run request schema")
+        if type(self.handle) is not AdmittedReplayHandleV1:
+            raise TypeError("Replay run handle must be an exact AdmittedReplayHandleV1")
+        if (
+            type(self.verification_gate_timeout_seconds) is not int
+            or self.verification_gate_timeout_seconds <= 0
+            or self.verification_gate_timeout_seconds > 30 * 24 * 60 * 60
+        ):
+            raise ValueError("Invalid replay verification gate timeout")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayRunRequestV1:
+        data = _keys(data, cls, "replay run request")
+        return cls(
+            data["schema_version"],
+            AdmittedReplayHandleV1.from_dict(data["handle"]),
+            data["verification_gate_timeout_seconds"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayRunResultV1:
+    """Workflow result. Carries references, never artifact bodies."""
+
+    schema_version: int
+    run_id: str
+    state: Literal["completed", "blocked", "rejected", "deferred"]
+    stages_completed: tuple[str, ...]
+    final_verification: ArtifactRef | None
+    verification_decision_id: str | None
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay run result schema")
+        _identifier(self.run_id, "replay run result run id")
+        if self.state not in {"completed", "blocked", "rejected", "deferred"}:
+            raise ValueError("Invalid replay run result state")
+        if type(self.stages_completed) is not tuple or any(
+            stage not in REPLAY_STAGE_ORDER for stage in self.stages_completed
+        ):
+            raise ValueError("Invalid replay run result stages")
+        if self.final_verification is not None:
+            _artifact(self.final_verification, "replay-final-apk-verification-receipt-v1",
+                      "replay run result verification")
+        if (self.state == "completed") != (self.final_verification is not None):
+            raise ValueError("Only a completed replay run carries a verification artifact")
+        if self.verification_decision_id is not None:
+            _identifier(self.verification_decision_id, "replay run result decision id")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayRunResultV1:
+        data = _keys(data, cls, "replay run result")
+        verification = data["final_verification"]
+        return cls(
+            data["schema_version"],
+            data["run_id"],
+            data["state"],
+            tuple(_array(data["stages_completed"], "replay run result stages")),
+            ArtifactRef.from_dict(verification) if verification is not None else None,
+            data["verification_decision_id"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)

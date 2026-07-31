@@ -26,9 +26,14 @@ from .decoded_artifact import (
 from .executor import ExecutionMetadata, ExecutionRequest, Launcher, execute
 from .ledger import Ledger
 from .replay_contracts import (
+    REPLAY_STAGES_WITHOUT_FRAMEWORK,
+    REPLAY_STAGE_ORDER,
+    AdmittedReplayHandleV1,
     AdmittedReplayVerificationGrantV1,
     AdmittedReplayV3,
     ReplayApplyOperationResultV1,
+    ReplayExecutionPlanV1,
+    ReplayVerificationGrantHandleV1,
     ReplayBackendCompositionV1,
     ReplayDecodedTreeReceiptV2,
     ReplayDecodedTreeReceiptV1,
@@ -3231,3 +3236,91 @@ async def apply_activity(stage: StageInput) -> ArtifactRef:
     except asyncio.CancelledError:
         runtime().ledger.quarantine_operation(key, owner)
         raise
+
+
+# Stage budgets are derived, never hard-coded per target. Each replay stage does
+# far more than its subprocess: apply runs every compiled operation, build
+# composes and re-validates an APK of ~90-135 MB, and verify re-decodes it and
+# runs every static assertion. Observed real durations are 932-2,448 s against
+# subprocess timeouts of 300-600 s, so budgets are deliberate multiples.
+#
+# These are ceilings, not targets, and they are generous on purpose: an expired
+# start_to_close delivers CancelledError, which quarantines the operation, which
+# is terminal. A tight timeout does not retry a stage, it destroys the run.
+_STAGE_BUDGET_ROLE = {
+    "install_framework": "install_framework",
+    "decode": "decode",
+    "apply": "decode",
+    "build": "build",
+    "verify": "decode",
+}
+_STAGE_BUDGET_MULTIPLIER = {
+    "install_framework": 6,
+    "decode": 6,
+    "apply": 6,
+    "build": 9,
+    "verify": 18,
+}
+
+
+def _replay_stage_budget(admitted: AdmittedReplayV3, stage: str) -> int:
+    plan = admitted.plan(_STAGE_BUDGET_ROLE[stage])
+    return plan.timeout_seconds * _STAGE_BUDGET_MULTIPLIER[stage]
+
+
+@activity.defn
+async def prepare_replay_plan_activity(handle: AdmittedReplayHandleV1) -> ReplayExecutionPlanV1:
+    """Derive the stage sequence from recorded authority.
+
+    Stage membership is target-dependent but not target-conditional: a profile
+    that declares frameworks needs the install stage. Deriving this here rather
+    than accepting it as Workflow input means a caller cannot omit a stage that
+    the admitted profile requires.
+    """
+    configured = runtime()
+    admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
+    stages = REPLAY_STAGE_ORDER if admitted.request.frameworks else REPLAY_STAGES_WITHOUT_FRAMEWORK
+    return ReplayExecutionPlanV1(
+        1,
+        admitted.run_spec.run_id,
+        admitted.sha256,
+        stages,
+        tuple(_replay_stage_budget(admitted, stage) for stage in stages),
+    )
+
+
+@activity.defn
+async def replay_install_frameworks_stage_activity(handle: AdmittedReplayHandleV1) -> ArtifactRef:
+    configured = runtime()
+    admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
+    return await replay_install_frameworks_checkpoint_activity(admitted)
+
+
+@activity.defn
+async def replay_decode_stage_activity(handle: AdmittedReplayHandleV1) -> ArtifactRef:
+    configured = runtime()
+    admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
+    return await replay_decode_checkpoint_activity(admitted)
+
+
+@activity.defn
+async def replay_apply_tree_stage_activity(handle: AdmittedReplayHandleV1) -> ArtifactRef:
+    configured = runtime()
+    admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
+    return await replay_apply_tree_checkpoint_activity(admitted)
+
+
+@activity.defn
+async def replay_build_patched_apk_stage_activity(handle: AdmittedReplayHandleV1) -> ArtifactRef:
+    configured = runtime()
+    admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
+    return await replay_build_patched_apk_checkpoint_activity(admitted)
+
+
+@activity.defn
+async def replay_verify_final_apk_stage_activity(
+    handle: ReplayVerificationGrantHandleV1,
+) -> ArtifactRef:
+    configured = runtime()
+    grant = Ledger.load_admitted_replay_verification_grant_v1(configured.ledger, handle)
+    return await replay_verify_final_apk_checkpoint_activity(grant)
