@@ -223,6 +223,40 @@ across thirteen sites and is idempotent by construction.
 5. Registration tripwires flip deliberately: the five exclusion tests become inclusion tests in
    the same commit that registers, never silently.
 
+## 3b. Known follow-ups, deliberately not done in this slice
+
+**F1. The harness and the Workflow derive different verification-gate ids.**
+`tests/integration/test_real_replay_harness.py::_verification_request_and_decision` names ids
+`real-replay-{target}-final-verification-*` and builds its capability with
+`final_decode_capability(JAVA_SHA256, target)`. `replay_gate.derive_verification_request`
+derives `{run_id}-final-verification-*`, and the harness `run_id` is
+`real-replay-{target}-run`, so the two differ by a `-run` segment. Same run, two different
+gate subjects and therefore two different request hashes.
+
+The harness should call `replay_gate.derive_verification_request` so the proven path and the
+Workflow agree byte-for-byte. It is **not** changed here because
+`RealReplayHarnessFastTests.test_final_decode_capability_is_exact_for_both_targets` pins
+`capability_id` to the target-derived string, and re-pinning it without a real run would be
+asserting values nobody has observed. Do this in the slice that re-runs 340 and 430 through the
+registered Workflow, where the new pins can be verified against actual evidence.
+
+**F2. `replay_gate.resolve_admitted_build` depends on three private `activities` helpers.**
+`_replay_build_predecessors`, `_replay_build_operation_identity` and
+`_validate_replay_patched_apk_receipt`. The clean fix is to extract the pre-grant half of
+`_replay_verification_predecessors` into a public seam. That was not done because
+`_replay_verification_predecessors` sits inside the verify Activity's proven execution path,
+and changing it trips the constraint that proven internals stay untouched. A signature-drift
+test guards the coupling meanwhile. Bundle the extraction with the next real run, which
+re-establishes the evidence anyway.
+
+**F3. Cancellation remains destructive.** `graceful_shutdown_timeout` is now set and
+documented, but it is a partial mitigation: no timeout makes stopping a worker safe during a
+40-minute stage. A genuinely non-destructive cancellation path means editing the proven
+Activities, which is its own reviewed slice.
+
+**F4. Still no heartbeats**, so worker loss is undetected until `start_to_close` expiry, up to
+three hours for verify. Adding them also edits proven Activity bodies.
+
 ## 4. NO-GO conditions
 
 Do not proceed if any holds: the 340 History test cannot be made to pass without raising the
