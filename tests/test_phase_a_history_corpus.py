@@ -20,6 +20,7 @@ from temporalio.workflow import NondeterminismError
 
 from dfinsta_pipeline.contracts import RunSpec
 from dfinsta_pipeline.workflow import PortRunWorkflow
+from tests.history_search import decoded_payload_count, history_search_surface
 
 
 try:
@@ -72,10 +73,21 @@ class PhaseAHistoryCorpusTests(unittest.IsolatedAsyncioTestCase):
             await Replayer(workflows=[IncompatiblePortRunWorkflow]).replay_workflow(history)
 
     def test_saved_phase_a_history_contains_no_private_paths(self) -> None:
+        """Searches decoded payload bodies, not just the JSON text.
+
+        to_json() base64-encodes payloads. Asserting against the raw text alone
+        cannot fail for a secret carried inside a payload, which is where one
+        would be. The positive control below proves the payloads really were
+        decoded, so absence is evidence rather than an empty search.
+        """
         text = FIXTURE_PATH.read_text(encoding="utf-8")
-        for forbidden in ("/home/", "/tmp/", "PRIVATE_KEY", "PASSWORD", "SECRET"):
+        surface = history_search_surface(text)
+        self.assertGreater(decoded_payload_count(text), 0)
+        self.assertIn("run-history", surface)  # positive control: the run id
+        self.assertNotIn("run-history", text)  # and it is base64-hidden in the text
+        for forbidden in ("/home/", "/tmp/", "PRIVATE_KEY", "PASSWORD", "SECRET", "arnav"):
             with self.subTest(forbidden=forbidden):
-                self.assertNotIn(forbidden, text)
+                self.assertNotIn(forbidden, surface)
 
     def test_saved_phase_a_history_fixture_identity_is_pinned(self) -> None:
         self.assertEqual(

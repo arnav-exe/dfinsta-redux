@@ -26,6 +26,7 @@ from dfinsta_pipeline.activities import (
 )
 from dfinsta_pipeline.contracts import GateDecision, GateRequest, RunSpec, canonical_sha256
 from dfinsta_pipeline.workflow import PortRunWorkflow
+from tests.history_search import decoded_payload_count, history_search_surface
 
 
 TEST_DEPLOYMENT_VERSION = WorkerDeploymentVersion("dfinsta-pipeline-tests", "phase-a-v1")
@@ -300,8 +301,15 @@ class TemporalPhaseATests(unittest.IsolatedAsyncioTestCase):
 
         history_json = history.to_json()
         self.assertLess(len(history_json.encode("utf-8")), 256 * 1024)
+
+        # to_json() base64-encodes payload bodies, so searching the JSON text
+        # alone cannot see inside a payload -- exactly where a leak would be.
+        surface = history_search_surface(history_json)
+        self.assertGreater(decoded_payload_count(history_json), 0)
+        self.assertIn(spec.subject_sha256, surface)  # positive control
+        self.assertNotIn(spec.subject_sha256, history_json)  # and it is genuinely hidden
         for forbidden in (str(Path(self.directory.name)), "PRIVATE_KEY", "PASSWORD", "SECRET"):
-            self.assertNotIn(forbidden, history_json)
+            self.assertNotIn(forbidden, surface)
 
         saved_history = WorkflowHistory.from_json(spec.run_id, history_json)
         await Replayer(workflows=[PortRunWorkflow]).replay_workflow(saved_history)
