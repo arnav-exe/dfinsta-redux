@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "policy_id": "dfinsta-self-distribution-v1",
+  "policy_id": "dfinsta-self-distribution-v2",
   "package": "com.instagram.android",
   "minimum_sdk_floor": 28,
-  "expected_certificate_sha256": "798cda9135bed36ff7d0e3ba8eaf021e883c7dfe55559186c9fdce480345e877",
+  "expected_certificate_sha256": "ee12866dc224d4f20a4f832cfdb0b9b6824ff6f4abbb1fefbaa522445aa3262d",
   "allowed_signer_count": 1,
   "required_signature_schemes": ["v3"]
 }
