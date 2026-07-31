@@ -416,6 +416,11 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Ledger.operation_event_count(runtime().ledger, self.key, "effect"), 0)
 
     async def test_no_framework_primary_and_repository_independent_adoption(self) -> None:
+        def decode_with_generated_framework(cwd: Path) -> None:
+            shutil.copytree(self.decoded_source, cwd / "output")
+            (cwd / "framework/1.apk").write_bytes(b"apktool generated framework")
+
+        self.process.mutate = decode_with_generated_framework
         execute = activities.execute
         with mock.patch.object(activities, "execute", wraps=execute) as execute_call:
             output = await self.invoke("primary")
@@ -436,6 +441,11 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.execution_request.input_artifact.kind, "final-apk")
         self.assertEqual(self.execution_request, execute_call.call_args.args[1])
         self.assertEqual(execute_call.call_args.kwargs["timeout_seconds"], 17)
+        workspace = self.attempts / self.key / digest(b"primary")
+        self.assertEqual(
+            (workspace / "framework/1.apk").read_bytes(),
+            b"apktool generated framework",
+        )
 
         shutil.rmtree(self.source_root)
         launches = len(self.launches)

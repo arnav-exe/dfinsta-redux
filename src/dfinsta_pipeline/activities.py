@@ -2953,10 +2953,7 @@ async def replay_verify_final_apk_checkpoint_activity(
                 if captured_final != final_bytes:
                     raise ValueError("Final APK changed during decode")
                 if framework_receipt is None:
-                    if _framework_cache_snapshot(framework_fd):
-                        raise ValueError(
-                            "No-framework verification mutated the framework directory"
-                        )
+                    _framework_cache_snapshot(framework_fd)
                 else:
                     framework_manifest = load_decoded_tree(
                         configured.store, framework_receipt.framework_cache_manifest
