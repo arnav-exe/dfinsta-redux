@@ -426,9 +426,27 @@ def startup(
         )
     else:
         raise ValueError(f"Unknown launch strategy: {strategy}")
-    time.sleep(wait)
-    activities = adb.run("shell", "dumpsys", "activity", "activities", check=False).stdout
-    foreground = resumed_activity(activities)
+    # Poll for an accepted foreground state rather than sleeping a fixed period.
+    # A fixed sleep makes the result depend on how warm the app is: the first
+    # launch after an install has to optimise ~20 dex files, which routinely
+    # exceeds ten seconds, so a clean install would fail this check every time
+    # while a warm re-run of the same build passes. That is precisely backwards
+    # for an automated pipeline, where a fresh install is the normal case.
+    #
+    # `wait` becomes a ceiling instead of a floor, so the warm case also returns
+    # sooner. The final observation is still taken after the loop, so a state
+    # that is only briefly correct cannot pass.
+    deadline = time.monotonic() + wait
+    activities = ""
+    foreground = None
+    while True:
+        activities = adb.run("shell", "dumpsys", "activity", "activities", check=False).stdout
+        foreground = resumed_activity(activities)
+        if foreground is not None and foreground.startswith(package):
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
     pid = package_process(adb, package)
     logcat = adb.run("logcat", "-d", "-v", "threadtime", timeout=30).stdout
     fatal_lines = fatal_log_lines(logcat)
@@ -794,7 +812,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="action", required=True)
     subparsers.add_parser("preflight")
     startup_parser = subparsers.add_parser("startup")
-    startup_parser.add_argument("--wait", type=float, default=10)
+    # Ceiling, not a fixed sleep: startup polls and returns as soon as the
+    # package is foreground. 45s accommodates a cold first launch after install.
+    startup_parser.add_argument("--wait", type=float, default=45)
     startup_parser.add_argument(
         "--launch-strategy",
         choices=("explicit_component", "package_launcher"),
