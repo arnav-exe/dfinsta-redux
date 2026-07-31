@@ -533,12 +533,12 @@ class PhaseBVerifierTests(VerifierFixture):
             b".method again()V\n:start_source\nreturn-void\n.end method\n"
         )
         target_smali = (
-            b".class Laddon/Feature;\n.method go()V\n:start_generated\n:J\n"
+            b".class Laddon/Feature;\n.method again()V\n:start_generated\n"
+            b"return-void\n.end method\n.method go()V\n:start_generated\n:J\n"
             b"sget v0, Lsample/Fields;->value:I\n"
             b"packed-switch v0, :switch_data_generated\n:end_generated\nreturn-void\n"
             b":case_generated\ngoto :end_generated\n:switch_data_generated\n"
             b".packed-switch 0x0\n:case_generated\n.end packed-switch\n.end method\n"
-            b".method again()V\n:start_generated\nreturn-void\n.end method\n"
         )
         self.write_source("bundle/addon/Feature.smali", source_smali)
         self.write_decoded("smali_extra/addon/Feature.smali", target_smali)

@@ -656,6 +656,7 @@ def _canonicalize_labels(lines: list[str]) -> list[str]:
 
 def _canonicalize_smali_file(lines: list[str]) -> list[str]:
     result = []
+    methods: list[list[str]] = []
     method: list[str] | None = None
     for line in lines:
         if method is None:
@@ -666,10 +667,12 @@ def _canonicalize_smali_file(lines: list[str]) -> list[str]:
         else:
             method.append(line)
             if line == ".end method":
-                result.extend(_canonicalize_smali_method(method))
+                methods.append(_canonicalize_smali_method(method))
                 method = None
     if method is not None:
         raise VerificationError("Unterminated smali method")
+    for canonical_method in sorted(methods, key=lambda item: item[0].encode("utf-8")):
+        result.extend(canonical_method)
     return result
 
 

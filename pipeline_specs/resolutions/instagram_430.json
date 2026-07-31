@@ -286,7 +286,6 @@
       "expected_final_count": 1,
       "expected_precondition_count": 1,
       "final_sequence": [
-        ":dfinsta_reels_discover_endpoint",
         "const-string v8, \"clips/discover/\"",
         "invoke-static {v8}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
         "move-result-object v8"
@@ -301,7 +300,6 @@
       "occurrence": null,
       "operation_id": "430.anchor.replace_reels_discover_endpoint",
       "payload": [
-        ":dfinsta_reels_discover_endpoint",
         "const-string v8, \"clips/discover/\"",
         "invoke-static {v8}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
         "move-result-object v8"
@@ -315,7 +313,6 @@
       "expected_final_count": 1,
       "expected_precondition_count": 1,
       "final_sequence": [
-        ":dfinsta_reels_homecoming_endpoint",
         "const-string v9, \"clips/homecoming/\"",
         "invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
         "move-result-object v9"
@@ -330,7 +327,6 @@
       "occurrence": null,
       "operation_id": "430.anchor.replace_reels_homecoming_endpoint",
       "payload": [
-        ":dfinsta_reels_homecoming_endpoint",
         "const-string v9, \"clips/homecoming/\"",
         "invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
         "move-result-object v9"
@@ -344,7 +340,6 @@
       "expected_final_count": 1,
       "expected_precondition_count": 1,
       "final_sequence": [
-        ":dfinsta_reels_stream_endpoint",
         "const-string v9, \"clips/discover/stream/\"",
         "invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
         "move-result-object v9"
@@ -359,7 +354,6 @@
       "occurrence": null,
       "operation_id": "430.anchor.replace_reels_stream_endpoint",
       "payload": [
-        ":dfinsta_reels_stream_endpoint",
         "const-string v9, \"clips/discover/stream/\"",
         "invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
         "move-result-object v9"
@@ -399,7 +393,7 @@
     }
   ],
   "schema_version": 3,
-  "source_bundle_sha256": "26981cb8441f023866bd2fdd5530e751e04282c3f508198a45f666cec48af8d3",
+  "source_bundle_sha256": "fdca1be0003a3557fb92d4ac802a542ae9bf6b2ad0128112d4d3f956da9fd858",
   "target": {
     "apk_sha256": "38ae9861b9ca89f60f41767324e1c3d54a4e3a00ed5555b92660a08e6db14754",
     "composition": "monolithic",
