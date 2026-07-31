@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy, VersioningBehavior
+from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityCancellationType
 
 with workflow.unsafe.imports_passed_through():
@@ -159,6 +160,18 @@ class ReplayRunWorkflow:
             self._state = state
             return self._result(run_id, state, None, self._decision.decision_id)
 
+        # ReplayVerificationAdmissionV1 requires the decision to bind the handle's
+        # run. If the gate Activity ever returned a different run, constructing it
+        # would raise ValueError inside Workflow code, which Temporal treats as a
+        # workflow *task* failure and retries forever -- the run would wedge
+        # instead of failing. Check it here and fail the execution outright.
+        if self._gate.run_id != request.handle.run_id:
+            raise ApplicationError(
+                "Verification gate does not bind the admitted replay run",
+                type="ReplayVerificationGateMismatch",
+                non_retryable=True,
+            )
+
         self._state = "admitting-verification-grant"
         grant_handle = await workflow.execute_activity(
             admit_replay_verification_grant_activity,
@@ -237,8 +250,11 @@ class ReplayRunWorkflow:
             or decision_time > current_time + timedelta(minutes=5)
         ):
             raise ValueError("Decision timestamp is outside the gate validity period")
-        # Shared across both gates in this run so an admission decision id can
-        # never be replayed into the verification gate.
+        # `self._decision is not None` is what actually rejects a duplicate: only
+        # one decision is ever accepted, so the id sets below can only hold that
+        # one. They are kept as defence in depth against a future second gate in
+        # this Workflow, not because the admission gate seeds them -- that gate
+        # closed before this Workflow started and its ids are not visible here.
         if (
             decision.decision_id in self._decision_ids
             or decision.idempotency_id in self._idempotency_ids
