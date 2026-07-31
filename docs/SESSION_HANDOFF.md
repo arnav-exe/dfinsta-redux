@@ -284,9 +284,23 @@ The first real 340 verifier run failed closed because apktool legitimately gener
 
 The first real 430 verifier run failed closed on two no-op synthetic endpoint labels removed by baksmali and `SettingsWrapper` method reordering. The reviewed target-specific fix replaced those source idempotence labels with comment markers, regenerated all source/resolution hashes, and canonicalized complete smali methods before sorting them by declaration. The fresh run from commit `609bacfa35808947644cde904d2cd6b91d83f076` succeeded in 2,448.3 seconds. Canonical evidence `/home/arnav/AI/dfinsta-real-final-verify-430-2/success.json` has SHA-256 `9179519362038c0f410dacbfdffc670a8987447022f522c4eb17fd818b729a0e`. Final APK SHA-256 is `c18ed84e091e40863f020ad4781e06bd9df10741b22af200445169c7412c3d27`; verification receipt SHA-256 is `bedc94f9652b11bdcd768ff64c968733f921548bc3879c245c75868411b712d6`; all 15 assertions and seven operation proofs passed. Adoption again used one production-validator call, zero launches, the same artifact, and no retry workspace. Both evidence files include exact decisions, replay-v3 authority, separate verification grants, operation claims/events, referenced producer claims, and manifest CAS children. They remain self-issued mechanical direct-Activity evidence, not authenticated production authority, signing, publication, or runtime behavior.
 
+## Workflow Registration Checkpoint
+
+Registration is implemented as of 2026-07-31 on `port-430`, commits `b6feddf` through `aca304f`. Suite 440 to 498 tests, one expected skip, three consecutive green runs. Design and remaining follow-ups are in [`docs/WORKFLOW_REGISTRATION_DESIGN.md`](WORKFLOW_REGISTRATION_DESIGN.md).
+
+`ReplayRunWorkflow` is a separate definition; `PortRunWorkflow` and `workflow.py` are byte-identical and hash-pinned by test. Only wrappers are registered: the five proven checkpoint Activities keep their signatures and bodies and are never registered directly, so their commit-bound real-run evidence stays valid. Wrappers take a 131-byte hash-pinned handle against the 102,066 bytes of specs an `AdmittedReplayV3` embeds for 340, and load the same authority from the ledger, which re-validates. Gate two is derived from recorded state by `replay_gate` after the build, independently by both the preparing and the admitting Activity, so no gate subject is ever taken from Workflow state.
+
+Three defects were found and fixed during this work, all pre-existing or self-inflicted rather than inherent to registration:
+
+- The Phase A History privacy assertions could never fail. `to_json()` base64-encodes payload bodies, so a plaintext search cannot see inside a payload. Proven against the stored fixture: `subject_sha256` and `run_id` are absent from the raw text yet present in five of eleven decoded blobs. Fixed in `449ec6f` with `tests/history_search.py` and mandatory positive controls.
+- The "old History still replays" guarantee was untested; the test regenerated in-process the history it replayed. A stored fixture now exists and is verified to reject a realistic additive change, not only an empty stub.
+- Commit `a2da2c5` regressed 15 ledger authority calls to the shadowable bound form by snapshotting a file mid-write; restored in `cb227e2` and confirmed at parity with the `130de49` baseline.
+
+Not yet done: an opt-in real 340/430 run through the registered Workflow. Until that exists, registration is proven by unit and time-skipping tests only.
+
 ## Immediate Next Actions
 
-1. Register the reviewed admitted framework/decode/apply/build/verify sequence in the durable Workflow without changing the proven Activity identities.
+1. Run the opt-in real 340/430 replay through the registered Workflow and confirm it reaches the same final receipts with no duplicate launches. Bundle follow-ups F1 and F2 from the design document into that slice: align the harness with `replay_gate.derive_verification_request`, and extract a public predecessor seam so `replay_gate` stops reaching into private `activities` helpers.
 2. Complete Phase A authority/deployment evidence with an authenticated trusted-client process, hard process-loss test, and saved replay corpus. Normal Current-version rollout is proven.
 3. Keep signing, publication, and runtime behavior behind their separate human gates; the new evidence proves only mechanical direct-Activity execution.
 4. Add Google ADK as bounded read-only Temporal Activities only after deterministic generalization passes; specialist topology follows measured failure clusters.
