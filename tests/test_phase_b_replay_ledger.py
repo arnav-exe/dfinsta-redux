@@ -250,6 +250,15 @@ class AdmittedReplayHandleLoadTests(unittest.TestCase):
             Ledger.load_admitted_replay_v3(
                 self.ledger, replace(self.handle, admitted_replay_sha256="0" * 64)
             )
+        with Ledger._connection(self.ledger) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("DROP TRIGGER decisions_no_delete")
+            connection.execute(
+                "DELETE FROM decisions WHERE decision_id = ?",
+                (self.admitted.decision.decision_id,),
+            )
+        with self.assertRaisesRegex(ValueError, "Gate decision is not recorded"):
+            Ledger.load_admitted_replay_v3(self.ledger, self.handle)
 
 
 class ReplayVerificationGrantHandleLoadTests(unittest.TestCase):
@@ -380,6 +389,23 @@ class ReplayVerificationGrantHandleLoadTests(unittest.TestCase):
             Ledger.load_admitted_replay_verification_grant_v1(
                 self.ledger, replace(self.handle, grant_sha256="0" * 64)
             )
+        with Ledger._connection(self.ledger) as connection:
+            connection.execute(
+                "UPDATE operation_claims SET status = 'pending', output_json = NULL "
+                "WHERE operation_key = ?",
+                (self.case.receipt.operation_key,),
+            )
+        with self.assertRaisesRegex(ValueError, "build claim is not completed"):
+            Ledger.load_admitted_replay_verification_grant_v1(self.ledger, self.handle)
+        with Ledger._connection(self.ledger) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("DROP TRIGGER decisions_no_delete")
+            connection.execute(
+                "DELETE FROM decisions WHERE decision_id = ?",
+                (self.case.decision.decision_id,),
+            )
+        with self.assertRaisesRegex(ValueError, "Gate decision is not recorded"):
+            Ledger.load_admitted_replay_verification_grant_v1(self.ledger, self.handle)
 
 
 if __name__ == "__main__":

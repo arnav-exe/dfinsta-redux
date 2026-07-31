@@ -539,14 +539,14 @@ class Ledger:
                     raise ValueError("Stored admitted replay is not canonical")
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 raise ValueError("Stored admitted replay is corrupt") from error
-            reconstructed_values = self._admitted_replay_v3_values(reconstructed, row[8])
+            reconstructed_values = Ledger._admitted_replay_v3_values(reconstructed, row[8])
             if row != reconstructed_values:
                 raise ValueError("Admitted replay authority does not match its recorded row")
             if row[2] != handle.admitted_replay_sha256:
                 raise ValueError("Admitted replay authority does not match handle")
             if reconstructed.sha256 != handle.admitted_replay_sha256:
                 raise ValueError("Stored admitted replay does not match handle")
-            self._require_decision_row(connection, reconstructed.decision)
+            Ledger._require_decision_row(connection, reconstructed.decision)
         return reconstructed
 
     @staticmethod
@@ -665,14 +665,14 @@ class Ledger:
 
         with Ledger._connection(self) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            self._require_decision_row(connection, normalized.decision)
-            self._require_admitted_replay_v3_row(
+            Ledger._require_decision_row(connection, normalized.decision)
+            Ledger._require_admitted_replay_v3_row(
                 connection, normalized.admitted_replay
             )
-            build_input_sha256 = self._require_completed_build_claim(
+            build_input_sha256 = Ledger._require_completed_build_claim(
                 connection, normalized
             )
-            values = self._verification_grant_values(
+            values = Ledger._verification_grant_values(
                 normalized, grant_json, build_input_sha256
             )
             try:
@@ -728,17 +728,17 @@ class Ledger:
                     raise ValueError("Stored verification grant is not canonical")
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 raise ValueError("Stored verification grant is corrupt") from error
-            self._require_decision_row(connection, reconstructed.decision)
-            self._require_admitted_replay_v3_row(
+            Ledger._require_decision_row(connection, reconstructed.decision)
+            Ledger._require_admitted_replay_v3_row(
                 connection, reconstructed.admitted_replay
             )
-            build_input_sha256 = self._require_completed_build_claim(
+            build_input_sha256 = Ledger._require_completed_build_claim(
                 connection, reconstructed
             )
-            reconstructed_values = self._verification_grant_values(
+            reconstructed_values = Ledger._verification_grant_values(
                 reconstructed, row[11], build_input_sha256
             )
-            candidate_values = self._verification_grant_values(
+            candidate_values = Ledger._verification_grant_values(
                 candidate, canonical_json(candidate), build_input_sha256
             )
             if (
@@ -780,14 +780,14 @@ class Ledger:
                     raise ValueError("Stored verification grant is not canonical")
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 raise ValueError("Stored verification grant is corrupt") from error
-            self._require_decision_row(connection, reconstructed.decision)
-            self._require_admitted_replay_v3_row(
+            Ledger._require_decision_row(connection, reconstructed.decision)
+            Ledger._require_admitted_replay_v3_row(
                 connection, reconstructed.admitted_replay
             )
-            build_input_sha256 = self._require_completed_build_claim(
+            build_input_sha256 = Ledger._require_completed_build_claim(
                 connection, reconstructed
             )
-            reconstructed_values = self._verification_grant_values(
+            reconstructed_values = Ledger._verification_grant_values(
                 reconstructed, row[11], build_input_sha256
             )
             if row != reconstructed_values:
