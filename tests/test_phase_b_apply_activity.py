@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import inspect
+import itertools
 import json
 import tempfile
 import threading
@@ -35,6 +36,12 @@ from dfinsta_pipeline.replay_contracts import (
 )
 from tests.test_phase_b_replay_contracts import admit_v3, artifact_ref, fixture_v3
 
+
+# id() is only unique among LIVE objects. These fixtures replace the ledger
+# per subTest, so CPython can hand a freed address back and two iterations
+# collide on the same path, failing mkdir(parents=True). A counter is
+# genuinely unique; exist_ok would instead let two iterations share a tree.
+_TREE_SEQUENCE = itertools.count()
 
 WORKER_SMALI = (
     b".class public Lsample/Worker;\n"
@@ -407,7 +414,7 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
         completed_framework: ArtifactRef | None = None,
         framework_receipt: ReplayFrameworkCacheReceiptV1 | None = None,
     ) -> tuple[ArtifactRef, ReplayDecodedTreeReceiptV1 | ReplayDecodedTreeReceiptV2]:
-        tree = self.root / f"decode-{admitted.run_spec.run_id}-{id(runtime().ledger)}"
+        tree = self.root / f"decode-{admitted.run_spec.run_id}-{next(_TREE_SEQUENCE)}"
         (tree / "smali/sample").mkdir(parents=True)
         (tree / "smali/sample/Worker.smali").write_bytes(WORKER_SMALI)
         (tree / "empty").mkdir()
@@ -514,7 +521,7 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
         key, input_sha256, installations, _ = (
             activities._replay_framework_operation_identity(admitted)
         )
-        tree = self.root / f"framework-{admitted.run_spec.run_id}-{id(runtime().ledger)}"
+        tree = self.root / f"framework-{admitted.run_spec.run_id}-{next(_TREE_SEQUENCE)}"
         tree.mkdir(parents=True)
         for installation in installations:
             (tree / f"{installation.package_id}.apk").write_bytes(
