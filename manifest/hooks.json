@@ -1,0 +1,270 @@
+{
+  "schema_version": 1,
+  "policy_revision": "2026-08-01",
+  "note": "Version-independent hook intent. Anchors are PATTERNS with <name:kind> captures; payloads reference those captures so registers and renamed types resolve automatically. Authored by diffing the same seven hooks as resolved against Instagram 430 and 439. JSON rather than YAML to stay dependency-free and match the repo's strict-decoding style.",
+  "hooks": [
+    {
+      "hook_id": "set_app_context",
+      "intent": "Capture the Application context at process start so custom code can read SharedPreferences",
+      "tier": "robust",
+      "strategy": "lifecycle",
+      "semantic_deps": ["Landroid/app/Application;->onCreate()V"],
+      "hosts": [
+        {
+          "kind": "named",
+          "descriptor": "Lcom/instagram/app/InstagramAppShell;",
+          "note": "stable named class; survived 430->439 at the same path"
+        }
+      ],
+      "anchor": ["invoke-super {<app:reg>}, Landroid/app/Application;->onCreate()V"],
+      "payload": [
+        "",
+        "    invoke-static {<app>}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V"
+      ],
+      "marker": "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
+      "expected_marker_count": 1,
+      "mode": "insert_after",
+      "constraints": ["helper must not throw: it only does a static field write"],
+      "probe": {
+        "kind": "startup_no_fatal",
+        "signal": "NoSuchMethodError|VerifyError|ClassNotFoundException",
+        "surface": "app_launch",
+        "requires_two_directional_delta": false,
+        "note": "Not toggleable, so no two-directional delta exists. Executing at startup without a fatal IS the proof: an unresolved reference would throw here before any UI."
+      },
+      "status": "active"
+    },
+    {
+      "hook_id": "tigon_url_block",
+      "intent": "Fail outgoing API requests whose URI path is blocked, as a normal request failure",
+      "tier": "robust",
+      "strategy": "url_block",
+      "semantic_deps": [
+        "/feed/timeline/",
+        "/discover/topical_explore",
+        "/api/v1/clips/homecoming/",
+        "/feed/reels_tray/",
+        "/profile_ads/get_profile_ads/"
+      ],
+      "hosts": [
+        {
+          "kind": "named",
+          "descriptor": "Lcom/instagram/api/tigon/TigonServiceLayer;",
+          "note": "stable named class; only its parameter types were renamed 430->439"
+        }
+      ],
+      "anchor": [
+        ":try_start_0",
+        "iget-object <uri:reg>, <req:reg>, <reqcls:type>-><urifield:member>:Ljava/net/URI;"
+      ],
+      "payload": [
+        "",
+        "    invoke-static {<uri>}, Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V"
+      ],
+      "marker": "Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V",
+      "expected_marker_count": 1,
+      "mode": "insert_after",
+      "constraints": [
+        "MUST sit inside a try range whose .catch handles Ljava/io/IOException; outside it, a blocked request becomes a crash",
+        "the :try_start_0 anchor line is load-bearing: the iget alone is not unique"
+      ],
+      "probe": {
+        "kind": "logcat_delta",
+        "signal": "java.io.IOException: Blocked by DFInsta setting",
+        "surface": "feed_tab",
+        "requires_two_directional_delta": true
+      },
+      "status": "active"
+    },
+    {
+      "hook_id": "replace_reels_discover_endpoint",
+      "intent": "Blank the Reels discover request path when Reels are disabled",
+      "tier": "robust",
+      "strategy": "endpoint_replace",
+      "semantic_deps": ["clips/discover/"],
+      "hosts": [
+        {
+          "kind": "by_literal",
+          "literal": "clips/discover/",
+          "note": "the class moved LX/05t2->LX/04tC; the literal did not. Several classes contain it - the correct one builds the outgoing request path, not an analytics map or prefetch allowlist."
+        }
+      ],
+      "anchor": ["const-string <r:reg>, \"clips/discover/\""],
+      "payload": [
+        "    # dfinsta_reels_discover_endpoint",
+        "    const-string <r>, \"clips/discover/\"",
+        "",
+        "    invoke-static {<r>}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "",
+        "    move-result-object <r>"
+      ],
+      "marker": "# dfinsta_reels_discover_endpoint",
+      "expected_marker_count": 1,
+      "mode": "replace",
+      "constraints": [
+        "the result must be written back to the SAME register the literal was loaded into; the repeated <r> capture enforces this",
+        "idempotence marker is a COMMENT, never a no-op label: baksmali deletes unreferenced labels"
+      ],
+      "probe": {
+        "kind": "logcat_delta",
+        "signal": "ClipsViewerPerfLogger: onClipsItemsRequestFailed",
+        "surface": "reels_tab",
+        "requires_two_directional_delta": true,
+        "note": "Block-counting CANNOT measure this hook. replaceReelsEndpoint blanks the endpoint upstream of throwIfBlocked, so the path never matches the blocklist and no IOException is produced. Zero blocks in both directions is expected, not a pass."
+      },
+      "status": "active"
+    },
+    {
+      "hook_id": "replace_reels_homecoming_endpoint",
+      "intent": "Blank the Reels homecoming request path when Reels are disabled",
+      "tier": "robust",
+      "strategy": "endpoint_replace",
+      "semantic_deps": ["clips/homecoming/"],
+      "hosts": [
+        {
+          "kind": "by_literal",
+          "literal": "clips/homecoming/",
+          "note": "same host class as the other two Reels literals"
+        }
+      ],
+      "anchor": ["const-string <r:reg>, \"clips/homecoming/\""],
+      "payload": [
+        "    # dfinsta_reels_homecoming_endpoint",
+        "    const-string <r>, \"clips/homecoming/\"",
+        "",
+        "    invoke-static {<r>}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "",
+        "    move-result-object <r>"
+      ],
+      "marker": "# dfinsta_reels_homecoming_endpoint",
+      "expected_marker_count": 1,
+      "mode": "replace",
+      "constraints": ["result written back to the same register"],
+      "probe": {
+        "kind": "logcat_delta",
+        "signal": "ClipsViewerPerfLogger: onClipsItemsRequestFailed",
+        "surface": "reels_tab",
+        "requires_two_directional_delta": true
+      },
+      "status": "active"
+    },
+    {
+      "hook_id": "replace_reels_stream_endpoint",
+      "intent": "Blank the Reels stream request path when Reels are disabled",
+      "tier": "robust",
+      "strategy": "endpoint_replace",
+      "semantic_deps": ["clips/discover/stream/"],
+      "hosts": [
+        {
+          "kind": "by_literal",
+          "literal": "clips/discover/stream/",
+          "note": "same host class as the other two Reels literals"
+        }
+      ],
+      "anchor": ["const-string <r:reg>, \"clips/discover/stream/\""],
+      "payload": [
+        "    # dfinsta_reels_stream_endpoint",
+        "    const-string <r>, \"clips/discover/stream/\"",
+        "",
+        "    invoke-static {<r>}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        "",
+        "    move-result-object <r>"
+      ],
+      "marker": "# dfinsta_reels_stream_endpoint",
+      "expected_marker_count": 1,
+      "mode": "replace",
+      "constraints": ["result written back to the same register"],
+      "probe": {
+        "kind": "logcat_delta",
+        "signal": "ClipsViewerPerfLogger: onClipsItemsRequestFailed",
+        "surface": "reels_tab",
+        "requires_two_directional_delta": true
+      },
+      "status": "active"
+    },
+    {
+      "hook_id": "install_settings_long_click",
+      "intent": "Open the DFInsta settings dialog by long-pressing Options on the user's own profile (ProfileActionBar variant)",
+      "tier": "ui",
+      "strategy": "ui_attach",
+      "semantic_deps": [],
+      "hosts": [
+        {
+          "kind": "by_agent",
+          "note": "No stable name or literal anchors this. Located by: enter at the profile fragment's action-bar configuration, follow the runtime branch to each delegate, pin the control by DRAWABLE id (string ids are unresolvable under sparse resource encoding), then prove own-profile via the self/other model chain. 430 LX/077K -> 439 LX/0DnT."
+        }
+      ],
+      "anchor": [
+        "new-instance <l:reg>, <listener:type>",
+        "invoke-direct {<l>, <a:reg>, <b:reg>, <c:reg>, <d:reg>}, <listener>-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V",
+        "invoke-static {<l>, <view:reg>}, <helper:type>-><hm:member>(Landroid/view/View$OnClickListener;Landroid/view/View;)V"
+      ],
+      "payload": [
+        "",
+        "    new-instance <l>, Lcom/dfinstagram/SettingsWrapper;",
+        "",
+        "    invoke-direct {<l>}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
+        "",
+        "    invoke-virtual {<view>, <l>}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V"
+      ],
+      "marker": "Lcom/dfinstagram/SettingsWrapper;",
+      "expected_marker_count": 2,
+      "mode": "insert_after",
+      "constraints": [
+        "must be restricted to the user's OWN profile; other users' Options must stay non-long-clickable",
+        "the listener register is dead after the stock helper call consumes it, which is why it is safe to reuse"
+      ],
+      "probe": {
+        "kind": "ui_dialog",
+        "signal": "Distraction-free settings",
+        "surface": "profile_options_long_press",
+        "requires_two_directional_delta": false,
+        "note": "Not toggleable. The proof is that the dialog opens at all; before the 430 re-map this hook applied cleanly and was completely inert."
+      },
+      "status": "active"
+    },
+    {
+      "hook_id": "install_settings_long_click_actionbar",
+      "intent": "Open the DFInsta settings dialog by long-pressing Options on the user's own profile (legacy IgActionBar variant)",
+      "tier": "ui",
+      "strategy": "ui_attach",
+      "semantic_deps": [],
+      "hosts": [
+        {
+          "kind": "by_agent",
+          "note": "The SECOND implementation of the same control. A MobileConfig flag selects between this and the ProfileActionBar variant at runtime, so the same APK can need either. Patching only one is why the 430 hook was runtime-inert. 430 LX/06X7 -> 439 LX/0Di2."
+        }
+      ],
+      "anchor": [
+        "iput-object <drawable:reg>, <cfg:reg>, <cfgcls:type>-><df:member>:Landroid/graphics/drawable/Drawable;",
+        "const <lbl:reg>, <labelid:any>",
+        "iput <lbl>, <cfg>, <cfgcls>-><lf:member>:I",
+        "iput-object <click:reg>, <cfg>, <cfgcls>-><cf:member>:Landroid/view/View$OnClickListener;",
+        "iput-object <long:reg>, <cfg>, <cfgcls>-><lcf:member>:Landroid/view/View$OnLongClickListener;"
+      ],
+      "payload": [
+        "",
+        "    # dfinsta_settings_long_click_actionbar",
+        "    new-instance <long>, Lcom/dfinstagram/SettingsWrapper;",
+        "",
+        "    invoke-direct {<long>}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
+        "",
+        "    iput-object <long>, <cfg>, <cfgcls>-><lcf>:Landroid/view/View$OnLongClickListener;"
+      ],
+      "marker": "Lcom/dfinstagram/SettingsWrapper;",
+      "expected_marker_count": 2,
+      "mode": "insert_after",
+      "constraints": [
+        "the same long-click iput appears TWICE in the host: once for Options and once for the other-user follow button. The five-line anchor including the drawable and label is what disambiguates.",
+        "sets the builder's own long-click field rather than attaching to a constructed view"
+      ],
+      "probe": {
+        "kind": "ui_dialog",
+        "signal": "Distraction-free settings",
+        "surface": "profile_options_long_press",
+        "requires_two_directional_delta": false
+      },
+      "status": "active"
+    }
+  ]
+}
