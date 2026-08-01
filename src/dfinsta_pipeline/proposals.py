@@ -35,6 +35,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .contracts import canonical_sha256
 from .evidence import (
+    NO_PROPOSER,
     EvidenceClaim,
     EvidenceKind,
     EvidenceLedger,
@@ -397,7 +398,7 @@ def assess(
             # Register anyway, so a hook nobody answered still appears in the
             # readiness report with every kind `not_exercised`. Silently missing
             # from the report reads as "nothing to worry about".
-            ledger.register(Subject(hook.hook_id, "agent", proposed_by="(none)"))
+            ledger.register(Subject(hook.hook_id, "agent", proposed_by=NO_PROPOSER))
         return Assessment(
             hook.hook_id,
             None,
@@ -436,14 +437,21 @@ def assess(
         )
 
     winning_proposer = winner_group[0].proposer
-    # A verifier that is the proposer is not independent evidence, and the ledger
-    # would refuse the claim. Separate them here so that arrives as a stated
-    # escalation rather than as an exception thrown mid-assessment.
-    self_refutations = [
-        item for item in refutations if item.verifier == winning_proposer
-    ]
+    # A verifier that helped produce the accepted answer is not independent
+    # evidence, and the ledger would refuse the claim. Separate them here so that
+    # arrives as a stated escalation rather than as an exception thrown
+    # mid-assessment.
+    #
+    # Two subtleties, both of which let a proposer clear its own work:
+    #   - compared stripped, like the ledger does; exact equality means one
+    #     trailing space defeats the check
+    #   - every proposer in the winning group is disqualified, not just the first.
+    #     `Subject.proposed_by` names only one of them, so the ledger cannot
+    #     notice a co-author reviewing the answer it co-wrote.
+    authors = {proposal.proposer.strip() for proposal in winner_group}
+    self_refutations = [item for item in refutations if item.verifier.strip() in authors]
     independent_refutations = [
-        item for item in refutations if item.verifier != winning_proposer
+        item for item in refutations if item.verifier.strip() not in authors
     ]
     for refutation in independent_refutations:
         claims.append(
@@ -473,7 +481,7 @@ def assess(
     # Decide. Every branch below states which check refused.
     candidates = [proposal for proposal in winner_group if proposal in surviving]
     if self_refutations:
-        names = ", ".join(item.verifier for item in self_refutations)
+        names = ", ".join(sorted({item.verifier.strip() for item in self_refutations}))
         return Assessment(
             hook.hook_id,
             None,
@@ -481,9 +489,9 @@ def assess(
             tuple(proposals),
             validations,
             reason=(
-                f"{hook.hook_id}: {names} both proposed the accepted answer and reviewed "
-                "it. A verifier that is the proposer is not independent evidence, so this "
-                "needs a genuine second opinion before it can advance."
+                f"{hook.hook_id}: {names} helped produce the accepted answer and also "
+                "reviewed it. A verifier that is one of the proposers is not independent "
+                "evidence, so this needs a genuine second opinion before it can advance."
             ),
         )
     if not surviving:

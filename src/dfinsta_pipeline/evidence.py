@@ -46,6 +46,11 @@ from .contracts import canonical_json, canonical_sha256
 
 SCHEMA_VERSION = 1
 
+#: Stands in for a proposer on a hook nobody answered, so the hook still appears
+#: in the readiness report with every kind `not_exercised` instead of being
+#: silently absent. A real registration may replace it.
+NO_PROPOSER = "(none)"
+
 
 class EvidenceError(ValueError):
     """Raised when a claim is malformed, self-attested, or waived without authority."""
@@ -412,6 +417,13 @@ class EvidenceLedger:
     def register(self, subject: Subject) -> None:
         existing = self._subjects.get(subject.hook_id)
         if existing is not None and existing != subject:
+            if existing.proposed_by == NO_PROPOSER:
+                # A hook registered because nobody answered it is a placeholder,
+                # there so it appears in the readiness report with every kind
+                # `not_exercised` rather than being silently absent. A later pass
+                # that does have proposals must be able to replace it.
+                self._subjects[subject.hook_id] = subject
+                return
             raise EvidenceError(
                 f"{subject.hook_id} is already registered as {existing.provenance!r} "
                 f"proposed by {existing.proposed_by!r}; re-registering it differently "
