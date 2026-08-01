@@ -112,27 +112,51 @@ def free_custom_tree(decode: Path) -> str:
 CALL_TARGET = re.compile(
     r"invoke-\w+(?:/range)?\s*\{[^}]*\},\s*(?P<descriptor>L[^;]+;)->(?P<method>[^(]+)\("
 )
-FIELD_TARGET = re.compile(r"(?:iput|sget|new-instance)[\w-]*\s+[^,]+,\s*(?P<descriptor>L[^;]+;)")
+#: Instructions that only *reference* a type. `iput`/`iget` carry TWO register
+#: operands before the owner, `sput`/`sget`/`new-instance` carry one, so the
+#: second is optional — an earlier version used `[^,]+`, which cannot span a
+#: comma and therefore never matched any `iput` at all.
+FIELD_TARGET = re.compile(
+    r"(?:iput|iget|sput|sget|new-instance)[\w-]*\s+[vp]\d+\s*(?:,\s*[vp]\d+\s*)?,\s*"
+    r"(?P<descriptor>L[^;]+;)"
+)
 
 
-def host_hook_map(report: ResolveReport, index: HookIndex) -> dict[str, list[list[str]]]:
+def host_hook_map(
+    report: ResolveReport, index: HookIndex, hooks: Sequence[Hook]
+) -> dict[str, list[list[str]]]:
     """Which DFInsta call each grafted DEX must be shown to contain.
 
-    Read out of the resolved payloads rather than hand-maintained, which is what
-    it was before. A DEX stores a method reference as three separate indices, so
-    only the type descriptor and the bare method name exist as literal strings —
-    that pair is what the verifier can actually look for.
+    Read out of the payloads rather than hand-maintained, which is what it was
+    before. A DEX stores a method reference as three separate indices, so only
+    the type descriptor and the bare method name exist as literal strings — that
+    pair is what the verifier can actually look for.
+
+    Covers ALREADY_APPLIED hosts as well as RESOLVED ones, because
+    :func:`host_dex_entries` grafts both. A DEX that is replaced in the output
+    with nothing asserted about its contents is the vacuous pass the verifier
+    refuses globally, reintroduced one DEX at a time.
     """
+    by_id = {hook.hook_id: hook for hook in hooks}
     out: dict[str, set[tuple[str, str]]] = {}
     for item in report.resolutions:
-        if item.outcome is not Outcome.RESOLVED or item.resolution is None:
+        if item.outcome not in {Outcome.RESOLVED, Outcome.ALREADY_APPLIED}:
             continue
         assert item.descriptor is not None
         path = index.path_for(item.descriptor)
         if path is None:  # pragma: no cover - resolved hosts are always indexed
             continue
         dex = dex_name(path.split("/", 1)[0])
-        for line in item.resolution.payload:
+        # The manifest payload, not the rendered one: an already-applied hook has
+        # no rendered payload, and the DFInsta descriptors and method names are
+        # literal in the template either way — only registers and host types are
+        # captures.
+        payload = (
+            item.resolution.payload
+            if item.resolution is not None
+            else list(by_id[item.hook_id].payload)
+        )
+        for line in payload:
             call = CALL_TARGET.search(line)
             if call and "dfinstagram" in call.group("descriptor"):
                 out.setdefault(dex, set()).add(
@@ -326,6 +350,7 @@ def record_resolution_evidence(
     proposed: Mapping[str, Sequence[str]],
     decode: Path,
     hooks: Sequence[Hook],
+    already_registered: Iterable[str] = (),
 ) -> None:
     """Turn what the pre-apply stages proved into ledger claims.
 
@@ -336,18 +361,42 @@ def record_resolution_evidence(
     their absence is what keeps a pre-apply pass from meaning "this works".
     """
     by_id = {hook.hook_id: hook for hook in hooks}
+    registered = set(already_registered)
     validate = load_validator()
     for item in report.resolutions:
-        provenance = "agent" if item.hook_id in proposed else "mechanical"
-        proposer = f"proposal:{item.hook_id}" if provenance == "agent" else ""
-        ledger.register(
-            Subject(item.hook_id, provenance, descriptor=item.descriptor, proposed_by=proposer)
-        )
         if item.outcome is Outcome.ALREADY_APPLIED:
-            # The marker is ours and only this pipeline writes it, so the site is
-            # already proven. Re-validating would fail on `marker_absent` by
-            # construction.
+            # The marker is this pipeline's own idempotence stamp. Its presence at
+            # exactly the expected count in exactly one class is deterministic
+            # evidence that this exact payload is in this exact place — but
+            # register liveness cannot be re-derived once the payload is applied,
+            # because that check needs an unpatched anchor. Hence its own
+            # provenance rather than a claim asserting something not re-derived.
+            if item.hook_id not in registered:
+                ledger.register(
+                    Subject(item.hook_id, "already_applied", descriptor=item.descriptor)
+                )
+            ledger.record(
+                deterministic_claim(
+                    item.hook_id,
+                    EvidenceKind.ANCHOR_UNIQUE,
+                    True,
+                    actor="dfinsta_pipeline.resolve",
+                    summary=item.reason,
+                    detail={"descriptor": item.descriptor, "outcome": item.outcome.value},
+                )
+            )
             continue
+        if item.hook_id not in registered:
+            # A hook assessed through `proposals.assess` is already registered
+            # there, with the real proposer. Registering it again under a
+            # synthetic name is refused by the ledger and used to kill the run.
+            provenance = "agent" if item.hook_id in proposed else "mechanical"
+            proposer = f"proposal:{item.hook_id}" if provenance == "agent" else ""
+            ledger.register(
+                Subject(
+                    item.hook_id, provenance, descriptor=item.descriptor, proposed_by=proposer
+                )
+            )
         ledger.record(
             deterministic_claim(
                 item.hook_id,
@@ -494,7 +543,14 @@ def port(
     #    gate unsatisfiable. They gate the release instead, and until they exist
     #    a passing gate here says only that nothing derivable from the decode
     #    objects.
-    record_resolution_evidence(ledger, report, proposals, paths.analysis_decode, hooks)
+    record_resolution_evidence(
+        ledger,
+        report,
+        proposals,
+        paths.analysis_decode,
+        hooks,
+        already_registered=assessments.keys(),
+    )
     readiness = ledger.report(PRE_APPLY)
     paths.readiness.write_text(
         json.dumps(readiness, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -541,7 +597,7 @@ def port(
     replace_dex = host_dex_entries(report, index)
     if not replace_dex:
         raise DriverError("no host DEX entries to graft; refusing to build a stock APK")
-    hooks_map = host_hook_map(report, index)
+    hooks_map = host_hook_map(report, index, hooks)
     if not hooks_map:
         raise DriverError("no host hook could be derived; the verifier would pass vacuously")
     paths.host_hooks.write_text(

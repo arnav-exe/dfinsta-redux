@@ -182,14 +182,35 @@ MECHANICAL_REQUIREMENTS: frozenset[EvidenceKind] = frozenset(
 )
 AGENT_REQUIREMENTS: frozenset[EvidenceKind] = frozenset(EvidenceKind)
 
+#: A hook this run did not apply, because the decode already carries its patch.
+#: Register liveness cannot be re-derived once the payload is in place — the
+#: check needs an unpatched anchor — so demanding it would make a normal re-run
+#: permanently unsatisfiable. What remains is genuine and deterministic: the
+#: marker is this pipeline's own idempotence stamp, and its presence at exactly
+#: the expected count in exactly one class proves this exact payload is in this
+#: exact place. The post-build kinds still apply in full, so the built APK is
+#: held to the same standard however its patches got there.
+ALREADY_APPLIED_REQUIREMENTS: frozenset[EvidenceKind] = frozenset(
+    {
+        EvidenceKind.ANCHOR_UNIQUE,
+        EvidenceKind.STATIC_VERIFIED,
+        EvidenceKind.RUNTIME_PROBE,
+        EvidenceKind.DIFFERENTIAL,
+    }
+)
+
+PROVENANCES = ("mechanical", "agent", "already_applied")
+
 
 def requirements_for(provenance: str) -> frozenset[EvidenceKind]:
     if provenance == "mechanical":
         return MECHANICAL_REQUIREMENTS
     if provenance == "agent":
         return AGENT_REQUIREMENTS
+    if provenance == "already_applied":
+        return ALREADY_APPLIED_REQUIREMENTS
     raise EvidenceError(
-        f"unknown provenance {provenance!r}; expected 'mechanical' or 'agent'. "
+        f"unknown provenance {provenance!r}; expected one of {', '.join(PROVENANCES)}. "
         "An unrecognised provenance must not silently pick the smaller requirement set."
     )
 
@@ -324,7 +345,7 @@ class Subject:
     """
 
     hook_id: str
-    provenance: str  # "mechanical" | "agent"
+    provenance: str  # one of PROVENANCES
     descriptor: str | None = None
     proposed_by: str = ""
 
@@ -335,9 +356,9 @@ class Subject:
                 f"{self.hook_id}: an agent-resolved hook must name its proposer, or "
                 "'produced by something other than the proposer' cannot be checked"
             )
-        if self.provenance == "mechanical" and self.proposed_by.strip():
+        if self.provenance != "agent" and self.proposed_by.strip():
             raise EvidenceError(
-                f"{self.hook_id}: a mechanically resolved hook has no proposer; "
+                f"{self.hook_id}: a {self.provenance} hook has no proposer; "
                 f"got {self.proposed_by!r}"
             )
 
