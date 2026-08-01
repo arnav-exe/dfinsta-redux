@@ -181,6 +181,31 @@ the 340 `minshop` shape exactly.
 
 ## 3. Decide — in progress
 
+**Stage 4a is built** (`src/dfinsta_pipeline/assessment.py`), and the premise was
+tested before it. A calibration experiment fixed seven engagement signals from product
+mechanics, then measured them against surfaces we already hold an opinion about with 40
+random literals as control: **six were noise**, and the control landed *between* the
+labelled groups, so a composite score would have measured roughly "how instrumented is
+this class". Hence no addictiveness score, and a measured/judged split enforced by types.
+
+What works is the app's own bookkeeping. The detector names no class — it finds any class
+enumerating several endpoints we already block, then reads what else that class lists.
+430 → `LX/05jj`, 439 → `LX/03Ez`: the same group under different obfuscated names, each
+yielding **the same four unblocked consumption endpoints**, so this gap has existed since
+at least 430:
+
+    feed/timeline_stream/   feed/injected_reels_media/
+    feed/reels_media/       feed/reels_media_stream/
+
+`feed/injected_reels_media/` is Reels injected into the timeline, going straight through.
+
+**Gate contracts are built** (`src/dfinsta_pipeline/feature_gate.py`). The response is
+symmetric to the request: dispositions go to CAS, the decision binds their hash,
+`assessment_sha256` pins what the human actually saw, and every candidate must carry a
+disposition — one nobody ruled on blocks rather than defaulting to `ignore`.
+
+Design and the experiment: [`docs/STAGE_4_DESIGN.md`](STAGE_4_DESIGN.md).
+
 - [x] **Detect surfaces present in a new version but absent from the last baseline**
       (`src/dfinsta_pipeline/surface_diff.py`). Diffs the stable-string layer only —
       resource names never ids, class *counts* never descriptor sets, so no descriptor can
