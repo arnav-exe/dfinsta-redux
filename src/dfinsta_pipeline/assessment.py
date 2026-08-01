@@ -1,0 +1,435 @@
+"""Stage 4a: turn changed surfaces into assessments a human can actually check.
+
+Stage 3 says what changed. This says what is worth doing about it — and the hard
+part is that "addictive" is a judgement, while this project's recurring failure
+is a confident wrong answer.
+
+A calibration experiment settled the shape before any of this was written. Seven
+engagement signals were fixed from product mechanics first — autoplay, infinite
+pagination, algorithmic ranking, prefetch, push, variable reward, engagement
+telemetry — and only then measured against surfaces we already hold an opinion
+about, with 40 random literals as a control. **Six were noise.** The composite
+scored positives 1.43, negatives 0.90 and *control 1.18*: the random group landed
+between the labelled ones, so summing those signals would have produced an
+authoritative-looking number measuring roughly "how instrumented is this class".
+Only prefetch separated, and weakly — 0.38 against a size-matched baseline of
+0.17, where 64% of comparable literals carry some prefetch anyway.
+
+So this module **computes no addictiveness score**, and the split between what is
+measured and what is judged is enforced by the types rather than by convention.
+
+What does work is the app's own bookkeeping. Instagram maintains curated arrays
+of endpoints it treats as continuous content, and a class that enumerates several
+of them together is declaring a group. That is checkable, per-version, and
+produced by the adversary rather than by us — the same principle the evidence
+ledger runs on.
+
+The detector never names a class. It looks for any class enumerating several
+endpoints that DFInsta already blocks, then reads whatever else that class lists;
+the extras are the candidates. Measured on both versions it finds `LX/05jj` on
+430 and `LX/03Ez` on 439 — the same group under different obfuscated names, each
+carrying the same four endpoints DFInsta does not block. It degrades honestly
+too: if a future version has no such class, the stage reports that it found no
+grouping rather than inventing one.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+
+from .hook_index import HookIndex
+from .hook_manifest import Hook
+
+
+class Strength(str, Enum):
+    """How much weight a piece of evidence can bear.
+
+    Recorded per item and never summed. The experiment is the reason: a composite
+    of mostly-weak signals reads as authority it has not earned.
+    """
+
+    STRONG = "strong"
+    MEDIUM = "medium"
+    WEAK = "weak"
+
+
+class Verdict(str, Enum):
+    """What a human may decide about a candidate.
+
+    ``OFFER_TOGGLE`` rather than ``BLOCK`` is the default shape for anything
+    judged addictive, because the product rule is that an addictive feature gets
+    a switch rather than a silent removal.
+    """
+
+    BLOCK = "block"
+    OFFER_TOGGLE = "offer_toggle"
+    IGNORE = "ignore"
+    DEFER = "defer"
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """One MEASURED fact, independently re-derivable from the decode.
+
+    Never a conclusion. ``detail`` carries what a reader needs to check it
+    themselves, because the point of separating measurement from judgement is
+    that a human can disagree with the reading without distrusting the facts.
+    """
+
+    kind: str
+    strength: Strength
+    summary: str
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "strength": self.strength.value,
+            "summary": self.summary,
+            "detail": dict(self.detail),
+        }
+
+
+@dataclass(frozen=True)
+class Judgement:
+    """A reading OF the evidence, by an agent or a human. Not evidence itself.
+
+    Deliberately a separate type. If a judgement could be appended to the
+    evidence list, the distinction would survive exactly as long as the next
+    person's attention.
+    """
+
+    actor: str
+    recommendation: Verdict
+    reasoning: str
+    #: What the judge could NOT establish. Stated because an admitted gap is
+    #: worth more than a confident guess, and this is where a reader looks to
+    #: decide how much the recommendation is worth.
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.actor.strip():
+            raise ValueError("a judgement must name who made it")
+        if not self.reasoning.strip():
+            raise ValueError(
+                "a judgement must give its reasoning; a bare recommendation is "
+                "indistinguishable from a guess at the gate"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "actor": self.actor,
+            "recommendation": self.recommendation.value,
+            "reasoning": self.reasoning,
+            "unresolved": list(self.unresolved),
+        }
+
+
+@dataclass(frozen=True)
+class Grouping:
+    """A class that enumerates several endpoints the app treats alike."""
+
+    descriptor: str
+    known: tuple[str, ...]  # endpoints DFInsta already blocks
+    novel: tuple[str, ...]  # everything else the same class lists
+
+    @property
+    def size(self) -> int:
+        return len(self.known) + len(self.novel)
+
+    @property
+    def cohesion(self) -> float:
+        """Share of the class's endpoints we already recognise.
+
+        Surfaced because it is what separates a curated list from a string pool,
+        and a human judging the inference deserves to see it rather than trust
+        that a threshold was applied.
+        """
+        return len(self.known) / self.size if self.size else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "descriptor": self.descriptor,
+            "known": list(self.known),
+            "novel": list(self.novel),
+            "size": self.size,
+            "cohesion": round(self.cohesion, 3),
+        }
+
+
+@dataclass(frozen=True)
+class Assessment:
+    """One candidate, its measured evidence, and — separately — any judgement."""
+
+    candidate_id: str
+    literal: str
+    measured: tuple[Evidence, ...]
+    judgement: Judgement | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse anything but `Evidence` in `measured`.
+
+        The docstring claimed this split was enforced by the types; it was not,
+        and the failure was silent rather than loud. A `Judgement` placed in
+        `measured` after a STRONG item slipped past `strongest`'s short-circuit
+        and was serialised into the **measured** array while the `judgement` key
+        stayed null — an opinion laundered into the facts, in a document that
+        still validated and whose counts still agreed.
+
+        A property that the whole design rests on has to be refused at the
+        boundary, the way `EvidenceClaim` refuses a bad producer, rather than
+        surviving on everyone's attention.
+        """
+        for item in self.measured:
+            if not isinstance(item, Evidence):
+                raise TypeError(
+                    f"{self.candidate_id}: measured evidence must be Evidence, got "
+                    f"{type(item).__name__}. A judgement belongs in `judgement`; "
+                    "putting it here would present an opinion as a measurement."
+                )
+
+    @property
+    def strongest(self) -> Strength | None:
+        for level in (Strength.STRONG, Strength.MEDIUM, Strength.WEAK):
+            if any(item.strength is level for item in self.measured):
+                return level
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "literal": self.literal,
+            "strongest_evidence": self.strongest.value if self.strongest else None,
+            "measured": [item.to_dict() for item in self.measured],
+            "judgement": self.judgement.to_dict() if self.judgement else None,
+        }
+
+
+# ---------------------------------------------------------------- normalising
+
+
+def normalise(literal: str) -> str:
+    """Compare endpoints the way the app writes them, not the way we do.
+
+    A manifest `semantic_deps` entry reads `/api/v1/clips/homecoming/` while the
+    index holds `clips/homecoming/`. Without this they never match and the whole
+    stage silently finds nothing — a failure that looks exactly like "no new
+    features", which is the worst possible way for it to break.
+    """
+    value = literal.strip().lstrip("/")
+    for prefix in ("api/v1/", "api/"):
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
+    return value
+
+
+def looks_like_uri_rule(dep: str) -> bool:
+    """Is this `semantic_deps` entry a URI-path rule at all?
+
+    Not every dependency is one — `set_app_context` declares
+    `Landroid/app/Application;->onCreate()V`, a method it must be able to anchor
+    on. Treating that as a blocking rule is harmless today because nothing
+    contains it, but the failure mode if a short non-path dep ever slipped
+    through is that it would match most of a group and quietly empty the report,
+    which is indistinguishable from "nothing new was found".
+    """
+    value = dep.strip()
+    if not value or "->" in value or ";" in value:
+        return False
+    return "/" in value
+
+
+def blocked_endpoints(hooks: Iterable[Hook]) -> set[str]:
+    """What DFInsta already covers, read from the manifest rather than hardcoded."""
+    out: set[str] = set()
+    for hook in hooks:
+        if hook.status != "active":
+            continue
+        for dep in hook.semantic_deps:
+            if not looks_like_uri_rule(dep):
+                continue
+            normalised = normalise(dep)
+            if normalised:
+                out.add(normalised)
+    return out
+
+
+def is_blocked(literal: str, blocked: Iterable[str]) -> str | None:
+    """Which rule, if any, already covers this endpoint. Returns the rule or None.
+
+    Substring containment, not equality, because that is what the app-side code
+    actually does: `throwIfBlocked` applies `endsWith` and `contains` against the
+    request's URI path, so the rule `/discover/topical_explore` covers the
+    literal `discover/topical_explore/` and `/clips/discover` covers
+    `clips/discover/interest/stream/`.
+
+    Equality was tried first and produced two false gaps out of six — endpoints
+    reported as unprotected that are in fact blocked. At a gate that is worse
+    than a miss: a human who checks one claim, finds it wrong, and discounts the
+    rest has been actively misled by the report.
+
+    The containment direction matters and is not symmetric. `feed/timeline/`
+    does NOT cover `feed/timeline_stream/`, because the trailing slash is part
+    of the rule — which is exactly why that one is a genuine gap.
+    """
+    target = normalise(literal)
+    matches = [rule for rule in blocked if rule and rule in target]
+    if not matches:
+        return None
+    # Longest first, then lexicographic. `blocked` arrives as a set, so taking
+    # the first match made the cited rule depend on PYTHONHASHSEED: several rules
+    # genuinely cover one endpoint (`clips/discover/` and `clips/discover/stream/`
+    # both cover the latter) and the citation moved between runs on identical
+    # input. The boolean never wavered, but the whole point of returning the rule
+    # is so a report can cite it, and the gate requires two independent
+    # derivations to agree byte-for-byte.
+    #
+    # Longest is also the more useful answer: the most specific rule is the one
+    # that tells a reader why this endpoint is considered covered.
+    return max(matches, key=lambda rule: (len(rule), rule))
+
+
+# ------------------------------------------------------------------ groupings
+
+
+#: A grouping must be mostly things we already recognise. Below this, the known
+#: endpoints are a minority of what the class holds, which is the signature of a
+#: generated global string pool rather than a curated list — `LX/0000` on 439
+#: holds 3 seeds among 51 literals (0.06) while the real grouping holds 5 among 9
+#: (0.56). `docs/PORT_430_MAPPING.md` already warns never to patch those pools;
+#: this keeps them out of the report for the same reason.
+#:
+#: Cohesion rather than a higher seed count, because a seed threshold is a magic
+#: number that happens to fit today's group and would miss a smaller one
+#: tomorrow. This measures the property that actually distinguishes them.
+MIN_COHESION = 0.4
+
+
+def find_groupings(
+    index: HookIndex,
+    seeds: Iterable[str],
+    min_seeds: int = 2,
+    min_size: int = 2,
+    min_cohesion: float = MIN_COHESION,
+) -> list[Grouping]:
+    """Classes that enumerate several *seed* endpoints, plus whatever else they list.
+
+    Deliberately names no class. `LX/05jj` on 430 and `LX/03Ez` on 439 are the
+    same grouping under different obfuscated names — resolving it by content is
+    the only thing that survives a version bump, and it is the same reason host
+    search uses co-located literals rather than a descriptor.
+
+    ``min_seeds`` guards against a coincidence: one shared endpoint means
+    nothing, and a global string pool that happens to hold everything would
+    otherwise look like the strongest grouping in the app.
+    """
+    wanted = {normalise(seed) for seed in seeds if normalise(seed)}
+    if not wanted:
+        return []
+    # Only classes that already hold a seed can be a group, so the search starts
+    # from them rather than walking all 181,000 classes.
+    candidates: set[str] = set()
+    for literal in wanted:
+        candidates.update(index.descriptors_with_literal(literal))
+
+    groupings: list[Grouping] = []
+    for descriptor in candidates:
+        literals = set(index.literals_in(descriptor))
+        # Split by the SAME containment rule the gap check uses. Using set
+        # membership here and containment there would let a covered endpoint sit
+        # in `novel` and be reported as a gap.
+        known = sorted(l for l in literals if is_blocked(l, wanted))
+        if len(known) < min_seeds or len(literals) < min_size:
+            continue
+        novel = sorted(l for l in literals if not is_blocked(l, wanted))
+        if len(known) / (len(known) + len(novel)) < min_cohesion:
+            continue  # a string pool that happens to contain some seeds
+        groupings.append(Grouping(descriptor, tuple(known), tuple(novel)))
+    return sorted(groupings, key=lambda g: (-len(g.known), -g.size, g.descriptor))
+
+
+# ----------------------------------------------------------------- assessing
+
+
+def coverage_gaps(groupings: Sequence[Grouping], blocked: set[str]) -> list[tuple[str, Grouping]]:
+    """Endpoints a grouping lists that DFInsta does not block.
+
+    The strongest single output of this stage: the app itself says these belong
+    with surfaces we already treat as distractions, and we let them through.
+    """
+    out: list[tuple[str, Grouping]] = []
+    seen: set[str] = set()
+    for grouping in groupings:
+        for literal in grouping.novel:
+            if literal in seen or is_blocked(literal, blocked):
+                continue
+            seen.add(literal)
+            out.append((literal, grouping))
+    return out
+
+
+def assess_gap(literal: str, grouping: Grouping) -> Assessment:
+    """Measured evidence for one unblocked endpoint inside a declared group."""
+    peers = ", ".join(grouping.known[:4])
+    return Assessment(
+        candidate_id=f"gap:{literal}",
+        literal=literal,
+        measured=(
+            Evidence(
+                "app_declared_grouping",
+                Strength.STRONG,
+                f"{grouping.descriptor} lists this endpoint alongside {len(grouping.known)} "
+                f"that DFInsta already blocks ({peers})",
+                {
+                    "descriptor": grouping.descriptor,
+                    "group_size": grouping.size,
+                    "known_members": list(grouping.known),
+                },
+            ),
+            Evidence(
+                "coverage_gap",
+                Strength.STRONG,
+                f"no active hook blocks {literal!r}",
+                {"literal": literal},
+            ),
+        ),
+    )
+
+
+def assess(
+    index: HookIndex,
+    hooks: Sequence[Hook],
+    min_seeds: int = 2,
+) -> tuple[list[Assessment], list[Grouping]]:
+    """Every unblocked endpoint the app groups with ones we block.
+
+    Returns the assessments and the groupings they came from, because a reader
+    at the gate needs to see the grouping to judge whether the inference holds.
+    """
+    blocked = blocked_endpoints(hooks)
+    groupings = find_groupings(index, blocked, min_seeds=min_seeds)
+    return [assess_gap(lit, g) for lit, g in coverage_gaps(groupings, blocked)], groupings
+
+
+def report(assessments: Sequence[Assessment], groupings: Sequence[Grouping]) -> dict[str, Any]:
+    """The document that goes to CAS and is hash-pinned into the gate."""
+    return {
+        "schema_version": 1,
+        "note": (
+            "Measured evidence and judgements are separate and must stay that way. "
+            "No addictiveness score is computed: a calibration experiment found six of "
+            "seven a-priori engagement signals to be noise, so a composite would read "
+            "as authority it has not earned."
+        ),
+        "groupings": [g.to_dict() for g in groupings],
+        "candidates": [a.to_dict() for a in assessments],
+        "counts": {
+            "groupings": len(groupings),
+            "candidates": len(assessments),
+            "judged": sum(1 for a in assessments if a.judgement is not None),
+        },
+    }

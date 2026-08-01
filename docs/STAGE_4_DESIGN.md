@@ -86,6 +86,132 @@ host fingerprint is, and it degrades honestly: if no such class exists in a
 future version, the stage reports that it found no grouping rather than inventing
 one.
 
+## The gate
+
+A survey of the existing gate machinery settled most of this. Two gates already
+exist and are structurally identical: a `GateRequest` built from `workflow.now()`,
+a `wait_condition` on a nullable decision slot, a synchronous `@workflow.update`
+handler that only mutates state, and a validator carrying six clauses — liveness,
+actor, six-way hash binding, timestamp well-formedness, validity window with a
+5-minute skew bound, and idempotency. Durable multi-day blocking, timeout →
+`blocked` (never implicit approval), append-only ledger persistence and
+worker/server-restart survival all come for free.
+
+Three things had to be decided rather than copied.
+
+### The payload does not go through Temporal
+
+An assessment covering ~100 candidates cannot enter History, which must stay
+compact and free of large bytes and private paths. The existing answer is a
+hash-pinned handle plus content-addressed storage, and `ArtifactRef` enforces
+`uri == f"cas://sha256/{sha256}"`, so a ref structurally cannot carry a
+filesystem path.
+
+So: the assessment document goes to CAS; a **pure** derivation function produces
+the gate request; the Workflow carries only its hash; and the admitting Activity
+re-derives the request from recorded state and refuses if the hashes differ. The
+derivation must touch no ledger, store, clock or environment — two independent
+derivations have to agree byte-for-byte, and the whole authority model rests on
+never accepting a caller's assertion of what was approved.
+
+### One verdict is not enough, so the response is a document too
+
+This is the real design problem. `GateDecision` offers one of
+`{approve, reject, defer}` plus a rationale capped at 2048 characters, while this
+gate needs a disposition **per candidate**. Stuffing that into `rationale` fails
+the length check, and per the project's own rule the sanctioned move is a new
+wrapper schema rather than new fields on an existing contract.
+
+The response is therefore symmetric to the request: the human's per-candidate
+dispositions go to CAS, and the decision binds that document's hash.
+
+```
+FeatureGateSubmissionV1 { schema_version, decision: GateDecision, dispositions: ArtifactRef }
+FeatureDispositionsV1   { schema_version, assessment_sha256, policy_revision, dispositions[] }
+```
+
+Two rules make that safe, and both are the point rather than decoration:
+
+- **`assessment_sha256` must equal the assessment the human was actually shown.**
+  Without it a human could rule on one assessment and have the verdicts applied
+  to a different one — the response-side form of "a stale approval cannot
+  authorise changed bytes".
+- **Every candidate must carry a disposition.** A candidate nobody ruled on
+  blocks the run; it does not default to `ignore`. This is stage 4's version of
+  the ledger's central rule that absence is never a pass, and it is the
+  difference between a human having decided and a human having scrolled past.
+
+Dispositions are `block`, `offer_toggle`, `ignore` or `defer`. `offer_toggle` is
+the default shape for anything judged addictive, because the product rule is that
+an addictive feature gets a switch rather than a silent removal.
+
+### Five things the first implementation had to decide
+
+Building the contracts surfaced gaps in the paragraphs above. Recorded as
+decisions rather than left to whoever implements the next piece.
+
+**The response document must be bound to the reference the human signed.**
+Saying the decision "binds the dispositions' hash" is not enough on its own: a
+caller could resolve one object and validate another, and every clause above
+would then be checked against rulings nobody submitted. The canonical bytes must
+hash to `dispositions.sha256`. Size is checked too but is a weak witness by
+itself — `block` and `defer` are both five characters, so a document deferring
+every candidate serialises to the same byte count as one blocking them all. The
+digest is what binds.
+
+**Candidate ids are not house identifiers.** `contracts.ID_PATTERN` forbids `:`
+and `/`, while real candidate ids look like `gap:feed/timeline_stream/`. Reusing
+the house pattern would have rejected 100% of real candidates — and only at the
+moment a real assessment first met a real gate, which is the worst place to find
+out. The gate has its own pattern allowing a namespace prefix and slash-separated
+segments, and the trailing slash is significant because it is significant to the
+endpoints themselves.
+
+**A whole-gate `reject` or `defer` does not excuse per-candidate completeness.**
+The wrapper exists precisely because one verb cannot express a hundred rulings,
+so one verb cannot dismiss them either. A human who wants to punt marks every
+candidate `defer` — which is itself a ruling, and leaves a record of what was
+deferred rather than an absence.
+
+**A zero-candidate gate is refused.** Completeness is satisfied vacuously by an
+empty list, so without this the run would proceed on a human having ruled on
+nothing. Stage 4a reporting no grouping is a legitimate outcome; raising a gate
+about it is not.
+
+**The derived subject binds the actor.** As first specified only the envelope
+carried `allowed_actor`, which left "who may answer" checked solely by the
+Workflow validator against History-resident state and never by the hash chain —
+so the admitting Activity could not independently verify it. That breaks the
+symmetry the rest of the design rests on, and `ReplayVerificationGrantRequestV1`
+already carries its actor for the same reason.
+
+### A second gate needs a new Workflow, not a new field
+
+The ledger is genuinely multi-gate: `decisions` is keyed on `decision_id` and
+`idempotency_id` only, `gate_id` is a real column, and neither `run_id` nor
+`(run_id, gate_id)` is constrained — so no migration. But three *contracts*
+(`WorkflowStatus`, `RunResult`, `ReplayRunResultV1`) assume one gate and one
+decision per run, and gate-openness is currently a state-string equality test.
+
+The established precedent is a separate `@workflow.defn` class with its own
+status and result envelopes, chosen so old-History replay compatibility stays
+trivially true instead of argued. Stage 4 follows it.
+
+### Two divergences recorded rather than hidden
+
+**The invalid-response budget is not implemented**, here or anywhere. The plan
+mandates "at most three before the run becomes `blocked`", and an existing test
+submits six invalid decisions then a valid one and expects it to succeed. It
+cannot be fixed in a validator: an Update rejected by its validator never reaches
+History, so a counter there silently resets on worker restart. Enforcing it means
+accepting the update into History and classifying inside the handler — a
+deliberate inversion that deserves its own reviewed change. Out of scope here,
+and noted so it is a decision rather than an oversight.
+
+**There is no trusted submission client.** `execute_update` appears only in
+tests. A human cannot actually answer this gate until one exists, which makes it
+the first thing to build after the gate itself.
+
 ## What stage 4 must not do
 
 - **No composite score.** Six of seven signals were noise; summing them would

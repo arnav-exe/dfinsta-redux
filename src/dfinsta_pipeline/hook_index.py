@@ -107,6 +107,7 @@ class HookIndex:
         self._resource_types = tuple(header.get("resource_types_indexed") or ())
         self._paths: dict[str, str] | None = None
         self._rows: dict[str, ClassRow] | None = None
+        self._literals_by_class: dict[str, tuple[str, ...]] | None = None
 
     # ------------------------------------------------------------------ load
 
@@ -288,6 +289,24 @@ class HookIndex:
             if not common:
                 return ()
         return tuple(sorted(common or ()))
+
+    def literals_in(self, descriptor: str) -> tuple[str, ...]:
+        """Every indexed API-path literal one class contains — the reverse lookup.
+
+        Built by inverting `api_paths` once and caching, because the question
+        "what else does this class enumerate?" is what turns a class holding
+        several known endpoints into a *declared group*, and asking it per class
+        by scanning the forward map would be quadratic.
+        """
+        if self._literals_by_class is None:
+            inverse: dict[str, set[str]] = {}
+            for literal, holders in self._api_paths.items():
+                for holder in holders:
+                    inverse.setdefault(holder, set()).add(literal)
+            self._literals_by_class = {
+                holder: tuple(sorted(values)) for holder, values in inverse.items()
+            }
+        return self._literals_by_class.get(descriptor, ())
 
     def literal_is_indexed(self, literal: str) -> bool:
         return literal in self._api_paths
