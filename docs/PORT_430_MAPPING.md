@@ -255,6 +255,46 @@ The current-user 430 Options action appears immediately after Profile navigation
 
 `FeedCacheCoordinator`, `FlashFeedCache`, and `FeedItemDatabase` are gone. The 340 field-level cache cleaner cannot be ported. Map public behavior/API or redesign cache invalidation rather than guessing new fields.
 
+## Settings Entry: Two Action-Bar Implementations
+
+Recorded 2026-08-01 after a device session on the Nothing Phone 1 (Android 15).
+
+Instagram 430 ships **two** profile action-bar implementations and picks between
+them at runtime. `UserDetailFragment` gates on `LX/05mS;->A03(session)`, which
+reads MobileConfig `0x81099a000034a6`:
+
+| Flag | Implementation | Options control built by | Hook |
+|---|---|---|---|
+| true | `com/instagram/profile/actionbar/ProfileActionBar` | `LX/077K;->A00(...)` returns an `ImageView` | `install_settings_long_click` |
+| false | legacy `LX/00ds` IgActionBar | `LX/06X7;->AP1(LX/00ds;)V` via an `LX/09rb` config | `install_settings_long_click_actionbar` |
+
+The original port mapped only the first. On a device where the flag is false the
+patch applies cleanly, passes every static assertion, and is **dead code at
+runtime** -- Options is not long-clickable and the settings dialog is
+unreachable. Because the discriminator is server-driven, the same APK can
+require either hook, so both operations are kept.
+
+The legacy path is the better hook point: `LX/09rb` already exposes
+`A0H:Landroid/view/View$OnLongClickListener;`, so the operation sets that field
+rather than reaching into a constructed view. `v0` is dead at the insertion
+point and `v1` holds the live builder, so no `.locals` change is needed. The
+five-line anchor is unique; note `0x7f134a0e` alone appears twice in the file.
+
+Two things this cost us that are worth remembering. Static analysis could not
+resolve `0x7f134a0e` to a string, because 430 uses sparse resource encoding and
+aapt, aapt2 and apktool all expose only ~555 of ~19,000 string entries -- the
+device had to settle it. And uiautomator reported the control as
+`android.widget.Button` before the patch and `android.widget.ImageView` after,
+because `LX/00ds;->A0E` derives an accessibility class-name override from
+`LX/09rc;->A0M`; setting the long-click listener on the builder may therefore
+have changed the announced role. An alternative anchor after
+`move-result-object v0` (`X/06X7.smali:823`) attaches to the finished view and
+would avoid touching builder config.
+
+Verified on device: Options long-clickable, dialog opens with all five contract
+labels, and the feed contrast passes in both directions across a restart.
+Evidence under `work/device-runner/newkey-430-remap-verified/`.
+
 ## Next Deterministic Work
 
 1. Attempt eligible profile-ad observation without claiming success from ad absence.
