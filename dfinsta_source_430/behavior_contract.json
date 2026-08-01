@@ -78,7 +78,12 @@
       "install_state": "in_place_update",
       "data_state": "preserved_after_clean_install_login",
       "cache_state": "unknown",
-      "features": ["feed", "explore", "reels", "stories"],
+      "features": [
+        "feed",
+        "explore",
+        "reels",
+        "stories"
+      ],
       "settings_evidence": "work/device-runner/nothing-v7-settings-rows",
       "disabled_evidence": "work/device-runner/nothing-v7-core-disabled-cache-unknown",
       "enabled_evidence": "work/device-runner/nothing-v7-core-enabled",
@@ -96,7 +101,11 @@
       "install_state": "in_place_update",
       "data_state": "preserved_from_340",
       "cache_state": "preserved",
-      "features": ["feed", "explore", "stories"],
+      "features": [
+        "feed",
+        "explore",
+        "stories"
+      ],
       "enabled_evidence": "work/device-runner/430-v3-enabled-features",
       "disabled_evidence": "work/device-runner/430-v3-disabled-features"
     },
@@ -109,7 +118,9 @@
       "install_state": "in_place_update",
       "data_state": "preserved_from_340",
       "cache_state": "exhausted_for_disabled_control",
-      "features": ["reels"],
+      "features": [
+        "reels"
+      ],
       "enabled_evidence": "work/device-runner/430-v6-diagnostic-enabled-reels",
       "disabled_evidence": "work/device-runner/430-v6-diagnostic-reels-after-50-swipes.png"
     }
@@ -121,53 +132,127 @@
   "startup": {
     "component": "com.instagram.android/com.instagram.android.activity.MainTabActivity",
     "action": "android.intent.action.MAIN",
-    "categories": ["android.intent.category.LAUNCHER"],
+    "categories": [
+      "android.intent.category.LAUNCHER"
+    ],
     "launch_strategy": "package_launcher",
     "foreground_states": [
-      {"activity": "com.instagram.android/.activity.MainTabActivity"},
-      {"activity": "com.instagram.android/com.instagram.mainactivity.InstagramMainActivity"},
+      {
+        "activity": "com.instagram.android/.activity.MainTabActivity"
+      },
+      {
+        "activity": "com.instagram.android/com.instagram.mainactivity.InstagramMainActivity"
+      },
       {
         "activity": "com.instagram.android/com.instagram.modal.ModalActivity",
         "requires_logged_out_anchor_set": true
       }
     ],
     "logged_out_accepted_anchor_sets": [
-      ["Join Instagram", "I already have a profile"],
-      ["Password"]
+      [
+        "Join Instagram",
+        "I already have a profile"
+      ],
+      [
+        "Password"
+      ]
     ],
-    "required": ["process_alive", "no_android_runtime_fatal", "foreground_state"]
+    "required": [
+      "process_alive",
+      "no_android_runtime_fatal",
+      "foreground_state"
+    ]
   },
   "device_validation": {
     "feature_state": {
       "poll_attempts": 5,
       "poll_interval_seconds": 1,
-      "settings_screen_selector": {"text": "Distraction-free settings - restart required"},
+      "settings_screen_selector": {
+        "text": "Distraction-free settings - restart required"
+      },
       "targets": [
         {
           "name": "home",
-          "features": ["feed", "stories"],
-          "selector": {"resource_id": "com.instagram.android:id/feed_tab", "content_desc": "Home"},
+          "features": [
+            "feed",
+            "stories"
+          ],
+          "selector": {
+            "resource_id": "com.instagram.android:id/feed_tab",
+            "content_desc": "Home"
+          },
           "disabled_state_assertions": [
-            {"name": "own_story_observation", "kind": "visible_text", "anchors": ["Your story"], "match": "all", "severity": "evidence"},
-            {"name": "feed_item_text_absent", "kind": "absent_text", "anchors": ["Suggested for you", "Liked by"], "match": "all", "severity": "evidence"}
+            {
+              "name": "own_story_observation",
+              "kind": "visible_text",
+              "anchors": [
+                "Your story"
+              ],
+              "match": "all",
+              "severity": "evidence"
+            },
+            {
+              "name": "feed_item_text_absent",
+              "kind": "absent_text",
+              "anchors": [
+                "Suggested for you",
+                "Liked by"
+              ],
+              "match": "all",
+              "severity": "evidence"
+            }
           ]
         },
         {
           "name": "explore",
-          "features": ["explore"],
-          "selector": {"resource_id": "com.instagram.android:id/search_tab", "content_desc": "Search and explore"},
+          "features": [
+            "explore"
+          ],
+          "selector": {
+            "resource_id": "com.instagram.android:id/search_tab",
+            "content_desc": "Search and explore"
+          },
           "disabled_state_assertions": [
-            {"name": "search_shell_observation", "kind": "visible_text", "anchors": ["Search with Meta AI"], "match": "all", "severity": "evidence"},
-            {"name": "discovery_text_absent", "kind": "absent_text", "anchors": ["Suggested for you"], "match": "all", "severity": "evidence"}
+            {
+              "name": "search_shell_observation",
+              "kind": "visible_text",
+              "anchors": [
+                "Search with Meta AI"
+              ],
+              "match": "all",
+              "severity": "evidence"
+            },
+            {
+              "name": "discovery_text_absent",
+              "kind": "absent_text",
+              "anchors": [
+                "Suggested for you"
+              ],
+              "match": "all",
+              "severity": "evidence"
+            }
           ]
         },
         {
           "name": "reels",
-          "features": ["reels"],
-          "selector": {"resource_id": "com.instagram.android:id/clips_tab", "content_desc": "Reels"},
+          "features": [
+            "reels"
+          ],
+          "selector": {
+            "resource_id": "com.instagram.android:id/clips_tab",
+            "content_desc": "Reels"
+          },
           "allow_screenshot_process_fallback": true,
           "disabled_state_assertions": [
-            {"name": "cached_items_exhausted_observation", "kind": "absent_text", "anchors": ["Follow"], "match": "all", "severity": "evidence"}
+            {
+              "name": "cached_items_exhausted_observation",
+              "kind": "absent_text",
+              "anchors": [
+                "Follow"
+              ],
+              "match": "all",
+              "severity": "evidence"
+            }
           ]
         }
       ]
@@ -180,9 +265,16 @@
     "positive_button": "Close",
     "preference_file": "com.instagram",
     "entry_selectors": {
-      "profile": {"resource_id": "com.instagram.android:id/profile_tab"},
-      "options": {"content_desc": "Options", "long_clickable": true},
-      "home": {"resource_id": "com.instagram.android:id/feed_tab"}
+      "profile": {
+        "resource_id": "com.instagram.android:id/profile_tab"
+      },
+      "options": {
+        "content_desc": "Options",
+        "long_clickable": true
+      },
+      "home": {
+        "resource_id": "com.instagram.android:id/feed_tab"
+      }
     },
     "recovery_actions": [],
     "entry": [
@@ -192,23 +284,101 @@
       "assert the framework multi-choice dialog title and five labels"
     ],
     "choices": [
-      {"order": 1, "label": "Disable feed", "key": "disable_feed", "default_checked": true},
-      {"order": 2, "label": "Disable Explore", "key": "disable_explore", "default_checked": true},
-      {"order": 3, "label": "Disable Reels", "key": "disable_reels", "default_checked": true},
-      {"order": 4, "label": "Disable Stories", "key": "disable_stories", "default_checked": true},
-      {"order": 5, "label": "Disable profile ads", "key": "disable_adds", "default_checked": true}
+      {
+        "order": 1,
+        "label": "Disable feed",
+        "key": "disable_feed",
+        "default_checked": true
+      },
+      {
+        "order": 2,
+        "label": "Disable Explore",
+        "key": "disable_explore",
+        "default_checked": true
+      },
+      {
+        "order": 3,
+        "label": "Disable Reels",
+        "key": "disable_reels",
+        "default_checked": true
+      },
+      {
+        "order": 4,
+        "label": "Disable Stories",
+        "key": "disable_stories",
+        "default_checked": true
+      },
+      {
+        "order": 5,
+        "label": "Disable profile ads",
+        "key": "disable_adds",
+        "default_checked": true
+      }
     ],
     "process_restart_required_after_change": true,
     "cached_content_warning": "Previously cached content may remain visible temporarily after restart",
     "other_user_long_click_exclusion_verified": true
   },
   "features": {
-    "feed": {"implementation": "Tigon URI blocking", "observed_contrast": true, "verified_contrast": false, "related_evidence": ["v7_nothing_core_contrasts", "v3_pixel_core_contrasts"]},
-    "explore": {"implementation": "Tigon URI blocking", "observed_contrast": true, "verified_contrast": false, "related_evidence": ["v7_nothing_core_contrasts", "v3_pixel_core_contrasts"]},
-    "reels": {"implementation": "Tigon URI blocking plus direct central endpoint replacement", "observed_contrast": true, "verified_contrast": false, "related_evidence": ["v7_nothing_core_contrasts", "v6_diagnostic_pixel_reels_contrast"], "warning": "warm-cache results may be inconclusive; cache state must be recorded rather than assuming a fixed exhaustion gesture count"},
-    "stories": {"implementation": "Tigon URI blocking", "observed_contrast": true, "verified_contrast": false, "related_evidence": ["v7_nothing_core_contrasts", "v3_pixel_core_contrasts"]},
-    "shopping": {"implementation": "retired from the 430 distraction contract because the standalone Shopping tab is gone", "verified_contrast": false},
-    "profile_ads": {"implementation": "exact Tigon URI blocking", "key": "disable_adds", "default_checked": true, "visible_switch": true, "verified_contrast": false, "warning": "runtime contrast depends on account and ad-inventory eligibility"}
+    "feed": {
+      "implementation": "Tigon URI blocking",
+      "observed_contrast": true,
+      "verified_contrast": true,
+      "related_evidence": [
+        "v7_nothing_core_contrasts",
+        "v3_pixel_core_contrasts"
+      ],
+      "verification_note": "verified 2026-08-01: canonical IOException blocks 4 with toggle on, 0 with it off; feed 42 nodes vs 132 nodes across a restart",
+      "verification_evidence": "work/device-runner/newkey-430-contrasts/FINDINGS.md"
+    },
+    "explore": {
+      "implementation": "Tigon URI blocking",
+      "observed_contrast": true,
+      "verified_contrast": true,
+      "related_evidence": [
+        "v7_nothing_core_contrasts",
+        "v3_pixel_core_contrasts"
+      ],
+      "verification_note": "verified 2026-08-01: canonical blocks 5 on / 0 off; the 3 raw off-side hits are a deferred aware_trace flush of the on-phase, not live blocks",
+      "verification_evidence": "work/device-runner/newkey-430-contrasts/FINDINGS.md"
+    },
+    "reels": {
+      "implementation": "Tigon URI blocking plus direct central endpoint replacement",
+      "observed_contrast": true,
+      "verified_contrast": true,
+      "related_evidence": [
+        "v7_nothing_core_contrasts",
+        "v6_diagnostic_pixel_reels_contrast"
+      ],
+      "warning": "warm-cache results may be inconclusive; cache state must be recorded rather than assuming a fixed exhaustion gesture count",
+      "verification_note": "verified 2026-08-01 via an alternate probe: replaceReelsEndpoint blanks the literal upstream of throwIfBlocked, so block-count cannot measure this feature. ClipsViewerPerfLogger onClipsItemsRequestFailed 404s: 5 with toggle on, 0 with it off, at comparable engagement",
+      "verification_evidence": "work/device-runner/newkey-430-contrasts/FINDINGS.md"
+    },
+    "stories": {
+      "implementation": "Tigon URI blocking",
+      "observed_contrast": true,
+      "verified_contrast": true,
+      "related_evidence": [
+        "v7_nothing_core_contrasts",
+        "v3_pixel_core_contrasts"
+      ],
+      "verification_note": "verified 2026-08-01: canonical blocks 3 on / 0 off; the 2 raw off-side hits are a deferred aware_trace flush of the on-phase",
+      "verification_evidence": "work/device-runner/newkey-430-contrasts/FINDINGS.md"
+    },
+    "shopping": {
+      "implementation": "retired from the 430 distraction contract because the standalone Shopping tab is gone",
+      "verified_contrast": false
+    },
+    "profile_ads": {
+      "implementation": "exact Tigon URI blocking",
+      "key": "disable_adds",
+      "default_checked": true,
+      "visible_switch": true,
+      "verified_contrast": false,
+      "warning": "runtime contrast depends on account and ad-inventory eligibility",
+      "verification_note": "inconclusive 2026-08-01: zero requests to profile_ads/get_profile_ads/ in either direction across three brand profiles visited three times each. This account surfaced no ad inventory, so the block condition never occurred. Absence of ads is not evidence of blocking.",
+      "verification_evidence": "work/device-runner/newkey-430-contrasts/FINDINGS.md"
+    }
   },
   "pending": [
     "Controlled core contrasts with installed-APK identity, verified preference state, successful restart on both sides, state-specific required assertions, and a declared cache protocol",
