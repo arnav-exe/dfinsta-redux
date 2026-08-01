@@ -38,7 +38,10 @@
         "requires_two_directional_delta": false,
         "note": "Not toggleable, so no two-directional delta exists. Executing at startup without a fatal IS the proof: an unresolved reference would throw here before any UI."
       },
-      "status": "active"
+      "status": "active",
+      "intent_constraints": [
+        "must not throw, and must not delay process start"
+      ]
     },
     {
       "hook_id": "tigon_url_block",
@@ -81,7 +84,10 @@
         "requires_two_directional_delta": true,
         "note": "HOOK-scoped, not feature-scoped. One code site enforces all five rules and the exception carries no path, so the count is 'this mechanism fired', not 'the feed rule fired'. The off-side therefore needs ALL five toggles off: measured on 439, all-on gives 10 canonical and all-off gives 0, while turning off only Disable feed leaves 2 - genuine live blocks of the other four rules, confirmed by a throwIfBlocked <- TigonServiceLayer.startRequest stack. A per-feature probe would need a path-scoped signal, which this log line does not provide."
       },
-      "status": "active"
+      "status": "active",
+      "intent_constraints": [
+        "a blocked request must fail the way a normal network failure fails, not crash the app"
+      ]
     },
     {
       "hook_id": "replace_reels_discover_endpoint",
@@ -127,7 +133,10 @@
         "requires_two_directional_delta": true,
         "note": "Block-counting CANNOT measure this hook. replaceReelsEndpoint blanks the endpoint upstream of throwIfBlocked, so the path never matches the blocklist and no IOException is produced. Zero blocks in both directions is expected, not a pass. Measured on 439: 3 canonical failures with Reels enabled and 0 with it disabled, so the Reels block is verified as a GROUP. This hook is NOT individually verified: all three replacements emit the identical line 'onClipsItemsRequestFailed [fetch]: status 404' with no endpoint qualifier, and one toggle governs all three, so if one replacement were inert the other two would still produce the signal. That is the 340 minshop failure mode - a substitution that never matched, hidden inside a group that worked. Attribution needs a surface that exercises only this endpoint."
       },
-      "status": "active"
+      "status": "active",
+      "intent_constraints": [
+        "when the feature is enabled the app must behave exactly as stock"
+      ]
     },
     {
       "hook_id": "replace_reels_homecoming_endpoint",
@@ -172,7 +181,10 @@
         "requires_two_directional_delta": true,
         "note": "Measured on 439: 3 canonical failures with Reels enabled and 0 with it disabled, so the Reels block is verified as a GROUP. This hook is NOT individually verified: all three replacements emit the identical line 'onClipsItemsRequestFailed [fetch]: status 404' with no endpoint qualifier, and one toggle governs all three, so if one replacement were inert the other two would still produce the signal. That is the 340 minshop failure mode - a substitution that never matched, hidden inside a group that worked. Attribution needs a surface that exercises only this endpoint."
       },
-      "status": "active"
+      "status": "active",
+      "intent_constraints": [
+        "when the feature is enabled the app must behave exactly as stock"
+      ]
     },
     {
       "hook_id": "replace_reels_stream_endpoint",
@@ -217,7 +229,10 @@
         "requires_two_directional_delta": true,
         "note": "Measured on 439: 3 canonical failures with Reels enabled and 0 with it disabled, so the Reels block is verified as a GROUP. This hook is NOT individually verified: all three replacements emit the identical line 'onClipsItemsRequestFailed [fetch]: status 404' with no endpoint qualifier, and one toggle governs all three, so if one replacement were inert the other two would still produce the signal. That is the 340 minshop failure mode - a substitution that never matched, hidden inside a group that worked. Attribution needs a surface that exercises only this endpoint."
       },
-      "status": "active"
+      "status": "active",
+      "intent_constraints": [
+        "when the feature is enabled the app must behave exactly as stock"
+      ]
     },
     {
       "hook_id": "install_settings_long_click",
@@ -261,7 +276,12 @@
         "requires_two_directional_delta": false,
         "note": "Not toggleable. The proof is that the dialog opens at all; before the 430 re-map this hook applied cleanly and was completely inert. Measured on 439: the dialog opens. NOT individually attributable - the other settings variant declares the same signal on the same surface, and Instagram picks between the two action-bar implementations at runtime, so exactly one is live and the observation cannot say which. Crediting both would credit a hook that may be entirely inert, which is what the 430 settings hook already was."
       },
-      "status": "active"
+      "status": "active",
+      "intent_constraints": [
+        "must take effect ONLY on the signed-in user's own profile; the equivalent control on another user's profile must be completely unaffected",
+        "a normal tap must still do exactly what it did before",
+        "the control must remain visible and usable if the modification cannot attach"
+      ]
     },
     {
       "hook_id": "install_settings_long_click_actionbar",
@@ -306,7 +326,12 @@
         "requires_two_directional_delta": false,
         "note": "Not toggleable, so no two-directional delta exists: the dialog either opens on long-press or it does not. This is the variant that was runtime-inert on 430 while passing every static assertion, so the dialog actually opening is the whole proof. Measured on 439: the dialog opens. NOT individually attributable - the other settings variant declares the same signal on the same surface, and Instagram picks between the two action-bar implementations at runtime, so exactly one is live and the observation cannot say which. Crediting both would credit a hook that may be entirely inert, which is what the 430 settings hook already was."
       },
-      "status": "active"
+      "status": "active",
+      "intent_constraints": [
+        "must take effect ONLY on the signed-in user's own profile; the equivalent control on another user's profile must be completely unaffected",
+        "a normal tap must still do exactly what it did before",
+        "the same screen carries other controls that respond to a long press; none of their behaviour may change"
+      ]
     }
   ]
 }

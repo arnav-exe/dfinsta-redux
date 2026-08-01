@@ -251,7 +251,16 @@ class Hook:
     # Fixed at 1. Retained because the emitted operation must carry it for the
     # applier; a hook that needs several sites gets one manifest entry per site.
     expected_anchor_count: int = 1
+    # What last version's patch looked like: notes for the applier and for a
+    # human reviewing a diff. NOT safe to show a proposer — they describe the
+    # answer's shape, and the shape is exactly what changes between versions.
     constraints: tuple[str, ...] = ()
+    # What the patch must ACHIEVE, in user-visible terms. Safe to show a
+    # proposer, because it constrains the outcome without describing the code.
+    # Kept separate from `constraints` because mixing them turns a search into a
+    # reading-comprehension exercise and makes any measurement of the proposer
+    # worthless.
+    intent_constraints: tuple[str, ...] = ()
     probe: Probe | None = None
     status: str = "active"
     # When true the anchor and payload here are a SHAPE, not a complete patch,
@@ -323,6 +332,7 @@ class Hook:
             mode=data.get("mode", "insert_after"),
             expected_anchor_count=int(data.get("expected_anchor_count", 1)),
             constraints=tuple(data.get("constraints", ())),
+            intent_constraints=tuple(data.get("intent_constraints", ())),
             probe=Probe.from_dict(data["probe"]) if data.get("probe") else None,
             status=data.get("status", "active"),
             requires_proposal=bool(data.get("requires_proposal", False)),
