@@ -46,9 +46,15 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
       stable named types → string literals → structural shape → numeric constants;
       **never the obfuscated descriptor** (names are recycled — see `docs/PORT_439_RECON.md`)
 - [x] One hook re-mapped by hand end to end, device-verified (`LX/06X7` action-bar variant)
-- [~] **Blind holdout: can a mapper rediscover the anchors unaided?**
+- [x] **Blind holdout: can a mapper rediscover the anchors unaided? YES.**
       Easy/medium sites (app context, Tigon, 3 Reels literals) demonstrated.
-      Settings sites re-running after the first attempt was contaminated.
+      Hard settings site found by two provably-uncontaminated mappers from an
+      isolated stock decode, including the runtime selector between the two
+      action-bar variants. Verified from agent transcripts, not from denials.
+      Working technique: enter at `UserDetailFragment->AP1`, follow the runtime
+      branch to each delegate, pin the control by **drawable id** since string
+      ids are unresolvable under sparse resources, prove own-profile via the
+      `A1K -> A2W -> A15()` chain.
 - [ ] Automated resolver: intent + clean decode → candidate anchors with evidence and confidence
 - [ ] Candidate anchors must be *proposals* only — the deterministic spine still applies and verifies
 - [ ] Measure coverage on 439: how many of 8 operations resolve automatically vs need a human
