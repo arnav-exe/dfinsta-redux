@@ -1,6 +1,7 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-01, branch `port-430`.
+Resume point as of 2026-08-02, branch `port-430`. Suite: 1536 tests, one
+expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
 practical "how to pick this up" record: what exists, what is next, and the
@@ -16,15 +17,16 @@ Stage numbers refer to `pipeline_flowchart.md`.
 | **1 Extract** | **done, in the driver** | `src/dfinsta_pipeline/driver.py` |
 | **2 Index** | **done** | `tools/indexer/build_index.py` (+46 tests) |
 | 3 Feature discovery | **done** — stable-string layer only | `src/dfinsta_pipeline/surface_diff.py` (+95 tests) |
-| 4 Addictiveness report / gate | **not started** — the largest remaining piece | — |
-| Gate 1 | not started | — |
+| **4a Assessment** | **done** | `src/dfinsta_pipeline/assessment.py` (+92 tests) |
+| **4b Gate contracts** | **done** — Activities and Workflow NOT written | `src/dfinsta_pipeline/feature_gate.py` (+54 tests) |
+| Gate 1 | contracts only; nothing raises it yet | — |
 | **5 Resolve** | **done** — 5/7 hooks resolve mechanically on 430 and 439, hosts included | `src/dfinsta_pipeline/resolve.py` (+61 tests), `hook_index.py` (+95) |
 | **5a Proposers / 5b verifier** | **done as a stage** | `src/dfinsta_pipeline/proposals.py` |
 | **5c Mechanical validator** | **done** | `tools/resolver/validate_candidates.py` (+8 mutation tests) |
 | **Evidence ledger** | **done** | `src/dfinsta_pipeline/evidence.py` (+144 tests) |
 | 6-7 Apply / Build | done, target-parameterized, driven | `tools/port_430/build.py` |
 | **8 Static verify** | **done, target-neutral** | `tools/verify/verify_build.py` (host-hook map supplied per run) |
-| 9 Runtime verify | manual; `probe_claim` exists but nothing drives the phone | `tools/device_validation/runner.py` |
+| **9 Runtime verify** | **done, three probe kinds + per-hook identity** | `src/dfinsta_pipeline/probes.py`, `runtime_identity.py` |
 | 10-11 Manifest update / report | not started | — |
 | Durable orchestration | `ReplayRunWorkflow` registered, **never run for real** | `src/dfinsta_pipeline/` |
 
@@ -52,24 +54,56 @@ the full build reinstalled straight afterwards.
 
 ## Immediate next steps, in order
 
-1. **Drive the phone.** This is now the biggest gap and the highest-value one. The ledger
-   has `probe_claim` with the two-directional rule and `tools/device_validation/runner.py`
-   has the ADB primitives, but nothing joins them, so `runtime_probe` and `differential`
-   are permanently `not_exercised` and no build can pass the release gate. Until this
-   exists the pipeline can produce a build but cannot say it works — which is exactly the
-   state that shipped three inert patches.
-2. **Real k-proposer run for the two settings hooks.** `proposals.py` is proven against
-   hand-made proposals; nothing yet spawns actual proposer agents and collects their
-   answers. The blind holdout is the reference for how to prompt them.
-3. **Feature discovery (stages 3-4) and the addictiveness gate.** Not started. Diff the
-   API surface between baseline and target, assess from evidence, present at a durable
-   gate. `docs/adk_pipeline_design.md` has the `FeatureAssessment` schema and the
-   delivery-branch idea (A endpoint / B inline JSON / C client UI) worth reusing.
-4. **Decision Memory**, with the reuse predicate from `docs/ADK_PIPELINE_PLAN.md`: a
-   decision is reusable only while feature identity, delivery mechanism, evidence
-   fingerprint and policy revision remain compatible.
-5. **Run the driver through the registered `ReplayRunWorkflow`** rather than in-process,
-   so the gates become durable Temporal Updates that can wait days.
+1. **A trusted submission client.** The gate contracts exist but nothing raises the gate
+   and no human can answer it: `execute_update` appears only in tests. This blocks stage 4
+   end to end and is the smallest thing that unblocks the most.
+2. **The gate's Activities and Workflow.** Follow `docs/STAGE_4_DESIGN.md` and the pattern
+   in `src/dfinsta_pipeline/replay_gate.py` / `replay_workflow.py`: a preparation Activity
+   returning only the request hash, a new `@workflow.defn` class (never new fields on
+   `WorkflowStatus`/`RunResult`), and an admitting Activity that re-derives independently.
+3. **Differential vs N−1** — the last evidence kind with no producer.
+4. **Close the proposer loop.** `proposer.py` has the sandbox, prompts and parsing, but the
+   agent call is a seam a human currently fills by hand.
+5. **Settle the three hooks that appear to do nothing** — see below.
+## Three hooks that appear to do nothing
+
+Found this session, all by machinery built this session. None is settled; each needs a
+different next step.
+
+**`install_settings_long_click_actionbar` on 439 — probably genuinely dead.** An
+adversarial verifier refuted it on reachability: `LX/0Di2;->Ac0(LX/004C;)V` is never
+invoked. Independently re-checked — exactly four `invoke-interface LX/0Pvr;->Ac0` sites and
+none can hold a `0Di2`; no `A1K(LX/0Pvr;)` call site passes one; `UserDetailFragment` uses
+its `A0L` only for `A02` and `LX/0DEm.A00`, which reads the `A01` View that `Ac0` would
+set. The live control appears to be `ProfileActionBar` + `LX/0Dxw` bound by `LX/0DnT` —
+the OTHER settings hook. Decisive test: a build carrying only this hook.
+
+**`replace_reels_homecoming_endpoint` — dormant, NOT dead.** `clips/homecoming/` and
+`clips/discover/stream/` sit in the same method `LX/04tC->A0A`, selected by a branch on
+`clips_viewer_homecoming_fyp` plus MobileConfig `0x810b9a007b4194` / `0x810af400383ea5`.
+This account is routed to stream. Keep it: coverage for a config flip, like the two
+action-bar variants.
+
+**`replace_reels_discover_endpoint` — never runs, probably legacy.** Different method
+(`A08`), whose context carries `android_purge_26_q2_ClipsDiscoverApiUtil_createRequestTask`.
+**Human decision 2026-08-01: KEEP**, with a revisit trigger that fires by itself — when
+that class goes, no single class carries all three Reels literals, the `co_literals`
+intersection empties and Resolve escalates.
+
+The general rule: **"never executed on my device" is not "dead."** Instagram is heavily
+server-config-driven, so a hook can be correct and dormant. Find the *selector* that routes
+past it; never conclude from silence.
+
+## Four consumption endpoints DFInsta does not block
+
+Stage 4a's first real output, stable across 430 and 439:
+
+    feed/timeline_stream/   feed/injected_reels_media/
+    feed/reels_media/       feed/reels_media_stream/
+
+Instagram groups these with `feed/timeline/` and `discover/topical_explore/` in one curated
+array (`LX/05jj` on 430, `LX/03Ez` on 439). `feed/injected_reels_media/` is Reels injected
+into the timeline. Not yet decided — this is what the stage-4 gate is for.
 
 ## Constraints that cost real time to learn
 
