@@ -1495,9 +1495,15 @@ class OperationsForTests(unittest.TestCase):
             marker="# dfinsta_marker",
             expected_marker_count=1,
         )
+        # The proposals must carry that hook's marker: a payload without it
+        # applies once and is then invisible to the applier.
+        marked = ("    # dfinsta_marker",) + PAYLOAD
         assessment = assess(
             hook,
-            [make_proposal(proposer="agent-a"), make_proposal(proposer="agent-b")],
+            [
+                make_proposal(proposer="agent-a", payload=marked),
+                make_proposal(proposer="agent-b", payload=marked),
+            ],
             DECODE,
             FakeValidator(),
         )
@@ -1666,21 +1672,28 @@ class MutationTests(unittest.TestCase):
         baseline = assess(make_hook(), proposals, DECODE, FakeValidator())
         self.assertTrue(baseline.resolved)
 
-        mutant = property(
-            lambda self: canonical_sha256(
+        # `assess` groups on `effect_key`, so that is what the mutation must
+        # target: folding the rationale into it makes two proposers who reached
+        # the same patch look like two different answers.
+        def mutant(self, hook):
+            return canonical_sha256(
                 {
                     "descriptor": self.descriptor,
-                    "anchor": list(self.anchor),
-                    "payload": list(self.payload),
-                    # The mutation, and the only difference from the real property.
+                    "mode": hook.mode,
+                    "locator": [self.anchor[-1]],
+                    "payload": list(self.normalised_payload()),
+                    # The mutation, and the only difference from the real method.
                     "rationale": self.rationale,
                 }
             )
-        )
-        with mock.patch.object(Proposal, "fingerprint", mutant):
-            self.assertNotEqual(proposals[0].fingerprint, proposals[1].fingerprint)
-            self.assertEqual(len(group_by_fingerprint(proposals)), 2)
-            broken = assess(make_hook(), proposals, DECODE, FakeValidator())
+
+        with mock.patch.object(Proposal, "effect_key", mutant):
+            hook = make_hook()
+            self.assertNotEqual(
+                proposals[0].effect_key(hook), proposals[1].effect_key(hook)
+            )
+            self.assertEqual(len(group_by_fingerprint(proposals, hook)), 2)
+            broken = assess(hook, proposals, DECODE, FakeValidator())
         self.assertFalse(broken.resolved)
         self.assertIn("1 of 2 distinct proposers", broken.reason)
 
@@ -1712,7 +1725,7 @@ class MutationTests(unittest.TestCase):
         self.assertIn("3 independent proposers agreed", forged.reason)
         claim = only_claim(forged, EvidenceKind.PROPOSER_AGREEMENT)
         self.assertIs(claim.verdict, Verdict.PASSED)
-        self.assertIn("3 of 3 proposers agreed", claim.summary)
+        self.assertIn("3 of 3 proposers independently reached", claim.summary)
 
     def test_keying_validations_by_proposer_accepts_a_proposal_the_validator_refused(self):
         """Reverting `Proposal.key` to the proposer id: a refused answer ships.
@@ -1893,7 +1906,7 @@ class ReportedDefectTests(unittest.TestCase):
         claim = only_claim(assessment, EvidenceKind.PROPOSER_AGREEMENT)
         self.assertIsNot(claim.verdict, Verdict.PASSED)
         self.assertFalse(claim.verdict.satisfies)
-        self.assertIn("1 of 1 proposers agreed", claim.summary)
+        self.assertIn("1 of 1 proposers independently reached", claim.summary)
         self.assertEqual(claim.detail["proposals"], 1)
         self.assertEqual(claim.detail["answered"], 1)
         self.assertEqual(claim.detail["agreed"], 1)
@@ -1915,7 +1928,7 @@ class ReportedDefectTests(unittest.TestCase):
             EvidenceKind.PROPOSER_AGREEMENT,
         )
         self.assertIs(claim.verdict, Verdict.PASSED)
-        self.assertIn("2 of 2 proposers agreed", claim.summary)
+        self.assertIn("2 of 2 proposers independently reached", claim.summary)
         self.assertEqual(claim.detail["agreed"], 2)
 
     def test_a_hook_with_no_proposals_is_registered_and_reported(self):

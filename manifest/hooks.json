@@ -292,7 +292,7 @@
       "hosts": [
         {
           "kind": "by_agent",
-          "note": "The SECOND implementation of the same control. A MobileConfig flag selects between this and the ProfileActionBar variant at runtime, so the same APK can need either. Patching only one is why the 430 hook was runtime-inert. 430 LX/06X7 -> 439 LX/0Di2."
+          "note": "The SECOND implementation of the same control. A MobileConfig flag selects between this and the ProfileActionBar variant at runtime, so the same APK can need either. Patching only one is why the 430 hook was runtime-inert. 430 LX/06X7 -> 439 LX/0Di2. REACHABILITY IN DOUBT ON 439. An adversarial verifier refuted the 439 mapping (LX/0Di2) on the grounds that LX/0Di2;->Ac0(LX/004C;)V is never invoked: exactly four invoke-interface LX/0Pvr;->Ac0 sites exist and none can hold a 0Di2, no A1K(LX/0Pvr;) call site passes one, and UserDetailFragment only calls A02 and hands it to LX/0DEm.A00, which reads the A01 View that Ac0 itself would set. Independently re-checked: all four points hold. The live 439 Options control appears to be ProfileActionBar + LX/0Dxw bound by LX/0DnT - i.e. the OTHER settings hook. So this hook is probably INERT in the shipped 439 build, which is exactly what it was on 430 before the re-map, and the ui_dialog probe cannot see it because both hooks share one signal. NOT proven at runtime: the decisive test is a build carrying only this hook."
         }
       ],
       "anchor": [

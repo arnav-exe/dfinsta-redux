@@ -126,6 +126,40 @@ class Proposal:
             }
         )
 
+    def normalised_payload(self) -> tuple[str, ...]:
+        """Payload with blank lines dropped and each line stripped.
+
+        Blank-line placement is formatting, and two proposers who wrote the same
+        instructions with different spacing have not disagreed about anything.
+        """
+        return tuple(line.strip() for line in self.payload if line.strip())
+
+    def effect_key(self, hook: Hook) -> str:
+        """What this proposal would actually DO, for comparing against another.
+
+        Agreement has to be on the effect, not on the anchor text. Two proposers
+        can identify the same insertion point with anchors of different lengths —
+        one used the last three lines of a block, another the last two — and
+        under a raw-text comparison they read as two different answers when they
+        are the same patch. That happened on the first real run.
+
+        For ``insert_after`` the anchor's job is done once it locates a point, so
+        only its LAST line matters. For ``replace`` the anchor is the thing being
+        replaced, so all of it counts.
+        """
+        locator = list(self.anchor) if hook.mode == "replace" else [self.anchor[-1]]
+        return canonical_sha256(
+            {
+                "descriptor": self.descriptor,
+                "mode": hook.mode,
+                "locator": locator,
+                "payload": list(self.normalised_payload()),
+            }
+        )
+
+    def marker_count(self, hook: Hook) -> int:
+        return "\n".join(self.payload).count(hook.marker)
+
     @property
     def key(self) -> str:
         """Identifies this exact proposal, not merely its author.
@@ -230,12 +264,18 @@ class Assessment:
 
 
 def group_by_fingerprint(
-    proposals: Sequence[Proposal],
+    proposals: Sequence[Proposal], hook: Hook | None = None
 ) -> dict[str, list[Proposal]]:
-    """Bucket proposals by the site+anchor they actually landed on."""
+    """Bucket proposals by what they would do.
+
+    With *hook*, buckets on :meth:`Proposal.effect_key` — the same insertion point
+    and the same instructions, regardless of how much anchor context each
+    proposer chose to quote. Without it, falls back to raw content identity.
+    """
     groups: dict[str, list[Proposal]] = {}
     for proposal in proposals:
-        groups.setdefault(proposal.fingerprint, []).append(proposal)
+        key = proposal.effect_key(hook) if hook is not None else proposal.fingerprint
+        groups.setdefault(key, []).append(proposal)
     return groups
 
 
@@ -407,6 +447,15 @@ def assess(
             reason=f"{hook.hook_id}: no proposals were produced",
         )
 
+    # A payload with no idempotence marker applies once and is then invisible:
+    # the applier finds no marker on a re-run and applies it AGAIN. Every one of
+    # the first three real proposals omitted it, because it is a mechanical
+    # requirement of this pipeline that nothing in the app tells them about.
+    unmarked = [
+        proposal
+        for proposal in proposals
+        if proposal.marker_count(hook) != hook.expected_marker_count
+    ]
     validations = validate_proposals(hook, proposals, decode, validator)
     surviving = [
         proposal
@@ -417,7 +466,7 @@ def assess(
     # One vote per proposer, everywhere. Counting a repeated answer as several
     # would let a single confidently-wrong agent manufacture its own consensus.
     votes = one_per_proposer(proposals)
-    groups = group_by_fingerprint(votes)
+    groups = group_by_fingerprint(votes, hook)
     winner_key, winner_group = max(
         groups.items(), key=lambda item: (len(item[1]), item[0])
     )
@@ -427,6 +476,9 @@ def assess(
             hook.hook_id,
             [proposal.to_dict() for proposal in votes],
             threshold=agreement_threshold,
+            # Same keys the decision uses, so the recorded claim cannot disagree
+            # with the conclusion drawn from the same proposals.
+            keys=[proposal.effect_key(hook) for proposal in votes],
         )
     )
     for proposal in proposals:
@@ -480,6 +532,23 @@ def assess(
 
     # Decide. Every branch below states which check refused.
     candidates = [proposal for proposal in winner_group if proposal in surviving]
+    if unmarked:
+        names = ", ".join(
+            f"{p.proposer} ({p.marker_count(hook)}/{hook.expected_marker_count})"
+            for p in unmarked
+        )
+        return Assessment(
+            hook.hook_id,
+            None,
+            tuple(claims),
+            tuple(proposals),
+            validations,
+            reason=(
+                f"{hook.hook_id}: {names} produced a payload that does not carry the "
+                f"idempotence marker {hook.marker!r}. Such a patch applies once and is "
+                "then undetectable, so a second run applies it again."
+            ),
+        )
     if self_refutations:
         names = ", ".join(sorted({item.verifier.strip() for item in self_refutations}))
         return Assessment(

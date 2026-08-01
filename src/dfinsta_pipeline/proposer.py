@@ -156,6 +156,7 @@ def proposer_prompt(hook: Hook, sandbox_decode: Path, version_label: str) -> str
         "\n".join(f"  - {item}" for item in hook.intent_constraints)
         or "  - (none beyond the description above)"
     )
+    marker = hook.marker
     return f"""You are locating where a behavioural modification must be injected into a
 decompiled Android app. You have the decompiled smali at:
 
@@ -200,6 +201,16 @@ The `anchor` is the exact consecutive smali lines the patch attaches to, each on
 stripped of leading and trailing whitespace, copied verbatim from the file. It
 must occur EXACTLY ONCE in that file — if your candidate lines occur twice,
 lengthen the anchor until they are unique, and say in `evidence` how you checked.
+
+Your `payload` MUST contain this line exactly once, as its own line:
+
+    {marker}
+
+It is an idempotence marker. The applier looks for it to tell whether this patch
+is already present; a payload without it applies once, becomes invisible, and is
+applied a second time on the next run. Nothing in the app tells you this — it is
+a requirement of the tool that will apply your answer. Use a comment marker
+verbatim as given; do not adapt or translate it.
 
 Put in `evidence` the specific chain you actually followed, with file and line
 for each step. Do not assert anything you did not verify — an unverified claim
@@ -401,3 +412,89 @@ def collect(
                     )
                 )
     return ProposerRun(hook.hook_id, tuple(proposals), tuple(refutations), tuple(failures))
+
+
+def from_responses(
+    hook: Hook, responses: Mapping[str, str | Mapping[str, Any]]
+) -> ProposerRun:
+    """Parse already-collected agent responses, keyed by proposer id.
+
+    The seam for a caller that runs its agents elsewhere — a standalone app with
+    an LLM client, or a session driving them by hand. Parsing and validation are
+    the same either way, so a malformed answer is caught here rather than
+    surfacing four stages later as "anchor not found".
+    """
+    proposals: list[Proposal] = []
+    failures: list[str] = []
+    for name, response in responses.items():
+        try:
+            proposals.append(parse_proposal(hook.hook_id, name, response))
+        except Exception as error:  # noqa: BLE001
+            failures.append(f"{name}: {type(error).__name__}: {error}")
+    return ProposerRun(hook.hook_id, tuple(proposals), (), tuple(failures))
+
+
+# ---------------------------------------------------------------------- cli
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    from .hook_manifest import load_manifest
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="action", required=True)
+
+    make = sub.add_parser("sandbox", help="hardlink a decode somewhere the answers are not")
+    make.add_argument("decode", type=Path)
+    make.add_argument("--root", type=Path, required=True)
+
+    ask = sub.add_parser("prompt", help="print the prompt one proposer should be given")
+    ask.add_argument("hook_id")
+    ask.add_argument("--sandbox", type=Path, required=True)
+    ask.add_argument("--version", required=True)
+    ask.add_argument("--manifest", type=Path, default=Path("manifest/hooks.json"))
+
+    take = sub.add_parser("collect", help="parse agent responses into a proposals file")
+    take.add_argument("hook_id")
+    take.add_argument(
+        "responses",
+        type=Path,
+        help="directory of one response per proposer, named <proposer-id>.json",
+    )
+    take.add_argument("--manifest", type=Path, default=Path("manifest/hooks.json"))
+    take.add_argument("--out", type=Path, required=True)
+
+    args = parser.parse_args(argv)
+
+    if args.action == "sandbox":
+        print(build_sandbox(args.decode, args.root))
+        return 0
+
+    hooks = {hook.hook_id: hook for hook in load_manifest(args.manifest)}
+    hook = hooks.get(args.hook_id)
+    if hook is None:
+        print(f"error: unknown hook {args.hook_id!r}", file=__import__("sys").stderr)
+        return 2
+
+    if args.action == "prompt":
+        print(proposer_prompt(hook, args.sandbox, args.version))
+        return 0
+
+    responses = {
+        path.stem: path.read_text(encoding="utf-8")
+        for path in sorted(args.responses.glob("*.json"))
+    }
+    run = from_responses(hook, responses)
+    for failure in run.failures:
+        print(f"dropped {failure}")
+    args.out.write_text(
+        json.dumps({hook.hook_id: [p.to_dict() for p in run.proposals]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"{len(run.proposals)} proposal(s) -> {args.out}")
+    return 0 if run.proposals else 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

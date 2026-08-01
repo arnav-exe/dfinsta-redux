@@ -640,6 +640,7 @@ def agreement_claim(
     proposals: Sequence[Mapping[str, Any]],
     actor: str = "resolve.proposer_agreement",
     threshold: float = 0.5,
+    keys: Sequence[str] | None = None,
 ) -> EvidenceClaim:
     """Agreement across k independent proposers, computed rather than asserted.
 
@@ -653,9 +654,15 @@ def agreement_claim(
     # agreeing lets two proposers that failed outright out-vote one that
     # succeeded, on the hash of an empty answer — "absence is a pass" in the one
     # place this module most forbids it.
+    if keys is not None and len(keys) != len(proposals):
+        raise EvidenceError(
+            f"{hook_id}: {len(keys)} agreement keys for {len(proposals)} proposals; "
+            "a mismatched pairing would tally the wrong answers together"
+        )
+    indexed = list(enumerate(proposals))
     answered = [
-        proposal
-        for proposal in proposals
+        (position, proposal)
+        for position, proposal in indexed
         if str(proposal.get("descriptor") or "").strip()
         and list(proposal.get("anchor", ()))
     ]
@@ -674,12 +681,21 @@ def agreement_claim(
             detail={"proposals": len(proposals), "answered": 0},
         )
     tally: dict[str, int] = {}
-    for proposal in answered:
-        key = canonical_sha256(
-            {
-                "descriptor": proposal.get("descriptor"),
-                "anchor": list(proposal.get("anchor", ())),
-            }
+    for position, proposal in answered:
+        # `keys` lets the caller tally on what a proposal would DO rather than on
+        # the text it quoted. Two proposers can locate the same insertion point
+        # with anchors of different lengths; tallying raw text calls that a
+        # disagreement, and then this claim contradicts the decision made from
+        # the same proposals.
+        key = (
+            keys[position]
+            if keys is not None
+            else canonical_sha256(
+                {
+                    "descriptor": proposal.get("descriptor"),
+                    "anchor": list(proposal.get("anchor", ())),
+                }
+            )
         )
         tally[key] = tally.get(key, 0) + 1
     best_key, best_count = max(tally.items(), key=lambda item: (item[1], item[0]))
@@ -694,8 +710,8 @@ def agreement_claim(
         producer=Producer.STATISTICS,
         actor=actor,
         summary=(
-            f"{best_count} of {len(proposals)} proposers agreed on the same "
-            f"descriptor and anchor ({share:.0%})"
+            f"{best_count} of {len(proposals)} proposers independently reached the "
+            f"same answer ({share:.0%})"
         ),
         detail={
             "proposals": len(proposals),
