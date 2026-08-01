@@ -138,11 +138,22 @@ def render(line: str, bindings: dict[str, str]) -> str:
 
 @dataclass(frozen=True)
 class HostFingerprint:
-    """How to find the class a hook attaches to, without naming it."""
+    """How to find the class a hook attaches to, without naming it.
+
+    ``co_literals`` are the *other* API-path literals the host must also
+    contain. They exist because a single literal is not selective enough: each
+    Reels endpoint string appears in 2-5 classes on both 430 and 439 — analytics
+    maps and prefetch allowlists carry them too — and the hook's anchor matches
+    cleanly inside three of them. Only the class that builds the outgoing
+    request path carries all three endpoints, so co-location is what actually
+    picks the host out. Measured, not assumed; and if a version splits them the
+    intersection empties and the caller escalates rather than guessing.
+    """
 
     kind: str  # "named" | "by_literal" | "by_agent"
     descriptor: str | None = None  # kind == "named"
     literal: str | None = None  # kind == "by_literal"
+    co_literals: tuple[str, ...] = ()  # kind == "by_literal"
     note: str = ""
 
     def __post_init__(self) -> None:
@@ -152,6 +163,25 @@ class HostFingerprint:
             raise ManifestError("named fingerprint needs a descriptor")
         if self.kind == "by_literal" and not self.literal:
             raise ManifestError("by_literal fingerprint needs a literal")
+        if self.co_literals and self.kind != "by_literal":
+            raise ManifestError(
+                f"co_literals only apply to a by_literal fingerprint, not {self.kind!r}"
+            )
+        if self.literal in self.co_literals:
+            raise ManifestError(
+                f"co_literal {self.literal!r} repeats the primary literal; "
+                "co_literals are the OTHER literals the host must also contain"
+            )
+        if len(set(self.co_literals)) != len(self.co_literals):
+            raise ManifestError("co_literals contains a duplicate")
+
+    @property
+    def required_literals(self) -> tuple[str, ...]:
+        """Every literal the host must contain, primary first."""
+        if self.kind != "by_literal":
+            return ()
+        assert self.literal is not None  # guaranteed by __post_init__
+        return (self.literal, *self.co_literals)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> HostFingerprint:
@@ -159,6 +189,7 @@ class HostFingerprint:
             data["kind"],
             data.get("descriptor"),
             data.get("literal"),
+            tuple(data.get("co_literals", ())),
             data.get("note", ""),
         )
 
@@ -411,14 +442,38 @@ def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
     )
 
 
+def assert_distinct(hooks: Iterable[Hook]) -> None:
+    """Every hook must have its own id and its own idempotence marker.
+
+    The marker rule is the load-bearing one. A marker identifies ONE hook's
+    patch, so when two hooks share one, each reads the other's applied patch as
+    its own and reports already-applied — and both silently drop out of the build
+    while the run still reports complete. Two hooks in this repo's own manifest
+    really did share `Lcom/dfinstagram/SettingsWrapper;`.
+
+    Checked here rather than only in :func:`load_manifest`, because any caller
+    can assemble a hook list without going near a file.
+    """
+    ids: set[str] = set()
+    markers: dict[str, str] = {}
+    for hook in hooks:
+        if hook.hook_id in ids:
+            raise ManifestError(f"duplicate hook_id {hook.hook_id!r}")
+        ids.add(hook.hook_id)
+        if hook.marker in markers:
+            raise ManifestError(
+                f"{hook.hook_id} and {markers[hook.marker]} share the marker "
+                f"{hook.marker!r}. A marker is a per-hook idempotence stamp: sharing one "
+                "makes each hook report the other's patch as already applied, and both "
+                "vanish from the build without any stage failing."
+            )
+        markers[hook.marker] = hook.hook_id
+
+
 def load_manifest(path: Path) -> list[Hook]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if data.get("schema_version") != 1:
         raise ManifestError("unsupported hook manifest schema")
     hooks = [Hook.from_dict(entry) for entry in data["hooks"]]
-    seen: set[str] = set()
-    for hook in hooks:
-        if hook.hook_id in seen:
-            raise ManifestError(f"duplicate hook_id {hook.hook_id!r}")
-        seen.add(hook.hook_id)
+    assert_distinct(hooks)
     return hooks

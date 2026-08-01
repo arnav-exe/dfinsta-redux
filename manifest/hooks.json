@@ -94,7 +94,8 @@
         {
           "kind": "by_literal",
           "literal": "clips/discover/",
-          "note": "the class moved LX/05t2->LX/04tC; the literal did not. Several classes contain it - the correct one builds the outgoing request path, not an analytics map or prefetch allowlist."
+          "co_literals": ["clips/homecoming/", "clips/discover/stream/"],
+          "note": "the class moved LX/05t2->LX/04tC; the literal did not. This literal alone appears in 5 classes on 430 and 5 on 439, and the anchor matches cleanly in 3 of them - analytics maps and prefetch allowlists load the same string. Only the class that builds the outgoing request path carries all three Reels endpoints, which is exactly one class on each version."
         }
       ],
       "anchor": [
@@ -136,7 +137,8 @@
         {
           "kind": "by_literal",
           "literal": "clips/homecoming/",
-          "note": "same host class as the other two Reels literals"
+          "co_literals": ["clips/discover/", "clips/discover/stream/"],
+          "note": "same host class as the other two Reels literals, and co-location is what proves it: this literal alone matched 2 classes on both versions."
         }
       ],
       "anchor": [
@@ -176,7 +178,8 @@
         {
           "kind": "by_literal",
           "literal": "clips/discover/stream/",
-          "note": "same host class as the other two Reels literals"
+          "co_literals": ["clips/discover/", "clips/homecoming/"],
+          "note": "same host class as the other two Reels literals. Alone it matched 3 classes on 430 and 4 on 439, with the anchor resolving in 3 of them."
         }
       ],
       "anchor": [
@@ -223,14 +226,15 @@
       ],
       "payload": [
         "",
+        "    # dfinsta_settings_long_click_profilebar",
         "    new-instance <l>, Lcom/dfinstagram/SettingsWrapper;",
         "",
         "    invoke-direct {<l>}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
         "",
         "    invoke-virtual {<view>, <l>}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V"
       ],
-      "marker": "Lcom/dfinstagram/SettingsWrapper;",
-      "expected_marker_count": 2,
+      "marker": "# dfinsta_settings_long_click_profilebar",
+      "expected_marker_count": 1,
       "mode": "insert_after",
       "constraints": [
         "must be restricted to the user's OWN profile; other users' Options must stay non-long-clickable",
@@ -273,11 +277,12 @@
         "",
         "    iput-object <long>, <cfg>, <cfgcls>-><lcf>:Landroid/view/View$OnLongClickListener;"
       ],
-      "marker": "Lcom/dfinstagram/SettingsWrapper;",
-      "expected_marker_count": 2,
+      "marker": "# dfinsta_settings_long_click_actionbar",
+      "expected_marker_count": 1,
       "mode": "insert_after",
       "constraints": [
         "the same long-click iput appears TWICE in the host: once for Options and once for the other-user follow button. The five-line anchor including the drawable and label is what disambiguates.",
+        "the marker must be unique to THIS hook: the two settings variants once shared Lcom/dfinstagram/SettingsWrapper; and each read the other's patch as its own",
         "sets the builder's own long-click field rather than attaching to a constructed view"
       ],
       "probe": {

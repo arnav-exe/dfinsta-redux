@@ -1205,14 +1205,18 @@ class ResolveInSourceTests(unittest.TestCase):
         self.assertIn("already applied", str(caught.exception))
 
     def test_a_partially_applied_class_names_the_marker_and_both_counts(self):
-        # The two-marker UI hook is the realistic case: an interrupted or
-        # half-reverted patch leaves one of the two occurrences behind.
-        hook = self.hooks["install_settings_long_click"]
-        self.assertEqual(hook.expected_marker_count, 2)
-        source = (
-            ".class LX/0DnT;\n"
-            "    new-instance v0, Lcom/dfinstagram/SettingsWrapper;\n"
+        # An interrupted or half-reverted patch leaves one of two occurrences
+        # behind. A synthetic two-marker hook rather than a manifest one, because
+        # every shipped hook now uses a single distinct marker — a manifest hook
+        # would tie this test to a count that is free to change.
+        hook = make_hook(
+            payload=(
+                "    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V",
+                "    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V",
+            ),
+            expected_marker_count=2,
         )
+        source = ".class LX/0DnT;\n    invoke-static {v0}, LH;->f(Ljava/lang/String;)V\n"
         result = resolve_in_source(hook, "LX/0DnT;", source)
         self.assertFalse(result.resolved)
         self.assertFalse(result.already_applied)
@@ -1232,9 +1236,15 @@ class ResolveInSourceTests(unittest.TestCase):
         anchor first would report "anchor pattern did not match" and send whoever
         reads it hunting for a version drift that never happened.
         """
-        hook = self.hooks["install_settings_long_click"]
+        hook = make_hook(
+            payload=(
+                "    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V",
+                "    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V",
+            ),
+            expected_marker_count=2,
+        )
         mangled = ".class LX/0DnT;\n    nop\n"
-        marker_line = "    new-instance v0, Lcom/dfinstagram/SettingsWrapper;\n"
+        marker_line = "    invoke-static {v0}, LH;->f(Ljava/lang/String;)V\n"
         # With no marker at all, this class reports the anchor failure...
         self.assertEqual(
             resolve_in_source(hook, "LX/0DnT;", mangled).reason,
@@ -1251,14 +1261,12 @@ class ResolveInSourceTests(unittest.TestCase):
         # reason carries both numbers so the reader can tell which case it is.
         # (The applier words this case the same way, so the two stay comparable.)
         hook = self.hooks["install_settings_long_click"]
-        source = (
-            ".class LX/0DnT;\n"
-            + "    new-instance v0, Lcom/dfinstagram/SettingsWrapper;\n" * 3
-        )
+        self.assertEqual(hook.expected_marker_count, 1)
+        source = ".class LX/0DnT;\n" + f"    {hook.marker}\n" * 3
         result = resolve_in_source(hook, "LX/0DnT;", source)
         self.assertFalse(result.resolved)
         self.assertFalse(result.already_applied)
-        self.assertIn("3/2", result.reason)
+        self.assertIn("3/1", result.reason)
 
     def test_already_applied_is_true_only_for_an_exact_marker_count(self):
         hook = make_hook(
@@ -1589,9 +1597,16 @@ class LoadManifestTests(unittest.TestCase):
 
     def test_accepts_distinct_hook_ids(self):
         # The duplicate check must key on the id, not on the entry as a whole.
+        # The clone needs its own marker too: a hook that shares one reads the
+        # other's applied patch as its own, so that is refused separately.
         payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
         clone = json.loads(json.dumps(payload["hooks"][0]))
         clone["hook_id"] = "set_app_context_second_shell"
+        clone["marker"] = "Lcom/dfinstagram/startapp;->setSecondContext(Landroid/app/Application;)V"
+        clone["payload"] = [
+            "",
+            "    invoke-static {<app>}, " + clone["marker"],
+        ]
         payload["hooks"].append(clone)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hooks.json"
@@ -1599,6 +1614,25 @@ class LoadManifestTests(unittest.TestCase):
             hooks = load_manifest(path)
         self.assertEqual(len(hooks), 8)
         self.assertEqual(hooks[-1].hook_id, "set_app_context_second_shell")
+
+    def test_rejects_two_hooks_sharing_a_marker(self):
+        """A shared marker makes each hook report the other's patch as its own.
+
+        Both then drop out of the build while the run still reports complete —
+        the one failure mode that produces a silently incomplete APK. Two hooks
+        in this repo's own manifest really did share
+        `Lcom/dfinstagram/SettingsWrapper;`.
+        """
+        payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        clone = json.loads(json.dumps(payload["hooks"][0]))
+        clone["hook_id"] = "set_app_context_clone"
+        payload["hooks"].append(clone)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hooks.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ManifestError) as caught:
+                load_manifest(path)
+        self.assertIn("share the marker", str(caught.exception))
 
 
 class RealManifestContentTests(unittest.TestCase):
