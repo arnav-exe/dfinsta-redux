@@ -157,10 +157,23 @@ Reels worked normally — exactly three hooks announced execution: `set_app_cont
 `tigon_url_block`, `replace_reels_stream_endpoint`.
 
 **`replace_reels_discover_endpoint` and `replace_reels_homecoming_endpoint` never ran in
-any state.** The host class is live (all three resolve into `LX/04tC` and the stream site
-fires), so this is not a wrong-class error. Either those sites sit on paths the exercise
-never reached, or 439 no longer requests those endpoints in these flows. Both make the
-hooks non-contributing; separating them needs broader exercise or a network trace.
+any state** — and reading `LX/04tC` shows they are **dormant, not dead**:
+
+- `clips/homecoming/` and `clips/discover/stream/` are in the SAME method `A0A`, chosen by a
+  runtime branch on `clips_viewer_homecoming_fyp` plus MobileConfig `0x810b9a007b4194` and
+  `0x810af400383ea5`. This account is routed to stream. The class names two viewer surfaces
+  (`clips_viewer_clips_tab`, `clips_viewer_homecoming_fyp`), so homecoming is a
+  server-selected Reels surface — keep the hook, it is coverage for a config flip exactly
+  like the two action-bar variants.
+- `clips/discover/` is in a different method `A08` whose context carries
+  `android_purge_26_q2_ClipsDiscoverApiUtil_createRequestTask`: Instagram has flagged that
+  path for removal in 2026 Q2, so it is probably legacy.
+
+**The general rule this establishes: "never executed on my device" is NOT "dead."** Instagram
+is heavily server-config-driven, so a hook can be correct and simply dormant. Retiring one
+because a single account never triggered it would drop coverage a config flip restores
+overnight. A non-reporting hook stays `inconclusive`, and the useful next step is to find the
+*selector* that routes past it — never to conclude from the silence.
 
 This was invisible before because all three shared one signal with no endpoint qualifier
 and one toggle governs all three, so the group moved 3 → 0 together and looked healthy —
