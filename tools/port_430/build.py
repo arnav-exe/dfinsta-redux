@@ -31,17 +31,33 @@ def checked_entries(archive: zipfile.ZipFile, label: str) -> dict[str, zipfile.Z
     return entries
 
 
-def graft_apk(stock_apk: Path, intermediate_apk: Path, output_apk: Path) -> None:
+def graft_apk(
+    stock_apk: Path,
+    intermediate_apk: Path,
+    output_apk: Path,
+    replace_names: set[str] | None = None,
+    added_name: str = "classes20.dex",
+) -> None:
+    """Graft changed DEX entries into the exact stock archive.
+
+    The DEX topology is target-specific and therefore a parameter, not a
+    constant: 430 replaced classes/3/4/6 and added classes20, while 439 keeps
+    its Reels builder in smali_classes3 so it replaces only classes/3/6, and
+    must add classes21 because stock already ships classes20. Defaults preserve
+    the 430 behaviour for existing callers and tests.
+    """
+    replace_names = set(GRAFT_NAMES - {"classes20.dex"}) if replace_names is None else set(replace_names)
+    graft_names = replace_names | {added_name}
     if output_apk.exists():
         raise FileExistsError(f"Refusing to overwrite {output_apk}")
 
     with zipfile.ZipFile(stock_apk) as stock, zipfile.ZipFile(intermediate_apk) as intermediate:
         stock_entries = checked_entries(stock, "stock APK")
         intermediate_entries = checked_entries(intermediate, "intermediate APK")
-        if "classes20.dex" in stock_entries:
-            raise ValueError("Stock APK already contains classes20.dex")
-        missing_stock = (GRAFT_NAMES - {"classes20.dex"}) - stock_entries.keys()
-        missing_intermediate = GRAFT_NAMES - intermediate_entries.keys()
+        if added_name in stock_entries:
+            raise ValueError(f"Stock APK already contains {added_name}")
+        missing_stock = replace_names - stock_entries.keys()
+        missing_intermediate = graft_names - intermediate_entries.keys()
         if missing_stock or missing_intermediate:
             raise ValueError(
                 f"Missing graft entries: stock={sorted(missing_stock)}, "
@@ -52,11 +68,11 @@ def graft_apk(stock_apk: Path, intermediate_apk: Path, output_apk: Path) -> None
             for info in stock.infolist():
                 if is_signature_artifact(info.filename):
                     continue
-                data_source = intermediate if info.filename in GRAFT_NAMES else stock
+                data_source = intermediate if info.filename in graft_names else stock
                 output.writestr(copy.copy(info), data_source.read(info.filename))
 
-            info = copy.copy(intermediate_entries["classes20.dex"])
-            output.writestr(info, intermediate.read("classes20.dex"))
+            info = copy.copy(intermediate_entries[added_name])
+            output.writestr(info, intermediate.read(added_name))
 
 
 def run(command: list[str]) -> None:
@@ -106,6 +122,16 @@ def main() -> None:
     parser.add_argument("--framework-path", required=True, type=Path)
     parser.add_argument("--work-tree", required=True, type=Path)
     parser.add_argument("--output-apk", required=True, type=Path)
+    parser.add_argument(
+        "--custom-tree",
+        default="smali_classes20",
+        help="free smali_classesN index for the custom classes (439 needs smali_classes21)",
+    )
+    parser.add_argument(
+        "--replace-dex",
+        default="classes.dex,classes3.dex,classes4.dex,classes6.dex",
+        help="comma-separated host DEX entries to graft from the intermediate",
+    )
     args = parser.parse_args()
 
     anchored_report = args.work_tree.parent / f"{args.work_tree.name}-anchored-report.json"
@@ -174,6 +200,8 @@ def main() -> None:
             str(args.patch_source),
             "--output",
             str(args.work_tree),
+            "--custom-tree",
+            args.custom_tree,
         ]
     )
     run(
@@ -200,7 +228,13 @@ def main() -> None:
             str(intermediate_apk),
         ]
     )
-    graft_apk(args.stock_apk, intermediate_apk, args.output_apk)
+    graft_apk(
+        args.stock_apk,
+        intermediate_apk,
+        args.output_apk,
+        replace_names={name for name in args.replace_dex.split(",") if name},
+        added_name=f"classes{args.custom_tree.replace('smali_classes', '')}.dex",
+    )
     run(
         [
             python,
