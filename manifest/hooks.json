@@ -95,7 +95,10 @@
         {
           "kind": "by_literal",
           "literal": "clips/discover/",
-          "co_literals": ["clips/homecoming/", "clips/discover/stream/"],
+          "co_literals": [
+            "clips/homecoming/",
+            "clips/discover/stream/"
+          ],
           "note": "the class moved LX/05t2->LX/04tC; the literal did not. This literal alone appears in 5 classes on 430 and 5 on 439, and the anchor matches cleanly in 3 of them - analytics maps and prefetch allowlists load the same string. Only the class that builds the outgoing request path carries all three Reels endpoints, which is exactly one class on each version."
         }
       ],
@@ -122,7 +125,7 @@
         "signal": "ClipsViewerPerfLogger: onClipsItemsRequestFailed",
         "surface": "reels_tab",
         "requires_two_directional_delta": true,
-        "note": "Block-counting CANNOT measure this hook. replaceReelsEndpoint blanks the endpoint upstream of throwIfBlocked, so the path never matches the blocklist and no IOException is produced. Zero blocks in both directions is expected, not a pass."
+        "note": "Block-counting CANNOT measure this hook. replaceReelsEndpoint blanks the endpoint upstream of throwIfBlocked, so the path never matches the blocklist and no IOException is produced. Zero blocks in both directions is expected, not a pass. Measured on 439: 3 canonical failures with Reels enabled and 0 with it disabled, so the Reels block is verified as a GROUP. This hook is NOT individually verified: all three replacements emit the identical line 'onClipsItemsRequestFailed [fetch]: status 404' with no endpoint qualifier, and one toggle governs all three, so if one replacement were inert the other two would still produce the signal. That is the 340 minshop failure mode - a substitution that never matched, hidden inside a group that worked. Attribution needs a surface that exercises only this endpoint."
       },
       "status": "active"
     },
@@ -138,7 +141,10 @@
         {
           "kind": "by_literal",
           "literal": "clips/homecoming/",
-          "co_literals": ["clips/discover/", "clips/discover/stream/"],
+          "co_literals": [
+            "clips/discover/",
+            "clips/discover/stream/"
+          ],
           "note": "same host class as the other two Reels literals, and co-location is what proves it: this literal alone matched 2 classes on both versions."
         }
       ],
@@ -163,7 +169,8 @@
         "kind": "logcat_delta",
         "signal": "ClipsViewerPerfLogger: onClipsItemsRequestFailed",
         "surface": "reels_tab",
-        "requires_two_directional_delta": true
+        "requires_two_directional_delta": true,
+        "note": "Measured on 439: 3 canonical failures with Reels enabled and 0 with it disabled, so the Reels block is verified as a GROUP. This hook is NOT individually verified: all three replacements emit the identical line 'onClipsItemsRequestFailed [fetch]: status 404' with no endpoint qualifier, and one toggle governs all three, so if one replacement were inert the other two would still produce the signal. That is the 340 minshop failure mode - a substitution that never matched, hidden inside a group that worked. Attribution needs a surface that exercises only this endpoint."
       },
       "status": "active"
     },
@@ -179,7 +186,10 @@
         {
           "kind": "by_literal",
           "literal": "clips/discover/stream/",
-          "co_literals": ["clips/discover/", "clips/homecoming/"],
+          "co_literals": [
+            "clips/discover/",
+            "clips/homecoming/"
+          ],
           "note": "same host class as the other two Reels literals. Alone it matched 3 classes on 430 and 4 on 439, with the anchor resolving in 3 of them."
         }
       ],
@@ -204,7 +214,8 @@
         "kind": "logcat_delta",
         "signal": "ClipsViewerPerfLogger: onClipsItemsRequestFailed",
         "surface": "reels_tab",
-        "requires_two_directional_delta": true
+        "requires_two_directional_delta": true,
+        "note": "Measured on 439: 3 canonical failures with Reels enabled and 0 with it disabled, so the Reels block is verified as a GROUP. This hook is NOT individually verified: all three replacements emit the identical line 'onClipsItemsRequestFailed [fetch]: status 404' with no endpoint qualifier, and one toggle governs all three, so if one replacement were inert the other two would still produce the signal. That is the 340 minshop failure mode - a substitution that never matched, hidden inside a group that worked. Attribution needs a surface that exercises only this endpoint."
       },
       "status": "active"
     },
@@ -240,7 +251,7 @@
       "mode": "insert_after",
       "constraints": [
         "must be restricted to the user's OWN profile; other users' Options must stay non-long-clickable. The shipped patch does this with `instance-of <r>, <model>, LX/077N;` plus `if-eqz` around the whole insert.",
-        "requires_proposal is set BECAUSE of that guard: the register holding the action model is the 4th init argument on 430 (p3) and the 2nd on 439 (p4), and the self-profile type moved LX/077N -> LX/0Dxw. Neither is derivable from this anchor, so the payload above is a SHAPE, not a complete patch — applying it as written would make every profile's Options long-clickable and undo the device-verified other-user exclusion.",
+        "requires_proposal is set BECAUSE of that guard: the register holding the action model is the 4th init argument on 430 (p3) and the 2nd on 439 (p4), and the self-profile type moved LX/077N -> LX/0Dxw. Neither is derivable from this anchor, so the payload above is a SHAPE, not a complete patch \u2014 applying it as written would make every profile's Options long-clickable and undo the device-verified other-user exclusion.",
         "the listener register is dead after the stock helper call consumes it, which is why it is safe to reuse"
       ],
       "probe": {
@@ -248,7 +259,7 @@
         "signal": "Distraction-free settings",
         "surface": "profile_options_long_press",
         "requires_two_directional_delta": false,
-        "note": "Not toggleable. The proof is that the dialog opens at all; before the 430 re-map this hook applied cleanly and was completely inert."
+        "note": "Not toggleable. The proof is that the dialog opens at all; before the 430 re-map this hook applied cleanly and was completely inert. Measured on 439: the dialog opens. NOT individually attributable - the other settings variant declares the same signal on the same surface, and Instagram picks between the two action-bar implementations at runtime, so exactly one is live and the observation cannot say which. Crediting both would credit a hook that may be entirely inert, which is what the 430 settings hook already was."
       },
       "status": "active"
     },
@@ -293,7 +304,7 @@
         "signal": "Distraction-free settings",
         "surface": "profile_options_long_press",
         "requires_two_directional_delta": false,
-        "note": "Not toggleable, so no two-directional delta exists: the dialog either opens on long-press or it does not. This is the variant that was runtime-inert on 430 while passing every static assertion, so the dialog actually opening is the whole proof."
+        "note": "Not toggleable, so no two-directional delta exists: the dialog either opens on long-press or it does not. This is the variant that was runtime-inert on 430 while passing every static assertion, so the dialog actually opening is the whole proof. Measured on 439: the dialog opens. NOT individually attributable - the other settings variant declares the same signal on the same surface, and Instagram picks between the two action-bar implementations at runtime, so exactly one is live and the observation cannot say which. Crediting both would credit a hook that may be entirely inert, which is what the 430 settings hook already was."
       },
       "status": "active"
     }

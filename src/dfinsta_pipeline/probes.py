@@ -46,7 +46,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
-from .evidence import EvidenceClaim, EvidenceLedger, probe_claim
+from .evidence import (
+    EvidenceClaim,
+    EvidenceKind,
+    EvidenceLedger,
+    Producer,
+    Verdict,
+    probe_claim,
+)
 from .hook_manifest import Hook, Probe, load_manifest
 
 PACKAGE = "com.instagram.android"
@@ -449,6 +456,230 @@ class ProbeRunner:
 
 def record(ledger: EvidenceLedger, claim: EvidenceClaim) -> EvidenceClaim:
     return ledger.record(claim)
+
+
+def shared_signals(hooks: Iterable[Hook]) -> dict[tuple[str, str, str], list[str]]:
+    """Probes that more than one hook would satisfy with the same observation.
+
+    Both settings hooks declare the signal ``Distraction-free settings`` on the
+    same surface, and Instagram picks between their two action-bar
+    implementations at runtime — so exactly one of them is live on any given
+    device, the dialog opening proves that *one* works, and nothing in the
+    observation says which. Recording `passed` for both would credit a hook that
+    may be completely inert, which is the precise failure the 430 settings hook
+    already produced once.
+    """
+    groups: dict[tuple[str, str, str], list[str]] = {}
+    for hook in hooks:
+        if hook.probe is None or hook.status != "active":
+            continue
+        key = (hook.probe.kind, hook.probe.signal, hook.probe.surface)
+        groups.setdefault(key, []).append(hook.hook_id)
+    return {key: ids for key, ids in groups.items() if len(ids) > 1}
+
+
+def attribute(claim: EvidenceClaim, group: Sequence[str]) -> EvidenceClaim:
+    """Downgrade a claim that cannot be attributed to the hook it is filed under.
+
+    The observation is real, so it is not discarded — but it becomes
+    ``inconclusive`` for each member, because "one of these two works" is not
+    evidence that this one does.
+    """
+    if len(group) < 2:
+        return claim
+    others = [name for name in group if name != claim.hook_id]
+    return EvidenceClaim(
+        hook_id=claim.hook_id,
+        kind=claim.kind,
+        verdict=Verdict.INCONCLUSIVE if claim.verdict is Verdict.PASSED else claim.verdict,
+        producer=claim.producer,
+        actor=claim.actor,
+        summary=(
+            f"{claim.summary} — but {', '.join(others)} declare the same signal on the "
+            "same surface and only one implementation is live at a time, so this "
+            "observation cannot say which hook produced it"
+        ),
+        detail={**dict(claim.detail), "attribution": "shared", "shared_with": others},
+    )
+
+
+# --------------------------------------------------- probes that are not deltas
+
+
+@dataclass(frozen=True)
+class AbsenceResult:
+    """An assertion that something is NOT there, plus proof the search worked."""
+
+    hits: int
+    control_found: bool
+    control: str
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def proven(self) -> bool:
+        # Zero hits means nothing only when the same search demonstrably CAN
+        # find something. An empty capture reports zero for every query.
+        return self.control_found and self.hits == 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hits": self.hits,
+            "control": self.control,
+            "control_found": self.control_found,
+            "proven": self.proven,
+            **dict(self.detail),
+        }
+
+
+class StartupProbe(ProbeRunner):
+    """`startup_no_fatal`: the hook runs at process start without throwing.
+
+    Not toggleable, so there is no delta to measure — executing at all IS the
+    proof, because an unresolved reference would throw before any UI appears.
+    That makes it an *absence* assertion, and an absence assertion with no
+    positive control is worthless: a scan of an empty capture reports zero hits
+    for every query and reads as a pass. So the same capture must be shown to
+    contain a marker that is certainly there.
+    """
+
+    #: Present in any logcat that actually covers this app starting.
+    CONTROL = r"Start proc \d+:com\.instagram\.android"
+
+    def measure_startup(self, hook: Hook) -> tuple[AbsenceResult, bool, str]:
+        self.stop()
+        self.device.logcat_clear()
+        self.launch()
+        self.device.sleep(18)
+        foreground = self.foreground_package()
+        alive = bool(self.device.shell("pidof", self.package).strip())
+        log = self.device.logcat_dump()
+        assert hook.probe is not None
+        hits = count_signal(log, hook.probe.signal)
+        control = re.search(self.CONTROL, log) is not None
+        return (
+            AbsenceResult(
+                hits.canonical,
+                control,
+                self.CONTROL,
+                {"raw_hits": hits.raw, "process_alive": alive, "foreground": foreground},
+            ),
+            alive and foreground == self.package,
+            foreground,
+        )
+
+    def claim(self, hook: Hook) -> tuple[EvidenceClaim, AbsenceResult]:
+        assert hook.probe is not None
+        result, running, foreground = self.measure_startup(hook)
+        if not result.control_found:
+            verdict, summary = (
+                Verdict.INCONCLUSIVE,
+                "the logcat capture does not contain this app starting, so finding no "
+                "fatal error proves nothing about it",
+            )
+        elif not running:
+            verdict, summary = (
+                Verdict.FAILED,
+                f"the app did not reach the foreground ({foreground or 'nothing'} did)",
+            )
+        elif result.hits:
+            verdict, summary = (
+                Verdict.FAILED,
+                f"{result.hits} startup error(s) matching {hook.probe.signal!r}",
+            )
+        else:
+            verdict, summary = (
+                Verdict.PASSED,
+                "started and stayed foreground with no linkage error, in a capture that "
+                "demonstrably covers this app starting",
+            )
+        return (
+            EvidenceClaim(
+                hook_id=hook.hook_id,
+                kind=EvidenceKind.RUNTIME_PROBE,
+                verdict=verdict,
+                producer=Producer.DEVICE,
+                actor=self.actor,
+                summary=summary,
+                detail=result.to_dict(),
+            ),
+            result,
+        )
+
+
+class DialogProbe(ProbeRunner):
+    """`ui_dialog`: the settings dialog opens on a long-press.
+
+    Not toggleable either — the dialog opens or it does not — and this is the
+    hook that was runtime-inert on 430 while passing every static assertion, so
+    the dialog actually appearing is the whole proof.
+    """
+
+    def measure_dialog(
+        self, hook: Hook, profile_selector: str, options_desc: str = "Options"
+    ) -> tuple[bool, AbsenceResult]:
+        assert hook.probe is not None
+        self.stop()
+        self.launch()
+        self.device.sleep(12)
+        profile = find_node(self.device.ui_xml(), resource_id=profile_selector)
+        if profile is None:
+            return False, AbsenceResult(0, False, "profile tab", {"reason": "no profile tab"})
+        centre = node_centre(profile)
+        assert centre is not None
+        self.device.tap(*centre)
+        self.device.sleep(6)
+
+        xml = self.device.ui_xml()
+        options = find_node(xml, content_desc=options_desc)
+        if options is None:
+            return False, AbsenceResult(
+                0, False, options_desc, {"reason": "Options control not on screen"}
+            )
+        long_clickable = 'long-clickable="true"' in options
+        centre = node_centre(options)
+        assert centre is not None
+        self.device.long_press(*centre, duration_ms=900)
+        self.device.sleep(4)
+
+        after = self.device.ui_xml()
+        found = hook.probe.signal in after
+        # The control: the dump has to actually be this app's UI, or "the title
+        # is not there" is a statement about a failed dump.
+        control = self.package in after
+        return found, AbsenceResult(
+            1 if found else 0,
+            control,
+            f"{self.package} in the UI dump",
+            {"options_long_clickable": long_clickable},
+        )
+
+    def claim(self, hook: Hook, profile_selector: str) -> tuple[EvidenceClaim, AbsenceResult]:
+        assert hook.probe is not None
+        found, result = self.measure_dialog(hook, profile_selector)
+        if not result.control_found:
+            verdict = Verdict.INCONCLUSIVE
+            summary = f"could not reach the control: {result.detail.get('reason', 'unknown')}"
+        elif found:
+            verdict = Verdict.PASSED
+            summary = f"long-pressing Options opened a dialog containing {hook.probe.signal!r}"
+        else:
+            verdict = Verdict.FAILED
+            summary = (
+                f"long-pressing Options did not show {hook.probe.signal!r}; the patch is "
+                "present but inert, which is exactly the 430 failure"
+            )
+        return (
+            EvidenceClaim(
+                hook_id=hook.hook_id,
+                kind=EvidenceKind.RUNTIME_PROBE,
+                verdict=verdict,
+                producer=Producer.DEVICE,
+                actor=self.actor,
+                summary=summary,
+                detail=result.to_dict(),
+            ),
+            result,
+        )
 
 
 # ---------------------------------------------------------------------- cli
