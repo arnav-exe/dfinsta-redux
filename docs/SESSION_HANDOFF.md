@@ -300,6 +300,10 @@ Not yet done: an opt-in real 340/430 run through the registered Workflow. Until 
 
 ## Immediate Next Actions
 
+> Superseded by [`docs/ROADMAP.md`](ROADMAP.md), which is now the single roadmap.
+> The list below is retained as history and is not maintained.
+
+
 1. Run the opt-in real 340/430 replay through the registered Workflow and confirm it reaches the same final receipts with no duplicate launches. Bundle follow-ups F1 and F2 from the design document into that slice: align the harness with `replay_gate.derive_verification_request`, and extract a public predecessor seam so `replay_gate` stops reaching into private `activities` helpers.
 2. Complete Phase A authority/deployment evidence with an authenticated trusted-client process, hard process-loss test, and saved replay corpus. Normal Current-version rollout is proven.
 3. Keep signing, publication, and runtime behavior behind their separate human gates; the new evidence proves only mechanical direct-Activity execution.
