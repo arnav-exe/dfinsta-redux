@@ -35,6 +35,11 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
 - [x] Durable Temporal Workflow with the replay chain registered and a mid-run verification gate
 - [x] Release signing gate with a pinned certificate
 - [x] Device validation harness bound to installed-artifact identity
+- [x] 340 real replay re-proven at current HEAD (65 assertions, 59 operation proofs).
+      Note the final APK hash differs from the historical proof and that is EXPECTED:
+      `apktool_full_rebuild` embeds build-time ZIP timestamps so it is not bit-reproducible,
+      while `stock_dex_graft` keeps 16,399 stock timestamps and only rewrites what it writes.
+      Verify rebuilds semantically, never by hash equality against a stored value.
 - [ ] **Opt-in real 340/430 run through the registered Workflow** — registration is proven by unit and time-skipping tests only
 - [ ] Fold in follow-ups F1/F2 from `docs/WORKFLOW_REGISTRATION_DESIGN.md` during that run
 - [ ] Non-destructive cancellation path (today a mistimed worker stop burns an admitted run)
