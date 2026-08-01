@@ -96,10 +96,15 @@ class HookIndex:
     def __init__(self, index_dir: Path, header: Mapping[str, Any], surface: Mapping[str, Any]):
         self._dir = Path(index_dir)
         self._header = dict(header)
-        self._api_paths: Mapping[str, Sequence[str]] = surface.get("api_paths", {})
-        self._resources: Mapping[str, Mapping[str, str]] = surface.get("resources", {})
-        self._stable_types: Mapping[str, str] = surface.get("stable_types", {})
-        self._resource_types = tuple(header.get("resource_types_indexed", ()))
+        # `or {}`, not a `get` default: the default applies only to a MISSING key,
+        # so an explicit JSON null would store None and every later lookup would
+        # raise TypeError — escaping `except IndexUnusable` in `resolve.main` and
+        # killing the stage with a traceback, which is the exact failure the
+        # malformed-index handling exists to prevent.
+        self._api_paths: Mapping[str, Sequence[str]] = surface.get("api_paths") or {}
+        self._resources: Mapping[str, Mapping[str, str]] = surface.get("resources") or {}
+        self._stable_types: Mapping[str, str] = surface.get("stable_types") or {}
+        self._resource_types = tuple(header.get("resource_types_indexed") or ())
         self._paths: dict[str, str] | None = None
         self._rows: dict[str, ClassRow] | None = None
 
