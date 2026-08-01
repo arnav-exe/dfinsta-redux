@@ -175,9 +175,11 @@ often. That is acceptable and expected.
 finding any anchor, and a blind holdout where two provably-uncontaminated proposers
 independently located the hardest one. The working technique: enter at the feature's
 fragment, follow the runtime branch to each delegate, pin the exact control by
-**drawable id** (string ids are unresolvable under sparse resource encoding — only
+**drawable NAME** (string ids are unresolvable under sparse resource encoding — only
 ~555 of ~19,000 are exposed), then prove ownership through the self/other model
-chain.
+chain. Resolve the name to that version's hex id from its own index: measured
+430 vs 439, **99.1% of shared drawable names carry a different id**, so a
+hardcoded id is as version-locked as an obfuscated descriptor.
 
 **6-8 Apply / Build / Static Verify** — the deterministic spine, already built and
 target-neutral. DEX topology comes from the target's resolution, not from code: 439
