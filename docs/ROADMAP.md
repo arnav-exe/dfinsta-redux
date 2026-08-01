@@ -62,7 +62,14 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
       `A1K -> A2W -> A15()` chain.
 - [ ] Automated resolver: intent + clean decode → candidate anchors with evidence and confidence
 - [ ] Candidate anchors must be *proposals* only — the deterministic spine still applies and verifies
-- [ ] Measure coverage on 439: how many of 8 operations resolve automatically vs need a human
+- [x] **Measure coverage on 439: 7/7 hook operations resolved by agents, zero human mapping.**
+      Built, structurally verified, signed, installed, and CONFIRMED WORKING on device
+      2026-08-01: 23 canonical block exceptions with the stack showing
+      `com.dfinstagram.hooks.throwIfBlocked` <- `TigonServiceLayer.startRequest`, and the
+      settings dialog opening with all five toggles. Every obfuscated host had moved
+      (`LX/077K`->`LX/0DnT`, `LX/06X7`->`LX/0Di2`, `LX/05t2`->`LX/04tC`), and the custom
+      code needed `classes21.dex` because 439 already ships `classes20`.
+- [ ] Turn the ad-hoc mapping workflow into a reusable resolver that emits candidates + evidence
 
 ## 3. Decide — not started
 
