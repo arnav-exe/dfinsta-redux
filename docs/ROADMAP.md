@@ -5,7 +5,7 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-01.
+Last updated 2026-08-01 (second pass: Resolve stage, evidence ledger, driver).
 
 ## End goal
 
@@ -69,8 +69,30 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
       predicted exactly that split.
 - [x] Mechanical validator for agent candidates (`tools/resolver/validate_candidates.py`),
       with mutation tests proving each check bites
-- [ ] Resolve stage: k independent proposers + adversarial verifier for the 2 `by_agent` hooks
-- [ ] Evidence ledger: gate on absent evidence, never on self-reported confidence
+- [x] **Resolve stage** (`src/dfinsta_pipeline/resolve.py`) — the first caller of the engine.
+      Host search runs off the Index, so **5 of 7 hooks resolve with no human input at all on
+      both 430 and 439, host discovery included**. Two ordering rules are load-bearing:
+      `already_applied` outranks `resolved` (on a re-run the real host carries our marker
+      while the decoys still match, so ranking resolved first patches a second, wrong class
+      every time), and a marker at the wrong count is a hard stop above both.
+- [x] **`by_literal` needed a real discriminator.** Measured: `clips/discover/` alone appears
+      in 5 classes per version and the anchor matches cleanly in 3 of them — analytics maps
+      and prefetch allowlists load the same string. Only the class building the outgoing
+      request path carries all three Reels endpoints: exactly one class on each version. Hence
+      `co_literals`. If a version splits them the intersection empties and the stage escalates.
+- [x] **Proposal pipeline** (`src/dfinsta_pipeline/proposals.py`) — k proposers → agreement by
+      content → mechanical validator → adversarial verifier, each producing evidence from a
+      producer that is not the proposer. Verified end to end against the real 430 decode:
+      2-of-3 agreement accepted; agreement on an answer the validator refuses is refused;
+      one proposer answering three times does not manufacture consensus.
+- [x] **Evidence ledger** (`src/dfinsta_pipeline/evidence.py`) — gates on absent evidence.
+      Confidence is recorded and never read (a test varies it across its whole range and pins
+      that no verdict moves). Evidence has phases: four kinds are derivable from the decode
+      and gate the apply, three need the built APK and gate the release — collapsing them
+      would make the pre-apply gate unsatisfiable. Retry-to-green is flagged, including from
+      `inconclusive`, which is the Reels probe's own bad state.
+- [ ] Wire the runtime probe producer to the device runner (the ledger's `probe_claim` exists;
+      nothing drives the phone yet)
 - [x] **Per-version Index** (`tools/indexer/build_index.py`): 181,421 classes in 3.4s,
       68 MB out, byte-identical across job counts. Confirmed API-path literals are the
       strongest fingerprint (93.9% survive 430->439 vs 89.3% of stable named types).
@@ -105,12 +127,37 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
 - [ ] Reels deep cache-exhaustion check
 - [ ] Re-verify the full contract on any new target before calling a port good
 
+## 5. The driver — done, and proven end to end
+
+`python -m dfinsta_pipeline.driver <stock.apk> --out <dir>` is the single entrypoint:
+extract → index → resolve → pre-apply evidence gate → compose → build → static verify,
+stopping at the first stage that cannot produce what the next needs.
+
+- [x] Proven on Instagram 430 from the stock APK: 5 hooks resolved mechanically with hosts
+      discovered from the index, 5/5 operations applied, apktool build, stock DEX graft, and
+      **static verification passed** — exact DEX topology, custom DEX new, 16,399 stock
+      entries byte-identical, every host hook present in the DEX that owns it, no forbidden
+      symbol in custom code.
+- [x] Derives per version what used to be hand-edited, each of which silently produces a
+      broken APK when wrong: the free `smali_classesN` (430→20, 439→21), the host DEX files
+      to graft (`classes.dex,classes3.dex,classes4.dex` on 430 — matching the hand-authored
+      list exactly), and the host-hook map the static verifier asserts against.
+- [x] Target-neutral static verifier (`tools/verify/verify_build.py`); `build.py` selects it
+      with `--verifier generic --host-hooks`. The 430-specific verifier is retained, not
+      loosened — they pin different things and neither is weaker.
+- [x] The run correctly reports that the APK is **not release-ready** because post-build
+      evidence is absent. That message is the point of the whole exercise.
+- [ ] Same run with the two settings hooks, which need real proposer agents rather than
+      hand-made proposals
+
 ## Immediate next three
 
-1. Finish the blind settings holdout and get a trustworthy answer on whether hook mapping
-   can be automated. Everything in section 2 depends on that number.
-2. Real 340/430 run through the registered Workflow, with F1/F2 folded in.
-3. Attempt a 439 port, measuring automated coverage against human effort.
+1. **Drive the phone.** Join `evidence.probe_claim` to `tools/device_validation/runner.py`
+   so `runtime_probe` and `differential` can exist. Nothing can pass the release gate until
+   they do, and this is what separates "a build" from "a build that works".
+2. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
+   reference, so `install_settings_long_click` stops being excluded from runs.
+3. Feature discovery and the addictiveness gate (section 3), which is still untouched.
 
 ## The decision worth making early
 

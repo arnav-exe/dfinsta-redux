@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-01, HEAD `ad924bc` on branch `port-430`.
+Resume point as of 2026-08-01, branch `port-430`.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
 practical "how to pick this up" record: what exists, what is next, and the
@@ -13,19 +13,27 @@ Stage numbers refer to `pipeline_flowchart.md`.
 | Stage | State | Where |
 |---|---|---|
 | 0 Load | manifest exists; Decision Memory not started | `manifest/hooks.json` |
-| 1 Extract | manual apktool invocation | — |
+| **1 Extract** | **done, in the driver** | `src/dfinsta_pipeline/driver.py` |
 | **2 Index** | **done** | `tools/indexer/build_index.py` (+46 tests) |
 | 3-4 Feature discovery / report | **not started** | — |
 | Gate 1 | not started | — |
-| **5a Port Planner** | proven as an ad-hoc Workflow; not yet a stage | — |
-| **5b Adversarial verifier** | proven ad-hoc; not yet a stage | — |
+| **5 Resolve** | **done** — 5/7 hooks resolve mechanically on 430 and 439, hosts included | `src/dfinsta_pipeline/resolve.py` (+61 tests), `hook_index.py` (+95) |
+| **5a Proposers / 5b verifier** | **done as a stage** | `src/dfinsta_pipeline/proposals.py` |
 | **5c Mechanical validator** | **done** | `tools/resolver/validate_candidates.py` (+8 mutation tests) |
-| Evidence ledger | **not started** — this is the key missing control | — |
-| 6-7 Apply / Build | done, target-parameterized | `tools/port_430/build.py` |
-| 8 Static verify | done, one per target | `tools/port_439/verify_439.py`, `tools/port_430/verify_apk.py` |
-| 9 Runtime verify | manual only | `tools/device_validation/runner.py` |
+| **Evidence ledger** | **done** | `src/dfinsta_pipeline/evidence.py` (+144 tests) |
+| 6-7 Apply / Build | done, target-parameterized, driven | `tools/port_430/build.py` |
+| **8 Static verify** | **done, target-neutral** | `tools/verify/verify_build.py` (host-hook map supplied per run) |
+| 9 Runtime verify | manual; `probe_claim` exists but nothing drives the phone | `tools/device_validation/runner.py` |
 | 10-11 Manifest update / report | not started | — |
 | Durable orchestration | `ReplayRunWorkflow` registered, **never run for real** | `src/dfinsta_pipeline/` |
+
+**The driver** is `python -m dfinsta_pipeline.driver <stock.apk> --out <dir>`. It runs
+extract → index → resolve → pre-apply evidence gate → compose → build → static verify,
+and stops at the first stage that cannot produce what the next one needs. `--reuse-decode`
+and `--reuse-index` skip the two slow read-only stages. It derives per version, rather
+than being told: the free `smali_classesN` for custom code (430 → 20, 439 → 21), which host
+DEX files to graft, and which DFInsta call each grafted DEX must be shown to contain. All
+three were hand-edited before and each silently produces a broken APK when wrong.
 
 **The engine that makes hooks version-independent** is `src/dfinsta_pipeline/hook_manifest.py`.
 Anchors are patterns with `<name:kind>` captures; payloads template off them.
@@ -35,19 +43,24 @@ settings hooks, declared `kind: "by_agent"`.
 
 ## Immediate next steps, in order
 
-1. **Wire the Index into host search.** `by_literal` hooks currently need a caller to
-   find the host; `api_surface.json` maps `literal -> [descriptors]` already. This makes
-   the reels hooks fully automatic instead of needing a known descriptor.
-2. **Teach a caller about `Resolution.already_applied`.** Nothing under `src/` imports
-   the engine yet. Code written as `if not resolution.resolved: fail()` would treat a
-   normal re-run as a failure.
-3. **Build the Resolve stage** for the two `by_agent` hooks: k independent proposers, an
-   adversarial verifier that sees only claims and is told to falsify, then the mechanical
-   validator. The ad-hoc Workflow that did this for 439 is the reference.
-4. **Build the evidence ledger.** Gate on *absent evidence*, never on self-reported
-   confidence. Table is in `pipeline_flowchart.md`.
-5. **Runtime probe runner** enforcing two-directional deltas, plus differential vs N−1.
-6. **The driver** — one command, APK in, verified build out. None exists today.
+1. **Drive the phone.** This is now the biggest gap and the highest-value one. The ledger
+   has `probe_claim` with the two-directional rule and `tools/device_validation/runner.py`
+   has the ADB primitives, but nothing joins them, so `runtime_probe` and `differential`
+   are permanently `not_exercised` and no build can pass the release gate. Until this
+   exists the pipeline can produce a build but cannot say it works — which is exactly the
+   state that shipped three inert patches.
+2. **Real k-proposer run for the two settings hooks.** `proposals.py` is proven against
+   hand-made proposals; nothing yet spawns actual proposer agents and collects their
+   answers. The blind holdout is the reference for how to prompt them.
+3. **Feature discovery (stages 3-4) and the addictiveness gate.** Not started. Diff the
+   API surface between baseline and target, assess from evidence, present at a durable
+   gate. `docs/adk_pipeline_design.md` has the `FeatureAssessment` schema and the
+   delivery-branch idea (A endpoint / B inline JSON / C client UI) worth reusing.
+4. **Decision Memory**, with the reuse predicate from `docs/ADK_PIPELINE_PLAN.md`: a
+   decision is reusable only while feature identity, delivery mechanism, evidence
+   fingerprint and policy revision remain compatible.
+5. **Run the driver through the registered `ReplayRunWorkflow`** rather than in-process,
+   so the gates become durable Temporal Updates that can wait days.
 
 ## Constraints that cost real time to learn
 

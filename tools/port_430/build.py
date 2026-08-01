@@ -132,7 +132,25 @@ def main() -> None:
         default="classes.dex,classes3.dex,classes4.dex,classes6.dex",
         help="comma-separated host DEX entries to graft from the intermediate",
     )
+    parser.add_argument(
+        "--verifier",
+        choices=("port430", "generic"),
+        default="port430",
+        help=(
+            "port430 pins 430's exact obfuscated descriptors and signatures, all of "
+            "which moved in 439. generic asserts the same topology and preservation "
+            "against a per-run --host-hooks map instead, so it is exact without being "
+            "version-locked. Neither is weaker; they pin different things."
+        ),
+    )
+    parser.add_argument(
+        "--host-hooks",
+        type=Path,
+        help="JSON map of grafted DEX -> [[descriptor, method]], required by --verifier generic",
+    )
     args = parser.parse_args()
+    if args.verifier == "generic" and args.host_hooks is None:
+        parser.error("--verifier generic requires --host-hooks")
 
     anchored_report = args.work_tree.parent / f"{args.work_tree.name}-anchored-report.json"
     intermediate_apk = args.output_apk.with_name(f"{args.output_apk.stem}-intermediate.apk")
@@ -235,8 +253,8 @@ def main() -> None:
         replace_names={name for name in args.replace_dex.split(",") if name},
         added_name=f"classes{args.custom_tree.replace('smali_classes', '')}.dex",
     )
-    run(
-        [
+    if args.verifier == "port430":
+        verify_command = [
             python,
             str(TOOLS / "verify_apk.py"),
             str(args.output_apk),
@@ -246,7 +264,22 @@ def main() -> None:
             "--output",
             str(verification_report),
         ]
-    )
+    else:
+        verify_command = [
+            python,
+            str(REPOSITORY / "tools" / "verify" / "verify_build.py"),
+            str(args.output_apk),
+            str(args.stock_apk),
+            "--custom-dex",
+            f"classes{args.custom_tree.replace('smali_classes', '')}.dex",
+            "--replaced-dex",
+            args.replace_dex,
+            "--host-hooks",
+            str(args.host_hooks),
+            "--output",
+            str(verification_report),
+        ]
+    run(verify_command)
     report = {
         "schema_version": 1,
         **input_provenance,

@@ -224,6 +224,7 @@
         "invoke-direct {<l>, <a:reg>, <b:reg>, <c:reg>, <d:reg>}, <listener>-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V",
         "invoke-static {<l>, <view:reg>}, <helper:type>-><hm:member>(Landroid/view/View$OnClickListener;Landroid/view/View;)V"
       ],
+      "requires_proposal": true,
       "payload": [
         "",
         "    # dfinsta_settings_long_click_profilebar",
@@ -237,7 +238,8 @@
       "expected_marker_count": 1,
       "mode": "insert_after",
       "constraints": [
-        "must be restricted to the user's OWN profile; other users' Options must stay non-long-clickable",
+        "must be restricted to the user's OWN profile; other users' Options must stay non-long-clickable. The shipped patch does this with `instance-of <r>, <model>, LX/077N;` plus `if-eqz` around the whole insert.",
+        "requires_proposal is set BECAUSE of that guard: the register holding the action model is the 4th init argument on 430 (p3) and the 2nd on 439 (p4), and the self-profile type moved LX/077N -> LX/0Dxw. Neither is derivable from this anchor, so the payload above is a SHAPE, not a complete patch — applying it as written would make every profile's Options long-clickable and undo the device-verified other-user exclusion.",
         "the listener register is dead after the stock helper call consumes it, which is why it is safe to reuse"
       ],
       "probe": {

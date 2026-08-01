@@ -422,6 +422,20 @@ def _classify(
         )
 
     resolved = [report for report in reports if report.resolved]
+    if resolved and hook.requires_proposal:
+        # The manifest anchor matched, but for this hook the manifest payload is a
+        # shape rather than a complete patch, so rendering it would emit a
+        # subtly wrong operation that assembles and verifies cleanly. Exactly the
+        # inert-or-worse failure this stage exists to prevent, so it stops here
+        # even though it *could* produce something.
+        return make(
+            Outcome.NEEDS_AGENT,
+            f"{hook.hook_id} is marked requires_proposal: its manifest anchor matched "
+            f"{resolved[0].descriptor}, but the payload is a shape and needs values no "
+            "anchor can capture. A validated proposal must supply the real anchor and "
+            "payload. " + "; ".join(hook.constraints[:1]),
+            descriptor=resolved[0].descriptor,
+        )
     if len(resolved) == 1:
         winner = resolved[0]
         path = index.path_for(winner.descriptor)

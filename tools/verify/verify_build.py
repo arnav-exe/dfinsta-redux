@@ -1,16 +1,21 @@
-"""Structural verification for the Instagram 439 DFInsta graft.
+"""Structural verification for a DFInsta graft, on any Instagram version.
 
 Deliberately separate from ``tools/port_430/verify_apk.py``: that verifier pins
 430's exact obfuscated descriptors and method signatures, all of which moved in
-439. Rather than loosen those pins into something that would pass on either
-target and prove less about both, this checks 439's own topology and its own
-resolved hosts.
+439. Loosening those pins into something that passes on either target would prove
+less about both. This takes the opposite route -- every version-specific fact is
+supplied by the caller, derived from that run's own resolution, so the assertions
+stay exact without being hardcoded.
+
+Supplied per target: which DEX holds the custom code, which host DEX files were
+grafted, and which hook call must appear in each of them (``--host-hooks``, the
+map the Resolve stage already knows and used to be hand-written here).
 
 What it proves:
   * exact DEX topology, including that the custom code landed in its own new DEX
-  * the custom DEX contains exactly the four approved descriptors and nothing else
-  * no forbidden symbol leaked into custom code
+  * the custom DEX contains the approved descriptors and nothing forbidden
   * every host hook call is present in the DEX that owns it
+  * every grafted host DEX actually differs from stock
   * every archive entry outside the grafted set is byte-identical to stock
 
 What it does not prove: runtime behaviour. A structurally perfect graft can still
@@ -49,7 +54,8 @@ FORBIDDEN_CUSTOM_SYMBOLS = (
     "Lcom/dfinstagram/preference/Preference;",
 )
 
-# host DEX -> (type descriptor, method name) pairs that must appear in it.
+# The default host-hook map, used when --host-hooks is not supplied. It is the
+# 439 resolution, kept as a worked example of the shape.
 #
 # NOTE: a DEX does NOT store a method reference as the concatenated smali form
 # "Lcom/x;->m(Ljava/lang/String;)V". It stores three separate indices (class
@@ -57,7 +63,7 @@ FORBIDDEN_CUSTOM_SYMBOLS = (
 # exist as literal strings in the string table. Searching raw DEX bytes for the
 # smali signature therefore always fails -- it did here, and looked like a
 # missing hook until the type descriptor was checked directly.
-HOST_HOOKS = {
+DEFAULT_HOST_HOOKS = {
     "classes3.dex": (
         ("Lcom/dfinstagram/startapp;", "setContext"),
         ("Lcom/dfinstagram/hooks;", "replaceReelsEndpoint"),
@@ -76,7 +82,27 @@ def is_signature_entry(name: str) -> bool:
     return parts[1] == "MANIFEST.MF" or parts[1].endswith((".SF", ".RSA", ".DSA", ".EC"))
 
 
-def verify(built: Path, stock: Path, custom_dex: str, replaced: set[str]) -> dict:
+def verify(
+    built: Path,
+    stock: Path,
+    custom_dex: str,
+    replaced: set[str],
+    host_hooks: dict | None = None,
+) -> dict:
+    host_hooks = DEFAULT_HOST_HOOKS if host_hooks is None else host_hooks
+    if not host_hooks:
+        # An empty map would make `all(...)` over it vacuously true, so a build
+        # with no host hook proven at all would pass.
+        raise ValueError(
+            "host_hooks is empty: with nothing to prove, every hook assertion "
+            "passes vacuously and the verifier certifies an unpatched graft"
+        )
+    unknown = sorted(set(host_hooks) - replaced)
+    if unknown:
+        raise ValueError(
+            f"host_hooks names {unknown}, which are not among the grafted DEX files "
+            f"{sorted(replaced)}; a hook cannot be in a DEX that was never replaced"
+        )
     results: dict[str, object] = {}
     with zipfile.ZipFile(built) as out, zipfile.ZipFile(stock) as ref:
         out_names = {i.filename for i in out.infolist()}
@@ -98,7 +124,7 @@ def verify(built: Path, stock: Path, custom_dex: str, replaced: set[str]) -> dic
         }
 
         hooks: dict[str, dict[str, bool]] = {}
-        for dex, pairs in HOST_HOOKS.items():
+        for dex, pairs in host_hooks.items():
             blob = out.read(dex)
             hooks[dex] = {
                 f"{descriptor} {name}": (descriptor.encode() in blob and name.encode() in blob)
@@ -150,14 +176,31 @@ def main() -> None:
     parser.add_argument("stock_apk", type=Path)
     parser.add_argument("--custom-dex", default="classes21.dex")
     parser.add_argument("--replaced-dex", default="classes.dex,classes3.dex,classes6.dex")
+    parser.add_argument(
+        "--host-hooks",
+        type=Path,
+        help='JSON {"classes3.dex": [["Lcom/dfinstagram/startapp;", "setContext"]]} '
+        "naming the call each grafted DEX must contain; derived from this run's "
+        "resolution. Defaults to the recorded 439 map.",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+
+    host_hooks = None
+    if args.host_hooks:
+        host_hooks = {
+            dex: [tuple(pair) for pair in pairs]
+            for dex, pairs in json.loads(
+                args.host_hooks.read_text(encoding="utf-8")
+            ).items()
+        }
 
     report = verify(
         args.built_apk,
         args.stock_apk,
         args.custom_dex,
         {n for n in args.replaced_dex.split(",") if n},
+        host_hooks,
     )
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:

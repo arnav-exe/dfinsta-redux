@@ -254,6 +254,13 @@ class Hook:
     constraints: tuple[str, ...] = ()
     probe: Probe | None = None
     status: str = "active"
+    # When true the anchor and payload here are a SHAPE, not a complete patch,
+    # and a validated proposal must supply the real ones. Set for the profile
+    # settings hook, whose payload needs an own-profile guard on a register no
+    # anchor can capture: rendering the template as written would attach the
+    # long-press to every profile's Options and undo the device-verified
+    # other-user exclusion.
+    requires_proposal: bool = False
 
     def __post_init__(self) -> None:
         if self.tier not in {"robust", "fragile", "ui"}:
@@ -318,6 +325,7 @@ class Hook:
             constraints=tuple(data.get("constraints", ())),
             probe=Probe.from_dict(data["probe"]) if data.get("probe") else None,
             status=data.get("status", "active"),
+            requires_proposal=bool(data.get("requires_proposal", False)),
         )
 
 
