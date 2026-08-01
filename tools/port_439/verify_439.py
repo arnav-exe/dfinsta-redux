@@ -49,14 +49,21 @@ FORBIDDEN_CUSTOM_SYMBOLS = (
     "Lcom/dfinstagram/preference/Preference;",
 )
 
-# host DEX -> call sites that must appear in it, per the 439 mapping
+# host DEX -> (type descriptor, method name) pairs that must appear in it.
+#
+# NOTE: a DEX does NOT store a method reference as the concatenated smali form
+# "Lcom/x;->m(Ljava/lang/String;)V". It stores three separate indices (class
+# type, name, prototype), and only the type descriptor and the bare method name
+# exist as literal strings in the string table. Searching raw DEX bytes for the
+# smali signature therefore always fails -- it did here, and looked like a
+# missing hook until the type descriptor was checked directly.
 HOST_HOOKS = {
     "classes3.dex": (
-        "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
-        "Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+        ("Lcom/dfinstagram/startapp;", "setContext"),
+        ("Lcom/dfinstagram/hooks;", "replaceReelsEndpoint"),
     ),
-    "classes.dex": ("Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V",),
-    "classes6.dex": ("Lcom/dfinstagram/SettingsWrapper;",),
+    "classes.dex": (("Lcom/dfinstagram/hooks;", "throwIfBlocked"),),
+    "classes6.dex": (("Lcom/dfinstagram/SettingsWrapper;", "onLongClick"),),
 }
 
 SIGNATURE_PREFIXES = ("META-INF/MANIFEST.MF",)
@@ -91,10 +98,21 @@ def verify(built: Path, stock: Path, custom_dex: str, replaced: set[str]) -> dic
         }
 
         hooks: dict[str, dict[str, bool]] = {}
-        for dex, needles in HOST_HOOKS.items():
+        for dex, pairs in HOST_HOOKS.items():
             blob = out.read(dex)
-            hooks[dex] = {n: (n.encode() in blob) for n in needles}
+            hooks[dex] = {
+                f"{descriptor} {name}": (descriptor.encode() in blob and name.encode() in blob)
+                for descriptor, name in pairs
+            }
         results["host_hooks"] = hooks
+
+        # A grafted host DEX must actually differ from stock, otherwise the
+        # graft silently shipped the unpatched original.
+        results["grafted_dex_changed"] = {
+            name: hashlib.sha256(out.read(name)).digest()
+            != hashlib.sha256(ref.read(name)).digest()
+            for name in sorted(replaced)
+        }
 
         grafted = replaced | {custom_dex}
         mismatched, missing = [], []
@@ -117,6 +135,7 @@ def verify(built: Path, stock: Path, custom_dex: str, replaced: set[str]) -> dic
         and all(results["custom_required_symbols"].values())
         and not any(results["custom_forbidden_symbols"].values())
         and all(all(v.values()) for v in results["host_hooks"].values())
+        and all(results["grafted_dex_changed"].values())
         and not missing
         and not mismatched
         and results["signatures_stripped"]
