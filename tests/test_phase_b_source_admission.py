@@ -904,7 +904,7 @@ class SourceAdmissionTests(unittest.TestCase):
             ),
             430: (
                 5,
-                "697599a490eadb160becd5035613df65bcd1c6ea3e4c81fea2df60cea63ad656",
+                "ec629cd5323cb4c468d0cca94429927b8bf6e87045dbb81d654681f4390d99a0",
             ),
         }
         for target, (count, tree_sha256) in expected.items():

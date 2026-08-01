@@ -87,12 +87,14 @@ ANCHORED_430_METHODS = {
         "Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function0;"
         "ZZZZZZZZZZZ)LX/03xp;"
     ),
+    "install_settings_long_click_actionbar": "AP1(LX/00ds;)V",
     "set_app_context": "onCreate()V",
     "tigon_url_block": "startRequest(LX/05ez;LX/05fq;LX/05gu;)LX/0Fcm;",
 }
 
 ANCHORED_430_INTENTS = {
     "install_settings_long_click": ("settings-entry",),
+    "install_settings_long_click_actionbar": ("settings-entry",),
     "replace_reels_discover_endpoint": ("block-reels",),
     "replace_reels_homecoming_endpoint": ("block-reels",),
     "replace_reels_stream_endpoint": ("block-reels",),
@@ -404,8 +406,8 @@ def anchored_operations_430(
                 1,
             )
         )
-    if len(result) != 6:
-        raise ValueError(f"Expected 6 430 edits, generated {len(result)}")
+    if len(result) != 7:
+        raise ValueError(f"Expected 7 430 edits, generated {len(result)}")
     return result
 
 

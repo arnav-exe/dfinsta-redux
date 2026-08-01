@@ -149,7 +149,7 @@ class PrepareAndPatchTests(unittest.TestCase):
             self.assertEqual((output / "res/raw/item").read_bytes(), b"resource")
             self.assertEqual((output / "smali_classes20/pkg/Only.smali").read_bytes(), b"class")
 
-    def test_has_six_exact_430_anchored_patches(self) -> None:
+    def test_has_seven_exact_430_anchored_patches(self) -> None:
         manifest = json.loads(
             (SOURCE / "patches/anchored_patches.json").read_text(encoding="utf-8")
         )
@@ -161,6 +161,7 @@ class PrepareAndPatchTests(unittest.TestCase):
                 "set_app_context",
                 "tigon_url_block",
                 "install_settings_long_click",
+                "install_settings_long_click_actionbar",
                 "replace_reels_discover_endpoint",
                 "replace_reels_homecoming_endpoint",
                 "replace_reels_stream_endpoint",
@@ -198,6 +199,28 @@ class PrepareAndPatchTests(unittest.TestCase):
         self.assertIn(
             "    invoke-virtual {v6, v0}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V",
             payload,
+        )
+        actionbar = operations["install_settings_long_click_actionbar"]
+        self.assertEqual(actionbar["descriptor"], "LX/06X7;")
+        self.assertEqual(actionbar["mode"], "insert_after")
+        self.assertEqual(actionbar["marker"], "Lcom/dfinstagram/SettingsWrapper;")
+        self.assertEqual(
+            actionbar["anchor"],
+            [
+                "iput-object v11, v1, LX/09rb;->A0F:Landroid/graphics/drawable/Drawable;",
+                "const v0, 0x7f134a0e",
+                "iput v0, v1, LX/09rb;->A06:I",
+                "iput-object v14, v1, LX/09rb;->A0G:Landroid/view/View$OnClickListener;",
+                "iput-object v13, v1, LX/09rb;->A0H:Landroid/view/View$OnLongClickListener;",
+            ],
+        )
+        self.assertIn(
+            "    new-instance v0, Lcom/dfinstagram/SettingsWrapper;",
+            actionbar["payload"],
+        )
+        self.assertIn(
+            "    iput-object v0, v1, LX/09rb;->A0H:Landroid/view/View$OnLongClickListener;",
+            actionbar["payload"],
         )
         for operation_id, register, endpoint in (
             ("replace_reels_discover_endpoint", "v8", "clips/discover/"),

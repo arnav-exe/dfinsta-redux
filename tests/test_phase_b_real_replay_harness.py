@@ -47,7 +47,7 @@ class RealReplayHarnessFastTests(unittest.TestCase):
         self.assertEqual(JAVA_SHA256, "1a86d087fa5a5be1ed3e8a531ae891da85fc80aad15ab6fa98060763f2eb7000")
         self.assertEqual(API36_FRAMEWORK_SHA256, "1f95cd4676f3e16e0432a0f19c01026593101fd26d8190233c70803de8453473")
         self.assertEqual((TARGETS[340].source_file_count, TARGETS[430].source_file_count), (112, 5))
-        self.assertEqual((TARGETS[340].operation_count, TARGETS[430].operation_count), (59, 7))
+        self.assertEqual((TARGETS[340].operation_count, TARGETS[430].operation_count), (59, 8))
 
     def test_profiles_and_capabilities_are_sorted_and_valid(self) -> None:
         for target in (340, 430):

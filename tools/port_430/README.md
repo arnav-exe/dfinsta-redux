@@ -1,6 +1,6 @@
 # Instagram 430 Minimal Port
 
-This tooling decodes the supplied stock Instagram 430 APK into a fresh refuse-overwrite tree, overlays four custom classes into `smali_classes20`, applies six anchored host operations, and uses apktool 2.9.3/aapt1 only to assemble the changed DEX files. It then grafts `classes.dex`, `classes3.dex`, `classes4.dex`, `classes6.dex`, and `classes20.dex` into the exact supplied stock APK, removing signing artifacts while preserving every other stock ZIP entry.
+This tooling decodes the supplied stock Instagram 430 APK into a fresh refuse-overwrite tree, overlays four custom classes into `smali_classes20`, applies seven anchored host operations, and uses apktool 2.9.3/aapt1 only to assemble the changed DEX files. It then grafts `classes.dex`, `classes3.dex`, `classes4.dex`, `classes6.dex`, and `classes20.dex` into the exact supplied stock APK, removing signing artifacts while preserving every other stock ZIP entry.
 
 The architecture is resource-free because apktool loses data while decoding/rebuilding Instagram 430's resource table. The grafted APK therefore retains the stock `resources.arsc`, binary `AndroidManifest.xml`, and every `res/` entry byte-for-byte. Settings are a framework `AlertDialog` opened by long-pressing the existing profile Options view; no Activity, manifest component, custom resource, or fixed application resource ID is used.
 

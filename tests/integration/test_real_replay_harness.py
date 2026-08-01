@@ -112,7 +112,7 @@ TARGETS = {
         "dfinsta_source_430",
         "apktool-2.9.3-aapt1-api36",
         5,
-        7,
+        8,
         "work/430-port/framework-res-api36.apk",
         API36_FRAMEWORK_SHA256,
     ),

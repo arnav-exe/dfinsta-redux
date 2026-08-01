@@ -363,6 +363,42 @@
       ]
     },
     {
+      "descriptor": "LX/06X7;",
+      "expected_final_count": 1,
+      "expected_precondition_count": 1,
+      "final_sequence": [
+        "iput-object v11, v1, LX/09rb;->A0F:Landroid/graphics/drawable/Drawable;",
+        "const v0, 0x7f134a0e",
+        "iput v0, v1, LX/09rb;->A06:I",
+        "iput-object v14, v1, LX/09rb;->A0G:Landroid/view/View$OnClickListener;",
+        "iput-object v13, v1, LX/09rb;->A0H:Landroid/view/View$OnLongClickListener;",
+        "new-instance v0, Lcom/dfinstagram/SettingsWrapper;",
+        "invoke-direct {v0}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
+        "iput-object v0, v1, LX/09rb;->A0H:Landroid/view/View$OnLongClickListener;"
+      ],
+      "intent_ids": [
+        "settings-entry"
+      ],
+      "kind": "smali_edit",
+      "match_policy": "all",
+      "method_signature": "AP1(LX/00ds;)V",
+      "mode": "insert_after",
+      "occurrence": null,
+      "operation_id": "430.anchor.install_settings_long_click_actionbar",
+      "payload": [
+        "new-instance v0, Lcom/dfinstagram/SettingsWrapper;",
+        "invoke-direct {v0}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
+        "iput-object v0, v1, LX/09rb;->A0H:Landroid/view/View$OnLongClickListener;"
+      ],
+      "precondition_sequence": [
+        "iput-object v11, v1, LX/09rb;->A0F:Landroid/graphics/drawable/Drawable;",
+        "const v0, 0x7f134a0e",
+        "iput v0, v1, LX/09rb;->A06:I",
+        "iput-object v14, v1, LX/09rb;->A0G:Landroid/view/View$OnClickListener;",
+        "iput-object v13, v1, LX/09rb;->A0H:Landroid/view/View$OnLongClickListener;"
+      ]
+    },
+    {
       "collision_policy": "forbid",
       "intent_ids": [
         "privacy-hardening"
@@ -393,7 +429,7 @@
     }
   ],
   "schema_version": 3,
-  "source_bundle_sha256": "fdca1be0003a3557fb92d4ac802a542ae9bf6b2ad0128112d4d3f956da9fd858",
+  "source_bundle_sha256": "65164c0d51ecf9fb81b4dfd737e9e5b079d1bf8d5074f94d1d54220fb96260b8",
   "target": {
     "apk_sha256": "38ae9861b9ca89f60f41767324e1c3d54a4e3a00ed5555b92660a08e6db14754",
     "composition": "monolithic",

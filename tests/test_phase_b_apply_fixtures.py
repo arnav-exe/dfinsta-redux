@@ -137,7 +137,7 @@ class ProvisionedApplyFixtureTests(unittest.TestCase):
         self.apply_target(340, 59)
 
     def test_apply_all_430_operations_to_provisioned_mini_tree(self) -> None:
-        self.apply_target(430, 7)
+        self.apply_target(430, 8)
 
 
 if __name__ == "__main__":

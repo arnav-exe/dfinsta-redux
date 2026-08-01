@@ -71,7 +71,7 @@ Data flow is authority-first: a gate decision and immutable artifact references 
 | `dfinsta_source_1.4.1/oracleDeltas/` | Normalized historical oracle evidence | maintained evidence, not forward-copy source |
 | `dfinsta_source_430/` | Minimal resource-free Instagram 430 port | maintained target source |
 | `dfinsta_source_430/newCode/` | Exactly four approved custom classes | maintained; overlaid into `smali_classes20` |
-| `dfinsta_source_430/patches/anchored_patches.json` | Six exact host operations | maintained; descriptor/anchor/marker cardinality is authority |
+| `dfinsta_source_430/patches/anchored_patches.json` | Seven exact host operations | maintained; descriptor/anchor/marker cardinality is authority |
 | `pipeline_specs/` | Shared intent, generated target resolutions, exact source manifests | tracked generated specifications; regenerate only with reviewed clean decodes |
 | `tools/reconstruction/` | 340 inventory, delta extraction, preparation, build, and verifier | maintained tools |
 | `tools/port_430/` | Fresh 430 decode, minimal overlay/patch, DEX graft, verifier | maintained tools |
@@ -118,7 +118,7 @@ Input hashes verified on 2026-07-31:
 - API 36 framework: `1f95cd4676f3e16e0432a0f19c01026593101fd26d8190233c70803de8453473`
 - Java launcher used by the real harness: `1a86d087fa5a5be1ed3e8a531ae891da85fc80aad15ab6fa98060763f2eb7000`
 
-Current executable authority resolves 340 to 59 total operations: 45 Smali edits (30 endpoint manifest records expand to 38 compiled method-scoped endpoint operations, plus seven anchored edits) and 14 resource/manifest/overlay operations. One compiled endpoint operation covers two matched literal occurrences. It resolves 430 to seven operations: six host Smali edits plus one custom-code overlay. `docs/RECONSTRUCTION_1.4.1.md` and `docs/BLOG_NOTES.md` contain an older “eight anchored” count; the current patch manifest, generated resolution, and fixture tests supersede that number.
+Current executable authority resolves 340 to 59 total operations: 45 Smali edits (30 endpoint manifest records expand to 38 compiled method-scoped endpoint operations, plus seven anchored edits) and 14 resource/manifest/overlay operations. One compiled endpoint operation covers two matched literal occurrences. It resolves 430 to eight operations: seven host Smali edits plus one custom-code overlay. The seventh anchored edit, `install_settings_long_click_actionbar`, was added on 2026-08-01 after a device session showed the original settings hook was runtime-inert; see `docs/PORT_430_MAPPING.md`. `docs/RECONSTRUCTION_1.4.1.md` and `docs/BLOG_NOTES.md` contain an older “eight anchored” count; the current patch manifest, generated resolution, and fixture tests supersede that number.
 
 - **Evidence:** `pipeline_specs/resolutions/instagram_340.json`, `pipeline_specs/resolutions/instagram_430.json`, both source manifests, `dfinsta_source_1.4.1/patches/anchored_patches.json`, `dfinsta_source_430/patches/anchored_patches.json`, `PhaseBFixtureTests`, `PhaseBApplyFixtureTests`, and `RealReplayHarnessFastTests.test_target_table_exact_hashes_and_counts`.
 - **Confidence:** high for the exact current specifications and pinned artifact hashes.

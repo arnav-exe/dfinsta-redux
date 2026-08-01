@@ -78,6 +78,7 @@ METHODS_430 = {
         "Ljava/lang/String;Ljava/util/List;Lkotlin/jvm/functions/Function0;"
         "ZZZZZZZZZZZ)LX/03xp;",
     ),
+    "430.anchor.install_settings_long_click_actionbar": ("LX/06X7;", "AP1(LX/00ds;)V"),
     "430.anchor.set_app_context": ("Lcom/instagram/app/InstagramAppShell;", "onCreate()V"),
     "430.anchor.tigon_url_block": (
         "Lcom/instagram/api/tigon/TigonServiceLayer;",
@@ -90,6 +91,13 @@ ANCHORS_430 = {
         "new-instance v0, LX/0417;",
         "invoke-direct {v0, v3, p2, v6, p3}, LX/0417;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V",
         "invoke-static {v0, v6}, LX/00ZY;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V",
+    ),
+    "430.anchor.install_settings_long_click_actionbar": (
+        "iput-object v11, v1, LX/09rb;->A0F:Landroid/graphics/drawable/Drawable;",
+        "const v0, 0x7f134a0e",
+        "iput v0, v1, LX/09rb;->A06:I",
+        "iput-object v14, v1, LX/09rb;->A0G:Landroid/view/View$OnClickListener;",
+        "iput-object v13, v1, LX/09rb;->A0H:Landroid/view/View$OnLongClickListener;",
     ),
     "430.anchor.replace_reels_discover_endpoint": ('const-string v8, "clips/discover/"',),
     "430.anchor.replace_reels_homecoming_endpoint": ('const-string v9, "clips/homecoming/"',),
@@ -235,12 +243,12 @@ class PhaseBFixtureTests(unittest.TestCase):
         )
         self.assertEqual(
             sum(isinstance(operation, SmaliEdit) for operation in self.resolutions[430].operations),
-            6,
+            7,
         )
         self.assertTrue(
             all(
                 isinstance(operation, SmaliEdit)
-                for operation in self.resolutions[430].operations[:6]
+                for operation in self.resolutions[430].operations[:7]
             )
         )
 

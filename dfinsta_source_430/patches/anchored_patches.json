@@ -63,7 +63,9 @@
       "id": "replace_reels_discover_endpoint",
       "descriptor": "LX/05t2;",
       "mode": "replace",
-      "anchor": ["const-string v8, \"clips/discover/\""],
+      "anchor": [
+        "const-string v8, \"clips/discover/\""
+      ],
       "expected_anchor_count": 1,
       "marker": "# dfinsta_reels_discover_endpoint",
       "expected_marker_count": 1,
@@ -80,7 +82,9 @@
       "id": "replace_reels_homecoming_endpoint",
       "descriptor": "LX/05t2;",
       "mode": "replace",
-      "anchor": ["const-string v9, \"clips/homecoming/\""],
+      "anchor": [
+        "const-string v9, \"clips/homecoming/\""
+      ],
       "expected_anchor_count": 1,
       "marker": "# dfinsta_reels_homecoming_endpoint",
       "expected_marker_count": 1,
@@ -97,7 +101,9 @@
       "id": "replace_reels_stream_endpoint",
       "descriptor": "LX/05t2;",
       "mode": "replace",
-      "anchor": ["const-string v9, \"clips/discover/stream/\""],
+      "anchor": [
+        "const-string v9, \"clips/discover/stream/\""
+      ],
       "expected_anchor_count": 1,
       "marker": "# dfinsta_reels_stream_endpoint",
       "expected_marker_count": 1,
@@ -108,6 +114,30 @@
         "    invoke-static {v9}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
         "",
         "    move-result-object v9"
+      ]
+    },
+    {
+      "id": "install_settings_long_click_actionbar",
+      "descriptor": "LX/06X7;",
+      "mode": "insert_after",
+      "anchor": [
+        "iput-object v11, v1, LX/09rb;->A0F:Landroid/graphics/drawable/Drawable;",
+        "const v0, 0x7f134a0e",
+        "iput v0, v1, LX/09rb;->A06:I",
+        "iput-object v14, v1, LX/09rb;->A0G:Landroid/view/View$OnClickListener;",
+        "iput-object v13, v1, LX/09rb;->A0H:Landroid/view/View$OnLongClickListener;"
+      ],
+      "expected_anchor_count": 1,
+      "marker": "Lcom/dfinstagram/SettingsWrapper;",
+      "expected_marker_count": 2,
+      "payload": [
+        "",
+        "    # dfinsta_settings_long_click_actionbar",
+        "    new-instance v0, Lcom/dfinstagram/SettingsWrapper;",
+        "",
+        "    invoke-direct {v0}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
+        "",
+        "    iput-object v0, v1, LX/09rb;->A0H:Landroid/view/View$OnLongClickListener;"
       ]
     }
   ]
