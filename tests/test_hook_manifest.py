@@ -37,6 +37,7 @@ from dfinsta_pipeline.hook_manifest import (
     resolve_in_source,
     significant,
 )
+from dfinsta_pipeline.runtime_identity import instrument, is_instrumented, probe_call
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1033,9 +1034,14 @@ class ResolveInSourceTests(unittest.TestCase):
             result.anchor,
             ["invoke-super {p0}, Landroid/app/Application;->onCreate()V"],
         )
+        # The payload now leads with the hook's runtime-identity call: one
+        # no-argument static named after the hook, whose whole point is that it
+        # needs no register and so renders identically whatever `app` binds to.
         self.assertEqual(
             result.payload,
             [
+                "",
+                "    invoke-static {}, Lcom/dfinstagram/probe;->h_set_app_context()V",
                 "",
                 "    invoke-static {p0}, Lcom/dfinstagram/startapp;->setContext"
                 "(Landroid/app/Application;)V",
@@ -1050,7 +1056,9 @@ class ResolveInSourceTests(unittest.TestCase):
         )
         self.assertTrue(result.resolved)
         self.assertEqual(result.bindings, {"app": "v4"})
-        self.assertIn("invoke-static {v4}", result.payload[1])
+        # payload[1] is the register-free probe call; the register-bearing
+        # setContext call is now at payload[3].
+        self.assertIn("invoke-static {v4}", result.payload[3])
 
     def test_a_multi_line_anchor_binds_across_lines(self):
         hook = self.hooks["tigon_url_block"]
@@ -1075,7 +1083,9 @@ class ResolveInSourceTests(unittest.TestCase):
             {"uri": "v2", "req": "p1", "reqcls": "LX/03AS;", "urifield": "A0B"},
         )
         self.assertEqual(result.anchor[0], ":try_start_0")
-        self.assertIn("invoke-static {v2}", result.payload[1])
+        # payload[1] is the register-free probe call; throwIfBlocked, which takes
+        # the captured uri register, is now at payload[3].
+        self.assertIn("invoke-static {v2}", result.payload[3])
 
     def test_anchor_lines_must_be_consecutive_in_the_significant_view(self):
         hook = self.hooks["tigon_url_block"]
@@ -1361,7 +1371,10 @@ class ResolveInSourceTests(unittest.TestCase):
         self.assertTrue(result.resolved)
         self.assertIn('    const-string v6, "clips/homecoming/"', result.payload)
         self.assertIn("    move-result-object v6", result.payload)
-        self.assertIn("    invoke-static {v6}, Lcom/dfinstagram/hooks;", result.payload[3])
+        # The probe call and its trailing blank now lead the replace payload, so
+        # the register-bearing replaceReelsEndpoint call has shifted from
+        # payload[3] to payload[5]; the repeated <r> still binds every use to v6.
+        self.assertIn("    invoke-static {v6}, Lcom/dfinstagram/hooks;", result.payload[5])
 
     def test_an_anchor_wider_than_the_source_cannot_match(self):
         hook = make_hook(
@@ -1383,7 +1396,9 @@ class ResolveInSourceTests(unittest.TestCase):
         before = (hook.anchor, hook.payload)
         resolve_in_source(hook, "LFoo;", CLEAN_APP_SHELL)
         self.assertEqual((hook.anchor, hook.payload), before)
-        self.assertIn("<app>", hook.payload[1])
+        # payload[1] is the register-free probe call; the <app> capture the
+        # resolver must not have consumed lives on in payload[3].
+        self.assertIn("<app>", hook.payload[3])
 
 
 class AsOperationTests(unittest.TestCase):
@@ -1603,10 +1618,15 @@ class LoadManifestTests(unittest.TestCase):
         clone = json.loads(json.dumps(payload["hooks"][0]))
         clone["hook_id"] = "set_app_context_second_shell"
         clone["marker"] = "Lcom/dfinstagram/startapp;->setSecondContext(Landroid/app/Application;)V"
-        clone["payload"] = [
-            "",
-            "    invoke-static {<app>}, " + clone["marker"],
-        ]
+        # load_manifest now rejects any active hook whose payload does not call
+        # its own runtime identity, so the clone must be instrumented for its new
+        # id. instrument() is the single source of that exact line.
+        clone["payload"] = list(
+            instrument(
+                ["", "    invoke-static {<app>}, " + clone["marker"]],
+                clone["hook_id"],
+            )
+        )
         payload["hooks"].append(clone)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hooks.json"
@@ -1633,6 +1653,76 @@ class LoadManifestTests(unittest.TestCase):
             with self.assertRaises(ManifestError) as caught:
                 load_manifest(path)
         self.assertIn("share the marker", str(caught.exception))
+
+    def test_rejects_an_active_hook_whose_payload_omits_its_probe_call(self):
+        """An active hook that does not announce its own execution is refused.
+
+        This is the load-time half of the runtime-identity change: presence in
+        the manifest is no longer allowed to stand in for a hook that reports
+        when it runs. Four patches in this project were applied and never
+        executed; the manifest now refuses the shape that hides that.
+        """
+        payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        hook = payload["hooks"][0]
+        hook_id = hook["hook_id"]
+        self.assertEqual(hook.get("status", "active"), "active")
+        call = probe_call(hook_id)
+        # Strip the hook's own probe call back out, leaving it uninstrumented.
+        hook["payload"] = [
+            line for line in hook["payload"] if line.strip() != call.strip()
+        ]
+        self.assertNotIn(call.strip(), [line.strip() for line in hook["payload"]])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hooks.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ManifestError) as caught:
+                load_manifest(path)
+        message = str(caught.exception)
+        # It must name the offending hook and quote the exact call to add, so a
+        # human can fix the manifest without reading the loader's source.
+        self.assertIn(hook_id, message)
+        self.assertIn(call.strip(), message)
+
+    def test_exempts_a_non_active_hook_from_the_probe_requirement(self):
+        """A retired hook is not required to be instrumented.
+
+        Only active hooks reach a build, so only active hooks can be silently
+        dead; the requirement is scoped to them deliberately, as the loader's
+        `status != "active"` skip records.
+        """
+        payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        retired = json.loads(json.dumps(payload["hooks"][0]))
+        retired["hook_id"] = "set_app_context_retired"
+        retired["marker"] = (
+            "Lcom/dfinstagram/startapp;->setRetiredContext(Landroid/app/Application;)V"
+        )
+        retired["status"] = "retired"
+        # Deliberately NOT instrumented — no probe call for its id anywhere.
+        retired["payload"] = ["", "    invoke-static {<app>}, " + retired["marker"]]
+        payload["hooks"].append(retired)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hooks.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            hooks = load_manifest(path)  # must not raise
+        loaded = {hook.hook_id: hook for hook in hooks}
+        self.assertIn("set_app_context_retired", loaded)
+        self.assertEqual(loaded["set_app_context_retired"].status, "retired")
+        # The exemption is a genuine skip, not a silent instrumentation.
+        self.assertFalse(
+            is_instrumented(
+                loaded["set_app_context_retired"].payload, "set_app_context_retired"
+            )
+        )
+
+    def test_the_shipped_manifest_satisfies_the_probe_requirement(self):
+        """The checked-in manifest must itself pass the new load-time gate."""
+        if not MANIFEST.exists():
+            self.skipTest(f"{MANIFEST} is not present")
+        hooks = load_manifest(MANIFEST)  # raises if any active hook is uninstrumented
+        for hook in hooks:
+            if hook.status == "active":
+                with self.subTest(hook=hook.hook_id):
+                    self.assertTrue(is_instrumented(hook.payload, hook.hook_id))
 
 
 class RealManifestContentTests(unittest.TestCase):

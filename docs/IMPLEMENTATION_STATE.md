@@ -12,10 +12,11 @@ Stage numbers refer to `pipeline_flowchart.md`.
 
 | Stage | State | Where |
 |---|---|---|
-| 0 Load | manifest exists; Decision Memory not started | `manifest/hooks.json` |
+| 0 Load | manifest + Decision Memory | `manifest/hooks.json`, `src/dfinsta_pipeline/decisions.py` |
 | **1 Extract** | **done, in the driver** | `src/dfinsta_pipeline/driver.py` |
 | **2 Index** | **done** | `tools/indexer/build_index.py` (+46 tests) |
-| 3-4 Feature discovery / report | **not started** | — |
+| 3 Feature discovery | **done** — stable-string layer only | `src/dfinsta_pipeline/surface_diff.py` (+95 tests) |
+| 4 Addictiveness report / gate | **not started** — the largest remaining piece | — |
 | Gate 1 | not started | — |
 | **5 Resolve** | **done** — 5/7 hooks resolve mechanically on 430 and 439, hosts included | `src/dfinsta_pipeline/resolve.py` (+61 tests), `hook_index.py` (+95) |
 | **5a Proposers / 5b verifier** | **done as a stage** | `src/dfinsta_pipeline/proposals.py` |
@@ -40,6 +41,14 @@ Anchors are patterns with `<name:kind>` captures; payloads template off them.
 **5 of 7 hooks resolve mechanically against both 430 and 439**, reproducing the
 hand-authored anchors and payloads exactly. The 2 that do not are the `ui`-tier
 settings hooks, declared `kind: "by_agent"`.
+
+## A device caveat that cost time
+
+A build carrying only a subset of hooks is not a usable app. Installing a 5-hook test
+build over the working 439 one removed the settings dialog, which is the ONLY way to
+reach the toggles — so the toggles were left off and unreachable until the full build was
+reinstalled. Test builds go on the phone only when they carry the settings hooks, or with
+the full build reinstalled straight afterwards.
 
 ## Immediate next steps, in order
 
@@ -83,6 +92,22 @@ literal strings.
 Explore, Stories — and is structurally blind to Reels, because `replaceReelsEndpoint`
 blanks the endpoint upstream of the block. Zero signal in both directions means the probe
 is invalid, not that the hook passed.
+
+**Presence is not execution, and that was four bugs pretending to be four bugs.** The 340
+`minshop` substitution (which lived in the retired Shopping identifier rules, not in a
+settings hook), the 430 settings hook, the 439 action-bar hook, and a verifier searching
+for a string form DEX does not store were all the same failure: present, never reached.
+Every payload now calls `Lcom/dfinstagram/probe;->h_<hook_id>()V` — the identity is the
+METHOD NAME so the call needs no registers and can never force a `.locals` change, and
+`load_manifest` refuses an uninstrumented active hook. On the first build carrying it,
+`replace_reels_discover_endpoint` and `replace_reels_homecoming_endpoint` turned out never
+to execute, in any toggle state, across launch/Reels/Explore/profile and four swipes.
+
+**Do not diff Instagram versions at the class layer.** Names are recycled, so a class diff
+reports "everything changed". Measured 430→439: API paths survive 93.9%, stable types
+89.3%, drawable NAMES 98.8% — and drawable **ids 0.9%**. `surface_diff.py` keeps names and
+ids in separate mappings and never reads the id one, so this is structural rather than a
+rule to remember.
 
 **Builds are semantically, not bitwise, reproducible.** `apktool` full rebuild stamps
 every ZIP entry with the build date. Verify by assertions, never by hash equality against

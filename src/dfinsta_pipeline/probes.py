@@ -458,6 +458,96 @@ def record(ledger: EvidenceLedger, claim: EvidenceClaim) -> EvidenceClaim:
     return ledger.record(claim)
 
 
+class IdentityProbe(ProbeRunner):
+    """`hook_executed`: did THIS hook's injection site run?
+
+    The probe every other kind approximates. A feature-level signal answers "is
+    the feature blocked", which is not the same question and cannot attribute:
+    three Reels endpoint hooks share one failure log, and two settings variants
+    share one dialog, so a shared observation credits hooks that may be entirely
+    inert. Both cases are real here, and the second hid a hook that is probably
+    dead.
+
+    Each payload calls a method named after its hook, which logs once per process
+    on first execution. So the answer is a line naming the hook, and it does not
+    depend on toggle state, on navigating to the right surface, or on the feature
+    producing an observable effect at all.
+    """
+
+    #: What `com.dfinstagram.probe` logs. One line per hook per process.
+    TAG = "DFInstaProbe"
+
+    def executed(self, log: str) -> set[str]:
+        """Hook ids that reported execution in this capture."""
+        found: set[str] = set()
+        for line in log.splitlines():
+            match = LOGCAT_LINE.match(line)
+            if match is None or match.group("tag").strip() != self.TAG:
+                continue
+            message = match.group("message").strip()
+            if message:
+                found.add(message)
+        return found
+
+    def measure_identities(self, dwell_seconds: float = 25.0) -> tuple[set[str], bool, str]:
+        """Start clean, exercise the app, and collect which hooks announced themselves."""
+        usable, why = self.screen_is_usable()
+        if not usable:
+            return set(), False, why
+        self.stop()
+        self.device.logcat_clear()
+        self.launch()
+        self.device.sleep(dwell_seconds)
+        foreground = self.foreground_package()
+        log = self.device.logcat_dump()
+        if foreground != self.package:
+            return set(), False, f"{self.package} did not reach the foreground"
+        return self.executed(log), True, ""
+
+    def claims(
+        self, hooks: Sequence[Hook], executed: set[str], visited: Sequence[str] = ()
+    ) -> list[EvidenceClaim]:
+        """One claim per hook: it ran, or it did not.
+
+        A hook that did not report is NOT automatically failed. Its site may
+        legitimately not have been reached by whatever the run exercised — an
+        endpoint nobody requested is not a broken patch. So an absent hook is
+        `inconclusive` and names the surfaces that were visited, which is the
+        information needed to decide whether the run should have reached it.
+        Recording it as `failed` would make an incomplete walkthrough look like a
+        defect; recording it as `passed` would be the failure this exists to stop.
+        """
+        out: list[EvidenceClaim] = []
+        for hook in hooks:
+            if hook.status != "active":
+                continue
+            ran = hook.hook_id in executed
+            out.append(
+                EvidenceClaim(
+                    hook_id=hook.hook_id,
+                    kind=EvidenceKind.RUNTIME_PROBE,
+                    verdict=Verdict.PASSED if ran else Verdict.INCONCLUSIVE,
+                    producer=Producer.DEVICE,
+                    actor=self.actor,
+                    summary=(
+                        f"{hook.hook_id} announced its own execution"
+                        if ran
+                        else (
+                            f"{hook.hook_id} never announced execution. Its site may not "
+                            "have been reached by this walkthrough, or the patch may be "
+                            "inert; these are different and this run cannot tell them apart."
+                        )
+                    ),
+                    detail={
+                        "executed": ran,
+                        "surfaces_visited": list(visited),
+                        "hooks_that_ran": sorted(executed),
+                    },
+                )
+            )
+        return out
+
+
 def shared_signals(hooks: Iterable[Hook]) -> dict[tuple[str, str, str], list[str]]:
     """Probes that more than one hook would satisfy with the same observation.
 

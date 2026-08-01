@@ -23,6 +23,8 @@
       ],
       "payload": [
         "",
+        "    invoke-static {}, Lcom/dfinstagram/probe;->h_set_app_context()V",
+        "",
         "    invoke-static {<app>}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V"
       ],
       "marker": "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
@@ -68,6 +70,8 @@
       ],
       "payload": [
         "",
+        "    invoke-static {}, Lcom/dfinstagram/probe;->h_tigon_url_block()V",
+        "",
         "    invoke-static {<uri>}, Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V"
       ],
       "marker": "Lcom/dfinstagram/hooks;->throwIfBlocked(Ljava/net/URI;)V",
@@ -112,6 +116,8 @@
         "const-string <r:reg>, \"clips/discover/\""
       ],
       "payload": [
+        "    invoke-static {}, Lcom/dfinstagram/probe;->h_replace_reels_discover_endpoint()V",
+        "",
         "    # dfinsta_reels_discover_endpoint",
         "    const-string <r>, \"clips/discover/\"",
         "",
@@ -161,6 +167,8 @@
         "const-string <r:reg>, \"clips/homecoming/\""
       ],
       "payload": [
+        "    invoke-static {}, Lcom/dfinstagram/probe;->h_replace_reels_homecoming_endpoint()V",
+        "",
         "    # dfinsta_reels_homecoming_endpoint",
         "    const-string <r>, \"clips/homecoming/\"",
         "",
@@ -209,6 +217,8 @@
         "const-string <r:reg>, \"clips/discover/stream/\""
       ],
       "payload": [
+        "    invoke-static {}, Lcom/dfinstagram/probe;->h_replace_reels_stream_endpoint()V",
+        "",
         "    # dfinsta_reels_stream_endpoint",
         "    const-string <r>, \"clips/discover/stream/\"",
         "",
@@ -253,6 +263,8 @@
       ],
       "requires_proposal": true,
       "payload": [
+        "",
+        "    invoke-static {}, Lcom/dfinstagram/probe;->h_install_settings_long_click()V",
         "",
         "    # dfinsta_settings_long_click_profilebar",
         "    new-instance <l>, Lcom/dfinstagram/SettingsWrapper;",
@@ -303,6 +315,8 @@
         "iput-object <long:reg>, <cfg>, <cfgcls>-><lcf:member>:Landroid/view/View$OnLongClickListener;"
       ],
       "payload": [
+        "",
+        "    invoke-static {}, Lcom/dfinstagram/probe;->h_install_settings_long_click_actionbar()V",
         "",
         "    # dfinsta_settings_long_click_actionbar",
         "    new-instance <long>, Lcom/dfinstagram/SettingsWrapper;",

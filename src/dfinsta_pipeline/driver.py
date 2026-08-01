@@ -62,6 +62,12 @@ from .proposals import (
     load_proposals,
 )
 from .resolve import Outcome, ResolveReport, resolve_manifest
+from .runtime_identity import (
+    PROBE_DESCRIPTOR,
+    expected_dex_symbols,
+    probe_method,
+    write_probe_class,
+)
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 INDEXER = REPOSITORY / "tools" / "indexer" / "build_index.py"
@@ -308,7 +314,10 @@ def build_index(decode: Path, index_dir: Path) -> None:
 
 
 def compose_patch_source(
-    destination: Path, custom_code: Path, operations: Sequence[Mapping[str, Any]]
+    destination: Path,
+    custom_code: Path,
+    operations: Sequence[Mapping[str, Any]],
+    hooks: Sequence[Hook] = (),
 ) -> None:
     """Write the exact patch source `build.py` consumes.
 
@@ -322,6 +331,10 @@ def compose_patch_source(
         raise DriverError(f"{custom_code} has no newCode/ directory")
     destination.mkdir(parents=True)
     shutil.copytree(custom_code / "newCode", destination / "newCode")
+    if hooks:
+        # Generated per run from the manifest, so the hook list and the probe
+        # methods cannot drift apart.
+        write_probe_class(hooks, destination / "newCode")
     (destination / "patches").mkdir()
     (destination / "patches" / "anchored_patches.json").write_text(
         json.dumps({"version": 1, "operations": list(operations)}, indent=1) + "\n",
@@ -587,7 +600,7 @@ def port(
         accepted_proposal = assessments[hook_id].accepted
         assert accepted_proposal is not None
         operations.append(accepted_proposal.as_operation(by_id[hook_id]))
-    compose_patch_source(paths.patch_source, custom_code, operations)
+    compose_patch_source(paths.patch_source, custom_code, operations, hooks)
     artifacts["patch_source"] = str(paths.patch_source)
     if stop_after == "compose":
         return RunResult("compose", report=report, artifacts=artifacts)

@@ -19,11 +19,20 @@ gates rather than doing the mechanical work.
 | | What it does | State |
 |---|---|---|
 | **Execute** a port | apply/build/graft/verify/sign/orchestrate | largely complete |
-| **Produce** a port | re-map hook intent onto a new obfuscated decode | **the gap** — hand-authored today |
-| **Decide** what to port | find new features, judge addictiveness, present evidence at a gate | not started |
+| **Produce** a port | re-map hook intent onto a new obfuscated decode | 5 of 7 hooks mechanical; the rest proposed, validated and refuted by agents |
+| **Decide** what to port | find new features, judge addictiveness, present evidence at a gate | surface diff done; the addictiveness gate is not |
 
-The execute machine is strong and mostly finished. The other two are where the remaining
-work lives, and they are what makes the pipeline agentic rather than merely reproducible.
+The remaining work is concentrated in two places: judging a new feature and presenting it
+at a durable gate, and closing the loop so the agents that propose hooks run inside the
+pipeline rather than being invoked by hand.
+
+**The lesson that reshaped all three machines.** Four separate failures — the 340
+`minshop` substitution, the 430 settings hook, the 439 action-bar hook, and a verifier
+searching for a string DEX does not store — were not four bugs. They were one: *something
+present and never reached*. Adding a check per incident would always have been one version
+behind, so instead every hook now announces its own execution. On the first run carrying
+that, two more hooks turned out never to run. Prefer instrumenting an invariant over
+enumerating its violations.
 
 ## 1. Execute — largely complete
 
@@ -99,8 +108,28 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
       events at a later cold start. The runner refuses to record a measurement it could not
       take — locked screen, app not foreground, surface control absent — because a zero the
       phone never had a chance to produce is not an observation.
+- [x] **Per-hook runtime identity** (`src/dfinsta_pipeline/runtime_identity.py`) — the
+      generalisation, and the one that retires a whole class of bug rather than patching
+      an instance of it. Four failures in this project were the same failure: a patch
+      present and never run (340 `minshop`, 430 settings, 439 action-bar, and a verifier
+      searching for a string DEX does not store). Each was found by a different ad-hoc
+      investigation, none by a standing check.
+
+      Every payload now calls a no-argument method named after its hook. The method NAME
+      is the identity, so the call needs **no registers** and can never force a `.locals`
+      change or clobber a live one. `load_manifest` refuses an uninstrumented active hook,
+      so the next hook cannot forget.
+
+      This fixes attribution at both ends at once. Statically, `host_hook_map` now emits a
+      distinct `(Lcom/dfinstagram/probe;, h_<hook_id>)` pair per hook, so the verifier can
+      tell three Reels hooks in one DEX apart. At runtime one line per hook per process
+      says the site executed — independent of toggles, of navigating to a surface, and of
+      the feature producing any observable effect. A hook that does not report is
+      `inconclusive`, never `failed`: its site may simply not have been exercised, and
+      that is a different thing from being inert.
 - [ ] Differential vs N−1 (the last evidence kind with no producer)
-- [ ] Probes for the remaining six hooks, and the Reels alternate signal
+- [ ] Re-measure the five previously-inconclusive hooks now that they are individually
+      attributable, and settle whether `install_settings_long_click_actionbar` is dead on 439
 - [x] **Per-version Index** (`tools/indexer/build_index.py`): 181,421 classes in 3.4s,
       68 MB out, byte-identical across job counts. Confirmed API-path literals are the
       strongest fingerprint (93.9% survive 430->439 vs 89.3% of stable named types).
@@ -120,9 +149,34 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
       code needed `classes21.dex` because 439 already ships `classes20`.
 - [ ] Turn the ad-hoc mapping workflow into a reusable resolver that emits candidates + evidence
 
-## 3. Decide — not started
+### What per-hook identity found on its first run
 
-- [ ] Detect surfaces present in a new version but absent from the last baseline
+Built, signed, installed on 439 and measured. Across app launch, Reels, Explore, the
+profile and four Reels swipes — with the toggles blocking **and** with them all off so
+Reels worked normally — exactly three hooks announced execution: `set_app_context`,
+`tigon_url_block`, `replace_reels_stream_endpoint`.
+
+**`replace_reels_discover_endpoint` and `replace_reels_homecoming_endpoint` never ran in
+any state.** The host class is live (all three resolve into `LX/04tC` and the stream site
+fires), so this is not a wrong-class error. Either those sites sit on paths the exercise
+never reached, or 439 no longer requests those endpoints in these flows. Both make the
+hooks non-contributing; separating them needs broader exercise or a network trace.
+
+This was invisible before because all three shared one signal with no endpoint qualifier
+and one toggle governs all three, so the group moved 3 → 0 together and looked healthy —
+the 340 `minshop` shape exactly.
+
+## 3. Decide — in progress
+
+- [x] **Detect surfaces present in a new version but absent from the last baseline**
+      (`src/dfinsta_pipeline/surface_diff.py`). Diffs the stable-string layer only —
+      resource names never ids, class *counts* never descriptor sets, so no descriptor can
+      cross a version boundary. Measured 430→439 and recomputed rather than quoted: api
+      paths survive 93.85%, stable types 89.32%, drawable names 98.80%, drawable **ids
+      0.88%**. First run surfaced 105 candidates, and two on its own: a
+      `delivery/background_prefetch` path co-located with exactly the Reels endpoints we
+      block, and `clips/discover/interest/stream/` spreading from 2 classes to 5 — the same
+      shape as the Shopping dissolution.
 - [ ] Assess whether a new feature is addictive, from evidence rather than assertion
 - [ ] Present conclusion **plus grounding evidence** at a durable human gate (gates last hours to days)
 - [ ] Handle changed features: shopping dissolved into other endpoints; decide block vs drop

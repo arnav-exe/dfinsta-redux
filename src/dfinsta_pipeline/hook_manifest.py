@@ -488,10 +488,34 @@ def assert_distinct(hooks: Iterable[Hook]) -> None:
         markers[hook.marker] = hook.hook_id
 
 
+def assert_instrumented(hooks: Iterable[Hook]) -> None:
+    """Every active hook's payload must announce its own execution.
+
+    Enforced at load rather than left to whoever adds the next hook, because the
+    thing it protects against is precisely a hook nobody was watching. Four
+    separate patches in this project were present and never ran, and each was
+    found by a different ad-hoc investigation months later. An uninstrumented
+    hook is one that can fail that way silently, so the manifest refuses it.
+    """
+    from .runtime_identity import is_instrumented, probe_call
+
+    for hook in hooks:
+        if hook.status != "active":
+            continue
+        if not is_instrumented(hook.payload, hook.hook_id):
+            raise ManifestError(
+                f"{hook.hook_id}: payload does not call its runtime identity. Add "
+                f"{probe_call(hook.hook_id).strip()!r} so this hook reports when it "
+                "executes; without it, a patch that is applied but never reached is "
+                "indistinguishable from one that works."
+            )
+
+
 def load_manifest(path: Path) -> list[Hook]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if data.get("schema_version") != 1:
         raise ManifestError("unsupported hook manifest schema")
     hooks = [Hook.from_dict(entry) for entry in data["hooks"]]
     assert_distinct(hooks)
+    assert_instrumented(hooks)
     return hooks

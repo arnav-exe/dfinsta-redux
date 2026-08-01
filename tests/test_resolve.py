@@ -37,6 +37,7 @@ from dfinsta_pipeline.hook_manifest import (
     load_manifest,
     render,
 )
+from dfinsta_pipeline.runtime_identity import instrument
 from dfinsta_pipeline.resolve import (
     CandidateReport,
     HookResolution,
@@ -392,8 +393,19 @@ def hook_to_dict(hook: Hook) -> dict[str, Any]:
 
 
 def write_manifest(path: Path, hooks: Iterable[Hook]) -> Path:
+    entries = []
+    for hook in hooks:
+        entry = hook_to_dict(hook)
+        # load_manifest -> assert_instrumented now rejects any ACTIVE hook whose
+        # payload does not announce its own runtime identity, so every manifest
+        # this helper writes must carry that call. instrument() is idempotent and
+        # the single source of the exact line, so these fixtures cannot drift from
+        # the generator; retired hooks are exempt, exactly as the loader is.
+        if hook.status == "active":
+            entry["payload"] = list(instrument(entry["payload"], hook.hook_id))
+        entries.append(entry)
     path.write_text(
-        json.dumps({"schema_version": 1, "hooks": [hook_to_dict(h) for h in hooks]}),
+        json.dumps({"schema_version": 1, "hooks": entries}),
         encoding="utf-8",
     )
     return path
