@@ -50,15 +50,19 @@ from typing import Any, Iterable
 # `init` and `clinit` are RESERVED: smali writes constructors as `-><init>(...)V`,
 # which would otherwise parse as a capture. They are always literal text.
 CAPTURE = re.compile(
-    r"<(?!init>|clinit>)(?P<name>[a-z_][a-z0-9_]*)(?::(?P<kind>reg|type|member|any))?>"
+    r"<(?!init[>:]|clinit[>:])(?P<name>[a-z_][a-z0-9_]*)(?::(?P<kind>reg|type|member|any))?>"
 )
+RESERVED_CAPTURE_NAMES = frozenset({"init", "clinit"})
 
 KIND_PATTERNS = {
     "reg": r"[vp]\d+",
-    "type": r"L[^;\s]+;",
+    "type": r"\[*(?:L[^;\s]+;|[ZBCSIJFD])",
     "member": r"[A-Za-z_$][A-Za-z0-9_$]*",
     "any": r"\S+",
 }
+
+
+PROBE_KINDS = frozenset({"logcat_delta", "ui_dialog", "startup_no_fatal"})
 
 
 class ManifestError(ValueError):
@@ -85,6 +89,11 @@ def compile_pattern(
         out.append(re.escape(line[position : match.start()]))
         name = match.group("name")
         kind = match.group("kind")
+        if kind and name in kinds and kinds[name] != kind:
+            raise ManifestError(
+                f"capture {name!r} is declared as {kinds[name]!r} and later as {kind!r}; "
+                "one name must have one kind across the whole anchor"
+            )
         if name in seen:
             if kind:
                 raise ManifestError(
@@ -170,6 +179,20 @@ class Probe:
     requires_two_directional_delta: bool = True
     note: str = ""
 
+    def __post_init__(self) -> None:
+        if self.kind not in PROBE_KINDS:
+            raise ManifestError(
+                f"unknown probe kind {self.kind!r}; an unrecognised probe reaching the "
+                "Verify stage is exactly what this class exists to prevent"
+            )
+        if not self.signal.strip() or not self.surface.strip():
+            raise ManifestError("probe needs a non-empty signal and surface")
+        if not self.requires_two_directional_delta and not self.note.strip():
+            raise ManifestError(
+                "waiving requires_two_directional_delta needs a note saying why; "
+                "silent waivers are how an inert hook passes verification"
+            )
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Probe:
         return cls(
@@ -194,6 +217,8 @@ class Hook:
     marker: str
     expected_marker_count: int
     mode: str = "insert_after"
+    # Fixed at 1. Retained because the emitted operation must carry it for the
+    # applier; a hook that needs several sites gets one manifest entry per site.
     expected_anchor_count: int = 1
     constraints: tuple[str, ...] = ()
     probe: Probe | None = None
@@ -208,6 +233,30 @@ class Hook:
             raise ManifestError(f"{self.hook_id}: needs at least one host fingerprint")
         if not self.anchor:
             raise ManifestError(f"{self.hook_id}: needs an anchor")
+        if not self.payload:
+            raise ManifestError(f"{self.hook_id}: needs a payload")
+        # An empty marker is silently fatal: str.count("") returns len+1, so the
+        # already-applied guard would fire on every class and the hook could never
+        # resolve. Reject it here rather than debug it later.
+        if not self.marker.strip():
+            raise ManifestError(f"{self.hook_id}: marker must be a non-empty string")
+        if self.expected_marker_count < 1:
+            raise ManifestError(f"{self.hook_id}: expected_marker_count must be >= 1")
+        if self.expected_anchor_count != 1:
+            # With N>1 only the first hit's bindings render the anchor, but the
+            # emitted operation still declares N. The applier does a literal search,
+            # so if the hits bound different registers it finds 1 of N and refuses.
+            raise ManifestError(
+                f"{self.hook_id}: expected_anchor_count must be 1; "
+                "multi-site hooks need one entry per site"
+            )
+        in_payload = "\n".join(self.payload).count(self.marker)
+        if in_payload != self.expected_marker_count:
+            raise ManifestError(
+                f"{self.hook_id}: marker {self.marker!r} appears {in_payload} time(s) in its "
+                f"own payload but expected_marker_count is {self.expected_marker_count}; "
+                "the applier would refuse this patch forever"
+            )
         # fail early on an unusable pattern rather than at resolve time
         declared: set[str] = set()
         for _, names in compile_anchor(self.anchor):
@@ -247,6 +296,7 @@ class Resolution:
 
     hook_id: str
     resolved: bool
+    already_applied: bool = False
     descriptor: str | None = None
     smali_path: str | None = None
     anchor: list[str] = field(default_factory=list)
@@ -283,6 +333,30 @@ def significant(lines: Iterable[str]) -> list[tuple[int, str]]:
 
 def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
     """Match the hook's anchor pattern inside one class body."""
+    # Marker first, matching the applier's own order. An exact count is the normal
+    # already-applied state, NOT a failure; only a partial count is wrong. Checking
+    # this after anchor matching would report "anchor did not match" for a genuinely
+    # partial patch whose anchor got mangled.
+    marker_count = smali.count(hook.marker)
+    if marker_count == hook.expected_marker_count:
+        return Resolution(
+            hook.hook_id,
+            False,
+            already_applied=True,
+            descriptor=descriptor,
+            reason=f"already applied: marker {hook.marker!r} present {marker_count} time(s)",
+        )
+    if marker_count:
+        return Resolution(
+            hook.hook_id,
+            False,
+            descriptor=descriptor,
+            reason=(
+                f"marker {hook.marker!r} found {marker_count}/"
+                f"{hook.expected_marker_count} times; partially applied"
+            ),
+        )
+
     body = significant(smali.splitlines())
     compiled = compile_anchor(hook.anchor)
     width = len(compiled)
@@ -290,7 +364,6 @@ def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
 
     for start in range(len(body) - width + 1):
         bindings: dict[str, str] = {}
-        names_so_far: list[str] = []
         ok = True
         for offset, (pattern, names) in enumerate(compiled):
             match = pattern.match(body[start + offset][1])
@@ -303,18 +376,20 @@ def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
                     ok = False
                     break
                 bindings[name] = value
-                names_so_far.append(name)
             if not ok:
                 break
         if ok:
             hits.append((start, bindings))
 
     if not hits:
-        return Resolution(hook.hook_id, False, reason="anchor pattern did not match")
+        return Resolution(
+            hook.hook_id, False, descriptor=descriptor, reason="anchor pattern did not match"
+        )
     if len(hits) != hook.expected_anchor_count:
         return Resolution(
             hook.hook_id,
             False,
+            descriptor=descriptor,
             occurrences=len(hits),
             reason=(
                 f"anchor matched {len(hits)} times, expected "
@@ -325,12 +400,6 @@ def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
     _, bindings = hits[0]
     concrete_anchor = [render(line, bindings) for line in hook.anchor]
     concrete_payload = [render(line, bindings) for line in hook.payload]
-    if smali.count(hook.marker):
-        return Resolution(
-            hook.hook_id,
-            False,
-            reason=f"marker {hook.marker!r} already present; partially applied?",
-        )
     return Resolution(
         hook.hook_id,
         True,
@@ -346,4 +415,10 @@ def load_manifest(path: Path) -> list[Hook]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if data.get("schema_version") != 1:
         raise ManifestError("unsupported hook manifest schema")
-    return [Hook.from_dict(entry) for entry in data["hooks"]]
+    hooks = [Hook.from_dict(entry) for entry in data["hooks"]]
+    seen: set[str] = set()
+    for hook in hooks:
+        if hook.hook_id in seen:
+            raise ManifestError(f"duplicate hook_id {hook.hook_id!r}")
+        seen.add(hook.hook_id)
+    return hooks

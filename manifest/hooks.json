@@ -8,7 +8,9 @@
       "intent": "Capture the Application context at process start so custom code can read SharedPreferences",
       "tier": "robust",
       "strategy": "lifecycle",
-      "semantic_deps": ["Landroid/app/Application;->onCreate()V"],
+      "semantic_deps": [
+        "Landroid/app/Application;->onCreate()V"
+      ],
       "hosts": [
         {
           "kind": "named",
@@ -16,7 +18,9 @@
           "note": "stable named class; survived 430->439 at the same path"
         }
       ],
-      "anchor": ["invoke-super {<app:reg>}, Landroid/app/Application;->onCreate()V"],
+      "anchor": [
+        "invoke-super {<app:reg>}, Landroid/app/Application;->onCreate()V"
+      ],
       "payload": [
         "",
         "    invoke-static {<app>}, Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V"
@@ -24,7 +28,9 @@
       "marker": "Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
       "expected_marker_count": 1,
       "mode": "insert_after",
-      "constraints": ["helper must not throw: it only does a static field write"],
+      "constraints": [
+        "helper must not throw: it only does a static field write"
+      ],
       "probe": {
         "kind": "startup_no_fatal",
         "signal": "NoSuchMethodError|VerifyError|ClassNotFoundException",
@@ -81,7 +87,9 @@
       "intent": "Blank the Reels discover request path when Reels are disabled",
       "tier": "robust",
       "strategy": "endpoint_replace",
-      "semantic_deps": ["clips/discover/"],
+      "semantic_deps": [
+        "clips/discover/"
+      ],
       "hosts": [
         {
           "kind": "by_literal",
@@ -89,7 +97,9 @@
           "note": "the class moved LX/05t2->LX/04tC; the literal did not. Several classes contain it - the correct one builds the outgoing request path, not an analytics map or prefetch allowlist."
         }
       ],
-      "anchor": ["const-string <r:reg>, \"clips/discover/\""],
+      "anchor": [
+        "const-string <r:reg>, \"clips/discover/\""
+      ],
       "payload": [
         "    # dfinsta_reels_discover_endpoint",
         "    const-string <r>, \"clips/discover/\"",
@@ -119,7 +129,9 @@
       "intent": "Blank the Reels homecoming request path when Reels are disabled",
       "tier": "robust",
       "strategy": "endpoint_replace",
-      "semantic_deps": ["clips/homecoming/"],
+      "semantic_deps": [
+        "clips/homecoming/"
+      ],
       "hosts": [
         {
           "kind": "by_literal",
@@ -127,7 +139,9 @@
           "note": "same host class as the other two Reels literals"
         }
       ],
-      "anchor": ["const-string <r:reg>, \"clips/homecoming/\""],
+      "anchor": [
+        "const-string <r:reg>, \"clips/homecoming/\""
+      ],
       "payload": [
         "    # dfinsta_reels_homecoming_endpoint",
         "    const-string <r>, \"clips/homecoming/\"",
@@ -139,7 +153,9 @@
       "marker": "# dfinsta_reels_homecoming_endpoint",
       "expected_marker_count": 1,
       "mode": "replace",
-      "constraints": ["result written back to the same register"],
+      "constraints": [
+        "result written back to the same register"
+      ],
       "probe": {
         "kind": "logcat_delta",
         "signal": "ClipsViewerPerfLogger: onClipsItemsRequestFailed",
@@ -153,7 +169,9 @@
       "intent": "Blank the Reels stream request path when Reels are disabled",
       "tier": "robust",
       "strategy": "endpoint_replace",
-      "semantic_deps": ["clips/discover/stream/"],
+      "semantic_deps": [
+        "clips/discover/stream/"
+      ],
       "hosts": [
         {
           "kind": "by_literal",
@@ -161,7 +179,9 @@
           "note": "same host class as the other two Reels literals"
         }
       ],
-      "anchor": ["const-string <r:reg>, \"clips/discover/stream/\""],
+      "anchor": [
+        "const-string <r:reg>, \"clips/discover/stream/\""
+      ],
       "payload": [
         "    # dfinsta_reels_stream_endpoint",
         "    const-string <r>, \"clips/discover/stream/\"",
@@ -173,7 +193,9 @@
       "marker": "# dfinsta_reels_stream_endpoint",
       "expected_marker_count": 1,
       "mode": "replace",
-      "constraints": ["result written back to the same register"],
+      "constraints": [
+        "result written back to the same register"
+      ],
       "probe": {
         "kind": "logcat_delta",
         "signal": "ClipsViewerPerfLogger: onClipsItemsRequestFailed",
@@ -262,7 +284,8 @@
         "kind": "ui_dialog",
         "signal": "Distraction-free settings",
         "surface": "profile_options_long_press",
-        "requires_two_directional_delta": false
+        "requires_two_directional_delta": false,
+        "note": "Not toggleable, so no two-directional delta exists: the dialog either opens on long-press or it does not. This is the variant that was runtime-inert on 430 while passing every static assertion, so the dialog actually opening is the whole proof."
       },
       "status": "active"
     }
