@@ -91,8 +91,16 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
       and gate the apply, three need the built APK and gate the release — collapsing them
       would make the pre-apply gate unsatisfiable. Retry-to-green is flagged, including from
       `inconclusive`, which is the Reels probe's own bad state.
-- [ ] Wire the runtime probe producer to the device runner (the ledger's `probe_claim` exists;
-      nothing drives the phone yet)
+- [x] **Runtime probe runner** (`src/dfinsta_pipeline/probes.py`) — the ledger now reaches the
+      phone. Measured on the installed 439 build: `tigon_url_block` gives **10 canonical blocks
+      with the toggles on and 0 with them off**, so `runtime_probe` is `passed` on real evidence
+      rather than absent. Counting is canonical, not `grep -c`: every live block also emits a
+      `NETWORK_FAILURE_REASON` field with the same text, and `aware_trace` re-narrates past
+      events at a later cold start. The runner refuses to record a measurement it could not
+      take — locked screen, app not foreground, surface control absent — because a zero the
+      phone never had a chance to produce is not an observation.
+- [ ] Differential vs N−1 (the last evidence kind with no producer)
+- [ ] Probes for the remaining six hooks, and the Reels alternate signal
 - [x] **Per-version Index** (`tools/indexer/build_index.py`): 181,421 classes in 3.4s,
       68 MB out, byte-identical across job counts. Confirmed API-path literals are the
       strongest fingerprint (93.9% survive 430->439 vs 89.3% of stable named types).

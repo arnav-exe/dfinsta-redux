@@ -78,7 +78,8 @@
         "kind": "logcat_delta",
         "signal": "java.io.IOException: Blocked by DFInsta setting",
         "surface": "feed_tab",
-        "requires_two_directional_delta": true
+        "requires_two_directional_delta": true,
+        "note": "HOOK-scoped, not feature-scoped. One code site enforces all five rules and the exception carries no path, so the count is 'this mechanism fired', not 'the feed rule fired'. The off-side therefore needs ALL five toggles off: measured on 439, all-on gives 10 canonical and all-off gives 0, while turning off only Disable feed leaves 2 - genuine live blocks of the other four rules, confirmed by a throwIfBlocked <- TigonServiceLayer.startRequest stack. A per-feature probe would need a path-scoped signal, which this log line does not provide."
       },
       "status": "active"
     },
