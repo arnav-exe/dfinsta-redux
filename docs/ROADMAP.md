@@ -71,7 +71,15 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
       with mutation tests proving each check bites
 - [ ] Resolve stage: k independent proposers + adversarial verifier for the 2 `by_agent` hooks
 - [ ] Evidence ledger: gate on absent evidence, never on self-reported confidence
-- [ ] Per-version Index (structural + API surface) so search does not rescan 180k classes
+- [x] **Per-version Index** (`tools/indexer/build_index.py`): 181,421 classes in 3.4s,
+      68 MB out, byte-identical across job counts. Confirmed API-path literals are the
+      strongest fingerprint (93.9% survive 430->439 vs 89.3% of stable named types).
+      **Overturned an earlier claim**: drawable *ids* are NOT stable — of 11,737 names
+      present in both versions only 103 keep their id, 99.1% are renumbered. Anchor on
+      the drawable NAME and re-resolve the id per version.
+- [ ] Feed the Index into host search so `by_literal` hooks resolve without a full rescan
+- [ ] Teach a Resolve-stage caller about `Resolution.already_applied` (nothing imports the
+      engine yet; naive `if not resolved: fail` would treat a normal re-run as failure)
 - [ ] Candidate anchors must be *proposals* only — the deterministic spine still applies and verifies
 - [x] **Measure coverage on 439: 7/7 hook operations resolved by agents, zero human mapping.**
       Built, structurally verified, signed, installed, and CONFIRMED WORKING on device
