@@ -301,5 +301,58 @@ class MutationTests(unittest.TestCase):
         self.assertNotIn("{}", mutant)
 
 
+class IdentityAgreementTests(unittest.TestCase):
+    """The generator and the verifier map must agree on what a valid hook set is.
+
+    They did not. `render_probe_class` refused two hook ids that collide into one
+    probe method while `expected_dex_symbols` silently returned the same
+    `(descriptor, method)` pair for both — defeating the static half of
+    attribution at exactly the point its docstring claims it holds, because the
+    verifier could no longer tell the two hooks apart. Latent at the time only
+    because nothing called the map yet, which is the worst kind of safe.
+    """
+
+    def colliding(self):
+        return [make_hook("a.b"), make_hook("a_b")]
+
+    def test_both_paths_refuse_a_colliding_hook_set(self):
+        for function in (render_probe_class, expected_dex_symbols):
+            with self.subTest(function=function.__name__):
+                with self.assertRaises(ManifestError) as caught:
+                    function(self.colliding())
+                self.assertIn("collide", str(caught.exception))
+
+    def test_only_the_generator_refuses_a_hook_set_with_nothing_active(self):
+        """The emptiness rule is deliberately NOT shared.
+
+        A probe class with no methods means nothing is instrumented, so
+        generating one is refused. An empty symbol map is a truthful answer to
+        "what should the verifier look for" when every hook is retired — and the
+        vacuity danger there is handled where it matters, by `verify_build`
+        refusing an empty host-hook map.
+        """
+        retired = [make_hook("only_one", status="retired")]
+        with self.assertRaises(ManifestError):
+            render_probe_class(retired)
+        self.assertEqual(expected_dex_symbols(retired), {})
+
+    def test_a_distinct_set_is_accepted_by_both(self):
+        """The guard must not over-fire: normal hook ids have to pass."""
+        hooks = [make_hook("alpha"), make_hook("beta")]
+        symbols = expected_dex_symbols(hooks)
+        self.assertEqual(sorted(symbols), ["alpha", "beta"])
+        self.assertEqual(len({pair for pair in symbols.values()}), 2)
+        rendered = render_probe_class(hooks)
+        for hook_id in ("alpha", "beta"):
+            self.assertIn(probe_method(hook_id), rendered)
+
+    def test_every_method_the_generator_emits_is_in_the_verifier_map(self):
+        """Anything the class defines must be something the verifier looks for."""
+        hooks = [make_hook("alpha"), make_hook("beta"), make_hook("gamma")]
+        rendered = render_probe_class(hooks)
+        for _, method in expected_dex_symbols(hooks).values():
+            self.assertIn(f".method public static {method}()V", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -71,6 +71,39 @@ def probe_call(hook_id: str) -> str:
     return f"    invoke-static {{}}, {PROBE_DESCRIPTOR}->{probe_method(hook_id)}()V"
 
 
+def assert_distinct_identities(
+    hooks: Sequence[Hook], require_any: bool = False
+) -> list[Hook]:
+    """Active hooks, refusing any set whose ids collide into one probe method.
+
+    The collision check is shared by the generator and the verifier map so the
+    two cannot disagree about what a valid hook set is. They did: the generator
+    rejected `a.b` and `a_b` while the map silently returned the same
+    `(descriptor, method)` pair for both, which defeats the static half of
+    attribution at exactly the point its docstring claims it holds — the verifier
+    would no longer be able to tell the two hooks apart.
+
+    ``require_any`` is NOT shared, deliberately. Generating a probe class with no
+    methods means nothing is instrumented and is refused. An empty *symbol map*
+    is a truthful answer to "what should the verifier look for" when every hook
+    is retired, and the vacuity danger there is already handled where it matters:
+    `verify_build.verify` refuses an empty host-hook map, because a verifier with
+    nothing to prove passes everything.
+    """
+    active = [hook for hook in hooks if hook.status == "active"]
+    if require_any and not active:
+        raise ManifestError("refusing to derive runtime identities from no hooks")
+    names = [probe_method(hook.hook_id) for hook in active]
+    duplicates = {name for name in names if names.count(name) > 1}
+    if duplicates:
+        # Two hook ids differing only in punctuation would collide into one
+        # method, and then one hook's execution would be reported as the other's.
+        raise ManifestError(
+            f"hook ids collide into the same probe method(s): {sorted(duplicates)}"
+        )
+    return active
+
+
 def render_probe_class(hooks: Sequence[Hook]) -> str:
     """Generate `com/dfinstagram/probe.smali` for exactly these hooks.
 
@@ -84,18 +117,7 @@ def render_probe_class(hooks: Sequence[Hook]) -> str:
     execution of that site in this process — so exactly one line is logged per
     hook per process however hot the site is.
     """
-    active = [hook for hook in hooks if hook.status == "active"]
-    if not active:
-        raise ManifestError("refusing to generate a probe class with no hooks")
-    names = [probe_method(hook.hook_id) for hook in active]
-    duplicates = {name for name in names if names.count(name) > 1}
-    if duplicates:
-        # Two hook ids differing only in punctuation would collide into one
-        # method, and then one hook's execution would be reported as the other's.
-        raise ManifestError(
-            f"hook ids collide into the same probe method(s): {sorted(duplicates)}"
-        )
-
+    active = assert_distinct_identities(hooks, require_any=True)
     lines = [
         f".class public final {PROBE_DESCRIPTOR}",
         ".super Ljava/lang/Object;",
@@ -205,6 +227,5 @@ def expected_dex_symbols(hooks: Sequence[Hook]) -> dict[str, tuple[str, str]]:
     """
     return {
         hook.hook_id: (PROBE_DESCRIPTOR, probe_method(hook.hook_id))
-        for hook in hooks
-        if hook.status == "active"
+        for hook in assert_distinct_identities(hooks)
     }
