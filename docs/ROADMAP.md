@@ -60,7 +60,18 @@ work lives, and they are what makes the pipeline agentic rather than merely repr
       branch to each delegate, pin the control by **drawable id** since string
       ids are unresolvable under sparse resources, prove own-profile via the
       `A1K -> A2W -> A15()` chain.
-- [ ] Automated resolver: intent + clean decode → candidate anchors with evidence and confidence
+- [x] **Version-independent Hook Manifest + pattern resolver** (`manifest/hooks.json`,
+      `src/dfinsta_pipeline/hook_manifest.py`). Anchors are patterns with `<name:kind>`
+      captures; payloads template off them. **5 of 7 hooks now resolve MECHANICALLY on
+      both 430 and 439**, reproducing the hand-authored anchors and payloads exactly and
+      picking up `v0`->`v4` and `LX/05ez;`->`LX/03AS;` automatically. The 2 that do not
+      are the `ui`-tier settings hooks, declared `kind: by_agent` — the tier taxonomy
+      predicted exactly that split.
+- [x] Mechanical validator for agent candidates (`tools/resolver/validate_candidates.py`),
+      with mutation tests proving each check bites
+- [ ] Resolve stage: k independent proposers + adversarial verifier for the 2 `by_agent` hooks
+- [ ] Evidence ledger: gate on absent evidence, never on self-reported confidence
+- [ ] Per-version Index (structural + API surface) so search does not rescan 180k classes
 - [ ] Candidate anchors must be *proposals* only — the deterministic spine still applies and verifies
 - [x] **Measure coverage on 439: 7/7 hook operations resolved by agents, zero human mapping.**
       Built, structurally verified, signed, installed, and CONFIRMED WORKING on device
