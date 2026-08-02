@@ -153,11 +153,21 @@ enumerating its violations.
       settings dialog opening with all five toggles. Every obfuscated host had moved
       (`LX/077K`->`LX/0DnT`, `LX/06X7`->`LX/0Di2`, `LX/05t2`->`LX/04tC`), and the custom
       code needed `classes21.dex` because 439 already ships `classes20`.
-- [ ] Turn the ad-hoc mapping workflow into a reusable resolver that emits candidates +
-      evidence. **The agent call is filled** (`agent_runner.py` over `sandbox_tools.py`), and one
-      real run against 439 navigated the decode and returned a candidate. What has never run is
-      the rest of the chain: k proposers, agreement by effect, the mechanical validator, the
-      adversarial verifier. Until it does, a single proposal is a candidate and nothing more.
+- [x] Turn the ad-hoc mapping workflow into a reusable resolver that emits candidates +
+      evidence. The full chain has now run: k=3 blind proposers, agreement, the mechanical
+      validator and two adversarial verifiers. On 439 for `install_settings_long_click` it gave
+      2-of-3 on the *host* and 1-of-3 by *effect*, and both verifiers failed to refute — so one
+      required signal passed and the other did not, and the gate correctly stayed shut. The
+      diagnosis was that the prompt asked for a whole patch when only the host varies; there is
+      now a narrowed host-discovery question (`host_prompt` / `HOST_SCHEMA` /
+      `proposals.host_agreement`) whose agreement is over a single field.
+- [ ] **6 of 7 hooks resolve mechanically on 439** (was 5). The seventh is
+      `install_settings_long_click`: its anchor is now unique on both 430 and 439, and
+      `capture_supply.py` derives the own-profile guard's two values deterministically on 430+.
+      What remains is a device test proving the guard still excludes *other* users' profiles,
+      before `requires_proposal` may be dropped — flipping it moves the hook from agent
+      provenance (owing agreement and adversarial verification) to mechanical provenance,
+      owing neither.
 
 ### What per-hook identity found on its first run
 
@@ -269,8 +279,9 @@ stopping at the first stage that cannot produce what the next needs.
       loosened — they pin different things and neither is weaker.
 - [x] The run correctly reports that the APK is **not release-ready** because post-build
       evidence is absent. That message is the point of the whole exercise.
-- [ ] Same run with the two settings hooks, which need real proposer agents rather than
-      hand-made proposals
+- [ ] Same run with the two settings hooks. `install_settings_long_click_actionbar` now
+      resolves mechanically (the baksmali trailing-comment fix); `install_settings_long_click`
+      needs the guard device test above.
 
 ## Immediate next three
 
