@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 1779 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 1850 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -155,6 +155,15 @@ array (`LX/05jj` on 430, `LX/03Ez` on 439). `feed/injected_reels_media/` is Reel
 into the timeline. Not yet decided — this is what the stage-4 gate is for.
 
 ## Constraints that cost real time to learn
+
+**baksmali annotates constants that look like floats, and it follows the NUMBER, not the
+version.** The action-bar anchor line was bare `const v0, 0x7f134a0e` on 430 and
+`const v0, 0x7f134a34    # 1.957818E38f` on 439 — same class, same field — so the anchor
+silently stopped matching at a version bump on a line nobody changed. Anchors now match
+against a quote-aware comment-stripped line and **emit the source line verbatim**: stripping
+in `significant()` instead would make a hook resolve and then patch nothing, because the
+applier searches a view that keeps the comment. 66,169 annotated code lines on 439; 1,152
+lines carry a `#` inside a string literal.
 
 **Obfuscated names are recycled.** `LX/05t2` exists in both 430 and 439 and is a
 different class in each. Never join on a descriptor across versions. Index per version.
