@@ -253,16 +253,23 @@
       "hosts": [
         {
           "kind": "by_agent",
-          "note": "No stable name or literal anchors this. Located by: enter at the profile fragment's action-bar configuration, follow the runtime branch to each delegate, pin the control by DRAWABLE id (string ids are unresolvable under sparse resource encoding), then prove own-profile via the self/other model chain. 430 LX/077K -> 439 LX/0DnT."
+          "note": "No stable name or literal anchors this. Located by: enter at the profile fragment's action-bar configuration, follow the runtime branch to each delegate, pin the control by DRAWABLE id (string ids are unresolvable under sparse resource encoding), then prove own-profile via the self/other model chain. 430 LX/077K -> 439 LX/0DnT. MEASURED 2026-08-02: the five-line anchor below is unique across the WHOLE decode, not just inside the host - 1 match in 1 class on 439 and 1 in 1 on 430, against 87 matches in 77 classes and 110 in 92 for the three-line form it replaced. So the anchor now identifies the host as well as the site, and this fingerprint stays by_agent only because the schema has no by_anchor kind; a future one would make host discovery mechanical too."
         }
       ],
       "anchor": [
         "new-instance <l:reg>, <listener:type>",
         "invoke-direct {<l>, <a:reg>, <b:reg>, <c:reg>, <d:reg>}, <listener>-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V",
-        "invoke-static {<l>, <view:reg>}, <helper:type>-><hm:member>(Landroid/view/View$OnClickListener;Landroid/view/View;)V"
+        "invoke-static {<l>, <view:reg>}, <helper:type>-><hm:member>(Landroid/view/View$OnClickListener;Landroid/view/View;)V",
+        "invoke-virtual {<view>, <lp:reg>}, Landroid/view/View;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V",
+        "return-object <view>"
       ],
       "requires_proposal": true,
       "payload": [
+        "    new-instance <l>, <listener>",
+        "",
+        "    invoke-direct {<l>, <a>, <b>, <c>, <d>}, <listener>-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V",
+        "",
+        "    invoke-static {<l>, <view>}, <helper>-><hm>(Landroid/view/View$OnClickListener;Landroid/view/View;)V",
         "",
         "    invoke-static {}, Lcom/dfinstagram/probe;->h_install_settings_long_click()V",
         "",
@@ -271,14 +278,20 @@
         "",
         "    invoke-direct {<l>}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
         "",
-        "    invoke-virtual {<view>, <l>}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V"
+        "    invoke-virtual {<view>, <l>}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V",
+        "",
+        "    invoke-virtual {<view>, <lp>}, Landroid/view/View;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V",
+        "",
+        "    return-object <view>"
       ],
       "marker": "# dfinsta_settings_long_click_profilebar",
       "expected_marker_count": 1,
-      "mode": "insert_after",
+      "mode": "replace",
       "constraints": [
-        "must be restricted to the user's OWN profile; other users' Options must stay non-long-clickable. The shipped patch does this with `instance-of <r>, <model>, LX/077N;` plus `if-eqz` around the whole insert.",
-        "requires_proposal is set BECAUSE of that guard: the register holding the action model is the 4th init argument on 430 (p3) and the 2nd on 439 (p4), and the self-profile type moved LX/077N -> LX/0Dxw. Neither is derivable from this anchor, so the payload above is a SHAPE, not a complete patch \u2014 applying it as written would make every profile's Options long-clickable and undo the device-verified other-user exclusion.",
+        "the last TWO anchor lines are the discriminator, not decoration. The three-line 'build a listener, attach it' idiom is generic: it matches 3 times in the 439 host and 2 times in the 430 host, and the resolver refused both as ambiguous. Only the site that builds the Options ImageView is followed by setLayoutParams on the SAME register the listener was attached to AND then returns that register. The other-user follow button (new-instance ...FadeInFollowButton) calls the button's own setup method instead and must be excluded \u2014 attaching there would put the DFInsta dialog on a stranger's Follow button. The third 439 site does call setLayoutParams on <view> but then falls through to a goto rather than returning, so requiring `return-object <view>` is what excludes it.",
+        "mode is `replace` BECAUSE the anchor now ends at `return-object`. With `insert_after` the payload would land after a return and be unreachable \u2014 statically perfect, runtime-inert, which is the failure this project has shipped more often than any other. The payload therefore re-emits the anchor verbatim and splices the DFInsta lines in BEFORE the return, keeping setLayoutParams and the return as the last two instructions.",
+        "must be restricted to the user's OWN profile; other users' Options must stay non-long-clickable. This method builds the icon for EVERY action-bar model type \u2014 every branch merges on the label just above the anchor \u2014 so an unguarded attach makes a stranger's controls long-clickable. The shipped patch guards with `instance-of <r>, <model>, LX/077N;` (430) / `LX/0Dxw;` (439) plus `if-eqz` around the DFInsta lines only, never around the stock lines.",
+        "requires_proposal is set BECAUSE of that guard, and the wider anchor does NOT retire it: the register holding the action model is the 4th init argument on 430 (p3, capture <d>) and the 2nd on 439 (p4, capture <b>), so no one capture name holds it; and the self-profile type moved LX/077N -> LX/0Dxw and is named on no line adjacent to this site, so no anchor extension can capture it. The payload above is therefore still a SHAPE, not a complete patch \u2014 applying it as written would make every profile's Options long-clickable and undo the device-verified other-user exclusion. What the wider anchor does buy is that the SITE is now mechanical: host in, one anchor out, on both 430 and 439.",
         "the listener register is dead after the stock helper call consumes it, which is why it is safe to reuse"
       ],
       "probe": {

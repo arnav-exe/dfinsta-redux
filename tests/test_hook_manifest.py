@@ -13,6 +13,7 @@ corrected behaviour and their docstrings record what the bug was and what it
 would have cost, because "this was once wrong" is the reason the assertion exists.
 """
 
+import dataclasses
 import json
 import re
 import sys
@@ -1120,6 +1121,197 @@ CLEAN_APP_SHELL = """.class public Lcom/instagram/app/InstagramAppShell;
 """
 
 
+# The one place this file quotes a real decode. `install_settings_long_click` is
+# the only hook whose anchor had to be discriminated against *sibling sites in
+# the same class*, so a synthetic fixture would be inventing the very thing under
+# test. Both excerpts are copied verbatim (byte for byte, only whole runs of
+# uninvolved instructions elided) from the checked-out stock decodes:
+#
+#   439  work/439-explore/stock-439/smali_classes6/X/0DnT.smali  lines 31-32,
+#        196-211 | 383-409 | 411-412, 606-626
+#   430  work/430-clean-build-v2/stock-430/smali_classes6/X/077K.smali  lines
+#        7-8, 172-187 | 368-369, 393-409
+#
+# `work/` is gitignored, so the excerpts are inlined rather than read; the tests
+# that touch the full decodes skip when it is absent.
+PROFILE_ACTION_BAR_439 = """\
+.class public final LX/0DnT;
+
+.method private final A00(Landroid/content/Context;Lcom/instagram/common/session/UserSession;LX/0Dw2;LX/0IwP;)Landroid/widget/ImageView;
+    .locals 9
+
+    :cond_4
+    const v0, -0x2605b3e
+
+    :goto_4
+    invoke-static {v6, v0, v3}, LX/03dC;->A0X(Landroid/view/View;IZ)V
+
+    :cond_5
+    new-instance v0, LX/0488;
+
+    invoke-direct {v0, v3, p4, v6, p3}, LX/0488;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V
+
+    invoke-static {v0, v6}, LX/003D;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V
+
+    invoke-virtual {v6, v2}, Landroid/view/View;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V
+
+    return-object v6
+.end method
+
+.method public static final A01(Landroid/content/Context;Lcom/instagram/common/session/UserSession;LX/0Dw2;LX/0IwP;)Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;
+    .locals 3
+    .annotation build Ldalvik/annotation/optimization/NeverInline;
+    .end annotation
+
+    new-instance v2, Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;
+
+    invoke-direct {v2, p0}, Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;-><init>(Landroid/content/Context;)V
+
+    const/4 v0, 0x1
+
+    iput-boolean v0, v2, Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;->A0D:Z
+
+    const/4 v1, 0x2
+
+    new-instance v0, LX/0488;
+
+    invoke-direct {v0, v1, p2, v2, p3}, LX/0488;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V
+
+    invoke-static {v0, v2}, LX/003D;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V
+
+    const/4 v0, 0x0
+
+    invoke-virtual {v2, v0, p1}, Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;->A03(ZLcom/instagram/common/session/UserSession;)V
+
+    return-object v2
+.end method
+
+.method public static final A02(Landroid/app/Activity;Landroid/content/Context;Lcom/instagram/common/session/UserSession;Lcom/instagram/common/ui/base/IgLinearLayout;Lcom/instagram/common/ui/base/IgLinearLayout;LX/0Dw2;Ljava/util/List;Lkotlin/jvm/functions/Function1;)V
+    .locals 21
+
+    const/4 v0, -0x2
+
+    new-instance v8, Landroid/widget/FrameLayout$LayoutParams;
+
+    invoke-direct {v8, v0, v0}, Landroid/widget/FrameLayout$LayoutParams;-><init>(II)V
+
+    const/16 v0, 0x50
+
+    iput v0, v8, Landroid/widget/FrameLayout$LayoutParams;->gravity:I
+
+    new-instance v0, LX/0488;
+
+    invoke-direct {v0, v4, v11, v2, v9}, LX/0488;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V
+
+    invoke-static {v0, v2}, LX/003D;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V
+
+    invoke-virtual {v2, v8}, Landroid/view/View;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V
+
+    iget-object v8, v10, LX/0Bgs;->A01:Ljava/lang/Integer;
+
+    goto :goto_5
+.end method
+"""
+
+PROFILE_ACTION_BAR_430 = """\
+.class public final LX/077K;
+
+.method public static final A00(Landroid/content/Context;Lcom/instagram/common/session/UserSession;LX/077F;LX/0JxZ;)Landroid/widget/ImageView;
+    .locals 9
+
+    :cond_4
+    const v0, -0x2605b3e
+
+    :goto_4
+    invoke-static {v6, v0, v3}, LX/00VW;->A0W(Landroid/view/View;IZ)V
+
+    :cond_5
+    new-instance v0, LX/0417;
+
+    invoke-direct {v0, v3, p2, v6, p3}, LX/0417;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V
+
+    invoke-static {v0, v6}, LX/00ZY;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V
+
+    invoke-virtual {v6, v2}, Landroid/view/View;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V
+
+    return-object v6
+.end method
+
+.method public static final A01(Landroid/content/Context;Lcom/instagram/common/session/UserSession;LX/077F;LX/0JxZ;)Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;
+    .locals 3
+
+    check-cast v2, Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;
+
+    const/4 v0, 0x1
+
+    iput-boolean v0, v2, Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;->A0D:Z
+
+    const/4 v1, 0x2
+
+    new-instance v0, LX/0417;
+
+    invoke-direct {v0, v1, p3, v2, p2}, LX/0417;-><init>(ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V
+
+    invoke-static {v0, v2}, LX/00ZY;->A00(Landroid/view/View$OnClickListener;Landroid/view/View;)V
+
+    invoke-virtual {v2, p0, p1}, Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;->A03(ZLcom/instagram/common/session/UserSession;)V
+
+    return-object v2
+.end method
+"""
+
+#: Where the full stock decodes live when they are present.
+REAL_DECODES = {
+    "439": (ROOT / "work/439-explore/stock-439/smali_classes6/X/0DnT.smali", "LX/0DnT;"),
+    "430": (
+        ROOT / "work/430-clean-build-v2/stock-430/smali_classes6/X/077K.smali",
+        "LX/077K;",
+    ),
+}
+
+
+def method_body(source: str, name: str) -> str:
+    """One `.method` block out of a smali excerpt, for per-site assertions."""
+    out: list[str] = []
+    inside = False
+    for line in source.splitlines():
+        if line.startswith(".method") and f" {name}(" in line:
+            inside = True
+        if inside:
+            out.append(line)
+        if inside and line.strip() == ".end method":
+            break
+    if not out:
+        raise AssertionError(f"no method {name} in the excerpt")
+    return "\n".join(out) + "\n"
+
+
+def count_anchor(anchor, source: str) -> int:
+    """How many times an anchor pattern matches, without the marker short-circuit."""
+    compiled = compile_anchor(list(anchor))
+    body = significant(source.splitlines())
+    code = [strip_comment(text) for _, text in body]
+    width = len(compiled)
+    hits = 0
+    for start in range(len(code) - width + 1):
+        bindings: dict[str, str] = {}
+        ok = True
+        for offset, (pattern, names) in enumerate(compiled):
+            match = pattern.match(code[start + offset])
+            if not match:
+                ok = False
+                break
+            for position, name in enumerate(names, start=1):
+                value = match.group(f"g{position}")
+                if bindings.setdefault(name, value) != value:
+                    ok = False
+                    break
+            if not ok:
+                break
+        hits += ok
+    return hits
+
+
 class ResolveInSourceTests(unittest.TestCase):
     def setUp(self):
         self.hooks = {hook.hook_id: hook for hook in load_manifest(MANIFEST)}
@@ -1864,6 +2056,343 @@ class AsOperationTests(unittest.TestCase):
             self.assertEqual(patched.count(hook.marker), hook.expected_marker_count)
 
 
+class ProfileSettingsAnchorTests(unittest.TestCase):
+    """`install_settings_long_click`: one host in, exactly one site out.
+
+    This was the only hook that did not resolve mechanically once its host was
+    known. Its anchor was the generic "build a listener, attach it" idiom, which
+    the host uses for every action-bar control: three matches on 439, two on 430,
+    and the resolver refused both as ambiguous. The anchor now runs two lines
+    further, to `setLayoutParams` on the same register and then `return-object`
+    on that register, which is true of the Options ImageView site and of neither
+    sibling.
+
+    Every assertion here is against text copied out of a real decode, because the
+    thing being tested is discrimination between sites that a synthetic fixture
+    would have to invent.
+    """
+
+    OPTIONS_SITE = "A00"
+    FOLLOW_BUTTON_SITE = "A01"
+    ROW_BUILDER_SITE = "A02"
+
+    def setUp(self):
+        self.hooks = {hook.hook_id: hook for hook in load_manifest(MANIFEST)}
+        self.hook = self.hooks["install_settings_long_click"]
+        #: the form that shipped before this change, and was ambiguous
+        self.three_line = self.hook.anchor[:3]
+
+    # ---------------------------------------------------------------- the site
+
+    def test_the_anchor_matches_exactly_once_in_the_real_439_host(self):
+        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
+        self.assertTrue(result.resolved, result.reason)
+        self.assertEqual(result.occurrences, 1)
+        self.assertEqual(result.bindings["view"], "v6")
+        self.assertEqual(result.bindings["listener"], "LX/0488;")
+
+    def test_the_anchor_matches_exactly_once_in_the_real_430_host_too(self):
+        # 430 was ambiguous as well (two sites), which the original diagnosis of
+        # this bug did not know. The same two extra lines fix both versions.
+        result = resolve_in_source(self.hook, "LX/077K;", PROFILE_ACTION_BAR_430)
+        self.assertTrue(result.resolved, result.reason)
+        self.assertEqual(result.occurrences, 1)
+        self.assertEqual(result.bindings["view"], "v6")
+
+    def test_the_three_line_form_it_replaced_really_was_ambiguous(self):
+        # The positive control for every "is not matched" assertion below: if the
+        # short form did not match these excerpts, they would not be evidence of
+        # anything.
+        self.assertEqual(count_anchor(self.three_line, PROFILE_ACTION_BAR_439), 3)
+        self.assertEqual(count_anchor(self.three_line, PROFILE_ACTION_BAR_430), 2)
+
+    def test_the_other_users_follow_button_site_is_not_matched(self):
+        """The site that MUST stay unpatched: FadeInFollowButton.
+
+        `A01` builds the Follow button shown on other people's profiles. It uses
+        the identical listener idiom, so the three-line anchor matched it. Patching
+        it would attach the DFInsta settings dialog to a stranger's Follow button —
+        the exact outcome this hook's intent_constraints forbid.
+        """
+        for label, source in (("439", PROFILE_ACTION_BAR_439), ("430", PROFILE_ACTION_BAR_430)):
+            body = method_body(source, self.FOLLOW_BUTTON_SITE)
+            with self.subTest(version=label):
+                self.assertIn(
+                    "Lcom/instagram/profile/ui/fadeinfollowbutton/FadeInFollowButton;",
+                    body,
+                )
+                self.assertEqual(count_anchor(self.three_line, body), 1)  # control
+                self.assertEqual(count_anchor(self.hook.anchor, body), 0)
+
+    def test_the_third_439_site_is_not_matched_because_it_does_not_return_the_view(self):
+        """`A02` calls setLayoutParams on the same register and still loses.
+
+        This is why `setLayoutParams` alone is not the discriminator: the row
+        builder does exactly that and then falls through to a `goto`. Only
+        `return-object <view>` separates it from the Options site.
+        """
+        body = method_body(PROFILE_ACTION_BAR_439, self.ROW_BUILDER_SITE)
+        self.assertIn("setLayoutParams", body)
+        self.assertNotIn("return-object", body)
+        self.assertEqual(count_anchor(self.three_line, body), 1)  # control
+        self.assertEqual(count_anchor(self.hook.anchor[:4], body), 1)  # control
+        self.assertEqual(count_anchor(self.hook.anchor, body), 0)
+
+    def test_every_anchor_line_is_load_bearing(self):
+        """Drop any one of the five and the anchor stops picking out one site.
+
+        Two ways a line can be load-bearing, and each of the five is one or the
+        other: either the shortened anchor no longer matches exactly once in the
+        439 host, or it no longer compiles at all because the dropped line is
+        where a capture the others use declares its kind.
+        """
+        self.assertEqual(count_anchor(self.hook.anchor, PROFILE_ACTION_BAR_439), 1)
+        for index in range(len(self.hook.anchor)):
+            shorter = self.hook.anchor[:index] + self.hook.anchor[index + 1 :]
+            with self.subTest(dropped=self.hook.anchor[index]):
+                try:
+                    hits = count_anchor(shorter, PROFILE_ACTION_BAR_439)
+                except ManifestError:
+                    continue  # the line carries a capture declaration
+                self.assertNotEqual(
+                    hits,
+                    1,
+                    "dropping this line still leaves a unique match, so it is not "
+                    "carrying its weight",
+                )
+
+    # ------------------------------------------------------------- the payload
+
+    def test_the_mode_is_replace_because_the_anchor_ends_in_a_return(self):
+        # An anchor ending at a return plus insert_after is the dead-code trap:
+        # it would assemble, verify, and never execute.
+        self.assertEqual(self.hook.anchor[-1], "return-object <view>")
+        self.assertEqual(self.hook.mode, "replace")
+
+    def test_the_injected_lines_land_before_the_return(self):
+        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
+        payload = [line.strip() for line in result.payload if line.strip()]
+        return_at = payload.index("return-object v6")
+        self.assertEqual(return_at, len(payload) - 1, "the return must be last")
+        injected = [
+            index
+            for index, line in enumerate(payload)
+            if "dfinsta" in line.lower()
+        ]
+        self.assertTrue(injected)
+        self.assertLess(max(injected), return_at)
+        # and the stock tail still runs after them
+        self.assertLess(max(injected), payload.index(
+            "invoke-virtual {v6, v2}, Landroid/view/View;->setLayoutParams"
+            "(Landroid/view/ViewGroup$LayoutParams;)V"
+        ))
+
+    def test_insert_after_this_anchor_would_put_the_payload_after_the_return(self):
+        """The trap, demonstrated rather than asserted about.
+
+        Flip the mode back to `insert_after` and run the real applier: every
+        injected line lands past `return-object`, i.e. unreachable. Nothing else
+        in the pipeline notices — the marker is present, the anchor matched, the
+        registers are safe — which is why the mode is pinned by a test.
+        """
+        sys.path.insert(0, str(RECONSTRUCTION_TOOLS))
+        try:
+            from apply_anchored_patches import apply_operation
+        except ImportError:  # pragma: no cover - tool tree is present in-repo
+            self.skipTest("reconstruction tools not importable")
+        finally:
+            sys.path.remove(str(RECONSTRUCTION_TOOLS))
+
+        broken = dataclasses.replace(self.hook, mode="insert_after")
+        operation = resolve_in_source(
+            broken, "LX/0DnT;", PROFILE_ACTION_BAR_439
+        ).as_operation(broken)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "0DnT.smali"
+            target.write_text(PROFILE_ACTION_BAR_439, encoding="utf-8")
+            self.assertEqual(apply_operation(target, operation), "applied")
+            lines = [line.strip() for line in target.read_text(encoding="utf-8").splitlines()]
+        return_at = lines.index("return-object v6")
+        attach_at = lines.index(
+            "invoke-virtual {v6, v0}, Landroid/view/View;->setOnLongClickListener"
+            "(Landroid/view/View$OnLongClickListener;)V"
+        )
+        self.assertGreater(attach_at, return_at, "insert_after is supposed to be dead here")
+
+        # ...and with the mode the manifest actually declares, it is alive.
+        operation = resolve_in_source(
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439
+        ).as_operation(self.hook)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "0DnT.smali"
+            target.write_text(PROFILE_ACTION_BAR_439, encoding="utf-8")
+            self.assertEqual(apply_operation(target, operation), "applied")
+            self.assertEqual(apply_operation(target, operation), "already_applied")
+            lines = [line.strip() for line in target.read_text(encoding="utf-8").splitlines()]
+        return_at = lines.index("return-object v6")
+        attach_at = lines.index(
+            "invoke-virtual {v6, v0}, Landroid/view/View;->setOnLongClickListener"
+            "(Landroid/view/View$OnLongClickListener;)V"
+        )
+        self.assertLess(attach_at, return_at)
+
+    def test_replace_keeps_every_stock_instruction_and_the_label_above_it(self):
+        sys.path.insert(0, str(RECONSTRUCTION_TOOLS))
+        try:
+            from apply_anchored_patches import apply_operation
+        except ImportError:  # pragma: no cover - tool tree is present in-repo
+            self.skipTest("reconstruction tools not importable")
+        finally:
+            sys.path.remove(str(RECONSTRUCTION_TOOLS))
+
+        operation = resolve_in_source(
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439
+        ).as_operation(self.hook)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "0DnT.smali"
+            target.write_text(PROFILE_ACTION_BAR_439, encoding="utf-8")
+            apply_operation(target, operation)
+            patched = target.read_text(encoding="utf-8")
+        for stock in operation["anchor"]:
+            with self.subTest(line=stock):
+                self.assertIn(stock, patched)
+        # `:cond_5` is the merge point every action-bar model jumps to. The anchor
+        # deliberately stops below it, so `replace` cannot eat it.
+        self.assertIn(":cond_5", patched)
+        self.assertNotIn(":cond_5", "\n".join(operation["anchor"]))
+
+    def test_the_marker_is_a_comment_present_exactly_once_in_the_payload(self):
+        self.assertTrue(self.hook.marker.startswith("#"))
+        self.assertEqual(self.hook.expected_marker_count, 1)
+        self.assertEqual(
+            "\n".join(self.hook.payload).count(self.hook.marker),
+            self.hook.expected_marker_count,
+        )
+        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
+        self.assertEqual(
+            "\n".join(result.payload).count(self.hook.marker),
+            self.hook.expected_marker_count,
+        )
+        # and re-resolving against an already-patched class says so
+        patched = PROFILE_ACTION_BAR_439.replace(
+            "    return-object v6\n.end method\n\n.method public static final A01",
+            f"    {self.hook.marker}\n    return-object v6\n.end method\n\n"
+            ".method public static final A01",
+            1,
+        )
+        again = resolve_in_source(self.hook, "LX/0DnT;", patched)
+        self.assertTrue(again.already_applied)
+
+    # ----------------------------------------------------- the own-profile guard
+
+    def test_the_payload_is_still_a_shape_because_the_guard_is_not_capturable(self):
+        """Loud, on purpose: a unique anchor did NOT retire `requires_proposal`.
+
+        The guard needs two things the anchor cannot supply. The register holding
+        the action model is the 4th `<init>` argument on 430 and the 2nd on 439,
+        so it is capture `<d>` on one version and `<b>` on the other — no single
+        name holds it. And the self-profile type (LX/077N -> LX/0Dxw) is named on
+        no line adjacent to this site, so no widening reaches it. Rendering this
+        payload as written would make every profile's Options long-clickable.
+        """
+        self.assertTrue(self.hook.requires_proposal)
+        declared: set[str] = set()
+        for _, names in compile_anchor(self.hook.anchor):
+            declared.update(names)
+        # nothing in the anchor binds a type that could be the self-profile model
+        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
+        self.assertNotIn("LX/0Dxw;", result.bindings.values())
+        # and the shape carries no guard at all
+        self.assertNotIn("instance-of", "\n".join(self.hook.payload))
+        self.assertNotIn("if-eqz", "\n".join(self.hook.payload))
+        # the model register is bound under different names on the two versions,
+        # which is the whole reason it cannot be named in the payload
+        binding_439 = resolve_in_source(
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439
+        ).bindings
+        binding_430 = resolve_in_source(
+            self.hook, "LX/077K;", PROFILE_ACTION_BAR_430
+        ).bindings
+        self.assertEqual(binding_439["b"], "p4")  # 439: model is the 2nd init arg
+        self.assertEqual(binding_430["d"], "p3")  # 430: model is the 4th init arg
+        self.assertIn("b", declared)
+        self.assertIn("d", declared)
+
+    def test_an_ungated_payload_without_a_guard_would_be_a_manifest_bug(self):
+        # The invariant that keeps the shape safe: a ui_attach payload that carries
+        # no own-profile guard must be behind requires_proposal.
+        for hook in self.hooks.values():
+            if hook.strategy != "ui_attach":
+                continue
+            with self.subTest(hook=hook.hook_id):
+                guarded = "instance-of" in "\n".join(hook.payload)
+                if not guarded and hook.hook_id == "install_settings_long_click":
+                    self.assertTrue(hook.requires_proposal)
+
+    def test_a_validated_proposal_can_still_wrap_the_dfinsta_lines_in_the_guard(self):
+        """The shape has to compose with the guard, or `replace` broke the hook.
+
+        Splices the guard in the way the shipped 430/439 patches do and checks the
+        resulting order: guard first, DFInsta lines inside it, skip label after
+        them, and the stock `setLayoutParams`/`return-object` outside and last, so
+        a non-self profile runs exactly the stock instructions.
+        """
+        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
+        scratch, model = result.bindings["l"], result.bindings["b"]
+        payload = list(result.payload)
+        first = payload.index(f"    {self.hook.marker}") - 2  # the probe call
+        last = next(
+            index for index, line in enumerate(payload) if "setOnLongClickListener" in line
+        )
+        guarded = (
+            payload[:first]
+            + [f"    instance-of {scratch}, {model}, LX/0Dxw;", "",
+               f"    if-eqz {scratch}, :dfinsta_skip", ""]
+            + payload[first : last + 1]
+            + ["", "    :dfinsta_skip"]
+            + payload[last + 1 :]
+        )
+        text = [line.strip() for line in guarded if line.strip()]
+        guard_at = text.index(f"instance-of {scratch}, {model}, LX/0Dxw;")
+        skip_at = text.index(":dfinsta_skip")
+        probe_at = next(i for i, l in enumerate(text) if "h_install_settings_long_click" in l)
+        attach_at = next(i for i, l in enumerate(text) if "setOnLongClickListener" in l)
+        click_at = next(i for i, l in enumerate(text) if "OnClickListener;Landroid/view/View;)V" in l)
+        params_at = next(i for i, l in enumerate(text) if "setLayoutParams" in l)
+        return_at = text.index("return-object v6")
+
+        self.assertNotEqual(model, result.bindings["view"])  # guards the MODEL
+        self.assertLess(click_at, guard_at)  # stock click attach is unconditional
+        self.assertLess(guard_at, probe_at)  # everything DFInsta is behind it
+        self.assertLess(attach_at, skip_at)  # ...and skipped when it is false
+        self.assertLess(skip_at, params_at)  # stock tail is outside the guard
+        self.assertLess(params_at, return_at)
+        self.assertEqual(return_at, len(text) - 1)
+
+    # ------------------------------------------------- against the full decodes
+
+    def test_the_inlined_excerpts_agree_with_the_full_decodes(self):
+        missing = [name for name, (path, _) in REAL_DECODES.items() if not path.is_file()]
+        if missing:
+            self.skipTest(f"decode(s) not checked out: {missing}")
+        for name, (path, descriptor) in REAL_DECODES.items():
+            body = path.read_text(encoding="utf-8")
+            with self.subTest(version=name):
+                result = resolve_in_source(self.hook, descriptor, body)
+                self.assertTrue(result.resolved, result.reason)
+                self.assertEqual(result.occurrences, 1)
+                excerpt = (
+                    PROFILE_ACTION_BAR_439 if name == "439" else PROFILE_ACTION_BAR_430
+                )
+                # the excerpt is a real slice, so every anchor line it produced is
+                # in the decode verbatim and binds identically
+                from_excerpt = resolve_in_source(self.hook, descriptor, excerpt)
+                self.assertEqual(result.anchor, from_excerpt.anchor)
+                self.assertEqual(result.bindings, from_excerpt.bindings)
+                for line in result.anchor:
+                    self.assertIn(line, body)
+
+
 class LoadManifestTests(unittest.TestCase):
     def test_loads_the_real_manifest(self):
         hooks = load_manifest(MANIFEST)
@@ -2135,6 +2664,34 @@ class RealManifestContentTests(unittest.TestCase):
                 with self.subTest(hook=hook.hook_id):
                     self.assertTrue(hook.marker.startswith("#"))
 
+    def test_replace_mode_payloads_reemit_every_anchor_line_in_order(self):
+        """`replace` overwrites the anchor, so the payload owes it back.
+
+        The applier does `lines[start:end + 1] = payload`: whatever the anchor
+        covered is gone unless the payload rewrites it. A payload that drops an
+        anchor line deletes stock code — and for the profile settings hook, whose
+        anchor now ends at `return-object`, dropping the last line would delete
+        the method's return and produce something that does not even verify.
+
+        Compared with kinds erased (`<r:reg>` -> `<r>`), because a payload refers
+        to a capture bare while the anchor declares it.
+        """
+        bare = lambda text: CAPTURE.sub(lambda m: f"<{m.group('name')}>", text.strip())
+        for hook in self.hooks:
+            if hook.mode != "replace":
+                continue
+            with self.subTest(hook=hook.hook_id):
+                payload = [bare(line) for line in hook.payload if line.strip()]
+                position = -1
+                for line in hook.anchor:
+                    wanted = bare(line)
+                    self.assertIn(
+                        wanted,
+                        payload[position + 1 :],
+                        f"{hook.hook_id}: `replace` would delete {line!r}",
+                    )
+                    position = payload.index(wanted, position + 1)
+
     def test_every_payload_capture_is_declared_by_its_anchor(self):
         # `__post_init__` already enforces this; assert it holds for the real file
         # so a manifest edit that slips a stray `<name>` in fails here by name.
@@ -2186,6 +2743,29 @@ class DesignIntentTests(unittest.TestCase):
                 self.assertNotRegex("\n".join(hook.anchor), r"LX/\w+;")
                 self.assertNotRegex("\n".join(hook.payload), r"LX/\w+;")
 
+    def test_no_ui_anchor_names_an_obfuscated_class_literally_either(self):
+        # The rule above was scoped to `robust` and so never covered the two hooks
+        # most likely to break it: the UI hooks are the ones whose hosts and helper
+        # types are all obfuscated. They pass, and now they are held to it — a
+        # `replace`-mode payload re-emits stock instructions, which is exactly the
+        # place a concrete LX/ descriptor would be easiest to paste in by accident.
+        for hook in self.hooks:
+            if hook.tier != "ui":
+                continue
+            with self.subTest(hook=hook.hook_id):
+                self.assertNotRegex("\n".join(hook.anchor), r"LX/\w+;")
+                self.assertNotRegex("\n".join(hook.payload), r"LX/\w+;")
+
+    def test_no_anchor_or_payload_pins_a_concrete_register_or_resource_id(self):
+        # Registers and resource ids moved between 430 and 439 too (v0 -> v4,
+        # 0x7f134a0e -> 0x7f134a34). Both belong in captures.
+        for hook in self.hooks:
+            with self.subTest(hook=hook.hook_id):
+                for line in hook.anchor + hook.payload:
+                    stripped = CAPTURE.sub("", line)
+                    self.assertNotRegex(stripped, r"(?<![\w$]){[vp]\d")
+                    self.assertNotRegex(stripped, r"0x7f[0-9a-f]{6}")
+
     def test_no_robust_host_needs_an_agent(self):
         for hook in self.hooks:
             if hook.tier != "robust":
@@ -2224,8 +2804,16 @@ class DesignIntentTests(unittest.TestCase):
     def test_the_ui_anchors_are_wide_enough_to_disambiguate(self):
         # Both UI hooks sit in classes where the single-line form is not unique;
         # the manifest records that by using multi-line anchors.
+        #
+        # The profile bar bound was 3 until 2026-08-02, and 3 was measured to be
+        # WRONG: the three-line form matched 3 sites in the 439 host and 2 in the
+        # 430 host, so the resolver rejected it as ambiguous on both versions. The
+        # bound is raised rather than relaxed because the two extra lines
+        # (`setLayoutParams` on <view>, then `return-object <view>`) are the entire
+        # discriminator; anything shorter is known not to resolve. See
+        # ProfileSettingsAnchorTests for the per-site evidence.
         hooks = {hook.hook_id: hook for hook in self.hooks}
-        self.assertGreaterEqual(len(hooks["install_settings_long_click"].anchor), 3)
+        self.assertGreaterEqual(len(hooks["install_settings_long_click"].anchor), 5)
         self.assertGreaterEqual(
             len(hooks["install_settings_long_click_actionbar"].anchor), 5
         )
