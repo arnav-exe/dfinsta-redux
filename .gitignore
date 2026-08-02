@@ -144,3 +144,4 @@ fabric.properties
 
 # Generated decoded evidence trees (see AGENTS.md: never patch source)
 /TESTING-PLAYGROUND/
+.coverage
