@@ -31,7 +31,9 @@ direction a plausible rewrite would take, and each docstring says what would
 reach the next port if that guard were dropped.
 """
 
+import contextlib
 import inspect
+import io
 import json
 import tempfile
 import unittest
@@ -69,6 +71,52 @@ from dfinsta_pipeline.resolve import (
     HostSearch,
     Outcome,
     ResolveReport,
+)
+
+from dfinsta_pipeline import agent_cost as agent_cost_module
+from dfinsta_pipeline.agent_cost import (
+    AGENT_ROUTES,
+    NEED_CAPTURE,
+    NEED_HOST,
+    NEED_PATCH,
+    NEED_UNSPECIFIED,
+    ROUTE_AGENT_PROPOSAL,
+    ROUTE_AGENT_SUPPLIER,
+    ROUTE_ALREADY_APPLIED,
+    ROUTE_DETERMINISTIC_SUPPLIER,
+    ROUTE_MECHANICAL,
+    ROUTE_NOT_RESOLVED,
+    VERDICT_FALLING,
+    VERDICT_FLAT,
+    VERDICT_RISING,
+    VERDICT_UNTESTABLE,
+    WITHHELD_DESCRIPTOR,
+    WITHHELD_PATH,
+    CostLedger,
+    HookCost,
+    Selectivity,
+    SupplierAttempt,
+    cost_report,
+    hook_costs,
+    record_run,
+    render,
+    scrub,
+    update_ledger,
+)
+from dfinsta_pipeline.capture_supply import (
+    AGENT,
+    STAGE_DRAWABLE_ABSENT,
+    STAGE_NO_PROPOSAL,
+    STAGE_PRECONDITION_TYPE_ABSENT,
+    Supplied,
+    SupplyOutcome,
+    decline,
+    run_supply_chain,
+)
+from dfinsta_pipeline.hook_manifest import (
+    CaptureSupply,
+    ManifestError,
+    SuppliedCapture,
 )
 
 
@@ -133,6 +181,7 @@ def hook_resolution(
     resolution: SiteResolution | None = None,
     searches: tuple | None = None,
     candidates: tuple | None = None,
+    supplies: tuple = (),
 ) -> HookResolution:
     if evidence is None:
         evidence = (
@@ -154,6 +203,7 @@ def hook_resolution(
         resolution=resolution,
         searches=searches,
         candidates=candidates,
+        supplies=supplies,
     )
 
 
@@ -904,6 +954,962 @@ class MutationTests(ManifestUpdateTestCase):
         self.assertEqual(first.recorded_at, second.recorded_at)
         self.assertEqual(everything(first), everything(second))
         self.assertNotIn("now(", inspect.getsource(manifest_update_module))
+
+
+# =============================================================================
+#  agent_cost: the measurement half of stage 10
+# =============================================================================
+#
+# `pipeline_flowchart.md` says agent invocations per port "should fall with every
+# version ported. A pipeline whose agent count is flat is not learning." The
+# number was measured nowhere, so the claim could not be wrong. Everything below
+# is written from what would have to be true for it to be *falsifiable*:
+#
+#   1. every hook produces a cost record, including the escalations — the
+#      opposite of `resolution_records`, where an escalation must produce nothing;
+#   2. a decline is recorded with its machine-readable stage, and a failure is
+#      never recorded at all, because it is an exception and the run dies;
+#   3. a narrowing selectivity margin is visible in the query output BEFORE it
+#      reaches 1 -> 1 and then 0;
+#   4. the same four forbidden values, attacked with the real strings the real
+#      430 and 439 supplier evidence contains.
+
+GUARD = "profile_action_bar_self_guard"
+ACTIONBAR = "Lcom/instagram/profile/actionbar/ProfileActionBar;"
+SETTINGS = "install_settings_long_click"
+
+# The self-profile model type on 439. `LX/077N;` on 430 — same hook, different
+# class, which is the whole reason a descriptor may not be stored here.
+SELF_TYPE = "LX/0Dxw;"
+DRAWABLE_ID = "0x7f082538"
+
+SUPPLY = CaptureSupply(
+    provides=(
+        SuppliedCapture("model", "reg", "model_register"),
+        SuppliedCapture("self_type", "type", "self_profile_type"),
+    ),
+    suppliers=(GUARD, AGENT),
+    params=(("self_drawable", "instagram_menu_outline_24"), ("requires_type", ACTIONBAR)),
+)
+
+#: Verbatim from a real run of `capture_supply.profile_action_bar_self_guard`
+#: against `work/439-explore/stock-439`. It contains a resource id and an
+#: obfuscated descriptor, which is why the fixture is the real text.
+GUARD_EVIDENCE = (
+    f"precondition: {ACTIONBAR} is present",
+    f"drawable instagram_menu_outline_24 resolves to {DRAWABLE_ID} in this version",
+    "instance-of by register in the matched method: v1=11 type(s)",
+    "dispatch register v1 tested against 11 subtypes",
+    "v1 is bound by the anchor at this site",
+    f"1 of 11 subtypes load instagram_menu_outline_24 ({DRAWABLE_ID}): {SELF_TYPE}",
+)
+
+
+def guard_answered(hits: int = 1, candidates: int = 11) -> Supplied:
+    evidence = list(GUARD_EVIDENCE[:-1])
+    evidence.append(
+        f"{hits} of {candidates} subtypes load instagram_menu_outline_24 "
+        f"({DRAWABLE_ID}): {SELF_TYPE}"
+    )
+    return Supplied(
+        GUARD,
+        {"model_register": "v1", "self_profile_type": SELF_TYPE},
+        evidence=tuple(evidence),
+    )
+
+
+def guard_declined(stage: str = STAGE_PRECONDITION_TYPE_ABSENT) -> Supplied:
+    return decline(
+        GUARD,
+        stage,
+        f"{ACTIONBAR} does not exist in this version. This rule describes the "
+        "ProfileActionBar design introduced around 430",
+        GUARD_EVIDENCE[:1],
+    )
+
+
+def agent_answered() -> Supplied:
+    return Supplied(
+        AGENT,
+        {"model_register": "v1", "self_profile_type": SELF_TYPE},
+        evidence=("from a validated capture proposal",),
+    )
+
+
+def supplied(*attempts: Supplied, winner: str = "") -> SupplyOutcome:
+    values = {"model": "v1", "self_type": SELF_TYPE} if winner else {}
+    return SupplyOutcome(SUPPLY, values, tuple(attempts), winner)
+
+
+def settings_hook(*supplies: SupplyOutcome, **kwargs) -> HookResolution:
+    kwargs.setdefault("found_by", "by_agent")
+    kwargs.setdefault("evidence", {"proposed": [HOST]})
+    if kwargs.get("outcome", Outcome.RESOLVED) is Outcome.RESOLVED:
+        kwargs.setdefault("resolution", site(HOST, hook_id=SETTINGS))
+    return hook_resolution(SETTINGS, supplies=supplies, **kwargs)
+
+
+def costs_for(*items: HookResolution, version: str = VERSION, stamp: str = STAMP):
+    return hook_costs(report(*items), version, stamp)
+
+
+def one_cost(*items: HookResolution, **kwargs) -> HookCost:
+    costs = costs_for(*items, **kwargs)
+    assert len(costs) == 1, f"expected one cost record, got {len(costs)}"
+    return costs[0]
+
+
+def stored(cost: HookCost) -> str:
+    return canonical_json(cost.to_dict())
+
+
+def ledger_of(*rows) -> CostLedger:
+    """A ledger built from (version, *hook resolutions) rows, in port order."""
+    ledger = CostLedger()
+    for version, *items in rows:
+        for cost in costs_for(*items, version=version):
+            ledger.record(cost)
+    return ledger
+
+
+class AgentCostTestCase(ManifestUpdateTestCase):
+    pass
+
+
+# ---------------------------------------------------------------------- purity
+
+
+class CostPurityTests(AgentCostTestCase):
+    """Same discipline as decision memory: Temporal replays this stage too."""
+
+    def test_two_calls_on_one_report_are_byte_identical(self):
+        first = costs_for(hook_resolution(), settings_hook(supplied(guard_answered(), winner=GUARD)))
+        second = costs_for(hook_resolution(), settings_hook(supplied(guard_answered(), winner=GUARD)))
+        self.assertEqual([stored(cost) for cost in first], [stored(cost) for cost in second])
+
+    def test_the_timestamp_is_the_callers_and_nothing_else_moves(self):
+        first = one_cost(hook_resolution())
+        second = one_cost(hook_resolution(), stamp="1999-01-01")
+        self.assertEqual(first.recorded_at, STAMP)
+        self.assertEqual(second.recorded_at, "1999-01-01")
+        self.assertEqual(
+            {**first.to_dict(), "recorded_at": ""}, {**second.to_dict(), "recorded_at": ""}
+        )
+
+    def test_the_module_contains_no_clock_and_no_environment(self):
+        source = inspect.getsource(agent_cost_module)
+        for forbidden in ("datetime", "time.time", "monotonic", "os.environ", "getenv", "now("):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
+
+    def test_the_pure_function_takes_no_path_and_touches_no_file(self):
+        parameters = inspect.signature(hook_costs).parameters
+        self.assertEqual(tuple(parameters), ("report", "version", "recorded_at"))
+        self.assertNotIn("path", parameters)
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the pure function touched the filesystem")
+
+        with mock.patch("builtins.open", refuse), mock.patch.object(
+            Path, "read_text", refuse
+        ), mock.patch.object(Path, "exists", refuse):
+            self.assertEqual(len(costs_for(hook_resolution())), 1)
+
+    def test_a_report_keeps_its_order(self):
+        costs = costs_for(hook_resolution(CONTEXT, found_by="named", descriptor=SHELL), hook_resolution(REELS))
+        self.assertEqual([cost.hook_id for cost in costs], [CONTEXT, REELS])
+
+    def test_a_decode_path_passed_as_the_version_is_refused_here_too(self):
+        with self.assertRaises(DecisionError) as caught:
+            costs_for(hook_resolution(), version=DECODE)
+        self.assertIn("looks like a path, not a version label", str(caught.exception))
+
+
+# ---------------------------------------------------------------- the five routes
+
+
+class RouteTests(AgentCostTestCase):
+    """What each hook cost, by the route that produced it.
+
+    The five the pipeline can take, plus `already_applied`, which is none of them
+    and must not be counted as any of them.
+    """
+
+    def test_an_anchor_only_hook_is_mechanical_and_owes_no_agent(self):
+        cost = one_cost(hook_resolution())
+        self.assertEqual(cost.route, ROUTE_MECHANICAL)
+        self.assertEqual(cost.agent_for, ())
+        self.assertFalse(cost.needed_agent)
+
+    def test_a_deterministic_supplier_is_its_own_route_not_merely_mechanical(self):
+        """The distinction the early warning depends on.
+
+        A hook resolved by a rule that could stop applying is not in the same
+        state as one resolved by its anchor alone, and collapsing them would hide
+        every future decline behind an unchanged count.
+        """
+        cost = one_cost(settings_hook(supplied(guard_answered(), winner=GUARD), found_by="named", descriptor=SHELL))
+        self.assertEqual(cost.route, ROUTE_DETERMINISTIC_SUPPLIER)
+        self.assertEqual(cost.agent_for, ())
+
+    def test_an_agent_supplier_is_an_agent_invocation_and_says_which_captures(self):
+        cost = one_cost(
+            settings_hook(
+                supplied(guard_declined(), agent_answered(), winner=AGENT),
+                found_by="named",
+                descriptor=SHELL,
+            )
+        )
+        self.assertEqual(cost.route, ROUTE_AGENT_SUPPLIER)
+        self.assertEqual(cost.agent_for, (f"{NEED_CAPTURE}:model", f"{NEED_CAPTURE}:self_type"))
+        self.assertTrue(cost.needed_agent)
+
+    def test_an_agent_proposed_host_is_an_agent_invocation_for_a_host(self):
+        cost = one_cost(settings_hook())
+        self.assertEqual(cost.route, ROUTE_AGENT_PROPOSAL)
+        self.assertEqual(cost.agent_for, (NEED_HOST,))
+
+    def test_a_hook_that_did_not_resolve_records_a_cost_and_no_resolution(self):
+        """The two halves of stage 10, on one hook, deliberately disagreeing.
+
+        Decision memory must record nothing for an escalation — absence is never
+        a pass, and a reason string filed as an answer is replayed next port. The
+        cost ledger must record it, because the escalation IS the cost. A build
+        that recorded neither is the state this pipeline was in.
+        """
+        escalated = settings_hook(outcome=Outcome.NEEDS_AGENT, resolution=None, evidence={"proposed": []})
+        self.assertEqual(records_for(escalated), ())
+        cost = one_cost(escalated)
+        self.assertEqual(cost.route, ROUTE_NOT_RESOLVED)
+        self.assertEqual(cost.outcome, Outcome.NEEDS_AGENT.value)
+
+    def test_a_needs_agent_with_no_host_proposed_asks_for_a_host(self):
+        cost = one_cost(
+            settings_hook(
+                outcome=Outcome.NEEDS_AGENT,
+                resolution=None,
+                evidence={"proposed": []},
+                searches=(HostSearch("by_agent", (), {"proposed": []}, reason="no host proposed"),),
+                candidates=(),
+            )
+        )
+        self.assertEqual(cost.agent_for, (NEED_HOST,))
+
+    def test_a_needs_agent_whose_anchor_matched_asks_for_the_whole_patch(self):
+        """`requires_proposal`: the site is known and the payload is a shape.
+
+        A different cost from a missing host — a host can be retired by a
+        manifest fingerprint, a whole patch cannot — so they may not collapse.
+        """
+        cost = one_cost(settings_hook(outcome=Outcome.NEEDS_AGENT, resolution=None))
+        self.assertEqual(cost.agent_for, (NEED_PATCH,))
+
+    def test_a_needs_agent_with_unfilled_captures_names_the_captures(self):
+        cost = one_cost(
+            settings_hook(
+                supplied(guard_declined(), decline(AGENT, STAGE_NO_PROPOSAL, "no proposal")),
+                outcome=Outcome.NEEDS_AGENT,
+                resolution=None,
+            )
+        )
+        self.assertEqual(cost.agent_for, (f"{NEED_CAPTURE}:model", f"{NEED_CAPTURE}:self_type"))
+
+    def test_a_blocked_outcome_is_not_counted_as_an_agent_invocation(self):
+        """AMBIGUOUS and NOT_FOUND stop the port; they do not run an agent.
+
+        `pipeline_flowchart.md` defines NEEDS_AGENT as the only way an agent runs,
+        so counting the others would inflate the very number this exists to track
+        and make a blocked port read as an expensive one.
+        """
+        for outcome in (Outcome.AMBIGUOUS, Outcome.UNRESOLVED, Outcome.NOT_FOUND, Outcome.CONFLICT):
+            with self.subTest(outcome=outcome.value):
+                cost = one_cost(hook_resolution(outcome=outcome))
+                self.assertEqual(cost.route, ROUTE_NOT_RESOLVED)
+                self.assertFalse(cost.needed_agent)
+                self.assertIn("blocked port rather than an agent invocation", cost.note)
+
+    def test_already_applied_is_its_own_route_and_not_a_mechanical_win(self):
+        """Mutation bait: fold `already_applied` into `mechanical`.
+
+        A second run over one decode would then report every hook newly
+        mechanised, and the agent count would fall without anything having been
+        learned — the exact false positive the metric exists to avoid.
+        """
+        cost = one_cost(hook_resolution(outcome=Outcome.ALREADY_APPLIED, resolution=None))
+        self.assertEqual(cost.route, ROUTE_ALREADY_APPLIED)
+        self.assertNotIn(ROUTE_ALREADY_APPLIED, AGENT_ROUTES)
+        self.assertIn("learned nothing about what it would cost", cost.note)
+
+    def test_a_route_claiming_no_agent_may_not_carry_an_agent_need(self):
+        with self.assertRaises(DecisionError) as caught:
+            HookCost(REELS, VERSION, ROUTE_MECHANICAL, "resolved", agent_for=(NEED_HOST,))
+        self.assertIn("is not mechanical", str(caught.exception))
+
+    def test_an_agent_route_must_say_what_the_agent_was_for(self):
+        with self.assertRaises(DecisionError) as caught:
+            HookCost(REELS, VERSION, ROUTE_AGENT_PROPOSAL, "resolved")
+        self.assertIn("nothing says what for", str(caught.exception))
+
+    def test_an_unrecognised_route_is_refused_rather_than_dropped_from_the_count(self):
+        with self.assertRaises(DecisionError) as caught:
+            HookCost(REELS, VERSION, "mechanicaal", "resolved")
+        self.assertIn("is not one of", str(caught.exception))
+
+
+# ------------------------------------------------- supplier attempts and declines
+
+
+class SupplierAttemptTests(AgentCostTestCase):
+    """The early warning. A decline is a finding; a failure is a fault.
+
+    `capture_supply` is explicit that the first is a returned value with a
+    machine-readable stage and the second is an exception. Only the first can
+    reach this ledger, and it has to arrive with the stage attached or the ledger
+    records only "an agent ran" — which is indistinguishable from "this version is
+    genuinely new", and is exactly the blindness being fixed.
+    """
+
+    def test_a_decline_is_recorded_with_its_machine_readable_stage(self):
+        cost = one_cost(
+            settings_hook(
+                supplied(guard_declined(STAGE_DRAWABLE_ABSENT), agent_answered(), winner=AGENT),
+                found_by="named",
+                descriptor=SHELL,
+            )
+        )
+        self.assertEqual([item.supplier for item in cost.attempts], [GUARD, AGENT])
+        rejected = cost.attempts[0]
+        self.assertFalse(rejected.answered)
+        self.assertEqual(rejected.stage, STAGE_DRAWABLE_ABSENT)
+        self.assertTrue(rejected.deterministic)
+        self.assertEqual(cost.deterministic_declines, (rejected,))
+        # And the winner is not mistaken for one.
+        self.assertTrue(cost.attempts[1].answered)
+        self.assertEqual(cost.attempts[1].stage, "")
+        self.assertFalse(cost.attempts[1].deterministic)
+
+    def test_a_decline_without_a_stage_cannot_be_recorded_at_all(self):
+        with self.assertRaises(DecisionError) as caught:
+            SupplierAttempt(GUARD, ("model",), answered=False, reason="it did not work")
+        self.assertIn("must carry the stage it stopped at", str(caught.exception))
+
+    def test_a_winner_may_not_carry_a_decline_stage(self):
+        with self.assertRaises(DecisionError) as caught:
+            SupplierAttempt(GUARD, ("model",), answered=True, stage=STAGE_DRAWABLE_ABSENT)
+        self.assertIn("rotting rule", str(caught.exception))
+
+    def test_a_failure_is_an_exception_and_so_reaches_no_record(self):
+        """The distinction drawn at the boundary that actually draws it.
+
+        `run_supply_chain` catches nothing: a supplier asked the wrong roles, or
+        an unreadable index, raises out of the run. So a fault cannot be recorded
+        as a finding about the target — the port dies instead, which is the
+        correct outcome and the reason a stage string always means the target.
+        """
+
+        class Request:
+            supply = SUPPLY
+
+        def boom(request):
+            raise ManifestError("the index is unreadable — a fault, not a finding")
+
+        with self.assertRaises(ManifestError):
+            run_supply_chain(Request(), {GUARD: boom, AGENT: lambda request: agent_answered()})
+
+        outcome = run_supply_chain(
+            Request(),
+            {GUARD: lambda request: guard_declined(), AGENT: lambda request: agent_answered()},
+        )
+        cost = one_cost(settings_hook(outcome, found_by="named", descriptor=SHELL))
+        self.assertEqual([item.stage for item in cost.attempts], [STAGE_PRECONDITION_TYPE_ABSENT, ""])
+
+    def test_the_deterministic_flag_is_derived_from_the_supplier_name(self):
+        """A stored flag could disagree with the name; the whole query turns on it."""
+        self.assertTrue(SupplierAttempt(GUARD, (), answered=True).deterministic)
+        self.assertFalse(SupplierAttempt(AGENT, (), answered=True).deterministic)
+        self.assertNotIn("deterministic=", inspect.getsource(agent_cost_module))
+
+
+# ---------------------------------------------------------- measured selectivity
+
+
+class SelectivityTests(AgentCostTestCase):
+    """The numbers a run computes and then throws away, kept as numbers.
+
+    `_selectivity` in `manifest_update` already writes them into a chain
+    `finding`, as prose, which is the right place for a human reading one record
+    and useless for a trend. `resolve.py` calls out the same antipattern when it
+    refuses to make a gate "parse '1/2' out of the reason prose".
+    """
+
+    def test_a_by_literal_host_records_the_widest_literal_and_the_intersection(self):
+        cost = one_cost(hook_resolution())
+        measurement = cost.selectivity[0]
+        self.assertEqual(measurement.subject, "by_literal")
+        self.assertEqual(measurement.candidates, 4)  # the least selective literal alone
+        self.assertEqual(measurement.hits, 1)  # all three together
+        self.assertEqual(measurement.margin, 3)
+        self.assertEqual(measurement.detail, dict(LITERAL_EVIDENCE["classes_per_literal"]))
+
+    def test_the_capture_suppliers_counts_are_recovered_as_numbers(self):
+        """"10 subtypes tested, 1 loads the drawable" is the second discriminator.
+
+        It exists only as prose inside `Supplied.evidence`, which is the seam:
+        `capture_supply.Supplied` wants a typed `measured` mapping filled where
+        the count is taken, the way `HostSearch.evidence` already carries
+        `classes_per_literal` as a dict.
+        """
+        cost = one_cost(
+            settings_hook(
+                supplied(guard_answered(hits=1, candidates=11), winner=GUARD),
+                found_by="named",
+                descriptor=SHELL,
+            )
+        )
+        measurement = cost.selectivity[0]
+        self.assertEqual(measurement.subject, f"supplier:{GUARD}")
+        self.assertEqual((measurement.candidates, measurement.hits), (11, 1))
+        self.assertEqual(cost.attempts[0].measured, (measurement,))
+
+    def test_an_evidence_line_that_states_no_count_records_no_measurement(self):
+        """Fails closed. A guessed number would be a trend nobody measured."""
+        vague = Supplied(GUARD, {"model_register": "v1"}, evidence=("it worked out",))
+        cost = one_cost(settings_hook(supplied(vague, winner=GUARD), found_by="named", descriptor=SHELL))
+        self.assertEqual(cost.selectivity, ())
+        self.assertEqual(cost.attempts[0].evidence, ("it worked out",))
+
+    def test_a_measurement_claiming_more_hits_than_candidates_is_refused(self):
+        with self.assertRaises(DecisionError) as caught:
+            Selectivity("by_literal", "x", candidates=2, hits=3)
+        self.assertIn("is impossible", str(caught.exception))
+
+    def test_the_three_dangerous_shapes_are_named_rather_than_left_to_a_reader(self):
+        self.assertTrue(Selectivity("s", "m", candidates=0, hits=0).failed)
+        self.assertTrue(Selectivity("s", "m", candidates=1, hits=1).vacuous)
+        self.assertTrue(Selectivity("s", "m", candidates=4, hits=2).ambiguous)
+        healthy = Selectivity("s", "m", candidates=4, hits=1)
+        self.assertFalse(healthy.failed or healthy.vacuous or healthy.ambiguous)
+
+    def test_the_selectivity_is_recorded_even_when_the_hook_did_not_resolve(self):
+        """The version a fingerprint stops discriminating is the version it fails.
+
+        Recording margins only for resolved hooks would lose the measurement in
+        exactly the run that explains the failure.
+        """
+        broken = hook_resolution(
+            outcome=Outcome.NOT_FOUND,
+            resolution=None,
+            evidence={
+                "literals": list(LITERALS),
+                "classes_per_literal": {LITERALS[0]: 4, LITERALS[1]: 3, LITERALS[2]: 2},
+                "co_located": 0,
+            },
+        )
+        cost = one_cost(broken)
+        self.assertEqual((cost.selectivity[0].candidates, cost.selectivity[0].hits), (4, 0))
+        self.assertTrue(cost.selectivity[0].failed)
+
+
+# ----------------------------------------------------------- the forbidden set
+
+
+class CostForbiddenValueTests(AgentCostTestCase):
+    """Each attack builds the record that would leak, with a positive control.
+
+    The strings are the real ones: `capture_supply` really does append
+    ``"1 of 11 subtypes load instagram_menu_outline_24 (0x7f082538): LX/0Dxw;"``
+    to its evidence on 439, so the leak is not hypothetical and the fixture is
+    not a straw man.
+    """
+
+    def test_an_obfuscated_descriptor_in_supplier_evidence_is_withheld(self):
+        cost = one_cost(
+            settings_hook(supplied(guard_answered(), winner=GUARD), found_by="named", descriptor=SHELL)
+        )
+        text = stored(cost)
+        self.assertNotIn(SELF_TYPE, text)
+        self.assertIn(WITHHELD_DESCRIPTOR, text)
+        # Positive control: the STABLE named type in the same evidence tuple is
+        # kept. It is the supplier's precondition — a decline that could not name
+        # it would say only that something was missing.
+        self.assertIn(ACTIONBAR, text)
+
+    def test_a_resource_id_in_supplier_evidence_is_withheld(self):
+        cost = one_cost(
+            settings_hook(supplied(guard_answered(), winner=GUARD), found_by="named", descriptor=SHELL)
+        )
+        text = stored(cost)
+        self.assertNotIn(DRAWABLE_ID, text)
+        self.assertIn(REDACTED_RESOURCE_ID, text)
+        # Positive control: the drawable NAME survives. 98.8% of names survive a
+        # version step and 0.9% of ids do, so the name is the handle.
+        self.assertIn("instagram_menu_outline_24", text)
+
+    def test_an_obfuscated_host_never_reaches_the_cost_record_at_all(self):
+        """A cost is a fact about the port. It needs no class and stores none."""
+        cost = one_cost(hook_resolution())
+        self.assertNotIn(HOST, stored(cost))
+        self.assertNotIn("smali_path", stored(cost))
+        self.assertNotIn(PATH, stored(cost))
+
+    def test_an_absolute_path_quoted_by_a_decline_is_withheld(self):
+        """Attack: `STAGE_CANDIDATE_UNREADABLE` quotes an OSError.
+
+        Its message carries `decode / path`, which is absolute, so nobody has to
+        write a machine path down for one to be stored.
+        """
+        unreadable = decline(
+            GUARD,
+            "candidate_unreadable",
+            f"the index names it but it cannot be read ([Errno 2] {DECODE}/smali/X/a.smali)",
+        )
+        cost = one_cost(
+            settings_hook(
+                supplied(unreadable, agent_answered(), winner=AGENT), found_by="named", descriptor=SHELL
+            )
+        )
+        text = stored(cost)
+        self.assertNotIn(DECODE, text)
+        self.assertIn(WITHHELD_PATH, text)
+        # Positive control: the stage survived the scrub, which is the only part
+        # of that decline the early warning needs.
+        self.assertIn("candidate_unreadable", text)
+
+    def test_an_api_path_literal_is_kept_even_though_it_is_path_shaped(self):
+        """The mirror failure: scrubbing so hard the measurement is lost.
+
+        `/api/v1/clips/` and `/home/arnav/work/` are the same shape. The literal
+        is the strongest fingerprint measured (93.9% survival), and a detail key
+        that came back as `<absolute-path-withheld>` would collapse every literal
+        in the map onto one key.
+        """
+        rooted = hook_resolution(
+            evidence={
+                "literals": ["/api/v1/clips/discover/", "/api/v1/clips/home/"],
+                "classes_per_literal": {"/api/v1/clips/discover/": 4, "/api/v1/clips/home/": 3},
+                "co_located": 1,
+            }
+        )
+        cost = one_cost(rooted)
+        self.assertEqual(sorted(cost.selectivity[0].detail), ["/api/v1/clips/discover/", "/api/v1/clips/home/"])
+        self.assertNotIn(WITHHELD_PATH, stored(cost))
+
+    def test_a_hand_built_record_carrying_a_leak_is_refused_not_stored(self):
+        """Scrub-then-refuse: the builder cleans, the record checks.
+
+        A later caller constructing a HookCost directly cannot skip the first
+        half, the same way `decisions.Step` refuses an absolute path rather than
+        trusting whoever built it.
+        """
+        for value, expected in (
+            (f"resolved via {SELF_TYPE}", "obfuscated descriptor"),
+            (f"the drawable is {DRAWABLE_ID}", "resource id"),
+            (f"see {DECODE}/x.smali", "absolute path"),
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(DecisionError) as caught:
+                    HookCost(REELS, VERSION, ROUTE_MECHANICAL, "resolved", note=value)
+                self.assertIn(expected, str(caught.exception))
+        # Positive control: the same field accepts what it is for.
+        self.assertEqual(
+            HookCost(REELS, VERSION, ROUTE_MECHANICAL, "resolved", note=f"{ACTIONBAR} is present").note,
+            f"{ACTIONBAR} is present",
+        )
+
+    def test_scrub_keeps_a_mobileconfig_flag_and_a_relative_smali_path(self):
+        self.assertEqual(scrub("0x81099a000034a6"), "0x81099a000034a6")
+        self.assertEqual(scrub("smali_classes6/X/0DnT.smali"), "smali_classes6/X/0DnT.smali")
+        self.assertEqual(scrub("v1=11 type(s)"), "v1=11 type(s)")
+        self.assertEqual(scrub(ACTIONBAR), ACTIONBAR)
+        self.assertEqual(scrub("LX/0Dxw;"), WITHHELD_DESCRIPTOR)
+
+    def test_nothing_is_written_into_the_field_the_proposer_is_shown(self):
+        cost = one_cost(hook_resolution())
+        self.assertNotIn("intent_constraints", stored(cost))
+        self.assertNotIn("intent_constraints", inspect.getsource(agent_cost_module))
+
+
+# --------------------------------------------------------------------- the query
+
+
+class CostQueryTests(AgentCostTestCase):
+    """The deliverable: the claim, per version, against the version before it."""
+
+    def test_it_counts_agent_invocations_and_says_what_each_was_for(self):
+        ledger = ledger_of(
+            (
+                VERSION,
+                hook_resolution(REELS),
+                settings_hook(),  # agent host
+                settings_hook(outcome=Outcome.NEEDS_AGENT, resolution=None),  # whole patch
+            )
+        )
+        report_out = cost_report(ledger, VERSION)
+        self.assertEqual(report_out["now"]["agent_invocations"], 2)
+        self.assertEqual(report_out["now"]["by_need"], {NEED_HOST: 1, NEED_CAPTURE: 0, NEED_PATCH: 1, NEED_UNSPECIFIED: 0})
+        self.assertEqual(
+            [(entry["hook_id"], entry["needed_for"]) for entry in report_out["agent_hooks"]],
+            [(SETTINGS, [NEED_HOST]), (SETTINGS, [NEED_PATCH])],
+        )
+
+    def test_one_version_alone_makes_the_claim_untestable_and_says_so(self):
+        """The honest verdict, and the one the pipeline has had until now.
+
+        "Agent invocations should fall" is a claim about a sequence, so a single
+        port cannot satisfy it — and must not be reported as if it had.
+        """
+        ledger = ledger_of((VERSION, hook_resolution(), settings_hook()))
+        report_out = cost_report(ledger, VERSION)
+        self.assertEqual(report_out["verdict"], VERDICT_UNTESTABLE)
+        self.assertIsNone(report_out["delta_agent_invocations"])
+        self.assertIn("claim about a sequence", "\n".join(render(report_out)))
+
+    def test_a_flat_count_is_reported_as_flat_and_not_as_success(self):
+        ledger = ledger_of(
+            ("430", hook_resolution(), settings_hook()),
+            ("439", hook_resolution(), settings_hook()),
+        )
+        report_out = cost_report(ledger, "439")
+        self.assertEqual(report_out["previous_version"], "430")
+        self.assertEqual(report_out["delta_agent_invocations"], 0)
+        self.assertEqual(report_out["verdict"], VERDICT_FLAT)
+        self.assertIn("FLAT against 430", "\n".join(render(report_out)))
+        self.assertIn("is not learning", "\n".join(render(report_out)))
+
+    def test_a_hook_that_became_mechanical_shows_as_falling_and_is_named(self):
+        ledger = ledger_of(
+            ("430", hook_resolution(), settings_hook()),
+            ("439", hook_resolution(), settings_hook(found_by="by_literal")),
+        )
+        report_out = cost_report(ledger, "439")
+        self.assertEqual(report_out["verdict"], VERDICT_FALLING)
+        self.assertEqual(report_out["delta_agent_invocations"], -1)
+        self.assertEqual(report_out["retired"], [SETTINGS])
+        self.assertIn("falling — 1 fewer than 430", "\n".join(render(report_out)))
+
+    def test_a_new_agent_cost_shows_as_rising_and_is_named(self):
+        ledger = ledger_of(
+            ("430", hook_resolution(), hook_resolution(CONTEXT, found_by="named", descriptor=SHELL)),
+            ("439", hook_resolution(), hook_resolution(CONTEXT, found_by="by_agent", descriptor=SHELL)),
+        )
+        report_out = cost_report(ledger, "439")
+        self.assertEqual(report_out["verdict"], VERDICT_RISING)
+        self.assertEqual(report_out["newly_costly"], [CONTEXT])
+
+    def test_a_narrowing_selectivity_margin_is_visible_across_two_versions(self):
+        """The requirement in one test: see it at 3 -> 1, not at 0.
+
+        Both versions resolve, both ports succeed, and nothing else in the
+        pipeline reports any difference between them. The discriminator lost 7 of
+        its 9 excluded candidates.
+        """
+
+        def reels(widest):
+            return hook_resolution(
+                evidence={
+                    "literals": list(LITERALS),
+                    "classes_per_literal": {LITERALS[0]: widest, LITERALS[1]: 3, LITERALS[2]: 2},
+                    "co_located": 1,
+                }
+            )
+
+        ledger = ledger_of(("430", reels(10)), ("439", reels(3)))
+        report_out = cost_report(ledger, "439")
+        entry = report_out["selectivity"][0]
+        self.assertEqual((entry["candidates"], entry["hits"]), (3, 1))
+        self.assertEqual((entry["previous"]["candidates"], entry["previous"]["hits"]), (10, 1))
+        self.assertEqual(entry["trend"], "NARROWING")
+        text = "\n".join(render(report_out))
+        self.assertIn("3 -> 1", text)
+        self.assertIn("(430: 10 -> 1)", text)
+        self.assertIn("NARROWING", text)
+
+    def test_a_margin_that_reaches_one_to_one_is_called_vacuous_before_it_fails(self):
+        def reels(widest, co_located=1):
+            return hook_resolution(
+                evidence={
+                    "literals": [LITERALS[0]],
+                    "classes_per_literal": {LITERALS[0]: widest},
+                    "co_located": co_located,
+                }
+            )
+
+        ledger = ledger_of(("430", reels(3)), ("439", reels(1)), ("440", reels(1, 0)))
+        self.assertEqual(cost_report(ledger, "439")["selectivity"][0]["trend"], "VACUOUS")
+        self.assertEqual(cost_report(ledger, "440")["selectivity"][0]["trend"], "FAILED")
+
+    def test_a_deterministic_rule_that_stopped_answering_is_reported_as_rot(self):
+        """The signal the whole module exists for.
+
+        Both ports succeed. Both produce a rendered patch. The only difference is
+        which supplier answered, and without this the visible symptom is "an agent
+        ran" — indistinguishable from "this version is genuinely new".
+        """
+        healthy = settings_hook(supplied(guard_answered(), winner=GUARD), found_by="named", descriptor=SHELL)
+        rotted = settings_hook(
+            supplied(guard_declined(STAGE_DRAWABLE_ABSENT), agent_answered(), winner=AGENT),
+            found_by="named",
+            descriptor=SHELL,
+        )
+        ledger = ledger_of(("430", healthy), ("439", rotted))
+
+        before = cost_report(ledger, "430")
+        self.assertEqual(before["now"]["agent_invocations"], 0)
+        self.assertEqual(before["rotting"], [])
+
+        after = cost_report(ledger, "439")
+        self.assertEqual(len(after["rotting"]), 1)
+        entry = after["rotting"][0]
+        self.assertEqual(entry["supplier"], GUARD)
+        self.assertEqual(entry["stage"], STAGE_DRAWABLE_ABSENT)
+        self.assertTrue(entry["answered_previously"])
+        self.assertEqual(entry["fell_through_to"], "an agent")
+        text = "\n".join(render(after))
+        self.assertIn(f"declined at '{STAGE_DRAWABLE_ABSENT}'", text)
+        self.assertIn("it ANSWERED on 430", text)
+        self.assertIn("rule rotting, not a new version", text)
+
+    def test_a_rule_that_ran_and_held_is_not_reported_as_one_that_never_ran(self):
+        """"No declines" is true of a rule that held and of one nobody asked.
+
+        Those are different states and only the first is evidence the rule still
+        works, so the healthy report names the rules that are holding rather than
+        saying nothing broke.
+        """
+        held = cost_report(
+            ledger_of((VERSION, settings_hook(supplied(guard_answered(), winner=GUARD), found_by="named", descriptor=SHELL))),
+            VERSION,
+        )
+        self.assertEqual(held["holding"], [{"hook_id": SETTINGS, "supplier": GUARD}])
+        self.assertIn(f"1 held — {GUARD} for {SETTINGS}", "\n".join(render(held)))
+
+        never = cost_report(ledger_of((VERSION, hook_resolution())), VERSION)
+        self.assertEqual(never["holding"], [])
+        self.assertIn("none ran. Not 'none broke'", "\n".join(render(never)))
+
+    def test_a_rule_that_stopped_being_tried_at_all_is_also_reported(self):
+        """A decline is visible; a supplier the manifest stopped asking is not.
+
+        Both end with an agent answering, so both look identical from outside.
+        """
+        healthy = settings_hook(supplied(guard_answered(), winner=GUARD), found_by="named", descriptor=SHELL)
+        dropped = settings_hook(
+            supplied(agent_answered(), winner=AGENT), found_by="named", descriptor=SHELL
+        )
+        after = cost_report(ledger_of(("430", healthy), ("439", dropped)), "439")
+        self.assertEqual([entry["stage"] for entry in after["rotting"]], ["not_tried"])
+        self.assertIn("did not run at all in this one", after["rotting"][0]["reason"])
+
+    def test_an_unmeasured_version_reports_nothing_rather_than_zero_cost(self):
+        report_out = cost_report(ledger_of((VERSION, hook_resolution())), "999")
+        self.assertFalse(report_out["recorded"])
+        self.assertIn("not 'nothing cost anything'", "\n".join(render(report_out)).lower())
+
+    def test_an_explicit_previous_version_overrides_the_preceding_one(self):
+        ledger = ledger_of(
+            ("340", hook_resolution(), settings_hook(), settings_hook(outcome=Outcome.NEEDS_AGENT, resolution=None)),
+            ("430", hook_resolution(), settings_hook()),
+            ("439", hook_resolution(), settings_hook()),
+        )
+        self.assertEqual(cost_report(ledger, "439")["verdict"], VERDICT_FLAT)
+        self.assertEqual(cost_report(ledger, "439", previous="340")["verdict"], VERDICT_FALLING)
+
+    def test_the_cli_prints_the_report_and_exits_nonzero_on_an_unmeasured_version(self):
+        path = self.tmp / "manifest" / "agent_cost.jsonl"
+        update_ledger(report(hook_resolution(), settings_hook()), VERSION, STAMP, path=path)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = agent_cost_module.main(["report", VERSION, "--ledger", str(path)])
+        self.assertEqual(code, 0)
+        self.assertIn("AGENT COST — 439", buffer.getvalue())
+        self.assertIn("agent invocations: 1", buffer.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(agent_cost_module.main(["report", "999", "--ledger", str(path)]), 1)
+
+
+# -------------------------------------------------------------------- the ledger
+
+
+class CostLedgerTests(AgentCostTestCase):
+    def setUp(self):
+        super().setUp()
+        self.ledger_path = self.tmp / "manifest" / "agent_cost.jsonl"
+
+    def test_records_round_trip_through_the_file(self):
+        written = update_ledger(
+            report(hook_resolution(), settings_hook(supplied(guard_answered(), winner=GUARD))),
+            VERSION,
+            STAMP,
+            path=self.ledger_path,
+        )
+        reloaded = CostLedger.load(self.ledger_path)
+        self.assertEqual(list(reloaded.costs), list(written))
+        self.assertEqual(reloaded.costs[1].attempts, written[1].attempts)
+        self.assertEqual(reloaded.costs[1].selectivity, written[1].selectivity)
+
+    def test_the_file_is_byte_identical_across_two_runs_of_one_report(self):
+        one, two = self.tmp / "a" / "cost.jsonl", self.tmp / "b" / "cost.jsonl"
+        source = report(hook_resolution(), settings_hook(supplied(guard_answered(), winner=GUARD)))
+        update_ledger(source, VERSION, STAMP, path=one)
+        update_ledger(source, VERSION, STAMP, path=two)
+        self.assertEqual(one.read_bytes(), two.read_bytes())
+
+    def test_it_appends_and_never_deduplicates(self):
+        update_ledger(report(hook_resolution()), VERSION, STAMP, path=self.ledger_path)
+        update_ledger(report(hook_resolution()), VERSION, STAMP, path=self.ledger_path)
+        self.assertEqual(len(CostLedger.load(self.ledger_path).costs_for(VERSION)), 2)
+
+    def test_versions_come_back_in_port_order_not_sorted(self):
+        """Sorting would put '1000' before '439', and 'the previous port' is a
+        fact about sequence rather than about string order."""
+        ledger = ledger_of(("439", hook_resolution()), ("1000", hook_resolution()))
+        self.assertEqual(ledger.versions, ("439", "1000"))
+        self.assertEqual(ledger.previous_version("1000"), "439")
+        self.assertIsNone(ledger.previous_version("439"))
+
+    def test_an_unreadable_line_is_named_before_anything_is_appended(self):
+        self.ledger_path.parent.mkdir(parents=True)
+        self.ledger_path.write_text('{"schema_version": 1, "kind": "hook_cost"}\n', encoding="utf-8")
+        with self.assertRaises(DecisionError) as caught:
+            update_ledger(report(hook_resolution()), VERSION, STAMP, path=self.ledger_path)
+        self.assertIn(f"{self.ledger_path}:1", str(caught.exception))
+
+    def test_a_decision_memory_line_is_refused_rather_than_half_read(self):
+        """The two files are different tables and must not be crossed."""
+        self.ledger_path.parent.mkdir(parents=True)
+        self.ledger_path.write_text(
+            '{"schema_version": 1, "kind": "resolution", "record": {}}\n', encoding="utf-8"
+        )
+        with self.assertRaises(DecisionError) as caught:
+            CostLedger.load(self.ledger_path)
+        self.assertIn("unexpected record kind", str(caught.exception))
+
+    def test_record_run_writes_both_halves_of_stage_ten(self):
+        """One call site. A port that recorded what it learned and forgot what it
+        paid is the state this whole module exists to leave behind."""
+        memory_path = self.tmp / "manifest" / "decisions.jsonl"
+        written = record_run(
+            report(hook_resolution(), settings_hook(outcome=Outcome.NEEDS_AGENT, resolution=None)),
+            VERSION,
+            STAMP,
+            memory_path=memory_path,
+            ledger_path=self.ledger_path,
+        )
+        self.assertEqual([record.hook_id for record in written["resolutions"]], [REELS])
+        self.assertEqual([cost.hook_id for cost in written["costs"]], [REELS, SETTINGS])
+        self.assertTrue(memory_path.exists() and self.ledger_path.exists())
+
+    def test_the_ledger_defaults_to_a_committed_path_and_is_never_touched_here(self):
+        for function in (agent_cost_module.open_ledger, update_ledger):
+            with self.subTest(function=function.__name__):
+                self.assertIs(
+                    inspect.signature(function).parameters["path"].default,
+                    agent_cost_module.DEFAULT_LEDGER_PATH,
+                )
+        self.assertEqual(agent_cost_module.DEFAULT_LEDGER_PATH.parent, DEFAULT_MEMORY_PATH.parent)
+
+
+# ------------------------------------------------------------------- mutations
+
+
+class CostMutationTests(AgentCostTestCase):
+    """The same guards, re-attacked from the direction a plausible rewrite takes."""
+
+    def test_counting_only_resolved_hooks_would_report_the_expensive_port_as_free(self):
+        """Mutation: mirror `resolution_records` and skip the escalations.
+
+        It reads as consistency between the two halves of stage 10. What it does
+        is delete the cost: a port where every settings hook escalated to an agent
+        would record zero agent invocations and read as fully mechanised.
+        """
+        escalated = report(
+            hook_resolution(REELS),
+            settings_hook(outcome=Outcome.NEEDS_AGENT, resolution=None),
+            settings_hook(outcome=Outcome.NEEDS_AGENT, resolution=None, evidence={"proposed": []}),
+        )
+        self.assertEqual([record.hook_id for record in resolution_records(escalated, VERSION, STAMP)], [REELS])
+        costs = hook_costs(escalated, VERSION, STAMP)
+        self.assertEqual(len(costs), 3)
+        self.assertEqual(sum(1 for cost in costs if cost.needed_agent), 2)
+
+    def test_treating_an_agent_supplier_as_a_supplier_would_hide_the_invocation(self):
+        """Mutation: count "a supplier answered" and not WHICH supplier.
+
+        The chain is written so the deterministic rule is tried first and the
+        agent is the fallback, so "a supplier answered" is true in both cases. The
+        distinction between them is the entire measurement.
+        """
+        deterministic = one_cost(
+            settings_hook(supplied(guard_answered(), winner=GUARD), found_by="named", descriptor=SHELL)
+        )
+        fell_through = one_cost(
+            settings_hook(
+                supplied(guard_declined(), agent_answered(), winner=AGENT),
+                found_by="named",
+                descriptor=SHELL,
+            )
+        )
+        self.assertEqual(deterministic.route, ROUTE_DETERMINISTIC_SUPPLIER)
+        self.assertEqual(fell_through.route, ROUTE_AGENT_SUPPLIER)
+        self.assertFalse(deterministic.needed_agent)
+        self.assertTrue(fell_through.needed_agent)
+
+    def test_reading_the_escalation_reason_as_prose_would_misfile_a_new_branch(self):
+        """Mutation: decide what the agent is for by matching `reason` text.
+
+        `resolve._classify` writes three different NEEDS_AGENT strings and a
+        fourth would be filed as whichever it resembled. Every branch here keys on
+        a field, and the unmatched case is recorded as `unspecified` rather than
+        defaulted to a host.
+        """
+        invented = HookResolution(
+            SETTINGS,
+            Outcome.NEEDS_AGENT,
+            reason="something new nobody has written a branch for",
+            descriptor=None,
+            searches=(HostSearch("named", (SHELL,), {"descriptor": SHELL}),),
+            candidates=(),
+        )
+        cost = one_cost(invented)
+        self.assertEqual(cost.agent_for, (NEED_UNSPECIFIED,))
+        self.assertIn("needs a branch here", cost.note)
+
+    def test_averaging_the_margin_would_hide_the_literal_that_is_dying(self):
+        """Mutation: record the mean of `classes_per_literal` rather than the max.
+
+        The max is the claim that co-location did the work — "the least selective
+        literal alone would have left N". A mean moves when any literal moves and
+        says nothing about the worst case, which is the case that fails.
+        """
+        cost = one_cost(hook_resolution())  # 4, 3, 2 -> co-located 1
+        self.assertEqual(cost.selectivity[0].candidates, 4)
+        self.assertNotEqual(cost.selectivity[0].candidates, 3)
+        self.assertEqual(cost.selectivity[0].detail[LITERALS[2]], 2)
+
+    def test_a_supplier_declining_silently_would_look_exactly_like_a_new_version(self):
+        """Mutation: record only the winning supplier, dropping `attempts`.
+
+        `SupplyOutcome.attempts` exists precisely so a gate sees the deterministic
+        rule was tried. Dropping it leaves "an agent answered", which is what the
+        pipeline reported before this module and is indistinguishable from a
+        version that genuinely moved.
+        """
+        cost = one_cost(
+            settings_hook(
+                supplied(guard_declined(STAGE_DRAWABLE_ABSENT), agent_answered(), winner=AGENT),
+                found_by="named",
+                descriptor=SHELL,
+            )
+        )
+        self.assertEqual(len(cost.attempts), 2)
+        self.assertEqual(cost.deterministic_declines[0].stage, STAGE_DRAWABLE_ABSENT)
+        self.assertIn(STAGE_DRAWABLE_ABSENT, stored(cost))
+
+    def test_stamping_inside_the_module_would_break_the_replay_it_is_written_for(self):
+        first = one_cost(hook_resolution())
+        second = one_cost(hook_resolution())
+        self.assertEqual(stored(first), stored(second))
+        self.assertNotIn("now(", inspect.getsource(agent_cost_module))
 
 
 if __name__ == "__main__":  # pragma: no cover

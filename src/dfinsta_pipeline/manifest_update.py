@@ -44,6 +44,14 @@ Nothing here reads the clock, the same way `decisions` and `evidence` do not:
 :func:`resolution_records` is pure and takes `recorded_at` from its caller, so
 two calls on one report produce byte-identical records and a Temporal replay
 produces the same line that is already on disk.
+
+**The other half of stage 10 is `agent_cost`.** This module records what a run
+*learned*, and only a hook that resolved has learned anything worth handing on —
+so an escalation deliberately produces nothing here. What a run *spent* is a
+different fact with a different subject, it is spent whether or not the hook
+resolved, and none of the three record kinds in `decisions` can hold it. It is
+recorded in `agent_cost` instead, in its own append-only ledger, under the same
+rules about what may never be written down.
 """
 
 from __future__ import annotations
@@ -146,8 +154,13 @@ def redact(value: str) -> str:
 # ------------------------------------------------------------------- the parts
 
 
-def _require_version(version: str) -> str:
-    """The version label a record is keyed by. Not a decode path."""
+def require_version(version: str) -> str:
+    """The version label a record is keyed by. Not a decode path.
+
+    Public because `agent_cost` keys the cost ledger the same way and must refuse
+    the same mistake: two stores that disagreed about what a version label is
+    would file two halves of one port under keys nothing can join.
+    """
     if not isinstance(version, str) or not version.strip():
         raise DecisionError(
             "version is required and must be a non-empty string; decision memory is "
@@ -163,12 +176,16 @@ def _require_version(version: str) -> str:
     return version
 
 
-def _winning_candidate(item: HookResolution, descriptor: str) -> str:
+def winning_candidate(item: HookResolution, descriptor: str) -> str:
     """How the winning host was found: ``named``, ``by_literal`` or ``by_agent``.
 
     Read off the candidate report rather than off the first search, because a
     hook may declare several fingerprints and the one that proposed the winner is
     the one that carried it.
+
+    Public because `agent_cost` decides whether a port paid an agent for the host
+    from exactly this value, and a second implementation of it would eventually
+    disagree with this one about which route a hook took.
     """
     for candidate in item.candidates:
         if candidate.descriptor == descriptor:
@@ -176,7 +193,7 @@ def _winning_candidate(item: HookResolution, descriptor: str) -> str:
     return ""
 
 
-def _search_for(item: HookResolution, found_by: str, descriptor: str) -> HostSearch | None:
+def search_for(item: HookResolution, found_by: str, descriptor: str) -> HostSearch | None:
     """The search whose evidence is about this host, not merely of the same kind."""
     same_kind = [search for search in item.searches if search.kind == found_by]
     for search in same_kind:
@@ -405,7 +422,7 @@ def resolution_records(
             "`HookResolution.to_dict` never serialises them, which is the gap this "
             "module exists to close."
         )
-    version = _require_version(version)
+    version = require_version(version)
     base = Compatibility() if compatibility is None else compatibility
     if not isinstance(base, Compatibility):
         raise DecisionError(
@@ -470,8 +487,8 @@ def _record_for(
             "the next run cannot open it."
         )
 
-    found_by = _winning_candidate(item, descriptor)
-    search = _search_for(item, found_by, descriptor)
+    found_by = winning_candidate(item, descriptor)
+    search = search_for(item, found_by, descriptor)
     signals = _signals(found_by, descriptor)
     technique = _technique(found_by, descriptor, _literals(search))
     record = ResolutionRecord(
