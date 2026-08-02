@@ -40,13 +40,26 @@ a write is not a mistake but corruption of the original. `DispatchTests` and
 `ToolSpecificationTests` assert that the surface is exactly three read verbs —
 by name, and by refusing every mutation verb a model might reach for.
 
-Two defects are pinned here as they behave rather than as they should, each with
-a docstring saying so: `test_a_line_longer_than_the_byte_cap_reads_as_an_empty_range`
-(a silent truncation) and `test_a_grep_that_produces_no_output_is_never_timed_out`
-(a timeout that only fires between output lines). Both are behaviour a fix should
-change, and both will fail loudly when it is changed, which is the point.
+Six behaviours here were defects first and are now fixed, and each keeps a test
+that fails if the fix is reverted, with the reason in the docstring rather than
+in a changelog nobody reads: the byte cap no longer reports an unreadable line as
+an empty range; `fixed=False` runs `-E` so the engine that validates the pattern
+and the engine that runs it agree; the timeout is a watchdog and so bounds a grep
+that produces nothing; a missing path is named instead of failing bare; `-H` makes
+the result shape independent of whether `path` was a file; and `dispatch` converts
+`TypeError` so every refusal a model can provoke arrives as `SandboxDenied`.
+
+Five things remain wrong on purpose, and each says DELIBERATE WART where it is
+pinned, because a wart that is not written down is indistinguishable from a bug
+nobody found: a non-`Path` root raises `TypeError` rather than `SandboxDenied`;
+four of the seven caps are module constants a caller cannot set; `grep` is
+resolved through `PATH`; ERE is still not Python's dialect, so `\\d` and lookaround
+return a clean "no matches"; and the truncation warning fires at exactly the cap
+as well as beyond it. The first four are judged not worth what changing them
+would cost; the last is an asymmetry that points one way.
 """
 
+import dataclasses
 import json
 import os
 import re
@@ -270,11 +283,16 @@ class ConstructionTests(SandboxTestCase):
         self.assertEqual(reader.max_matches, MAX_MATCHES)
 
     def test_the_root_must_be_a_path(self) -> None:
-        """A `TypeError`, not a `SandboxDenied` — asserted so the difference is deliberate.
+        """A DELIBERATE WART: this one refusal is a `TypeError`, not a `SandboxDenied`.
 
-        A runtime catching only `SandboxDenied` around construction gets a
-        traceback here. That is the right call for a caller bug (nothing an agent
-        can say reaches this argument), but it is a difference worth pinning.
+        Every other refusal in the module is a `SandboxDenied`, and `dispatch`
+        now converts even a missing tool argument into one. This does not
+        convert, and the inconsistency is on purpose rather than overlooked: no
+        agent can reach this argument. `root` comes from the caller that built
+        the sandbox, so a non-`Path` here is a bug in the pipeline and should
+        stop it, where an agent's bad path is a turn to be spent. A runtime
+        catching only `SandboxDenied` around construction therefore gets a
+        traceback, which is the outcome that belongs to a programming error.
         """
         for value in (str(self.root), None, 7, b"/tmp"):
             with self.subTest(root=value):
@@ -338,6 +356,44 @@ class ConstructionTests(SandboxTestCase):
         """The positive control for the loop above: the bound is `< 1`, not `< 2`."""
         reader = SandboxReader(root=self.root, max_read_bytes=1, max_matches=1, timeout_seconds=1)
         self.assertEqual(reader.max_matches, 1)
+
+    def test_only_three_of_the_seven_caps_are_per_reader(self) -> None:
+        """A DELIBERATE WART: the caps are half configurable, and the split is not principled.
+
+        Three are dataclass fields a caller can set per sandbox. Four are module
+        constants that only a monkeypatch can move, and nothing about them is
+        more universal than the other three — `MAX_MATCHES_PER_FILE` in
+        particular is the sibling of `max_matches` and lives on the other side of
+        the line. It is recorded rather than fixed because moving a constant onto
+        the dataclass changes its default's meaning for every existing caller,
+        and because the tests that need to vary a bound (`max_read_bytes`,
+        `max_matches`, `timeout_seconds`) happen to be the three that are fields.
+
+        The consequence is real and worth naming: the two bounds most likely to
+        bite a large decode — 1000 directory entries and 20 matches per file —
+        cannot be raised for one difficult hook without editing the module. This
+        test is also the drift check: adding a field or a constant fails it and
+        forces the question to be answered again.
+        """
+        fields = {field.name for field in dataclasses.fields(SandboxReader)}
+        self.assertEqual(fields, {"root", "max_read_bytes", "max_matches", "timeout_seconds"})
+        self.assertEqual(
+            {
+                name
+                for name in vars(sandbox_tools)
+                if name.isupper() and isinstance(getattr(sandbox_tools, name), int)
+            },
+            {
+                "MAX_READ_BYTES",
+                "DEFAULT_READ_LINES",
+                "MAX_READ_LINES",
+                "MAX_MATCHES",
+                "MAX_MATCHES_PER_FILE",
+                "SEARCH_TIMEOUT_SECONDS",
+                "MAX_PATTERN",
+                "MAX_ENTRIES",
+            },
+        )
 
     def test_the_reader_is_frozen(self) -> None:
         """Nobody widens the sandbox after construction by assigning to `root`."""
@@ -727,26 +783,48 @@ class ReadFileTests(SandboxTestCase):
             "     1  aa\n... stopped at line 1 after 100 bytes; read again from there",
         )
 
-    def test_a_line_longer_than_the_byte_cap_reads_as_an_empty_range(self) -> None:
-        """A DEFECT, pinned as it behaves. This is the one silent truncation left.
+    def test_a_line_longer_than_the_byte_cap_says_so_instead_of_reading_as_empty(
+        self,
+    ) -> None:
+        """THE LAST SILENT TRUNCATION, and why the branch order is what it is.
 
-        When the *first* line of the requested range is itself larger than
-        `max_read_bytes`, nothing is collected, and the empty-collection branch
-        runs before the byte-cap branch can report anything. The agent is told the
-        file "has 1 lines; none in the requested range" — which is false twice
-        over: the file has four lines, and the range was not empty but unreadable.
-        A proposer reading a minified or generated file gets "there is nothing
-        here" and moves on.
+        Two different things produce an empty collection, and they must not share
+        a message. A range past the end of the file really is empty. A first line
+        larger than `max_read_bytes` is not: it is a line that exists and was
+        withheld. Reporting the second as the first told a proposer looking at a
+        generated file that there was nothing in it — false twice over, since the
+        file had four lines and the range was not empty but unreadable — and it
+        was silent, which is the one thing this module's caps must never be.
 
-        The fix is to report the byte cap before the empty-range message, and to
-        stop reusing `total` as both "lines in the file" and "line we stopped at":
-        after a `break` it is the latter, which is why the count is wrong too.
+        The byte-cap branch therefore runs first, and it names the line rather
+        than a count: after a `break`, `total` is the line the read stopped at
+        and not the length of the file, so the count in the other message would
+        have been wrong as well.
+
+        Mutation: remove the `stopped_on_bytes` branch, or move it below the
+        empty-range return. The empty-range control below is what makes that
+        detectable rather than a message nobody compares.
         """
-        self.write("smali_classes4/X/one_long_line.smali", ("z" * 500 + "\n") * 4)
+        path = "smali_classes4/X/one_long_line.smali"
+        self.write(path, ("z" * 500 + "\n") * 4)
         reader = SandboxReader(root=self.root, max_read_bytes=100)
+
         self.assertEqual(
-            reader.read_file("smali_classes4/X/one_long_line.smali"),
-            "(smali_classes4/X/one_long_line.smali has 1 lines; none in the requested range)",
+            reader.read_file(path),
+            f"(line 1 of {path} is longer than 100 bytes and was not returned; "
+            "this is a generated or minified file)",
+        )
+        # The line named is the line asked for, not a hardcoded first line.
+        self.assertEqual(
+            reader.read_file(path, start_line=3),
+            f"(line 3 of {path} is longer than 100 bytes and was not returned; "
+            "this is a generated or minified file)",
+        )
+        # POSITIVE CONTROL, and the other half of the distinction: a range that
+        # is genuinely empty still says so, and says nothing about bytes.
+        self.assertEqual(
+            reader.read_file(path, start_line=9),
+            f"({path} has 4 lines; none in the requested range)",
         )
 
     def test_trailing_whitespace_is_stripped_but_indentation_is_kept(self) -> None:
@@ -821,24 +899,24 @@ class SearchTests(SandboxTestCase):
         )
 
     def test_a_search_that_reads_to_the_end_is_never_reported_as_a_failure(self) -> None:
-        """A LIVE BUG, asserted as it should behave. One search in six refuses at random.
+        """REGRESSION. One search in six used to refuse at random, and this is how.
 
-        `_stream_matches` kills the child in its `finally` whenever `poll()` is
-        None. After the stdout iterator reaches EOF that is a race, not a
-        condition: EOF means grep closed the pipe, and whether the parent sees the
-        exit status yet is a matter of scheduling. When it loses, a grep that
-        finished perfectly is SIGKILLed, `returncode` becomes -9, and — because
-        nothing stopped early — the -9 is read as an error and every caller gets
-        `SandboxDenied('Search failed: ')`, with `--no-messages` having eaten the
-        one line that might have explained it.
+        `_stream_matches` killed the child in its `finally` whenever `poll()`
+        returned None. After the stdout iterator reaches EOF that is a race and
+        not a condition: EOF means grep closed the pipe, and whether the parent
+        has seen the exit status yet is a matter of scheduling. On the runs that
+        lost, a grep which had finished perfectly was SIGKILLed, `returncode`
+        became -9, and — nothing having stopped early — the -9 was read as an
+        error, so the caller got `SandboxDenied('Search failed: ')` with
+        `--no-messages` having eaten the one line that might have explained it.
 
         Measured at 7/60 and 12/60 on two runs of this fixture, matching and
-        non-matching alike. Fifty iterations here, so a surviving bug shows up
-        with probability better than 999 in 1000.
+        non-matching searches alike. Fifty iterations here, so a reintroduction
+        shows up with probability better than 999 in 1000; the shim test in
+        `GrepProcessLifecycleTests` catches it every time instead of nearly.
 
-        The fix is to kill only what was deliberately abandoned:
-        `if stopped_early and process.poll() is None:`. Verified out of tree —
-        120/120 clean afterwards.
+        The guard is `if stopped_early and process.poll() is None:` — kill only
+        what was deliberately abandoned.
         """
         expected = f'{TC_PATH}:10:    const-string v0, "feed/timeline_stream/"'
         for attempt in range(50):
@@ -873,33 +951,74 @@ class SearchTests(SandboxTestCase):
         self.assertIn(TC_PATH, self.reader.search("feed/timeline.stream/", fixed=False))
         self.assertIn(TC_PATH, self.reader.search("const-string.*timeline", fixed=False))
 
-    def test_a_regex_runs_as_a_posix_basic_expression_not_a_python_one(self) -> None:
-        """A DEFECT, pinned as it behaves. `fixed=False` is validated by one engine
-        and executed by another.
+    def test_a_regex_is_run_as_an_extended_expression_so_validation_means_something(
+        self,
+    ) -> None:
+        """`-E`, because the pattern is validated by Python and executed by grep.
 
-        The pattern is compiled with Python's `re` to reject nonsense, then handed
-        to `grep` with no `-E`, which reads it as a POSIX *basic* expression. In
-        BRE, `(`, `)`, `|` and `+` are literal characters. So
-        `invoke-(static|virtual)` passes validation, runs, and returns "no
-        matches" — a false negative that reads exactly like an answer, in the one
-        tool a proposer uses to decide whether a literal is unique.
+        Without it grep reads the pattern as a POSIX *basic* expression, in which
+        `(`, `)`, `|` and `+` are literal characters — so
+        `invoke-(static|virtual)` passed `re.compile`, ran, and returned "no
+        matches". A false negative shaped exactly like an answer, in the one tool
+        a proposer uses to decide whether a literal is unique. The two engines
+        now agree on everything a proposer is likely to reach for.
 
-        The fix is one flag: add `-E` and the two engines agree on everything a
-        proposer is likely to write. Asserted as it is, so the fix is visible.
+        They still are not the same dialect, and that is why `fixed=True` remains
+        the default rather than being a convenience: ERE has no `\\d`, no `\\b`,
+        no lookaround. `test_perl_only_syntax_is_not_an_extended_expression`
+        below pins that boundary, so nobody reads this test as a promise that
+        Python's regex language works here.
+
+        Mutation: drop the `-E`. Both assertions below return "no matches", which
+        is what makes this a test rather than a demonstration.
         """
         self.assertEqual(
-            self.reader.search("invoke-(static|virtual)", fixed=False),
-            "no matches for 'invoke-(static|virtual)'",
-        )
-        self.assertEqual(
-            self.reader.search("invoke-stat+ic", fixed=False), "no matches for 'invoke-stat+ic'"
-        )
-        # What BRE does support, it supports; and the escaped spelling works.
-        self.assertIn(TC_PATH, self.reader.search("invoke-.*A01", fixed=False))
-        self.assertEqual(
-            self.match_files(self.reader.search(r"invoke-\(static\|virtual\)", fixed=False)),
+            self.match_files(self.reader.search("invoke-(static|virtual)", fixed=False)),
             sorted([TC_PATH, T2_PATH]),
         )
+        self.assertEqual(
+            self.match_files(self.reader.search("invoke-stat+ic", fixed=False)),
+            sorted([TC_PATH, T2_PATH]),
+        )
+        # Anchors, classes and quantifiers, on the descriptors this exists for.
+        self.assertEqual(
+            self.match_files(self.reader.search("^\\.class .*LX/0(4tC|5t2);$", fixed=False)),
+            sorted([TC_PATH, T2_PATH]),
+        )
+        self.assertIn(TC_PATH, self.reader.search("invoke-.*A01", fixed=False))
+        # And the BRE spelling is now the one that does not work, which is the
+        # sharpest evidence that the dialect actually changed.
+        self.assertEqual(
+            self.reader.search(r"invoke-\(static\|virtual\)", fixed=False),
+            r"no matches for 'invoke-\\(static\\|virtual\\)'",
+        )
+
+    def test_perl_only_syntax_is_still_not_an_extended_expression(self) -> None:
+        """The boundary `-E` does NOT move, measured rather than assumed.
+
+        A DELIBERATE WART, and the reason `fixed=True` stays the default. Python
+        accepts all four patterns below; grep implements none of them and says so
+        only on stderr, which `--no-messages` suppresses — so a lookahead comes
+        back as a clean "no matches" that reads like a finding. `-P` is not
+        compiled into every grep, and a proposer searching for a smali descriptor
+        wants a literal anyway, so the gap is accepted rather than closed.
+
+        The half that does work is asserted too, because the dialect is narrower
+        than Python and wider than POSIX: GNU implements `\\w` and `\\b` as
+        extensions. Without that half, someone reading only the failures would
+        "fix" this test by assuming the whole escape set is missing.
+        """
+        for pattern in (r"invoke-\d", r"invoke-static\Z", "invoke-(?=static)", "(?i)INVOKE-STATIC"):
+            with self.subTest(unsupported=pattern):
+                re.compile(pattern)  # Python is happy with every one of them.
+                self.assertEqual(
+                    self.reader.search(pattern, fixed=False), f"no matches for {pattern!r}"
+                )
+        for pattern in (r"\binvoke-static\b", r"invoke-\w+ \{v0\}", "invoke-s{1,2}tatic"):
+            with self.subTest(supported=pattern):
+                self.assertIn(TC_PATH, self.reader.search(pattern, fixed=False))
+        # And the POSIX spelling of the Perl class above, which is the advice.
+        self.assertIn(TC_PATH, self.reader.search(r"invoke-[a-z]+ \{v[0-9]\}", fixed=False))
 
     def test_a_pattern_beginning_with_a_dash_is_a_pattern(self) -> None:
         """Mutation: drop the `--`. `grep` then reads `->A01` as a bundle of flags
@@ -941,32 +1060,65 @@ class SearchTests(SandboxTestCase):
         self.assertNotIn(str(self.base), output)
         self.assertEqual(self.match_files(output), sorted([AAA_PATH, TC_PATH, T2_PATH]))
 
-    def test_a_search_of_a_single_file_omits_the_filename(self) -> None:
-        """A WART, pinned as it behaves. `grep` prints no name for one named file.
+    def test_a_search_of_a_single_file_still_names_the_file(self) -> None:
+        """`-H` unconditionally, so the result shape never depends on the argument.
 
-        The tool description promises `file:line:text`; when `path` names a file
-        rather than a directory the result is `line:text`. Harmless to a human,
-        but it is a different shape arriving in the same field, and `evidence`
-        downstream is parsed. `-H` in the argv would make the shape unconditional.
+        Left to itself grep prints no filename when handed exactly one file, and
+        the tool's own description ("returning 'file:line:text'") would become
+        false at precisely the moment a proposer narrows onto one class. One
+        shape, whatever `path` was, so `evidence` can be parsed without knowing
+        what was asked.
+
+        Mutation: `-rn` instead of `-rnH`. The directory searches elsewhere in
+        this class all still pass, because grep volunteers the name once there is
+        more than one file — which is why this needs its own test.
         """
-        self.assertEqual(self.reader.search("const-string", TC_PATH), '10:    const-string v0, "feed/timeline_stream/"')
+        self.assertEqual(
+            self.reader.search("const-string", TC_PATH),
+            f'{TC_PATH}:10:    const-string v0, "feed/timeline_stream/"',
+        )
+        # A directory holding exactly one matching file is the same shape.
+        self.assertEqual(
+            self.reader.search("LX/0aaa;", "smali_classes12"),
+            f"{AAA_PATH}:1:.class public final LX/0aaa;",
+        )
 
     def test_no_matches_is_an_answer_rather_than_a_failure(self) -> None:
         self.assertEqual(
             self.reader.search("LX/9999;"), "no matches for 'LX/9999;'"
         )
 
-    def test_a_missing_path_inside_the_sandbox_fails_with_an_empty_reason(self) -> None:
-        """A WART, pinned as it behaves. `--no-messages` eats the only explanation.
+    def test_a_missing_path_is_named_rather_than_reported_as_a_bare_failure(self) -> None:
+        """A typo must read as a typo, and `--no-messages` is why it did not.
 
-        `grep` exits 2 for a path that does not exist and its stderr is suppressed,
-        so the agent is told `Search failed:` and nothing else. Checking
-        `target.exists()` before running, or keeping stderr and filtering, would
-        cost nothing and turn a dead end into a typo.
+        grep exits 2 for a path that does not exist and its stderr is suppressed,
+        so the agent used to be told `Search failed: ` and nothing else — a dead
+        end where the truth was one misspelled directory. The existence check
+        runs before grep and names the path, relative to the root like every
+        other message here.
+
+        Mutation: remove the `target.exists()` check. This returns to the bare
+        `Search failed: `, which no proposer can act on.
         """
         self.assertEqual(
             self.denied(lambda: self.reader.search("const-string", "smali_classes9")),
-            "Search failed: ",
+            "No such path in the sandbox: smali_classes9",
+        )
+        self.assertEqual(
+            self.denied(lambda: self.reader.search("const-string", "smali_classes4/X/0000.smali")),
+            "No such path in the sandbox: smali_classes4/X/0000.smali",
+        )
+        # A path outside is still the *escape* message: the two must not merge,
+        # since one is a typo and the other is the whole point of the stage.
+        self.assertEqual(
+            self.denied(lambda: self.reader.search("const-string", "../answers")),
+            self.escape_message("../answers"),
+        )
+        # A dangling symlink is a missing path, named by where it pointed.
+        (self.root / "dangling").symlink_to("smali_classes4/X/nothing.smali")
+        self.assertEqual(
+            self.denied(lambda: self.reader.search("const-string", "dangling")),
+            "No such path in the sandbox: smali_classes4/X/nothing.smali",
         )
 
     def test_a_binary_file_is_skipped_rather_than_dumped(self) -> None:
@@ -1138,13 +1290,16 @@ class SearchCapTests(SandboxTestCase):
         self.assertGreaterEqual(len(self.match_files(output)), 10)
 
     def test_a_result_exactly_at_the_cap_is_still_announced_as_truncated(self) -> None:
-        """Over-warning, in the safe direction, and worth knowing about.
+        """A DELIBERATE WART: the warning over-fires, always in the safe direction.
 
-        The loop stops the moment it holds `max_matches` lines, so it cannot tell
-        "exactly the cap" from "the cap and more". It says TRUNCATED for both. The
-        alternative — reading one line further to find out — would be a hair more
-        accurate and would keep a 202 MB pipe open to learn it, so this is the
-        right trade. A proposer that re-searches more narrowly has lost nothing.
+        The loop stops the moment it holds `max_matches` lines, so it cannot
+        distinguish "exactly the cap" from "the cap and more" and says TRUNCATED
+        for both. Finding out would mean reading one line further, which means
+        keeping a 202 MB pipe open to learn something that changes nothing: a
+        proposer told its list may be incomplete re-searches more narrowly and
+        loses a turn, where a proposer wrongly told its list is complete
+        concludes a literal is unique and loses the proposal. The asymmetry is
+        the whole argument, and it points one way.
         """
         reader = SandboxReader(root=self.root, max_matches=30)
         self.fill("aaa", 25)  # trimmed to 20 by the per-file cap
@@ -1212,6 +1367,15 @@ class GrepProcessLifecycleTests(SandboxTestCase):
 
     The shim is not a stand-in for grep's semantics — every other search test
     above runs the real binary. It stands in only for its *timing*.
+
+    That the shim works at all is A DELIBERATE WART worth stating: the module
+    runs `subprocess.Popen(["grep", ...])`, so the binary is whatever `PATH`
+    resolves, and anyone who can set this process's environment chooses what
+    "grep" means. It is not tightened to `/usr/bin/grep` because that is not
+    where grep lives everywhere, and because it would buy nothing under the
+    module's stated threat model — a model wandering, not a same-uid attacker,
+    who by then has easier routes than an environment variable. Tests depending
+    on it is the honest evidence that it is true.
     """
 
     def install_grep(self, script: str) -> None:
@@ -1259,15 +1423,15 @@ class GrepProcessLifecycleTests(SandboxTestCase):
         self.assertFalse(marker.exists(), "grep outlived the read it was serving")
 
     def test_a_grep_that_closes_stdout_before_exiting_is_not_killed(self) -> None:
-        """The deterministic form of the race in `SearchTests`, with the timing chosen.
+        """The deterministic form of the race above, with the timing chosen rather
+        than left to the scheduler.
 
-        Real grep closes stdout and exits in the same breath, so whether the
-        parent's `poll()` sees the exit status is left to the scheduler and the
-        bug shows up as one search in six. This shim widens that window to a
-        second and makes it certain: it closes stdout, then lingers. A `finally`
-        that kills whatever `poll()` reports as running kills a grep that has
-        already produced its complete answer, and turns it into
-        `Search failed: `.
+        Real grep closes stdout and exits in the same breath, so the window is
+        whatever the kernel makes it and the bug appears as one search in six.
+        This shim widens it to a second and makes it certain: it closes stdout,
+        then lingers. A `finally` that kills whatever `poll()` reports as running
+        kills a grep that has already produced its complete answer and turns it
+        into `Search failed: `. Mutation: drop the `stopped_early and` guard.
         """
         self.install_grep(
             'echo "f.smali:1:invoke-static"\nexec 1>&-\nsleep 1\nexit 0'
@@ -1277,9 +1441,16 @@ class GrepProcessLifecycleTests(SandboxTestCase):
         )
 
     def test_a_search_that_keeps_producing_past_the_timeout_is_refused(self) -> None:
-        """The deadline is checked between lines, so this shim produces them slowly."""
+        """A grep that is answering, slowly, is still bounded by the timeout.
+
+        Forty lines and then an exit, rather than an endless loop: a test whose
+        failure mode is a hung suite is not a test. If the bound were ever removed
+        this fails in eight seconds on "SandboxDenied not raised" rather than
+        never returning.
+        """
         self.install_grep(
-            'while :; do echo "f.smali:1:invoke-static"; sleep 0.2; done'
+            "i=0\n"
+            'while [ $i -lt 40 ]; do echo "f.smali:1:invoke-static"; sleep 0.2; i=$((i+1)); done'
         )
         reader = SandboxReader(root=self.root, max_matches=10_000, timeout_seconds=1)
 
@@ -1291,30 +1462,47 @@ class GrepProcessLifecycleTests(SandboxTestCase):
             message,
             "Search for 'invoke-static' exceeded 1s; narrow it with `path` or `include`",
         )
-        self.assertLess(elapsed, 10, "the timeout fired rather than the shim being outlasted")
+        self.assertLess(elapsed, 4, "the timeout fired rather than the shim finishing on its own")
 
-    def test_a_grep_that_produces_no_output_is_never_timed_out(self) -> None:
-        """A DEFECT, pinned as it behaves. The deadline only exists between lines.
+    def test_a_grep_that_produces_no_output_is_timed_out_too(self) -> None:
+        """THE CASE THE OLD DEADLINE COULD NOT SEE, and the reason it is a watchdog.
 
-        The check lives inside `for line in process.stdout`, so a `grep` that is
-        working hard and emitting nothing — a backtracking regex, an unreadable
-        mount, a pattern that matches nowhere in 1.7 GiB — is never interrupted.
-        `timeout_seconds` reads like a bound on the call and is a bound only on
-        the gap between results.
+        A deadline checked inside `for line in process.stdout` bounds the gap
+        between results, not the call: a grep that is working hard and emitting
+        nothing — a pattern matching nowhere across 1.7 GiB, an unreadable mount —
+        never enters the loop, so the check never runs and the search is
+        unbounded. That is the shape of search most likely to be slow, so the one
+        the bound existed for was the one it missed.
 
-        The fix is a real deadline: `select` with a timeout on the pipe, or a
-        watchdog timer that kills the process. Asserted as it is, so the fix
-        turns this test red rather than leaving it silently redundant.
+        A `threading.Timer` fires whether or not anything was read. The shim
+        `exec`s `sleep`, deliberately: a forked grandchild would inherit the
+        pipes and hold `communicate` open for the shim's full lifetime, so the
+        call would take three seconds even with the watchdog working and this
+        test would measure the fixture instead of the module.
+
+        Mutations: remove the `expired.is_set()` check and the killed grep
+        reports `Search failed: ` instead; remove the watchdog and this waits the
+        shim out and returns "no matches".
         """
-        self.install_grep("sleep 2\nexit 1")
+        self.install_grep("exec sleep 3")
         reader = SandboxReader(root=self.root, timeout_seconds=1)
 
         started = time.monotonic()
-        result = reader.search("invoke-static")
+        message = self.denied(lambda: reader.search("invoke-static"))
         elapsed = time.monotonic() - started
 
-        self.assertEqual(result, "no matches for 'invoke-static'")
-        self.assertGreater(elapsed, 1, "the 1s timeout did not apply")
+        self.assertEqual(
+            message,
+            "Search for 'invoke-static' exceeded 1s; narrow it with `path` or `include`",
+        )
+        self.assertLess(elapsed, 2.5, "the watchdog fired at 1s, not when the shim ended")
+
+        # POSITIVE CONTROL. A watchdog that always fires, or an `expired` that is
+        # never cleared between calls, would pass everything above.
+        self.install_grep("exec sleep 0.2")
+        self.assertEqual(
+            reader.search("invoke-static"), "no matches for 'invoke-static'"
+        )
 
     def test_a_grep_that_fails_is_reported_with_its_own_words(self) -> None:
         self.install_grep('echo "grep: something went wrong" >&2\nexit 2')
@@ -1408,7 +1596,10 @@ class DispatchTests(SandboxTestCase):
     def test_the_names_are_matched_exactly(self) -> None:
         for name in ("List_dir", "READ_FILE", " search", "search ", "read_file()", "search\n", ""):
             with self.subTest(tool=name):
-                self.assertIn("Unknown tool", self.denied(lambda name=name: self.reader.dispatch(name, {})))
+                self.assertIn(
+                    "Unknown tool",
+                    self.denied(lambda name=name: self.reader.dispatch(name, {})),
+                )
 
     def test_a_non_string_tool_name_is_refused(self) -> None:
         for name in (None, 7, ["search"], b"search", {"name": "search"}, True):
@@ -1422,7 +1613,9 @@ class DispatchTests(SandboxTestCase):
         for arguments in (None, [], ["path", "."], "path=.", 7, ("path", "."), {"a"}):
             with self.subTest(arguments=repr(arguments)):
                 self.assertEqual(
-                    self.denied(lambda arguments=arguments: self.reader.dispatch("list_dir", arguments)),
+                    self.denied(
+                        lambda arguments=arguments: self.reader.dispatch("list_dir", arguments)
+                    ),
                     "Tool arguments must be an object",
                 )
 
@@ -1443,7 +1636,11 @@ class DispatchTests(SandboxTestCase):
         ):
             with self.subTest(tool=name, argument=unexpected):
                 self.assertEqual(
-                    self.denied(lambda name=name, arguments=arguments: self.reader.dispatch(name, arguments)),
+                    self.denied(
+                        lambda name=name, arguments=arguments: self.reader.dispatch(
+                            name, arguments
+                        )
+                    ),
                     f"Unknown argument for {name}: {unexpected}",
                 )
 
@@ -1453,21 +1650,45 @@ class DispatchTests(SandboxTestCase):
             "Unknown argument for list_dir: alpha",
         )
 
-    def test_a_missing_required_argument_raises_a_type_error(self) -> None:
-        """A WART, pinned as it behaves: this one refusal is not a `SandboxDenied`.
+    def test_a_missing_required_argument_is_refused_in_the_same_channel_as_the_rest(
+        self,
+    ) -> None:
+        """Every refusal a model can provoke arrives as `SandboxDenied`, including this one.
 
-        A model that calls `read_file` with no `path` — which the schema forbids
-        but nothing enforces before the call — gets `TypeError` out of the `**`
-        expansion. A runtime catching `SandboxDenied` to feed the refusal back to
-        the model instead crashes the loop. One `if` over the required names
-        would put it in the same channel as every other argument error.
+        The schema marks `path` and `pattern` required and nothing enforces that
+        before the call, so a model that omits one used to get a `TypeError` out
+        of the `**` expansion. A runtime catches `SandboxDenied` in order to hand
+        the refusal back to the model and carry on; one omitted argument would
+        instead have ended the run. Which exception type this is decides whether
+        a typo costs a turn or a whole proposal.
+
+        The conversion wraps the whole call rather than pre-checking the required
+        names, so a `TypeError` raised *inside* a handler would also be reported
+        as an argument error. Nothing can currently do that — every handler
+        validates its own arguments and raises `SandboxDenied` first — but it is
+        the reason `__cause__` is asserted below: the original is preserved for
+        whoever has to debug it.
+
+        Mutation: drop the `try`/`except`. Both subtests then fail on the
+        exception type rather than on the message.
         """
-        for name in ("read_file", "search"):
+        for name, argument in (("read_file", "path"), ("search", "pattern")):
             with self.subTest(tool=name):
-                with self.assertRaises(TypeError) as raised:
+                with self.assertRaises(SandboxDenied) as raised:
                     self.reader.dispatch(name, {})
-                self.assertIn("missing 1 required positional argument", str(raised.exception))
-                self.assertNotIsInstance(raised.exception, SandboxDenied)
+                self.assertEqual(
+                    str(raised.exception),
+                    f"Invalid arguments for {name}: SandboxReader.{name}() missing 1 "
+                    f"required positional argument: '{argument}'",
+                )
+                self.assertIsInstance(raised.exception.__cause__, TypeError)
+
+        # The two argument channels stay distinct: a *wrong* name is still named
+        # as unknown rather than collapsing into the message above.
+        self.assertEqual(
+            self.denied(lambda: self.reader.dispatch("read_file", {"file": TC_PATH})),
+            "Unknown argument for read_file: file",
+        )
 
     def test_dispatch_enforces_containment_exactly_as_the_methods_do(self) -> None:
         """It is the entry point a runtime uses, so it is the one that must hold."""
@@ -1480,7 +1701,11 @@ class DispatchTests(SandboxTestCase):
         ):
             with self.subTest(tool=name, path=arguments["path"]):
                 self.assertEqual(
-                    self.denied(lambda name=name, arguments=arguments: self.reader.dispatch(name, arguments)),
+                    self.denied(
+                        lambda name=name, arguments=arguments: self.reader.dispatch(
+                            name, arguments
+                        )
+                    ),
                     self.escape_message(arguments["path"]),
                 )
 
@@ -1504,17 +1729,30 @@ class ToolSpecificationTests(unittest.TestCase):
 
         Mutation: add a fourth specification without a handler. Every schema is
         still valid JSON and the tool 404s at the first call.
+
+        Both directions are covered. Advertised-implies-dispatchable is the loop
+        below; dispatchable-implies-advertised falls out of the refusal message,
+        which is built by joining the handler names — a fourth handler with no
+        specification would appear in it and fail the comparison.
         """
+        names = [tool["name"] for tool in self.specifications]
         with TemporaryDirectory() as directory:
             reader = SandboxReader(root=Path(directory).resolve())
-            for tool in self.specifications:
-                with self.subTest(tool=tool["name"]):
+            for name in names:
+                with self.subTest(tool=name):
                     try:
-                        reader.dispatch(tool["name"], {})
+                        reader.dispatch(name, {})
                     except SandboxDenied as error:
                         self.assertNotIn("Unknown tool", str(error))
                     except TypeError:
                         pass  # a required argument is missing; the name resolved
+            with self.assertRaises(SandboxDenied) as raised:
+                reader.dispatch("write_file", {})
+            self.assertEqual(
+                str(raised.exception),
+                f"Unknown tool 'write_file'. This sandbox is read-only and offers "
+                f"exactly: {', '.join(sorted(names))}.",
+            )
 
     def test_no_tool_offers_mutation(self) -> None:
         """Read the surface the way a model reads it: by name and by description.
@@ -1555,9 +1793,10 @@ class ToolSpecificationTests(unittest.TestCase):
         """A schema promising 10_000 lines over a reader that refuses at 2_000 is
         a model told to ask for something it will be refused for."""
         read_file = next(tool for tool in self.specifications if tool["name"] == "read_file")
-        self.assertEqual(read_file["input_schema"]["properties"]["line_count"]["maximum"], MAX_READ_LINES)
-        self.assertEqual(read_file["input_schema"]["properties"]["line_count"]["minimum"], 1)
-        self.assertEqual(read_file["input_schema"]["properties"]["start_line"]["minimum"], 1)
+        properties = read_file["input_schema"]["properties"]
+        self.assertEqual(properties["line_count"]["maximum"], MAX_READ_LINES)
+        self.assertEqual(properties["line_count"]["minimum"], 1)
+        self.assertEqual(properties["start_line"]["minimum"], 1)
 
     def test_the_specifications_are_plain_json(self) -> None:
         """Vendor-neutral by construction: no wrapper type survives a round trip."""
@@ -1599,8 +1838,11 @@ class ToolTranscriptTests(unittest.TestCase):
 
     def test_arguments_are_rendered_in_a_stable_order(self) -> None:
         """A transcript that reorders between runs cannot be diffed against another."""
-        first = tool_transcript(iter([("search", {"pattern": "a", "fixed": True, "path": "."}, "x")]))
-        second = tool_transcript(iter([("search", {"path": ".", "fixed": True, "pattern": "a"}, "x")]))
+        arguments = {"pattern": "a", "fixed": True, "path": "."}
+        first = tool_transcript(iter([("search", arguments, "x")]))
+        reordered = {key: arguments[key] for key in reversed(list(arguments))}
+        second = tool_transcript(iter([("search", reordered, "x")]))
+        self.assertNotEqual(list(arguments), list(reordered))
         self.assertEqual(first, second)
 
     def test_no_calls_render_as_nothing(self) -> None:

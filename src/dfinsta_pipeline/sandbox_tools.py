@@ -43,6 +43,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -220,6 +221,17 @@ class SandboxReader:
                     break
                 collected.append(rendered)
         if not collected:
+            # Order matters here, and getting it wrong was a silent truncation:
+            # a first line longer than the byte cap collected nothing, fell into
+            # the branch below, and told the reader the range was empty. A
+            # proposer looking at a generated file was informed there was
+            # nothing in it. The cause is reported instead.
+            if stopped_on_bytes:
+                return (
+                    f"(line {start_line} of {_relative(self.root, target)} is longer than "
+                    f"{self.max_read_bytes} bytes and was not returned; this is a generated "
+                    "or minified file)"
+                )
             return f"({_relative(self.root, target)} has {total} lines; none in the requested range)"
         body = "\n".join(collected)
         last = start_line + len(collected) - 1
@@ -264,6 +276,11 @@ class SandboxReader:
             except re.error as error:
                 raise SandboxDenied(f"Invalid regular expression: {error}") from error
         target = self.resolve(path)
+        if not target.exists():
+            # `--no-messages` suppresses grep's own explanation, so without this
+            # a mistyped path returns a bare "Search failed:" and reads like a
+            # dead end rather than like a typo.
+            raise SandboxDenied(f"No such path in the sandbox: {_relative(self.root, target)}")
 
         # `-r`, never `-R`. They differ in exactly one way and it is the way that
         # matters here: `-R` follows symlinks encountered while recursing, so a
@@ -278,15 +295,28 @@ class SandboxReader:
         # instead — a small per-file cap so results span many files rather than
         # coming from the first one, and an overall cap enforced by reading
         # incrementally and killing grep the moment it is reached.
+        # `-H` unconditionally: without it grep omits the filename when given a
+        # single file, so the tool's own description ("returns file:line:text")
+        # becomes false exactly when a proposer is narrowing in on one class.
         argv = [
             "grep",
-            "-rn",
+            "-rnH",
             "--binary-files=without-match",
             "--no-messages",
             f"--max-count={MAX_MATCHES_PER_FILE}",
         ]
         if fixed:
             argv.append("-F")
+        else:
+            # `-E`, because the pattern was validated with Python's `re` and
+            # grep's default is POSIX *basic* regex. Without this,
+            # `invoke-(static|virtual)` and `a+` pass validation, run, and
+            # return "no matches" -- a false negative shaped exactly like an
+            # answer, in the tool used to decide whether a literal is unique.
+            # ERE is not Python's dialect either, so a pattern using `\d` or a
+            # lookahead still misbehaves; `fixed=True` is the default for that
+            # reason and is what suits API paths and smali descriptors.
+            argv.append("-E")
         if include is not None:
             if type(include) is not str or not include or "\x00" in include:
                 raise SandboxDenied("include must be a non-empty string")
@@ -325,7 +355,6 @@ class SandboxReader:
         A killed grep's exit status is therefore not an error here.
         """
 
-        deadline = time.monotonic() + self.timeout_seconds
         lines: list[str] = []
         truncated = False
         stopped_early = False
@@ -336,6 +365,21 @@ class SandboxReader:
             text=True,
             cwd=str(self.root),
         )
+        # A watchdog, not a deadline checked between lines. Checking inside the
+        # read loop bounds the GAP BETWEEN RESULTS, not the call: a grep that
+        # matches nothing across a 1.7 GiB tree produces no lines at all, so the
+        # loop never runs and the timeout never fires. That is the shape of the
+        # search most likely to be slow.
+        expired = threading.Event()
+
+        def on_deadline() -> None:
+            expired.set()
+            if process.poll() is None:
+                process.kill()
+
+        watchdog = threading.Timer(self.timeout_seconds, on_deadline)
+        watchdog.daemon = True
+        watchdog.start()
         try:
             assert process.stdout is not None
             for line in process.stdout:
@@ -345,16 +389,6 @@ class SandboxReader:
                 if len(lines) >= self.max_matches:
                     truncated = stopped_early = True
                     break
-                if time.monotonic() > deadline:
-                    stopped_early = True
-                    process.kill()
-                    process.wait(timeout=10)
-                    return (
-                        [],
-                        False,
-                        f"Search for {pattern!r} exceeded {self.timeout_seconds}s; "
-                        "narrow it with `path` or `include`",
-                    )
         finally:
             # Kill ONLY when we stopped reading early. Killing unconditionally
             # looks harmless and is not: grep can have written every match and
@@ -362,6 +396,7 @@ class SandboxReader:
             # None, the kill lands on a process that was about to succeed, and a
             # complete search is reported as "Search failed" — intermittently,
             # which is the worst way for it to be wrong.
+            watchdog.cancel()
             if stopped_early and process.poll() is None:
                 process.kill()
             stderr = ""
@@ -370,6 +405,13 @@ class SandboxReader:
             except subprocess.TimeoutExpired:  # pragma: no cover - a wedged grep
                 process.kill()
                 process.communicate()
+        if expired.is_set():
+            return (
+                [],
+                False,
+                f"Search for {pattern!r} exceeded {self.timeout_seconds}s; narrow it "
+                "with `path` or `include`",
+            )
         # grep exits 1 for "no matches", which is an answer rather than a
         # failure; a non-zero status after we killed it says nothing at all.
         if not stopped_early and process.returncode not in (0, 1):
@@ -409,7 +451,14 @@ class SandboxReader:
         unexpected = sorted(set(arguments) - allowed)
         if unexpected:
             raise SandboxDenied(f"Unknown argument for {name}: {unexpected[0]}")
-        return handler(**arguments)
+        try:
+            return handler(**arguments)
+        except TypeError as error:
+            # A missing required argument would otherwise escape as `TypeError`,
+            # and every caller here catches `SandboxDenied` in order to hand the
+            # refusal back to the model. One omitted `path` would crash the run
+            # instead of costing a turn.
+            raise SandboxDenied(f"Invalid arguments for {name}: {error}") from error
 
 
 def tool_specifications() -> list[dict[str, Any]]:
