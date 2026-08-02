@@ -90,9 +90,10 @@ INDEX_340 = ROOT / "work/index-340"
 PROFILE_ACTION_BAR = "Lcom/instagram/profile/actionbar/ProfileActionBar;"
 SELF_DRAWABLE = "instagram_menu_outline_24"
 
-#: The own-profile guard, spliced into the shipped payload. NOT written to
-#: `manifest/hooks.json` by these tests — the mechanism is proved here and the
-#: decision to ship it is a human's.
+#: The own-profile guard. These lines are now IN `manifest/hooks.json`; they are
+#: kept here as the independent statement of what the shipped payload must
+#: contain, so `test_the_shipped_payload_carries_exactly_this_guard` fails if the
+#: manifest ever drifts from what these tests assume.
 GUARD_LINES = (
     "    instance-of <l>, <model>, <selfprofile>",
     "",
@@ -111,34 +112,25 @@ PROFILE_GUARD_SUPPLY = CaptureSupply(
 
 
 def guarded_settings_hook(**overrides: object) -> Hook:
-    """The shipped settings hook with the own-profile guard rendered from suppliers.
+    """The shipped settings hook, exactly as `manifest/hooks.json` declares it.
 
-    Built from `manifest/hooks.json` rather than hand-written so the anchor under
-    test is the real one, and `requires_proposal` cleared so the supply path is
-    reached — the shipped manifest still carries the flag, and until a human
-    clears it this whole mechanism is inert on it, which is the intended default.
+    This used to SPLICE the guard and the supply group into a shipped hook that
+    had neither, standing in for a manifest entry a human had not yet approved.
+    That entry is now shipped, so the splice has to go: applied to the current
+    manifest it inserted a SECOND `instance-of`/`if-eqz` pair and a duplicate
+    `:dfinsta_not_self_profile` label — a payload that would not assemble — and
+    every test here went on passing, because they all ask `assertIn`. Reading the
+    manifest directly removes the reconstruction, so these tests now exercise the
+    bytes that ship.
+
+    `overrides` is kept for the tests that deliberately deform the hook.
     """
     base = {hook.hook_id: hook for hook in load_manifest(MANIFEST)}[
         "install_settings_long_click"
     ]
-    payload = list(base.payload)
-    marker = payload.index("    # dfinsta_settings_long_click_profilebar")
-    payload[marker + 1 : marker + 1] = list(GUARD_LINES)
-    # Close the guard just before the stock tail, so only the DFInsta lines are
-    # skipped on another user's profile and setLayoutParams/return always run.
-    tail = next(
-        index
-        for index, line in enumerate(payload)
-        if "setLayoutParams" in line and index > marker
-    )
-    payload[tail:tail] = ["    :dfinsta_not_self_profile", ""]
-    fields: dict[str, object] = {
-        "payload": tuple(payload),
-        "supplied_captures": (PROFILE_GUARD_SUPPLY,),
-        "requires_proposal": False,
-    }
-    fields.update(overrides)
-    return dataclasses.replace(base, **fields)  # type: ignore[arg-type]
+    if not overrides:
+        return base
+    return dataclasses.replace(base, **overrides)  # type: ignore[arg-type]
 
 
 # ----------------------------------------------------------------- tiny fixtures
@@ -268,14 +260,62 @@ class ManifestDeclarationTests(unittest.TestCase):
             )
         self.assertIn("duplicate role", str(caught.exception))
 
-    def test_shipped_manifest_still_loads(self):
+    def test_shipped_manifest_declares_the_supply_group_on_one_hook(self):
+        """Was: "nothing declares a supplied capture yet".
+
+        That assertion pinned the state of an earlier slice, which added the
+        mechanism and deliberately left the manifest entry to a human. The human
+        approved it, so the assertion is inverted rather than deleted: it now pins
+        WHICH hook declares a group and WHAT the group says, so an accidental
+        second group, a renamed role, or a dropped supplier still fails here.
+        """
         hooks = load_manifest(MANIFEST)
         self.assertEqual(len(hooks), 7)
-        # Nothing in the shipped manifest declares a supplied capture yet; this
-        # slice adds the mechanism, not the entry.
+        with_supply = [hook for hook in hooks if hook.supplied_captures]
         self.assertEqual(
-            [hook.hook_id for hook in hooks if hook.supplied_captures], []
+            [hook.hook_id for hook in with_supply], ["install_settings_long_click"]
         )
+        (hook,) = with_supply
+        self.assertEqual(len(hook.supplied_captures), 1)
+        supply = hook.supplied_captures[0]
+        self.assertEqual(supply.names, ("model", "selfprofile"))
+        self.assertEqual(
+            [(item.name, item.kind, item.role) for item in supply.provides],
+            [("model", "reg", "model_register"), ("selfprofile", "type", "self_profile_type")],
+        )
+        # deterministic rule first, agent as the fallback — never the reverse
+        self.assertEqual(supply.suppliers, (PROFILE_GUARD, AGENT))
+        self.assertEqual(
+            supply.parameters,
+            {"requires_type": PROFILE_ACTION_BAR, "self_drawable": SELF_DRAWABLE},
+        )
+        # and the flag that would short-circuit the whole supply path is off
+        self.assertFalse(hook.requires_proposal)
+
+    def test_the_shipped_payload_carries_exactly_this_guard(self):
+        # The guard must appear ONCE. Twice would not assemble (duplicate label),
+        # and no `assertIn` anywhere in this file would notice — which is exactly
+        # what the old splicing fixture silently produced once the manifest gained
+        # the guard of its own.
+        hook = guarded_settings_hook()
+        payload = list(hook.payload)
+        for line in GUARD_LINES:
+            if line:
+                self.assertEqual(payload.count(line), 1, line)
+        self.assertEqual(payload.count("    :dfinsta_not_self_profile"), 1)
+        guard_at = payload.index(GUARD_LINES[0])
+        label_at = payload.index("    :dfinsta_not_self_profile")
+        attach_at = next(
+            index for index, line in enumerate(payload) if "setOnLongClickListener" in line
+        )
+        tail_at = next(
+            index for index, line in enumerate(payload) if "setLayoutParams" in line
+        )
+        # DFInsta lines inside the guard, stock tail outside it and last
+        self.assertLess(guard_at, attach_at)
+        self.assertLess(attach_at, label_at)
+        self.assertLess(label_at, tail_at)
+        self.assertTrue(payload[-1].strip().startswith("return-object"))
 
     def test_guarded_settings_hook_fixture_is_a_valid_hook(self):
         hook = guarded_settings_hook()

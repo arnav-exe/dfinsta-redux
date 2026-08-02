@@ -2076,6 +2076,19 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
     FOLLOW_BUTTON_SITE = "A01"
     ROW_BUILDER_SITE = "A02"
 
+    #: The own-profile guard's two values, per version. The payload cannot render
+    #: without them — that is the whole point of `supplied_captures` — so every
+    #: test here that renders has to pass them in.
+    #:
+    #: They are written out rather than derived because THIS class tests site
+    #: discrimination against inline excerpts, and the supplier needs an index and
+    #: a whole decode. That the supplier really derives exactly these from the real
+    #: 430 and 439 decodes is pinned by `test_capture_supply.RealDecodeSupplyTests`;
+    #: duplicating them here would be a problem only if nothing checked the link,
+    #: and something does.
+    GUARD_439 = {"model": "p4", "selfprofile": "LX/0Dxw;"}
+    GUARD_430 = {"model": "p3", "selfprofile": "LX/077N;"}
+
     def setUp(self):
         self.hooks = {hook.hook_id: hook for hook in load_manifest(MANIFEST)}
         self.hook = self.hooks["install_settings_long_click"]
@@ -2085,7 +2098,9 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
     # ---------------------------------------------------------------- the site
 
     def test_the_anchor_matches_exactly_once_in_the_real_439_host(self):
-        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
+        result = resolve_in_source(
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439, self.GUARD_439
+        )
         self.assertTrue(result.resolved, result.reason)
         self.assertEqual(result.occurrences, 1)
         self.assertEqual(result.bindings["view"], "v6")
@@ -2094,7 +2109,9 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
     def test_the_anchor_matches_exactly_once_in_the_real_430_host_too(self):
         # 430 was ambiguous as well (two sites), which the original diagnosis of
         # this bug did not know. The same two extra lines fix both versions.
-        result = resolve_in_source(self.hook, "LX/077K;", PROFILE_ACTION_BAR_430)
+        result = resolve_in_source(
+            self.hook, "LX/077K;", PROFILE_ACTION_BAR_430, self.GUARD_430
+        )
         self.assertTrue(result.resolved, result.reason)
         self.assertEqual(result.occurrences, 1)
         self.assertEqual(result.bindings["view"], "v6")
@@ -2170,7 +2187,9 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
         self.assertEqual(self.hook.mode, "replace")
 
     def test_the_injected_lines_land_before_the_return(self):
-        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
+        result = resolve_in_source(
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439, self.GUARD_439
+        )
         payload = [line.strip() for line in result.payload if line.strip()]
         return_at = payload.index("return-object v6")
         self.assertEqual(return_at, len(payload) - 1, "the return must be last")
@@ -2205,7 +2224,7 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
 
         broken = dataclasses.replace(self.hook, mode="insert_after")
         operation = resolve_in_source(
-            broken, "LX/0DnT;", PROFILE_ACTION_BAR_439
+            broken, "LX/0DnT;", PROFILE_ACTION_BAR_439, self.GUARD_439
         ).as_operation(broken)
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "0DnT.smali"
@@ -2221,7 +2240,7 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
 
         # ...and with the mode the manifest actually declares, it is alive.
         operation = resolve_in_source(
-            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439, self.GUARD_439
         ).as_operation(self.hook)
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "0DnT.smali"
@@ -2246,7 +2265,7 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
             sys.path.remove(str(RECONSTRUCTION_TOOLS))
 
         operation = resolve_in_source(
-            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439, self.GUARD_439
         ).as_operation(self.hook)
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "0DnT.smali"
@@ -2268,7 +2287,9 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
             "\n".join(self.hook.payload).count(self.hook.marker),
             self.hook.expected_marker_count,
         )
-        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
+        result = resolve_in_source(
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439, self.GUARD_439
+        )
         self.assertEqual(
             "\n".join(result.payload).count(self.hook.marker),
             self.hook.expected_marker_count,
@@ -2280,94 +2301,173 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
             ".method public static final A01",
             1,
         )
-        again = resolve_in_source(self.hook, "LX/0DnT;", patched)
+        again = resolve_in_source(self.hook, "LX/0DnT;", patched, self.GUARD_439)
         self.assertTrue(again.already_applied)
 
     # ----------------------------------------------------- the own-profile guard
 
-    def test_the_payload_is_still_a_shape_because_the_guard_is_not_capturable(self):
-        """Loud, on purpose: a unique anchor did NOT retire `requires_proposal`.
+    def test_the_guard_is_in_the_payload_and_its_two_values_are_supplied(self):
+        """The payload carries the guard; the two values it needs are supplied.
 
-        The guard needs two things the anchor cannot supply. The register holding
-        the action model is the 4th `<init>` argument on 430 and the 2nd on 439,
-        so it is capture `<d>` on one version and `<b>` on the other — no single
-        name holds it. And the self-profile type (LX/077N -> LX/0Dxw) is named on
-        no line adjacent to this site, so no widening reaches it. Rendering this
-        payload as written would make every profile's Options long-clickable.
+        This test used to assert the opposite — that the payload was a SHAPE with
+        no guard in it, kept safe by `requires_proposal`. That was right while
+        nothing could fill the guard's two values. `capture_supply` can, so the
+        guard now lives in the manifest and `requires_proposal` is gone.
+
+        Removing the flag is not a loosening, because the flag and the supply path
+        cannot coexist: `resolve` tests `requires_proposal` against the SITED
+        candidates and returns NEEDS_AGENT before the supply pass runs, so leaving
+        it set would make the supplier dead code and the change inert.
+
+        What has NOT changed is why the two values cannot be anchored, and that is
+        still asserted below: the model register is capture `<b>` on 439 and `<d>`
+        on 430 — no single name holds it — and the self-profile type is bound by no
+        anchor line at all. That is why they are `supplied_captures` rather than
+        ordinary captures.
         """
-        self.assertTrue(self.hook.requires_proposal)
+        self.assertFalse(self.hook.requires_proposal)
+        self.assertEqual(
+            sorted(self.hook.supplied_capture_names), ["model", "selfprofile"]
+        )
+        # the guard really is in the manifest payload now
+        text = "\n".join(self.hook.payload)
+        self.assertIn("instance-of <l>, <model>, <selfprofile>", text)
+        self.assertIn("if-eqz <l>, :dfinsta_not_self_profile", text)
+
         declared: set[str] = set()
         for _, names in compile_anchor(self.hook.anchor):
             declared.update(names)
-        # nothing in the anchor binds a type that could be the self-profile model
-        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
-        self.assertNotIn("LX/0Dxw;", result.bindings.values())
-        # and the shape carries no guard at all
-        self.assertNotIn("instance-of", "\n".join(self.hook.payload))
-        self.assertNotIn("if-eqz", "\n".join(self.hook.payload))
+        # the two supplied names are NOT anchor captures — one source each
+        self.assertNotIn("model", declared)
+        self.assertNotIn("selfprofile", declared)
+        # nothing the anchor binds could be the self-profile model type
+        result = resolve_in_source(
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439, self.GUARD_439
+        )
+        self.assertNotIn("LX/0Dxw;", [result.bindings[name] for name in declared])
         # the model register is bound under different names on the two versions,
         # which is the whole reason it cannot be named in the payload
         binding_439 = resolve_in_source(
-            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439
+            self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439, self.GUARD_439
         ).bindings
         binding_430 = resolve_in_source(
-            self.hook, "LX/077K;", PROFILE_ACTION_BAR_430
+            self.hook, "LX/077K;", PROFILE_ACTION_BAR_430, self.GUARD_430
         ).bindings
         self.assertEqual(binding_439["b"], "p4")  # 439: model is the 2nd init arg
         self.assertEqual(binding_430["d"], "p3")  # 430: model is the 4th init arg
         self.assertIn("b", declared)
         self.assertIn("d", declared)
 
-    def test_an_ungated_payload_without_a_guard_would_be_a_manifest_bug(self):
-        # The invariant that keeps the shape safe: a ui_attach payload that carries
-        # no own-profile guard must be behind requires_proposal.
-        for hook in self.hooks.values():
-            if hook.strategy != "ui_attach":
-                continue
-            with self.subTest(hook=hook.hook_id):
-                guarded = "instance-of" in "\n".join(hook.payload)
-                if not guarded and hook.hook_id == "install_settings_long_click":
-                    self.assertTrue(hook.requires_proposal)
+    def test_without_the_supplied_values_the_payload_refuses_to_render(self):
+        """The safety `requires_proposal` used to provide, at the render boundary.
 
-    def test_a_validated_proposal_can_still_wrap_the_dfinsta_lines_in_the_guard(self):
-        """The shape has to compose with the guard, or `replace` broke the hook.
-
-        Splices the guard in the way the shipped 430/439 patches do and checks the
-        resulting order: guard first, DFInsta lines inside it, skip label after
-        them, and the stock `setLayoutParams`/`return-object` outside and last, so
-        a non-self profile runs exactly the stock instructions.
+        The old flag stopped the whole hook. This is narrower and stronger: the
+        anchor-only pass still finds the SITE — which is what a supplier needs in
+        order to run — but it produces no payload, and `as_operation` raises rather
+        than handing the applier an unguarded attach. The failure the flag existed
+        to prevent (every profile's Options long-clickable) is now impossible by
+        construction rather than by remembering to set a boolean.
         """
-        result = resolve_in_source(self.hook, "LX/0DnT;", PROFILE_ACTION_BAR_439)
-        scratch, model = result.bindings["l"], result.bindings["b"]
-        payload = list(result.payload)
-        first = payload.index(f"    {self.hook.marker}") - 2  # the probe call
-        last = next(
-            index for index, line in enumerate(payload) if "setOnLongClickListener" in line
-        )
-        guarded = (
-            payload[:first]
-            + [f"    instance-of {scratch}, {model}, LX/0Dxw;", "",
-               f"    if-eqz {scratch}, :dfinsta_skip", ""]
-            + payload[first : last + 1]
-            + ["", "    :dfinsta_skip"]
-            + payload[last + 1 :]
-        )
-        text = [line.strip() for line in guarded if line.strip()]
-        guard_at = text.index(f"instance-of {scratch}, {model}, LX/0Dxw;")
-        skip_at = text.index(":dfinsta_skip")
-        probe_at = next(i for i, l in enumerate(text) if "h_install_settings_long_click" in l)
-        attach_at = next(i for i, l in enumerate(text) if "setOnLongClickListener" in l)
-        click_at = next(i for i, l in enumerate(text) if "OnClickListener;Landroid/view/View;)V" in l)
-        params_at = next(i for i, l in enumerate(text) if "setLayoutParams" in l)
-        return_at = text.index("return-object v6")
+        for descriptor, body in (
+            ("LX/0DnT;", PROFILE_ACTION_BAR_439),
+            ("LX/077K;", PROFILE_ACTION_BAR_430),
+        ):
+            with self.subTest(host=descriptor):
+                result = resolve_in_source(self.hook, descriptor, body)
+                self.assertFalse(result.resolved)
+                self.assertEqual(result.occurrences, 1)  # the site WAS located
+                self.assertEqual(sorted(result.awaiting), ["model", "selfprofile"])
+                self.assertEqual(list(result.payload), [])
+                with self.assertRaises(ManifestError):
+                    result.as_operation(self.hook)
 
-        self.assertNotEqual(model, result.bindings["view"])  # guards the MODEL
-        self.assertLess(click_at, guard_at)  # stock click attach is unconditional
-        self.assertLess(guard_at, probe_at)  # everything DFInsta is behind it
-        self.assertLess(attach_at, skip_at)  # ...and skipped when it is false
-        self.assertLess(skip_at, params_at)  # stock tail is outside the guard
-        self.assertLess(params_at, return_at)
-        self.assertEqual(return_at, len(text) - 1)
+    def test_an_ungated_payload_without_a_guard_would_be_a_manifest_bug(self):
+        """This hook attaches to a control the site builds for EVERY model type.
+
+        The invariant: `install_settings_long_click` either carries the runtime
+        own-profile guard or is held back by `requires_proposal`. It is now the
+        first of those, so the guarded case is asserted POSITIVELY — the old
+        `if not guarded: assertTrue(requires_proposal)` form passes vacuously the
+        moment the guard lands, which is precisely when it stops meaning anything.
+
+        Scoped to this hook, as before. The other `ui_attach` hook needs no runtime
+        guard and never had one: it writes the builder's own long-click FIELD at a
+        site its five-line anchor pins by drawable and label, so it is scoped
+        structurally rather than at runtime. Demanding a guard there would be
+        demanding a change to a separate, device-verified hook.
+        """
+        hook = self.hooks["install_settings_long_click"]
+        self.assertEqual(hook.strategy, "ui_attach")
+        guarded = "instance-of" in "\n".join(hook.payload)
+        self.assertTrue(guarded, "the own-profile guard left the payload")
+        self.assertFalse(hook.requires_proposal)
+        # and the guard is only trustworthy if the values it tests are supplied
+        self.assertTrue(hook.supplied_capture_names)
+
+    def test_the_rendered_payload_wraps_the_dfinsta_lines_in_the_guard(self):
+        """The rendered order, on both versions, with the probe OUTSIDE the guard.
+
+        This test used to splice a hypothetical guard into a guardless payload and
+        check the result. The manifest carries the guard now, so it asserts the
+        real rendered output instead — a hypothetical splice could stay green
+        while the shipped payload said something else.
+
+        One assertion is deliberately inverted from the old hypothetical. It
+        required `guard_at < probe_at` — probe inside the guard, "everything
+        DFInsta is behind it". The probe is now FIRST, outside the guard, because
+        `runtime_identity.instrument` states what the probe is for: "the site
+        reports execution even if a later instruction in the payload throws — the
+        question being answered is 'did control reach here'". Inside the guard it
+        answers a different and weaker question. Silence would then mean either
+        "this action-bar implementation never ran" or "it ran on someone else's
+        profile", and those are the two findings the probe exists to separate:
+        whether LX/0DnT is the live implementation on this device is exactly the
+        open question recorded against both settings hooks. Nothing is lost by
+        moving it out, because attachment is already proven by the `ui_dialog`
+        probe — the dialog opening IS the listener having attached.
+
+        The cost is a real one and is pinned here so nobody mistakes it later:
+        `h_install_settings_long_click` firing means the SITE executed, not that
+        the settings dialog was installed.
+        """
+        for descriptor, body, supplied, selftype in (
+            ("LX/0DnT;", PROFILE_ACTION_BAR_439, self.GUARD_439, "LX/0Dxw;"),
+            ("LX/077K;", PROFILE_ACTION_BAR_430, self.GUARD_430, "LX/077N;"),
+        ):
+            with self.subTest(host=descriptor):
+                result = resolve_in_source(self.hook, descriptor, body, supplied)
+                self.assertTrue(result.resolved, result.reason)
+                scratch = result.bindings["l"]
+                model = supplied["model"]
+                view = result.bindings["view"]
+                text = [line.strip() for line in result.payload if line.strip()]
+
+                guard_at = text.index(f"instance-of {scratch}, {model}, {selftype}")
+                skip_at = text.index(":dfinsta_not_self_profile")
+                branch_at = text.index(f"if-eqz {scratch}, :dfinsta_not_self_profile")
+                probe_at = next(
+                    i for i, l in enumerate(text) if "h_install_settings_long_click(" in l
+                )
+                attach_at = next(
+                    i for i, l in enumerate(text) if "setOnLongClickListener" in l
+                )
+                click_at = next(
+                    i
+                    for i, l in enumerate(text)
+                    if "OnClickListener;Landroid/view/View;)V" in l
+                )
+                params_at = next(i for i, l in enumerate(text) if "setLayoutParams" in l)
+                return_at = text.index(f"return-object {view}")
+
+                self.assertNotEqual(model, view)  # guards the MODEL, not the view
+                self.assertLess(click_at, guard_at)  # stock click attach is unconditional
+                self.assertLess(probe_at, guard_at)  # reachability is reported first
+                self.assertLess(guard_at, branch_at)
+                self.assertLess(branch_at, attach_at)  # the attach is behind the guard
+                self.assertLess(attach_at, skip_at)  # ...and skipped when it is false
+                self.assertLess(skip_at, params_at)  # stock tail is outside the guard
+                self.assertLess(params_at, return_at)
+                self.assertEqual(return_at, len(text) - 1)
 
     # ------------------------------------------------- against the full decodes
 
@@ -2377,8 +2477,9 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
             self.skipTest(f"decode(s) not checked out: {missing}")
         for name, (path, descriptor) in REAL_DECODES.items():
             body = path.read_text(encoding="utf-8")
+            supplied = self.GUARD_439 if name == "439" else self.GUARD_430
             with self.subTest(version=name):
-                result = resolve_in_source(self.hook, descriptor, body)
+                result = resolve_in_source(self.hook, descriptor, body, supplied)
                 self.assertTrue(result.resolved, result.reason)
                 self.assertEqual(result.occurrences, 1)
                 excerpt = (
@@ -2386,7 +2487,7 @@ class ProfileSettingsAnchorTests(unittest.TestCase):
                 )
                 # the excerpt is a real slice, so every anchor line it produced is
                 # in the decode verbatim and binds identically
-                from_excerpt = resolve_in_source(self.hook, descriptor, excerpt)
+                from_excerpt = resolve_in_source(self.hook, descriptor, excerpt, supplied)
                 self.assertEqual(result.anchor, from_excerpt.anchor)
                 self.assertEqual(result.bindings, from_excerpt.bindings)
                 for line in result.anchor:
@@ -2692,17 +2793,31 @@ class RealManifestContentTests(unittest.TestCase):
                     )
                     position = payload.index(wanted, position + 1)
 
-    def test_every_payload_capture_is_declared_by_its_anchor(self):
+    def test_every_payload_capture_has_exactly_one_declared_source(self):
         # `__post_init__` already enforces this; assert it holds for the real file
         # so a manifest edit that slips a stray `<name>` in fails here by name.
+        #
+        # A capture now has TWO possible sources — the anchor, or a
+        # `supplied_captures` group — and the point of the test is that it has
+        # exactly one. Accepting the union alone would let a name be declared in
+        # both places, where the anchor binding and the supplier's answer can
+        # disagree silently and only one of them ends up in the rendered payload.
         for hook in self.hooks:
-            declared: set[str] = set()
+            anchored: set[str] = set()
             for _, names in compile_anchor(hook.anchor):
-                declared.update(names)
+                anchored.update(names)
+            supplied = set(hook.supplied_capture_names)
+            with self.subTest(hook=hook.hook_id):
+                self.assertEqual(
+                    anchored & supplied,
+                    set(),
+                    "a capture bound by the anchor AND filled by a supplier has two "
+                    "sources that can disagree",
+                )
             for line in hook.payload:
                 for match in CAPTURE.finditer(line):
                     with self.subTest(hook=hook.hook_id, capture=match.group("name")):
-                        self.assertIn(match.group("name"), declared)
+                        self.assertIn(match.group("name"), anchored | supplied)
 
 
 class DesignIntentTests(unittest.TestCase):

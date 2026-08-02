@@ -263,7 +263,6 @@
         "invoke-virtual {<view>, <lp:reg>}, Landroid/view/View;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V",
         "return-object <view>"
       ],
-      "requires_proposal": true,
       "payload": [
         "    new-instance <l>, <listener>",
         "",
@@ -274,11 +273,17 @@
         "    invoke-static {}, Lcom/dfinstagram/probe;->h_install_settings_long_click()V",
         "",
         "    # dfinsta_settings_long_click_profilebar",
+        "    instance-of <l>, <model>, <selfprofile>",
+        "",
+        "    if-eqz <l>, :dfinsta_not_self_profile",
+        "",
         "    new-instance <l>, Lcom/dfinstagram/SettingsWrapper;",
         "",
         "    invoke-direct {<l>}, Lcom/dfinstagram/SettingsWrapper;-><init>()V",
         "",
         "    invoke-virtual {<view>, <l>}, Landroid/view/View;->setOnLongClickListener(Landroid/view/View$OnLongClickListener;)V",
+        "",
+        "    :dfinsta_not_self_profile",
         "",
         "    invoke-virtual {<view>, <lp>}, Landroid/view/View;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V",
         "",
@@ -291,7 +296,8 @@
         "the last TWO anchor lines are the discriminator, not decoration. The three-line 'build a listener, attach it' idiom is generic: it matches 3 times in the 439 host and 2 times in the 430 host, and the resolver refused both as ambiguous. Only the site that builds the Options ImageView is followed by setLayoutParams on the SAME register the listener was attached to AND then returns that register. The other-user follow button (new-instance ...FadeInFollowButton) calls the button's own setup method instead and must be excluded \u2014 attaching there would put the DFInsta dialog on a stranger's Follow button. The third 439 site does call setLayoutParams on <view> but then falls through to a goto rather than returning, so requiring `return-object <view>` is what excludes it.",
         "mode is `replace` BECAUSE the anchor now ends at `return-object`. With `insert_after` the payload would land after a return and be unreachable \u2014 statically perfect, runtime-inert, which is the failure this project has shipped more often than any other. The payload therefore re-emits the anchor verbatim and splices the DFInsta lines in BEFORE the return, keeping setLayoutParams and the return as the last two instructions.",
         "must be restricted to the user's OWN profile; other users' Options must stay non-long-clickable. This method builds the icon for EVERY action-bar model type \u2014 every branch merges on the label just above the anchor \u2014 so an unguarded attach makes a stranger's controls long-clickable. The shipped patch guards with `instance-of <r>, <model>, LX/077N;` (430) / `LX/0Dxw;` (439) plus `if-eqz` around the DFInsta lines only, never around the stock lines.",
-        "requires_proposal is set BECAUSE of that guard, and the wider anchor does NOT retire it: the register holding the action model is the 4th init argument on 430 (p3, capture <d>) and the 2nd on 439 (p4, capture <b>), so no one capture name holds it; and the self-profile type moved LX/077N -> LX/0Dxw and is named on no line adjacent to this site, so no anchor extension can capture it. The payload above is therefore still a SHAPE, not a complete patch \u2014 applying it as written would make every profile's Options long-clickable and undo the device-verified other-user exclusion. What the wider anchor does buy is that the SITE is now mechanical: host in, one anchor out, on both 430 and 439.",
+        "the guard's two values are the ONLY thing the anchor cannot reach, and the wider anchor does not change that: the register holding the action model is the 4th init argument on 430 (p3, capture <d>) and the 2nd on 439 (p4, capture <b>), so no one capture NAME holds it across versions; and the self-profile type moved LX/077N -> LX/0Dxw and is named on no line adjacent to this site, so no anchor extension can capture it. What the wider anchor does buy is that the SITE is mechanical: host in, one anchor out, on both 430 and 439.",
+        "<model> and <selfprofile> are therefore filled from supplied_captures, NOT from requires_proposal. requires_proposal must not be re-added: Resolve tests it against `sited` candidates and returns NEEDS_AGENT before the supply pass ever runs, so the flag and the supply group cannot both be set \u2014 the flag wins and the supplier is dead code. The safety the flag provided is not lost, it moved: a supply group that cannot be filled escalates to NEEDS_AGENT with the capture names, and merge_supplied kind-checks every supplied value at the render boundary, so an unfillable guard still refuses to render rather than emitting an unguarded attach.",
         "the listener register is dead after the stock helper call consumes it, which is why it is safe to reuse"
       ],
       "probe": {
@@ -306,6 +312,31 @@
         "must take effect ONLY on the signed-in user's own profile; the equivalent control on another user's profile must be completely unaffected",
         "a normal tap must still do exactly what it did before",
         "the control must remain visible and usable if the modification cannot attach"
+      ],
+      "supplied_captures": [
+        {
+          "provides": [
+            {
+              "name": "model",
+              "kind": "reg",
+              "role": "model_register"
+            },
+            {
+              "name": "selfprofile",
+              "kind": "type",
+              "role": "self_profile_type"
+            }
+          ],
+          "suppliers": [
+            "profile_action_bar_self_guard",
+            "agent"
+          ],
+          "params": {
+            "requires_type": "Lcom/instagram/profile/actionbar/ProfileActionBar;",
+            "self_drawable": "instagram_menu_outline_24"
+          },
+          "note": "The own-profile guard needs two values no anchor line can bind, so they are derived from the matched method instead. profile_action_bar_self_guard proves, in order: ProfileActionBar exists in this version (the SELECTOR - a version without it decides self/other some other way and any value derived here would describe the wrong architecture); instagram_menu_outline_24 re-resolves to a drawable id in THIS version (the NAME is the durable key, the id is not); exactly one register in the enclosing method is tested against 2+ distinct instance-of types (430 tests 11 against p3, 439 tests 10 against p4, and no other register is tested more than once in either); that register is one the anchor bound at this site, so it is live where the payload renders; and exactly one of those subtypes loads the drawable - that is the self-profile type. Derived: p4/LX/0Dxw; on 439 and p3/LX/077N; on 430, which are exactly the values the shipped device-verified builds carry. Every 'exactly one' is checked as uniqueness rather than taken as the first hit, and a candidate that cannot be READ declines rather than being skipped, because skipping it would let 'exactly one matched' be true only because the second was never looked at. The rule was derived from 430 and 439 ONLY and a holdout says how far that reaches: 340 and 300 have no ProfileActionBar, no model-subtype dispatch chain, and no instagram_menu_outline_24 (340 ships instagram_menu_pano_outline_24, a different asset). Both keys fail together below 430 because both are consequences of one rewrite, so 430 and 439 are NOT two independent confirmations - this is a 430+ rule resting on roughly one data point. That is why the agent is the fallback and why the deterministic supplier is written to decline unless every precondition is affirmatively proven; inverting the order would be trusting a one-point rule and escalating only on an obvious error, which is how a version-independent payload once shipped without its guard."
+        }
       ]
     },
     {
