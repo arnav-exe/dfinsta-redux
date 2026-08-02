@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 2204 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 2221 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -215,6 +215,36 @@ history, so re-running 439 reported 14 hooks and 4 invocations. The claim is inv
 flatters or damns the project by accident. Fixed by keying a run on `(version, recorded_at)`,
 which needed no schema change because `record_run` already stamps every record of a run
 identically. The ledger keeps the failed attempt; only the reading changed.
+
+## The manifest has no `by_agent` fingerprint left
+
+`kind: "by_anchor"` — *the class whose body matches this hook's own anchor pattern* — retired
+both remaining agent fingerprints. **7 of 7 hooks resolve on 430 and 439 with no `--proposals`
+at all**, so the next port costs **0 agent invocations** where 439 cost 2.
+
+Measured, not cited: each five-line anchor matches exactly one class per decode and it is the
+known host every time (1 of 181,421 on 439, 1 of 179,190 on 430; the three-line form it
+replaced matched 87 and 110). Cross-checked by a full unprefiltered match over every class of
+both decodes with no shared code — same four hosts.
+
+Cost: one decode walk per `by_anchor` hook, 6.1 s for both warm, with a prefilter derived from
+the anchor's own longest fixed run (17-34×). Cold cache unmeasured, realistically 10-15 s. Each
+hook is its own walk; fine at two, worth batching at four.
+
+**Why this may drop `proposer_agreement` and `adversarial_verified`**: those exist because an
+agent's descriptor is an assertion nothing checks, and a 430 descriptor still names a live
+class in 439. Here nothing is carried between versions — the pattern is re-matched against the
+target decode every port and is the same text the patch is spliced into, so a version where it
+stops identifying the host is one where it stops identifying the *site*, and the hook escalates
+rather than resolving somewhere wrong.
+
+The scan also collects classes carrying the hook's **marker**, which is load-bearing rather
+than incidental: one of these hooks is `replace` mode, so a decode this pipeline already
+patched no longer matches its own anchor, and without the marker route a re-run would report
+NOT_FOUND where every other kind reports ALREADY_APPLIED.
+
+**What it does not prove**: the claim that agent cost *falls* still needs a real second
+version. The verdict stays `UNTESTABLE` until 440.
 
 ## Stage 10's generaliser, and the poison it caught
 
