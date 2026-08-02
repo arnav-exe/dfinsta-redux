@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 1933 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 2033 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -138,6 +138,35 @@ fourth provenance, not an eighth `EvidenceKind`.
 `tests/test_phase_a_history_corpus.py` **fails when run alone** (`RuntimeError: Failed
 validating workflow PortRunWorkflow`) and passes inside the full suite: it depends on an
 import another module performs first. The suite being green hides it.
+
+## Captures can be supplied from outside the anchor
+
+`src/dfinsta_pipeline/capture_supply.py` plus `Hook.supplied_captures`. The anchor binds what
+is adjacent; a supplier binds what is not. Declared per *question* rather than per field, with
+a chain of suppliers in preference order. **A decline is a returned value; a failure is an
+exception** — and returning neither is refused, because silence reads as success.
+
+Measured: 439 → `p4` / `LX/0Dxw;`; 430 → `p3` / `LX/077N;`, the values the shipped patches use.
+On 340 it declines, and with both keys relaxed it runs every step and still declines — a
+positive control rather than an untested absence.
+
+**`requires_proposal` on `install_settings_long_click` was deliberately NOT flipped**, so this
+path does not yet run for the shipped manifest. Flipping it moves the hook from agent
+provenance (owing k-of-n agreement and adversarial verification) to mechanical provenance
+(owing neither) — a real reduction in scrutiny for the one hook with a safety-critical guard,
+on a rule with one architecture's worth of evidence. **The test that justifies it**: a build
+with the flag flipped, checking long-press does nothing on *another user's* profile. Same
+shape as the test that settled the actionbar hook.
+
+Three limits worth knowing: the `ProfileActionBar` precondition is necessary but not
+sufficient (a future version that keeps the class and reorders the dispatch is where the
+supplier answers confidently and is wrong); the "one dominant register" rule has a thin margin
+and will likely start declining before it starts lying; and a `params` typo degrades quietly
+to "an agent ran" rather than "the manifest is wrong".
+
+**And the strategic limit**: a supplier re-derives from scratch every version and **nothing
+accumulates**. This closes the structural gap in stage 5 but does not move
+agent-invocations-per-port. It is a prerequisite for stage 10's second half, not a substitute.
 
 ## Immediate next steps, in order
 
