@@ -33,10 +33,23 @@ A later reference to the same name, written ``<name>``, must match the value
 captured earlier — so ``move-result-object <r>`` provably lands in the same
 register the literal was loaded into.
 
-What this module does NOT do: choose between candidate hosts, or judge whether a
-literal is really the outgoing request path. Those need search and judgement, and
-belong to the Resolve stage's agents. This module is the deterministic half — it
-turns a fingerprint plus a decode into a concrete, checked operation, or fails.
+Some payload values are not adjacent to the site at all, and no anchor extension
+can reach them. The profile settings hook needs an own-profile guard whose model
+register is the 4th constructor argument on 430 and the 2nd on 439 — so no single
+capture name holds it — and whose self-profile type is named on no line near the
+site. Those captures are declared in ``supplied_captures`` and filled by a
+*supplier* instead: see :class:`CaptureSupply` and
+:mod:`dfinsta_pipeline.capture_supply`. The rule stays "every payload capture is
+declared by something": an anchor line, or a named supplier. A capture declared
+by neither is still refused, and a capture declared by both is a manifest bug
+rather than a merge, because there would be no way to say which value wins.
+
+What this module does NOT do: choose between candidate hosts, judge whether a
+literal is really the outgoing request path, or run a supplier. Those need search,
+judgement, an index and a decode. This module is the deterministic half — it turns
+a fingerprint plus a decode into a concrete, checked operation, or fails. It stays
+pure: a supplier hands it a *mapping*, which it validates and merges, and it never
+calls one.
 """
 
 from __future__ import annotations
@@ -53,6 +66,12 @@ CAPTURE = re.compile(
     r"<(?!init[>:]|clinit[>:])(?P<name>[a-z_][a-z0-9_]*)(?::(?P<kind>reg|type|member|any))?>"
 )
 RESERVED_CAPTURE_NAMES = frozenset({"init", "clinit"})
+
+#: The name half of :data:`CAPTURE`, anchored. A `supplied_captures` entry names a
+#: capture that no anchor line writes, so nothing else would ever check the name is
+#: spellable — and a name the payload cannot reference is a capture that silently
+#: never renders.
+CAPTURE_NAME = re.compile(r"[a-z_][a-z0-9_]*\Z")
 
 KIND_PATTERNS = {
     "reg": r"[vp]\d+",
@@ -122,6 +141,20 @@ def compile_anchor(lines: Iterable[str]) -> list[tuple[re.Pattern[str], list[str
     """Compile every anchor line, sharing capture kinds across the whole anchor."""
     kinds: dict[str, str] = {}
     return [compile_pattern(line, kinds) for line in lines]
+
+
+def anchor_capture_kinds(lines: Iterable[str]) -> dict[str, str]:
+    """Capture name -> declared kind, for one whole anchor.
+
+    :func:`compile_anchor` already computes this and throws it away. A capture
+    supplier needs it to tell which of an anchor's bindings are REGISTERS, and
+    guessing from the value would be wrong: ``KIND_PATTERNS['member']`` also
+    matches ``v0``, so a field called ``v0`` would read as a live register.
+    """
+    kinds: dict[str, str] = {}
+    for line in lines:
+        compile_pattern(line, kinds)
+    return kinds
 
 
 def render(line: str, bindings: dict[str, str]) -> str:
@@ -236,6 +269,116 @@ class Probe:
 
 
 @dataclass(frozen=True)
+class SuppliedCapture:
+    """One payload capture that no anchor line can bind.
+
+    ``kind`` is validated against :data:`KIND_PATTERNS` and re-checked against the
+    *value* a supplier returns, which is the whole reason a supplied capture is not
+    simply a free string: a supplier — and one of them is an LLM — must be unable
+    to inject smali through a capture. ``reg`` admits ``v0``; it does not admit
+    ``v0}, LX/Evil;->go()V  #``.
+
+    ``role`` is what the SUPPLIER calls this value; ``name`` is what the payload
+    calls it. They are separate so a manifest can rename a capture without
+    touching supplier code, and so two suppliers answering the same question can
+    be swapped for one another. It defaults to ``name``.
+    """
+
+    name: str
+    kind: str
+    role: str = ""
+
+    def __post_init__(self) -> None:
+        if not CAPTURE_NAME.match(self.name):
+            raise ManifestError(
+                f"supplied capture name {self.name!r} is not a capture name; it must "
+                r"match [a-z_][a-z0-9_]* so the payload can write <name>"
+            )
+        if self.name in RESERVED_CAPTURE_NAMES:
+            raise ManifestError(
+                f"supplied capture {self.name!r} is reserved: smali writes constructors "
+                "as -><init>(...)V and the pattern engine always reads those literally"
+            )
+        if self.kind not in KIND_PATTERNS:
+            raise ManifestError(
+                f"supplied capture {self.name!r} has unknown kind {self.kind!r}; "
+                f"one of {sorted(KIND_PATTERNS)}"
+            )
+        if not self.role:
+            object.__setattr__(self, "role", self.name)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SuppliedCapture:
+        return cls(data["name"], data["kind"], data.get("role", ""))
+
+
+@dataclass(frozen=True)
+class CaptureSupply:
+    """One supplier question, and the captures its answer fills.
+
+    Grouped rather than one entry per capture because a supplier answers a
+    *question*, not a field: the profile guard's model register and self-profile
+    type are two halves of one derivation over one method, and splitting them
+    would repeat ``params`` and invite two entries that disagree about it.
+
+    ``suppliers`` is an ordered preference chain, tried left to right, first
+    non-decline wins. The deterministic supplier goes first and the agent last —
+    but only because the deterministic one is written to DECLINE unless every
+    precondition is affirmatively proven. A supplier that guesses would make this
+    ordering a liability rather than an optimisation.
+    """
+
+    provides: tuple[SuppliedCapture, ...]
+    suppliers: tuple[str, ...]
+    params: tuple[tuple[str, str], ...] = ()
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.provides:
+            raise ManifestError("a capture supply must provide at least one capture")
+        if not self.suppliers:
+            raise ManifestError(
+                "a capture supply needs at least one supplier; with none the hook can "
+                "never resolve and would report 'awaiting' forever rather than escalating"
+            )
+        if any(not name.strip() for name in self.suppliers):
+            raise ManifestError("supplier names must be non-empty")
+        if len(set(self.suppliers)) != len(self.suppliers):
+            raise ManifestError(f"supplier chain {list(self.suppliers)} repeats a supplier")
+        names = [item.name for item in self.provides]
+        if len(set(names)) != len(names):
+            raise ManifestError(f"capture supply declares {names} with a duplicate name")
+        roles = [item.role for item in self.provides]
+        if len(set(roles)) != len(roles):
+            # Two captures sharing a role would both take the same supplier value,
+            # silently, and only one of them would be the one that was meant.
+            raise ManifestError(f"capture supply declares {roles} with a duplicate role")
+        keys = [key for key, _ in self.params]
+        if len(set(keys)) != len(keys):
+            raise ManifestError(f"capture supply params repeat a key: {keys}")
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(item.name for item in self.provides)
+
+    @property
+    def parameters(self) -> dict[str, str]:
+        return dict(self.params)
+
+    def by_role(self) -> dict[str, SuppliedCapture]:
+        return {item.role: item for item in self.provides}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CaptureSupply:
+        return cls(
+            provides=tuple(SuppliedCapture.from_dict(item) for item in data["provides"]),
+            suppliers=tuple(data["suppliers"]),
+            params=tuple((str(key), str(value)) for key, value in data.get("params", {}).items()),
+            note=data.get("note", ""),
+        )
+
+
+@dataclass(frozen=True)
 class Hook:
     hook_id: str
     intent: str
@@ -263,6 +406,10 @@ class Hook:
     intent_constraints: tuple[str, ...] = ()
     probe: Probe | None = None
     status: str = "active"
+    # Payload captures no anchor line can bind, and who fills them. See
+    # `CaptureSupply`. Empty for every hook whose anchor reaches everything its
+    # payload needs, which is six of the seven shipped.
+    supplied_captures: tuple[CaptureSupply, ...] = ()
     # When true the anchor and payload here are a SHAPE, not a complete patch,
     # and a validated proposal must supply the real ones. Set for the profile
     # settings hook, whose payload needs an own-profile guard on a register no
@@ -308,13 +455,53 @@ class Hook:
         declared: set[str] = set()
         for _, names in compile_anchor(self.anchor):
             declared.update(names)
+
+        supplied: dict[str, SuppliedCapture] = {}
+        for group in self.supplied_captures:
+            for item in group.provides:
+                if item.name in supplied:
+                    raise ManifestError(
+                        f"{self.hook_id}: supplied capture <{item.name}> is declared by "
+                        "two supply groups; one capture has one supplier chain"
+                    )
+                if item.name in declared:
+                    # NOT a merge. Both would be authoritative and there is no rule
+                    # for which wins, so the manifest is wrong rather than ambiguous.
+                    # An anchor line cannot even reference a supplied capture without
+                    # declaring it — a bare `<name>` on first use is already rejected
+                    # for having no kind — so this is the only way the two can meet.
+                    raise ManifestError(
+                        f"{self.hook_id}: <{item.name}> is captured by an anchor line AND "
+                        "declared in supplied_captures. A capture has exactly one source; "
+                        "if the anchor really binds it, delete the supplied_captures entry"
+                    )
+                supplied[item.name] = item
+
         for line in self.payload:
             for match in CAPTURE.finditer(line):
-                if match.group("name") not in declared:
+                name = match.group("name")
+                if name not in declared and name not in supplied:
                     raise ManifestError(
-                        f"{self.hook_id}: payload uses <{match.group('name')}> "
-                        "which no anchor line captures"
+                        f"{self.hook_id}: payload uses <{name}> which no anchor line "
+                        "captures and no supplied_captures entry declares"
                     )
+
+        # An unused supplied capture is the shape of a dropped safety guard: the
+        # manifest declares the machinery for an own-profile check and then renders
+        # a payload without one, which is exactly how a version-independent payload
+        # once shipped without the guard it was written to carry.
+        used = {
+            match.group("name")
+            for line in self.payload
+            for match in CAPTURE.finditer(line)
+        }
+        unused = sorted(set(supplied) - used)
+        if unused:
+            raise ManifestError(
+                f"{self.hook_id}: supplied capture(s) {unused} are declared but never "
+                "used by the payload. A supplier is run to fill a hole in the patch; "
+                "declaring one the payload ignores means the hole is still there"
+            )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Hook:
@@ -335,8 +522,16 @@ class Hook:
             intent_constraints=tuple(data.get("intent_constraints", ())),
             probe=Probe.from_dict(data["probe"]) if data.get("probe") else None,
             status=data.get("status", "active"),
+            supplied_captures=tuple(
+                CaptureSupply.from_dict(item) for item in data.get("supplied_captures", ())
+            ),
             requires_proposal=bool(data.get("requires_proposal", False)),
         )
+
+    @property
+    def supplied_capture_names(self) -> tuple[str, ...]:
+        """Every capture a supplier must fill before this hook's payload can render."""
+        return tuple(name for group in self.supplied_captures for name in group.names)
 
 
 @dataclass
@@ -353,6 +548,12 @@ class Resolution:
     bindings: dict[str, str] = field(default_factory=dict)
     occurrences: int = 0
     reason: str = ""
+    # Non-empty when the anchor matched cleanly but the payload still needs values
+    # a supplier has not been asked for yet. Machine-readable on purpose: the
+    # Resolve stage has to tell "the site is here, fill in two blanks" apart from
+    # "the anchor did not match", and prose in `reason` is not a thing to branch on.
+    # `resolved` stays False throughout — an awaiting resolution is never appliable.
+    awaiting: tuple[str, ...] = ()
 
     def as_operation(self, hook: Hook) -> dict[str, Any]:
         """Emit the resolved form the existing applier already understands."""
@@ -431,8 +632,145 @@ def strip_comment(line: str) -> str:
     return line
 
 
-def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
-    """Match the hook's anchor pattern inside one class body."""
+@dataclass(frozen=True)
+class AnchorHit:
+    """One place an anchor pattern matched, and what it bound there.
+
+    ``first_line``/``last_line`` index the RAW ``smali.splitlines()`` list, not the
+    ``significant()`` view, because the only caller that wants them — a capture
+    supplier — needs to find the enclosing ``.method``, and ``.method`` lines
+    survive `significant()` but the offsets do not survive its filtering.
+    """
+
+    bindings: Mapping[str, str]
+    lines: tuple[str, ...]
+    first_line: int
+    last_line: int
+
+
+def find_anchor_hits(hook: Hook, smali: str) -> list[AnchorHit]:
+    """Every place the hook's anchor matches in one class body.
+
+    Split out of :func:`resolve_in_source` so a capture supplier locates the site
+    with the SAME matcher the resolver uses. A supplier reimplementing the loop
+    would eventually disagree with it about which method the payload lands in,
+    and would do so silently.
+    """
+    body = significant(smali.splitlines())
+    # Match the instruction, keep the line. An anchor is written to describe code,
+    # so a baksmali annotation hanging off the end of it must not decide whether it
+    # matches — but the annotation is still part of the line the applier will look
+    # for, and the applier finds an anchor by literal string comparison against its
+    # own copy of `significant()`. So the pattern is tried against the stripped
+    # instruction and the emitted anchor is the line as written.
+    code = [strip_comment(text) for _, text in body]
+    compiled = compile_anchor(hook.anchor)
+    width = len(compiled)
+    hits: list[AnchorHit] = []
+
+    for start in range(len(body) - width + 1):
+        bindings: dict[str, str] = {}
+        ok = True
+        for offset, (pattern, names) in enumerate(compiled):
+            match = pattern.match(code[start + offset])
+            if not match:
+                ok = False
+                break
+            for position, name in enumerate(names, start=1):
+                value = match.group(f"g{position}")
+                if name in bindings and bindings[name] != value:
+                    ok = False
+                    break
+                bindings[name] = value
+            if not ok:
+                break
+        if ok:
+            window = body[start : start + width]
+            hits.append(
+                AnchorHit(
+                    bindings=bindings,
+                    # Emitting the matched lines rather than `render(hook.anchor,
+                    # bindings)` cannot widen the match: every line here matched a
+                    # fully-anchored `^...$` pattern, so any other line equal to it
+                    # would have matched too. The two forms therefore differ only
+                    # where a trailing comment exists — and there, only this one is
+                    # a string the applier can find.
+                    lines=tuple(text for _, text in window),
+                    first_line=window[0][0],
+                    last_line=window[-1][0],
+                )
+            )
+    return hits
+
+
+def merge_supplied(
+    hook: Hook, bindings: Mapping[str, str], supplied: Mapping[str, str]
+) -> dict[str, str]:
+    """Fold supplier values into the anchor's bindings, refusing anything unsafe.
+
+    This is the trust boundary for a supplier, and one of the two shipped
+    suppliers is an LLM. Everything here is a refusal rather than a repair:
+
+    * a name bound by BOTH the anchor and a supplier — no rule says which wins;
+    * a name no ``supplied_captures`` entry declares — a supplier answering a
+      question nobody asked, which would render into the payload unchecked;
+    * a value that does not fully match its declared :data:`KIND_PATTERNS` entry —
+      ``reg`` is ``[vp]\\d+`` and nothing else, so no supplier can smuggle a second
+      instruction, a register RANGE, or a comment through a capture;
+    * a declared name with no value — an incomplete answer is not a partial patch,
+      it is no patch.
+
+    Raises rather than returning a failed Resolution because every one of these is
+    a contract violation by the CALLER, not a property of the target. The Resolve
+    stage catches it and escalates; nothing silently continues.
+    """
+    declared = {item.name: item for group in hook.supplied_captures for item in group.provides}
+    merged = dict(bindings)
+    for name, value in supplied.items():
+        if name in bindings:
+            raise ManifestError(
+                f"{hook.hook_id}: supplied capture <{name}> collides with the anchor "
+                f"binding <{name}>={bindings[name]!r}. A capture has one source; a "
+                "supplier may not overwrite what the anchor proved"
+            )
+        item = declared.get(name)
+        if item is None:
+            raise ManifestError(
+                f"{hook.hook_id}: <{name}> was supplied but no supplied_captures entry "
+                f"declares it (declared: {sorted(declared) or 'none'})"
+            )
+        if not re.fullmatch(KIND_PATTERNS[item.kind], value):
+            raise ManifestError(
+                f"{hook.hook_id}: supplied capture <{name}> is declared {item.kind!r} but "
+                f"the value {value!r} does not match {KIND_PATTERNS[item.kind]!r}. A "
+                "capture is a typed hole, not a text substitution: without this a "
+                "supplier could render arbitrary smali into the payload"
+            )
+        merged[name] = value
+    missing = sorted(set(declared) - set(supplied))
+    if missing:
+        raise ManifestError(
+            f"{hook.hook_id}: supplied capture(s) {missing} have no value. The payload "
+            "cannot be rendered without them and rendering it partially would emit a "
+            "patch missing exactly the part no anchor could reach"
+        )
+    return merged
+
+
+def resolve_in_source(
+    hook: Hook,
+    descriptor: str,
+    smali: str,
+    supplied: Mapping[str, str] | None = None,
+) -> Resolution:
+    """Match the hook's anchor pattern inside one class body.
+
+    *supplied* carries values for the hook's ``supplied_captures``. Passing
+    ``None`` for a hook that declares some is not an error — it is the first,
+    anchor-only pass, and the result comes back unresolved with
+    :attr:`Resolution.awaiting` naming what is still needed, so the caller can run
+    a supplier against the site this pass just located.
+    """
     # Marker first, matching the applier's own order. An exact count is the normal
     # already-applied state, NOT a failure; only a partial count is wrong. Checking
     # this after anchor matching would report "anchor did not match" for a genuinely
@@ -457,36 +795,7 @@ def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
             ),
         )
 
-    body = significant(smali.splitlines())
-    # Match the instruction, keep the line. An anchor is written to describe code,
-    # so a baksmali annotation hanging off the end of it must not decide whether it
-    # matches — but the annotation is still part of the line the applier will look
-    # for, and the applier finds an anchor by literal string comparison against its
-    # own copy of `significant()`. So the pattern is tried against the stripped
-    # instruction and the emitted anchor is the line as written.
-    code = [strip_comment(text) for _, text in body]
-    compiled = compile_anchor(hook.anchor)
-    width = len(compiled)
-    hits: list[tuple[int, dict[str, str]]] = []
-
-    for start in range(len(body) - width + 1):
-        bindings: dict[str, str] = {}
-        ok = True
-        for offset, (pattern, names) in enumerate(compiled):
-            match = pattern.match(code[start + offset])
-            if not match:
-                ok = False
-                break
-            for position, name in enumerate(names, start=1):
-                value = match.group(f"g{position}")
-                if name in bindings and bindings[name] != value:
-                    ok = False
-                    break
-                bindings[name] = value
-            if not ok:
-                break
-        if ok:
-            hits.append((start, bindings))
+    hits = find_anchor_hits(hook, smali)
 
     if not hits:
         return Resolution(
@@ -504,13 +813,29 @@ def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
             ),
         )
 
-    hit_start, bindings = hits[0]
-    # Emitting the matched lines rather than `render(hook.anchor, bindings)` cannot
-    # widen the match: every line here matched a fully-anchored `^...$` pattern, so
-    # any other line equal to it would have matched too, and this pattern matched
-    # once. The two forms therefore differ only where a trailing comment exists —
-    # and there, only this one is a string the applier can find.
-    concrete_anchor = [text for _, text in body[hit_start : hit_start + width]]
+    hit = hits[0]
+    concrete_anchor = list(hit.lines)
+    awaiting = hook.supplied_capture_names
+    if awaiting and supplied is None:
+        # The site is found; the payload is not renderable yet. Reported as
+        # unresolved with `awaiting` set rather than as a failure, because the
+        # caller's next move is to run a supplier against THIS site — and it needs
+        # the anchor bindings and the line span to do that.
+        return Resolution(
+            hook.hook_id,
+            False,
+            descriptor=descriptor,
+            anchor=concrete_anchor,
+            bindings=dict(hit.bindings),
+            occurrences=len(hits),
+            awaiting=awaiting,
+            reason=(
+                f"anchor matched exactly once, but the payload needs supplied "
+                f"capture(s) {list(awaiting)} that no anchor line can bind"
+            ),
+        )
+
+    bindings = merge_supplied(hook, hit.bindings, supplied or {})
     concrete_payload = [render(line, bindings) for line in hook.payload]
     return Resolution(
         hook.hook_id,

@@ -94,9 +94,11 @@ _PACKAGE_SEGMENT = re.compile(r"^[a-z][a-z0-9_]{2,}$")
 _CLASS_SEGMENT = re.compile(r"^[A-Za-z][A-Za-z0-9_$]{2,}$")
 
 #: The line every chain step cites. `Step` requires a real line >= 1 and the
-#: resolver retains none: `hook_manifest.resolve_in_source` computes the anchor's
-#: position in `significant()` coordinates and discards it, so nothing downstream
-#: knows where in the file the anchor matched. Line 1 of a smali class is its
+#: resolver retains none: `hook_manifest.find_anchor_hits` knows where the anchor
+#: matched, but `resolve_in_source` keeps only the matched TEXT in `Resolution`
+#: and drops the position, so nothing downstream knows where in the file it was.
+#: (A capture supplier gets the span directly from `find_anchor_hits`; it is not
+#: carried through a `Resolution`.) Line 1 of a smali class is its
 #: `.class` declaration — the one line whose content is known without reading the
 #: file, and a real place for the next agent to open.
 CLASS_DECLARATION_LINE = 1

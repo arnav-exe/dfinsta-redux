@@ -27,6 +27,15 @@ folded into "did not resolve".
 Everything the stage decides is recorded per candidate, including the rejected
 ones, because a gate needs to see what was considered and why it lost — not a
 score.
+
+**Some captures come from a supplier, not the anchor.** A hook whose payload needs
+a value no anchor line can bind (see :mod:`dfinsta_pipeline.capture_supply`)
+resolves in two passes: the anchor-only pass locates the site and comes back
+``awaiting``, then a supplier chain runs against THAT site and the payload renders
+from the merged bindings. A supplier that declines produces ``NEEDS_AGENT`` naming
+the captures it could not fill and the stage each supplier stopped at — never a
+rendered payload with a hole in it, because the hole in this hook's payload is an
+own-profile guard and a patch without it long-presses strangers' profiles.
 """
 
 from __future__ import annotations
@@ -39,6 +48,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .capture_supply import Supplier, SupplyOutcome, SupplyRequest, run_supply_chain
 from .hook_index import HookIndex, IndexUnusable
 from .hook_manifest import (
     Hook,
@@ -46,6 +56,7 @@ from .hook_manifest import (
     ManifestError,
     Resolution,
     assert_distinct,
+    find_anchor_hits,
     load_manifest,
     resolve_in_source,
 )
@@ -81,6 +92,15 @@ class CandidateReport:
     occurrences: int = 0
     reason: str = ""
     bindings: Mapping[str, str] = field(default_factory=dict)
+    # Non-empty when the anchor matched here but the payload still needs supplier
+    # values. Such a candidate is a located SITE, not a resolution — it must never
+    # be counted with `resolved`, or a hook would apply with its guard unrendered.
+    awaiting: tuple[str, ...] = ()
+
+    @property
+    def sited(self) -> bool:
+        """The anchor matched here, whether or not the payload can render yet."""
+        return self.resolved or bool(self.awaiting)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +115,7 @@ class CandidateReport:
             "occurrences": self.occurrences,
             "reason": self.reason,
             "bindings": dict(self.bindings),
+            "awaiting": list(self.awaiting),
         }
 
 
@@ -127,6 +148,10 @@ class HookResolution:
     resolution: Resolution | None = None
     searches: tuple[HostSearch, ...] = ()
     candidates: tuple[CandidateReport, ...] = ()
+    # Every supplier that ran for this hook, winners and declines alike. A gate
+    # needs to see that the deterministic rule was TRIED and which precondition it
+    # could not prove — "an agent answered" without that reads as a free choice.
+    supplies: tuple[SupplyOutcome, ...] = ()
 
     @property
     def escalates(self) -> bool:
@@ -149,6 +174,23 @@ class HookResolution:
             "descriptor": self.descriptor,
             "searches": [search.to_dict() for search in self.searches],
             "candidates": [candidate.to_dict() for candidate in self.candidates],
+            "supplies": [
+                {
+                    "captures": list(supply.supply.names),
+                    "supplier": supply.supplier,
+                    "values": dict(supply.values),
+                    "attempts": [
+                        {
+                            "supplier": attempt.supplier,
+                            "stage": attempt.stage,
+                            "declined": attempt.declined,
+                            "evidence": list(attempt.evidence),
+                        }
+                        for attempt in supply.attempts
+                    ],
+                }
+                for supply in self.supplies
+            ],
         }
 
 
@@ -309,8 +351,15 @@ def resolve_hook(
     index: HookIndex,
     decode: Path,
     proposals: Sequence[str] = (),
+    capture_proposals: Mapping[str, str] | None = None,
+    registry: Mapping[str, Supplier] | None = None,
 ) -> HookResolution:
-    """Resolve one hook: find candidate hosts, then check each against the decode."""
+    """Resolve one hook: find candidate hosts, then check each against the decode.
+
+    *capture_proposals* maps a supplier ROLE to an agent-proposed value, for the
+    captures no anchor can bind; *registry* overrides the supplier table, which is
+    what a test uses to prove the chain's preference order without a model.
+    """
     decode = Path(decode)
     searches: list[HostSearch] = []
     ordered: list[tuple[str, str]] = []  # (descriptor, found_by)
@@ -356,10 +405,13 @@ def resolve_hook(
                 occurrences=resolution.occurrences,
                 reason=resolution.reason,
                 bindings=dict(resolution.bindings),
+                awaiting=resolution.awaiting,
             )
         )
 
-    return _classify(hook, searches, reports, index, decode)
+    return _classify(
+        hook, searches, reports, index, decode, capture_proposals or {}, registry
+    )
 
 
 def _classify(
@@ -368,12 +420,19 @@ def _classify(
     reports: list[CandidateReport],
     index: HookIndex,
     decode: Path,
+    capture_proposals: Mapping[str, str],
+    registry: Mapping[str, Supplier] | None,
 ) -> HookResolution:
     """Turn per-candidate results into one outcome, worst-first."""
     frozen_searches = tuple(searches)
     frozen_reports = tuple(reports)
 
-    def make(outcome: Outcome, reason: str, descriptor: str | None = None) -> HookResolution:
+    def make(
+        outcome: Outcome,
+        reason: str,
+        descriptor: str | None = None,
+        supplies: tuple[SupplyOutcome, ...] = (),
+    ) -> HookResolution:
         return HookResolution(
             hook.hook_id,
             outcome,
@@ -381,6 +440,7 @@ def _classify(
             descriptor=descriptor,
             searches=frozen_searches,
             candidates=frozen_reports,
+            supplies=supplies,
         )
 
     # 1. A half-patched decode. Nothing else can be concluded through it.
@@ -422,7 +482,13 @@ def _classify(
         )
 
     resolved = [report for report in reports if report.resolved]
-    if resolved and hook.requires_proposal:
+    # `sited`, not `resolved`: a hook with supplied captures never reports a
+    # resolved candidate on the anchor-only pass, so checking `resolved` here would
+    # silently stop enforcing requires_proposal the moment a hook gained a
+    # supplier. That is exactly backwards — a hook flagged as a shape must keep
+    # escalating until a human clears the flag.
+    sited = [report for report in reports if report.sited]
+    if sited and hook.requires_proposal:
         # The manifest anchor matched, but for this hook the manifest payload is a
         # shape rather than a complete patch, so rendering it would emit a
         # subtly wrong operation that assembles and verifies cleanly. Exactly the
@@ -431,11 +497,25 @@ def _classify(
         return make(
             Outcome.NEEDS_AGENT,
             f"{hook.hook_id} is marked requires_proposal: its manifest anchor matched "
-            f"{resolved[0].descriptor}, but the payload is a shape and needs values no "
+            f"{sited[0].descriptor}, but the payload is a shape and needs values no "
             "anchor can capture. A validated proposal must supply the real anchor and "
             "payload. " + "; ".join(hook.constraints[:1]),
-            descriptor=resolved[0].descriptor,
+            descriptor=sited[0].descriptor,
         )
+
+    awaiting = [report for report in reports if report.awaiting]
+    if awaiting:
+        return _supply_and_resolve(
+            hook,
+            awaiting,
+            index,
+            decode,
+            capture_proposals,
+            registry,
+            frozen_searches,
+            frozen_reports,
+        )
+
     if len(resolved) == 1:
         winner = resolved[0]
         path = index.path_for(winner.descriptor)
@@ -478,16 +558,132 @@ def _classify(
     )
 
 
+def _supply_and_resolve(
+    hook: Hook,
+    awaiting: list[CandidateReport],
+    index: HookIndex,
+    decode: Path,
+    capture_proposals: Mapping[str, str],
+    registry: Mapping[str, Supplier] | None,
+    searches: tuple[HostSearch, ...],
+    reports: tuple[CandidateReport, ...],
+) -> HookResolution:
+    """Second pass: run the supplier chain against the located site, then render.
+
+    Reached only when the anchor matched but the payload needs values no anchor
+    line binds. Every exit that is not ``RESOLVED`` is an escalation naming the
+    captures, because the alternative — rendering what IS bound and leaving the
+    rest — is a patch with its own-profile guard missing.
+    """
+
+    def make(outcome: Outcome, reason: str, descriptor: str | None, supplies) -> HookResolution:
+        return HookResolution(
+            hook.hook_id,
+            outcome,
+            reason=reason,
+            descriptor=descriptor,
+            searches=searches,
+            candidates=reports,
+            supplies=tuple(supplies),
+        )
+
+    if len(awaiting) > 1:
+        names = ", ".join(report.descriptor for report in awaiting)
+        return make(
+            Outcome.AMBIGUOUS,
+            f"the anchor matched in {len(awaiting)} candidate classes ({names}); running a "
+            "capture supplier against one of them would derive the guard from a site that "
+            "may not be the one patched",
+            None,
+            (),
+        )
+
+    winner = awaiting[0]
+    path = index.path_for(winner.descriptor)
+    assert path is not None
+    body = (decode / path).read_text(encoding="utf-8", errors="replace")
+    hits = find_anchor_hits(hook, body)
+    # `resolve_in_source` already established there is exactly one; re-deriving it
+    # rather than carrying it keeps `Resolution` free of match internals.
+    assert len(hits) == hook.expected_anchor_count
+
+    supplies: list[SupplyOutcome] = []
+    values: dict[str, str] = {}
+    for group in hook.supplied_captures:
+        outcome = run_supply_chain(
+            SupplyRequest(
+                hook=hook,
+                supply=group,
+                descriptor=winner.descriptor,
+                smali_path=path,
+                smali=body,
+                hit=hits[0],
+                index=index,
+                decode=decode,
+                proposed=dict(capture_proposals),
+            ),
+            registry,
+        )
+        supplies.append(outcome)
+        values.update(outcome.values)
+
+    unfilled = [name for outcome in supplies if not outcome.ok for name in outcome.missing]
+    if unfilled:
+        detail = "; ".join(outcome.reason() for outcome in supplies if not outcome.ok)
+        return make(
+            Outcome.NEEDS_AGENT,
+            f"{hook.hook_id}: capture(s) {unfilled} could not be supplied for "
+            f"{winner.descriptor}, so the payload cannot be rendered — {detail}",
+            winner.descriptor,
+            supplies,
+        )
+
+    try:
+        resolution = resolve_in_source(hook, winner.descriptor, body, values)
+    except ManifestError as error:
+        # A supplier returned something the manifest layer refuses. It is already
+        # kind-checked once in the chain, so reaching here means the two layers
+        # disagree — which must escalate loudly, never render.
+        return make(
+            Outcome.NEEDS_AGENT,
+            f"{hook.hook_id}: the supplied capture(s) were rejected at the render "
+            f"boundary — {error}",
+            winner.descriptor,
+            supplies,
+        )
+    if not resolution.resolved:  # pragma: no cover - the anchor matched moments ago
+        return make(Outcome.UNRESOLVED, resolution.reason, winner.descriptor, supplies)
+
+    resolution.smali_path = path
+    return HookResolution(
+        hook.hook_id,
+        Outcome.RESOLVED,
+        reason=(
+            f"{winner.descriptor} matched the anchor exactly once; "
+            + "; ".join(outcome.reason() for outcome in supplies)
+        ),
+        descriptor=winner.descriptor,
+        resolution=resolution,
+        searches=searches,
+        candidates=reports,
+        supplies=tuple(supplies),
+    )
+
+
 def resolve_manifest(
     hooks: Iterable[Hook],
     index: HookIndex,
     decode: Path | str,
     proposals: Mapping[str, Sequence[str]] | None = None,
+    capture_proposals: Mapping[str, Mapping[str, str]] | None = None,
+    registry: Mapping[str, Supplier] | None = None,
 ) -> ResolveReport:
     """Resolve every active hook against one decode.
 
     *proposals* maps ``hook_id`` to agent-proposed host descriptors, for the
-    hooks no mechanical fingerprint can reach.
+    hooks no mechanical fingerprint can reach. *capture_proposals* maps
+    ``hook_id`` to ``{role: value}`` for captures no anchor can bind — the same
+    escalation route, one level further in.
     """
     decode = Path(decode)
     index.assert_matches(decode)
@@ -496,8 +692,16 @@ def resolve_manifest(
     # both drop out of the build, with nothing failing. Refuse the set up front.
     assert_distinct(hooks)
     proposals = proposals or {}
+    capture_proposals = capture_proposals or {}
     resolutions = tuple(
-        resolve_hook(hook, index, decode, proposals.get(hook.hook_id, ()))
+        resolve_hook(
+            hook,
+            index,
+            decode,
+            proposals.get(hook.hook_id, ()),
+            capture_proposals.get(hook.hook_id, {}),
+            registry,
+        )
         for hook in hooks
         if hook.status == "active"
     )
@@ -524,6 +728,14 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help='JSON {"hook_id": ["LX/0Di2;"]} of agent-proposed hosts for by_agent hooks',
     )
+    parser.add_argument(
+        "--capture-proposals",
+        type=Path,
+        help=(
+            'JSON {"hook_id": {"role": "value"}} of agent-supplied captures, for the '
+            "payload values no anchor line can bind"
+        ),
+    )
     parser.add_argument("--json", type=Path, help="write the full report here")
     parser.add_argument(
         "--operations", type=Path, help="write applier operations here (only if complete)"
@@ -540,7 +752,12 @@ def main(argv: list[str] | None = None) -> int:
     proposals = (
         json.loads(args.proposals.read_text(encoding="utf-8")) if args.proposals else {}
     )
-    report = resolve_manifest(hooks, index, args.decode, proposals)
+    captures = (
+        json.loads(args.capture_proposals.read_text(encoding="utf-8"))
+        if args.capture_proposals
+        else {}
+    )
+    report = resolve_manifest(hooks, index, args.decode, proposals, captures)
 
     for item in report.resolutions:
         mark = " " if not item.escalates else "!"
