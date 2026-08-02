@@ -19,8 +19,39 @@ if TYPE_CHECKING:
 
 
 class Ledger:
-    def __init__(self, path: Path):
+    """The authority for artifacts, decisions and lineage. Append-only by trigger.
+
+    `read_only=True` opens the same database through SQLite's `mode=ro` URI and
+    refuses every write method. It exists for the trusted submission client,
+    which must re-derive a gate subject from recorded state in order to know
+    what it is asking a human to sign, and must be structurally unable to
+    *create* the state it is checking. A promise not to write would be worth
+    much less: the rejected standalone replay CLI failed exactly here, by
+    self-asserting the values it should have been verifying.
+
+    Two independent defences, on purpose. `_require_writable` gives a legible
+    error at the call site, and the read-only connection makes SQLite refuse
+    even if a future caller reaches past the guard. `RuntimeError` is chosen
+    deliberately: it is already in the stage retry policy's non-retryable list,
+    so a read-only ledger reached from an Activity fails closed and loudly
+    rather than retrying until the budget is gone.
+    """
+
+    def __init__(self, path: Path, *, read_only: bool = False):
+        if type(read_only) is not bool:
+            raise TypeError("Ledger read_only must be a boolean")
         self.path = path
+        self.read_only = read_only
+        if read_only:
+            # No mkdir and no schema statements: creating what you are about to
+            # read is the failure mode this mode exists to make impossible. A
+            # missing file is a real condition the caller must see, not one to
+            # paper over by creating an empty ledger that answers "no decisions".
+            if not self.path.is_file():
+                raise FileNotFoundError(f"Ledger does not exist: {self.path}")
+            with self._connection() as connection:
+                connection.execute("SELECT COUNT(*) FROM decisions").fetchone()
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -151,7 +182,25 @@ class Ledger:
                 (operation_key, kind, input_sha256, status, output_json),
             )
 
+    def _require_writable(self) -> None:
+        if self.read_only:
+            raise RuntimeError("Ledger is open read-only")
+
     def _connect(self) -> sqlite3.Connection:
+        if self.read_only:
+            # `mode=ro` is the structural half of the guarantee. `journal_mode`
+            # is deliberately not set: it writes the database header, and the
+            # databases this opens are already in WAL mode anyway.
+            connection = sqlite3.connect(
+                f"file:{self.path}?mode=ro", uri=True, timeout=30
+            )
+            try:
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.execute("PRAGMA busy_timeout=30000")
+                return connection
+            except BaseException:
+                connection.close()
+                raise
         connection = sqlite3.connect(self.path, timeout=30)
         try:
             connection.execute("PRAGMA foreign_keys=ON")
@@ -187,6 +236,7 @@ class Ledger:
         *,
         retry_safe: bool,
     ) -> ArtifactRef | None:
+        self._require_writable()
         if type(owner_token) is not str or not owner_token:
             raise ValueError("Operation owner token must be a non-empty string")
         with self._connection() as connection:
@@ -235,6 +285,7 @@ class Ledger:
             return None
 
     def release_pending_operation(self, operation_key: str, owner_token: str) -> None:
+        self._require_writable()
         if type(owner_token) is not str or not owner_token:
             raise ValueError("Operation owner token must be a non-empty string")
         with self._connection() as connection:
@@ -257,6 +308,7 @@ class Ledger:
     def record_effect(
         self, operation_key: str, owner_token: str, output: ArtifactRef
     ) -> ArtifactRef:
+        self._require_writable()
         if type(owner_token) is not str or not owner_token:
             raise ValueError("Operation owner token must be a non-empty string")
         output_json = canonical_json(output)
@@ -291,6 +343,7 @@ class Ledger:
         return output
 
     def complete_operation(self, operation_key: str, output: ArtifactRef) -> ArtifactRef:
+        self._require_writable()
         output_json = canonical_json(output)
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -348,6 +401,7 @@ class Ledger:
         return output
 
     def quarantine_operation(self, operation_key: str, owner_token: str) -> None:
+        self._require_writable()
         if type(owner_token) is not str or not owner_token:
             raise ValueError("Operation owner token must be a non-empty string")
         with self._connection() as connection:
@@ -370,6 +424,7 @@ class Ledger:
                 )
 
     def record_decision(self, decision: GateDecision) -> None:
+        self._require_writable()
         values = (
             decision.decision_id,
             decision.idempotency_id,
@@ -446,6 +501,7 @@ class Ledger:
             raise ValueError("Gate decision is not recorded")
 
     def record_admitted_replay_v3(self, admitted: AdmittedReplayV3) -> None:
+        self._require_writable()
         from .replay_contracts import AdmittedReplayV3
 
         if type(admitted) is not AdmittedReplayV3:
@@ -514,6 +570,36 @@ class Ledger:
                 raise ValueError("Admitted replay authority does not match candidate")
             self._require_decision_row(connection, reconstructed.decision)
         return reconstructed
+
+    def admitted_replay_handle_for_run(self, run_id: str) -> AdmittedReplayHandleV1:
+        """Return the recorded handle for a run, for a caller with no prior view.
+
+        Every stage receives its handle from the Workflow and loads through
+        :meth:`load_admitted_replay_v3`, whose pin check preserves "the caller's
+        view equals the ledger's view". The trusted submission client has no
+        prior view to preserve -- it is *establishing* one in order to re-derive
+        a gate subject, and the run id is all a published `GateRequest` gives
+        it. So this returns a handle rather than the authority itself: the
+        client still loads through the one existing path, and the pin check,
+        vacuous only for this caller, is not bypassed for anybody else.
+
+        Not for stages. A stage that reached for this would be discarding the
+        handle the Workflow gave it and trusting a run id instead.
+        """
+
+        from .replay_contracts import AdmittedReplayHandleV1
+
+        if type(run_id) is not str:
+            raise TypeError("Admitted replay run id must be a string")
+        with Ledger._connection(self) as connection:
+            row = connection.execute(
+                "SELECT run_id, admitted_replay_sha256 FROM admitted_replays_v3 "
+                "WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Admitted replay authority is not recorded")
+        return AdmittedReplayHandleV1(1, row[0], row[1])
 
     def load_admitted_replay_v3(
         self, handle: AdmittedReplayHandleV1
@@ -647,6 +733,7 @@ class Ledger:
     def record_admitted_replay_verification_grant_v1(
         self, grant: AdmittedReplayVerificationGrantV1
     ) -> None:
+        self._require_writable()
         from .replay_contracts import AdmittedReplayVerificationGrantV1
 
         if type(grant) is not AdmittedReplayVerificationGrantV1:

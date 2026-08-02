@@ -80,8 +80,22 @@ def configure_runtime(
     source_root: Path | None = None,
     executor_paths: Mapping[str, Path] | None = None,
     launcher: Launcher | None = None,
+    read_only: bool = False,
 ) -> None:
+    """Bind the module-global runtime to one state root.
+
+    `read_only=True` opens the ledger through `Ledger(read_only=True)`. It is
+    for the trusted submission client, which re-derives a gate subject by
+    calling the same helpers the preparing Activity calls -- `replay_gate`
+    reaches the ledger through `runtime()`, so the only way to reuse that exact
+    derivation rather than reimplement it is to give it a runtime that cannot
+    write. A second implementation of the derivation would defeat the point:
+    the client's whole claim is that it computes what the Activity computed.
+    """
+
     global _runtime
+    if type(read_only) is not bool:
+        raise TypeError("Runtime read_only must be a boolean")
     state_root = state_root.resolve()
     cas_root = state_root / "cas"
     ledger_path = state_root / "ledger.sqlite3"
@@ -128,7 +142,7 @@ def configure_runtime(
             raise ValueError("Source root must not overlap runtime state or executable paths")
     _runtime = ActivityRuntime(
         store=ContentStore(cas_root),
-        ledger=Ledger(ledger_path),
+        ledger=Ledger(ledger_path, read_only=read_only),
         attempts_root=resolved_attempts_root,
         source_root=resolved_source_root,
         executor_paths=MappingProxyType(copied_paths),
