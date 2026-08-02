@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 1777 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 1779 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -201,7 +201,10 @@ now takes `--custom-tree` and `--replace-dex`; defaults preserve 430.
   (`ERROR: could not get idle state`). Drive to a dialog, or use `screencap`.
 - **A failed `uiautomator dump` leaves the previous file in place**, so `adb pull`
   silently returns stale data. `rm -f` first and assert freshness.
-- **Never `git add` a file a background agent is writing.** A commit once shipped an
+- **Never `git add` a file a background agent is writing — and a stability check does not
+  license it.** A test file was committed 78 lines short because the "has this file stopped
+  changing?" check had been invalidated by a `SendMessage` that resumed the very agent it was
+  watching. Wait for the completion notification; a timer measures the wrong thing. A commit once shipped an
   agent's deliberate scratch mutation — 15 ledger authority calls regressed to a
   shadowable form — and the suite stayed green because no test exercised that defence.
 - **Blind experiments need the answers physically removed**, not merely forbidden. `.git`
