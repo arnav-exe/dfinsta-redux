@@ -60,10 +60,19 @@ from typing import Any, Callable
 from .sandbox_tools import SandboxDenied, SandboxReader
 
 #: Turns, not tokens: the thing that runs away here is a model searching the same
-#: literal twenty different ways. Enough for a real navigation -- the measured
-#: 439 host searches took well under this -- and short enough that a lost agent
-#: fails rather than grinds.
-DEFAULT_MAX_TURNS = 40
+#: literal twenty different ways.
+#:
+#: 40 was a guess and it was wrong. On the first unattended 439 port, **four of
+#: six proposers exhausted it** and were dropped -- including all three for
+#: `install_settings_long_click_actionbar`, which stopped the run at Resolve.
+#: The hand-run proposals that succeeded had used 60 and taken 54 and 66 tool
+#: calls, so the guess was under the measurement that already existed.
+#:
+#: Set from that measurement with headroom, because the two failure modes are
+#: not symmetric: a cap set too low reads as *the agents could not find it*,
+#: which is a false finding about the app, while a cap set too high costs some
+#: wasted minutes on an agent that was lost anyway. Prefer the cheap failure.
+DEFAULT_MAX_TURNS = 100
 
 #: The three tools, named as the SDK exposes in-process MCP tools.
 SERVER_NAME = "sandbox"
