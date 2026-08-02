@@ -705,12 +705,67 @@ def hook_costs(report: ResolveReport, version: str, recorded_at: str) -> tuple[H
 # ------------------------------------------------------------------ the ledger
 
 
+#: What a run stamped with nothing is called in prose. A hand-built record carries
+#: ``recorded_at=""``; those records are one run rather than none, and saying so is
+#: better than printing an empty field where a timestamp belongs.
+UNSTAMPED = "(unstamped)"
+
+
+@dataclass(frozen=True)
+class CostRun:
+    """One port ATTEMPT: every record a single :func:`record_run` call appended.
+
+    The unit the central claim is actually about. "Agent invocations per port"
+    counts one attempt at one version; two attempts at 439 — a run that stopped at
+    resolve and the re-run that finished — are not two ports, and adding them
+    together inflates the very number the project judges itself by, in proportion
+    to how many times someone retried.
+
+    **No schema change was needed to recover this.** :func:`record_run` takes a
+    single caller-supplied *recorded_at* and stamps every record it writes with it,
+    so the run identifier was already in the data: it is
+    ``(version, recorded_at)``. Version is part of the key because the stamp is a
+    caller's value rather than a clock reading, and two versions ported under one
+    stamp are still two ports.
+    """
+
+    version: str
+    recorded_at: str
+    #: 1-based, in the order this ledger saw the run — see :meth:`CostLedger.runs_for`.
+    ordinal: int
+    #: How many runs the ledger holds for this version, so a run can always say
+    #: what it is one of.
+    of: int
+    costs: tuple[HookCost, ...] = ()
+
+    @property
+    def agent_invocations(self) -> int:
+        return sum(1 for cost in self.costs if cost.needed_agent)
+
+    @property
+    def stamp(self) -> str:
+        return self.recorded_at or UNSTAMPED
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "ordinal": self.ordinal,
+            "of": self.of,
+            "recorded_at": self.recorded_at,
+            "hooks": len(self.costs),
+            "agent_invocations": self.agent_invocations,
+        }
+
+
 class CostLedger:
     """Append-only JSONL of what each port cost. Same shape and spirit as `DecisionMemory`.
 
-    Never edits, never deduplicates. Two runs over one decode append two identical
-    records; collapsing them would be deciding which run was the real one, and the
-    query reports the duplication rather than hiding it.
+    Never edits, never deduplicates. Two runs over one decode append two sets of
+    records; collapsing them on write would be deciding which run was the real one,
+    and both attempts genuinely cost what they cost.
+
+    The *reading* is where a run has to be one run: :meth:`runs_for` splits a
+    version's records back into the attempts that wrote them, and
+    :func:`cost_report` reports one of those rather than a version's whole history.
     """
 
     def __init__(self, path: Path | str | None = None):
@@ -757,7 +812,70 @@ class CostLedger:
         return tuple(seen)
 
     def costs_for(self, version: str) -> tuple[HookCost, ...]:
+        """EVERY record for this version, across every attempt at it.
+
+        Deliberately still available and deliberately not what the query reports:
+        it is the honest answer to "what is on file for 439", and it was the wrong
+        answer to "what did the 439 port cost" — a version re-run once returns each
+        hook twice. Use :meth:`runs_for` for anything that counts.
+        """
         return tuple(cost for cost in self._costs if cost.version == version)
+
+    def runs_for(self, version: str) -> tuple[CostRun, ...]:
+        """This version's records split into the runs that wrote them, oldest first.
+
+        Ordered by first appearance and never sorted by the timestamp: this file is
+        append-only, so its order *is* the order the runs were recorded, whereas
+        sorting the strings would compare a ``+05:30`` offset against a ``Z`` one
+        and hand the word "latest" to the wrong run.
+        """
+        grouped: dict[str, list[HookCost]] = {}
+        for cost in self._costs:
+            if cost.version == version:
+                grouped.setdefault(cost.recorded_at, []).append(cost)
+        total = len(grouped)
+        return tuple(
+            CostRun(version, recorded_at, ordinal, total, tuple(costs))
+            for ordinal, (recorded_at, costs) in enumerate(grouped.items(), start=1)
+        )
+
+    def latest_run(self, version: str) -> CostRun | None:
+        """The most recent attempt at this version, whether or not it was the best one."""
+        runs = self.runs_for(version)
+        return runs[-1] if runs else None
+
+    def select_run(self, version: str, selector: int | str | None = None) -> CostRun | None:
+        """One run: the latest by default, or the ordinal or exact stamp asked for.
+
+        Refuses a selector that matches nothing rather than falling back to the
+        latest. A silent fallback is how a report ends up labelled as the run
+        somebody asked for and computed from a different one.
+        """
+        runs = self.runs_for(version)
+        if not runs:
+            return None
+        if selector is None:
+            return runs[-1]
+        if isinstance(selector, bool):
+            raise DecisionError(f"run selector {selector!r} is not an ordinal or a timestamp")
+        if isinstance(selector, str) and selector.isdigit():
+            # The CLI hands over strings; an all-digit one is an ordinal, since no
+            # `recorded_at` this ledger writes is bare digits.
+            selector = int(selector)
+        if isinstance(selector, int):
+            if 1 <= selector <= len(runs):
+                return runs[selector - 1]
+            raise DecisionError(
+                f"{version}: run {selector} does not exist; this ledger holds "
+                f"{len(runs)} run(s) for it, numbered 1..{len(runs)}"
+            )
+        for run in runs:
+            if run.recorded_at == selector:
+                return run
+        raise DecisionError(
+            f"{version}: no run recorded at {selector!r}. Recorded: "
+            f"{[run.stamp for run in runs]}"
+        )
 
     def previous_version(self, version: str) -> str | None:
         versions = self.versions
@@ -964,24 +1082,53 @@ VERDICT_FLAT = "flat"
 VERDICT_RISING = "rising"
 
 
+#: Which run got reported, and why — carried in the output rather than left to be
+#: assumed, because "the latest" and "the one you asked for" are different claims
+#: and a reader cannot tell them apart from the numbers.
+SELECTED_LATEST = "latest"
+SELECTED_EXPLICIT = "explicit"
+
+
 def cost_report(
-    ledger: CostLedger, version: str, previous: str | None = None
+    ledger: CostLedger,
+    version: str,
+    previous: str | None = None,
+    *,
+    run: int | str | None = None,
 ) -> dict[str, Any]:
-    """Per version: how many hooks needed an agent, for what, and against the previous port.
+    """Per RUN: how many hooks needed an agent, for what, and against the previous port.
 
     The deliverable. `pipeline_flowchart.md` says the agent count "should fall
     with every version ported. A pipeline whose agent count is flat is not
-    learning." This returns the number for one version, the number for the version
-    before it, and the difference — so the sentence becomes a claim that can turn
-    out to be false.
+    learning." This returns the number for one run of one version, the number for
+    the latest run of the version before it, and the difference — so the sentence
+    becomes a claim that can turn out to be false.
+
+    **One run, not a version's history.** A version re-run once held every hook
+    twice, every margin twice and every agent invocation twice, so retrying a
+    failed port inflated the number the claim is made of. *run* selects which
+    attempt by 1-based ordinal or exact ``recorded_at``; the default is the latest.
+
+    **Latest, not best.** The default is the most recent attempt whether or not an
+    earlier one was cheaper, because a query that reports a version's best run is
+    a query whose number cannot rise — and a metric that cannot rise is a press
+    release. The choice is not silent: the run reported, how many runs exist, and
+    what each of the others cost are all in the output, and :func:`render` says
+    outright when a run that is not being counted cost less.
     """
     if not isinstance(ledger, CostLedger):
         raise DecisionError(f"cost_report() takes a CostLedger, got {type(ledger).__name__}")
     require_version(version)
-    costs = ledger.costs_for(version)
+    runs = ledger.runs_for(version)
+    reported = ledger.select_run(version, run)
+    costs = reported.costs if reported is not None else ()
     if previous is None:
         previous = ledger.previous_version(version)
-    earlier = ledger.costs_for(previous) if previous else ()
+    # Latest-to-latest: "did the count fall between ports" compares the port that
+    # stands as this version's result against the one that stands as the previous
+    # version's, and an abandoned attempt at either end is not a port.
+    prior_run = ledger.latest_run(previous) if previous else None
+    earlier = prior_run.costs if prior_run is not None else ()
 
     now = _breakdown(costs)
     was = _breakdown(earlier) if earlier else None
@@ -1000,6 +1147,19 @@ def cost_report(
         "version": version,
         "previous_version": previous,
         "recorded": bool(costs),
+        # Which attempt these numbers are, what else is on file for this version,
+        # and which attempt the comparison is against. Without these three a
+        # reader cannot tell one run's cost from a version's accumulated history.
+        "run": (
+            {
+                **reported.summary(),
+                "selected": SELECTED_LATEST if run is None else SELECTED_EXPLICIT,
+            }
+            if reported is not None
+            else None
+        ),
+        "runs": [item.summary() for item in runs],
+        "previous_run": prior_run.summary() if prior_run is not None else None,
         "now": now,
         "previous": was,
         "delta_agent_invocations": delta,
@@ -1045,6 +1205,60 @@ def cost_report(
     }
 
 
+def _run_lines(report: Mapping[str, Any]) -> list[str]:
+    """Which attempt these numbers are, and what the other attempts cost.
+
+    The header used to read as a fact about a version, and after a re-run it was
+    a fact about no port at all. Every line here exists so the alternative to
+    folding the runs together is not silently dropping them.
+    """
+    run = report.get("run")
+    if run is None:
+        return []
+    runs = list(report.get("runs") or [])
+    version = report["version"]
+    lines = [
+        f"  run {run['ordinal']} of {run['of']} for {version}, "
+        f"recorded {run['recorded_at'] or UNSTAMPED}"
+    ]
+    if run["of"] == 1:
+        lines.append("  It is the only run this ledger holds for this version.")
+        return lines
+
+    others = [item for item in runs if item["ordinal"] != run["ordinal"]]
+    if run["selected"] == SELECTED_LATEST:
+        lines.append(
+            f"  Reporting the LATEST run whether or not it was the best one. "
+            f"{len(others)} other run(s) for {version} are in this ledger and NOT ONE of "
+            "their records is counted below:"
+        )
+    else:
+        lines.append(
+            f"  Reporting run {run['ordinal']} because it was asked for; the latest is run "
+            f"{run['of']}. The other {len(others)} run(s) are not counted below:"
+        )
+    for item in others:
+        lines.append(
+            f"     run {item['ordinal']}   {item['recorded_at'] or UNSTAMPED}   "
+            f"{item['hooks']} hook(s)   {item['agent_invocations']} agent invocation(s)"
+        )
+    lines.append("     (report one of those instead: --run <n>, or --run '<recorded_at>')")
+    cheaper = sorted(
+        (item for item in others if item["agent_invocations"] < run["agent_invocations"]),
+        key=lambda item: item["agent_invocations"],
+    )
+    if cheaper:
+        best = cheaper[0]
+        lines.append(
+            f"  NOTE: run {best['ordinal']} cost fewer agent invocations "
+            f"({best['agent_invocations']}) than the run reported here "
+            f"({run['agent_invocations']}), and the run reported here is still the one "
+            "above. Reporting a version's cheapest attempt would make this number one "
+            "that cannot rise, and a number that cannot rise is a press release."
+        )
+    return lines
+
+
 def render(report: Mapping[str, Any]) -> list[str]:
     """The report as lines. Pure, so the CLI's output is testable."""
     lines: list[str] = []
@@ -1062,9 +1276,19 @@ def render(report: Mapping[str, Any]) -> list[str]:
     previous = report["previous_version"]
 
     lines.append(f"AGENT COST — {version}   ({now['hooks']} hook(s) resolved against this decode)")
+    lines.extend(_run_lines(report))
     lines.append("")
+    prior_run = report.get("previous_run")
     comparison = (
-        f"   (was {was['agent_invocations']} on {previous})" if was is not None else ""
+        f"   (was {was['agent_invocations']} on {previous}"
+        + (
+            f", its latest of {prior_run['of']} run(s)"
+            if prior_run is not None and prior_run["of"] > 1
+            else ""
+        )
+        + ")"
+        if was is not None
+        else ""
     )
     lines.append(f"  agent invocations: {now['agent_invocations']}{comparison}")
     for entry in report["agent_hooks"]:
@@ -1176,6 +1400,13 @@ def main(argv: list[str] | None = None) -> int:
         "--previous", help="compare against this version instead of the preceding one"
     )
     report_cmd.add_argument(
+        "--run",
+        help=(
+            "report this run of the version — a 1-based ordinal from `versions`, or an "
+            "exact recorded_at. Default: the latest run, best or not"
+        ),
+    )
+    report_cmd.add_argument(
         "--ledger",
         type=Path,
         default=DEFAULT_LEDGER_PATH,
@@ -1183,7 +1414,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     report_cmd.add_argument("--json", action="store_true", help="print the report as JSON")
 
-    versions_cmd = sub.add_parser("versions", help="which ports this ledger has measured")
+    # Extended rather than given a subcommand of its own: "which ports has this
+    # ledger measured" and "how many times was each attempted" are one question,
+    # and a second subcommand would be a second place that has to agree about what
+    # a run is. The ordinals it prints are what `report --run` takes.
+    versions_cmd = sub.add_parser(
+        "versions", help="which ports this ledger has measured, and each attempt at them"
+    )
     versions_cmd.add_argument(
         "--ledger", type=Path, default=DEFAULT_LEDGER_PATH, help="cost ledger JSONL"
     )
@@ -1200,12 +1437,31 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "versions":
         for version in ledger.versions:
-            costs = ledger.costs_for(version)
-            agents = sum(1 for cost in costs if cost.needed_agent)
-            print(f"{version:>6}  {len(costs):>3} hook(s)  {agents:>3} agent invocation(s)")
+            runs = ledger.runs_for(version)
+            # The version line is the LATEST run, for the same reason the report
+            # is: summing the runs made a retried port look like an expensive one.
+            latest = runs[-1]
+            print(
+                f"{version:>6}  {len(latest.costs):>3} hook(s)  "
+                f"{latest.agent_invocations:>3} agent invocation(s)  "
+                f"[latest of {len(runs)} run(s)]"
+            )
+            for run in runs:
+                mark = "*" if run is latest else " "
+                print(
+                    f"        {mark} run {run.ordinal:<3} {run.stamp:<34} "
+                    f"{len(run.costs):>3} hook(s)  "
+                    f"{run.agent_invocations:>3} agent invocation(s)"
+                )
         return 0 if ledger.versions else 1
 
-    report = cost_report(ledger, args.version, args.previous)
+    try:
+        report = cost_report(ledger, args.version, args.previous, run=args.run)
+    except DecisionError as error:
+        # A --run that matches nothing exits rather than reporting a different run
+        # under the label of the one asked for.
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True))
     else:

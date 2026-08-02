@@ -35,6 +35,7 @@ import contextlib
 import inspect
 import io
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +87,9 @@ from dfinsta_pipeline.agent_cost import (
     ROUTE_DETERMINISTIC_SUPPLIER,
     ROUTE_MECHANICAL,
     ROUTE_NOT_RESOLVED,
+    SELECTED_EXPLICIT,
+    SELECTED_LATEST,
+    UNSTAMPED,
     VERDICT_FALLING,
     VERDICT_FLAT,
     VERDICT_RISING,
@@ -93,6 +97,7 @@ from dfinsta_pipeline.agent_cost import (
     WITHHELD_DESCRIPTOR,
     WITHHELD_PATH,
     CostLedger,
+    CostRun,
     HookCost,
     Selectivity,
     SupplierAttempt,
@@ -1072,6 +1077,33 @@ def ledger_of(*rows) -> CostLedger:
     return ledger
 
 
+def runs_ledger(*rows) -> CostLedger:
+    """A ledger built from (version, stamp, *hook resolutions) rows, in append order.
+
+    Distinct stamps are what make two rows two runs, and that is not a convention
+    invented here: `record_run` takes one caller-supplied `recorded_at` and stamps
+    every record of one attempt with it, so the run identifier is already in the
+    data and no schema change was needed to read it back.
+    """
+    ledger = CostLedger()
+    for version, stamp, *items in rows:
+        for cost in costs_for(*items, version=version, stamp=stamp):
+            ledger.record(cost)
+    return ledger
+
+
+#: The committed ledger, which now holds genuine two-run data: one 439 port that
+#: stopped at resolve and the re-run that finished. Copied before use, never read
+#: in place — it is real recorded evidence and a test may not be why it changed.
+REAL_LEDGER = Path(__file__).resolve().parent.parent / "manifest" / "agent_cost.jsonl"
+
+#: The two 439 attempts on file, oldest first. Safe to pin: the ledger is
+#: append-only, so runs 1 and 2 can never become different runs — a third port
+#: appends run 3 and leaves these two exactly where they are.
+REAL_RUN_ONE = "2026-08-02T16:12:40.616633+00:00"
+REAL_RUN_TWO = "2026-08-02T16:42:05.463572+00:00"
+
+
 class AgentCostTestCase(ManifestUpdateTestCase):
     pass
 
@@ -1725,6 +1757,379 @@ class CostQueryTests(AgentCostTestCase):
         self.assertIn("agent invocations: 1", buffer.getvalue())
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(agent_cost_module.main(["report", "999", "--ledger", str(path)]), 1)
+
+
+# ----------------------------------------------------------------- one run, not a version
+
+
+class CostRunTests(AgentCostTestCase):
+    """A report is about one PORT, and two attempts at a version are not two ports.
+
+    Found by the first real unattended port. 439 was run once, stopped at resolve,
+    and re-run; `cost_report` aggregated every record for the version and reported
+    7 hooks as 14, 2 agent invocations as 4, and every selectivity margin twice.
+
+    The ledger was right and is untouched: it is append-only, both attempts
+    genuinely cost what they cost, and dropping the failed one on write would be
+    deciding which run was the real one. Every test here is about the *reading*.
+
+    The failure mode is worse than an inflated number. It is a number that moves
+    with how many times somebody retried, so "agent invocations per port" flatters
+    or damns a port according to a fact about the operator — and that is the one
+    number `pipeline_flowchart.md` asks the project to judge itself by.
+    """
+
+    def test_two_runs_of_one_version_report_one_run_and_not_their_sum(self):
+        ledger = runs_ledger(
+            ("439", "T1", hook_resolution(REELS), settings_hook()),
+            ("439", "T2", hook_resolution(REELS), settings_hook()),
+        )
+        # The ledger still holds both attempts. It must: this is the append-only
+        # record of what was spent, and the fix is not allowed to be a deletion.
+        self.assertEqual(len(ledger.costs_for("439")), 4)
+
+        report_out = cost_report(ledger, "439")
+        self.assertEqual(report_out["now"]["hooks"], 2)
+        self.assertEqual(report_out["now"]["agent_invocations"], 1)
+        self.assertEqual(report_out["now"]["routes"][ROUTE_AGENT_PROPOSAL], 1)
+        self.assertEqual(report_out["now"]["routes"][ROUTE_MECHANICAL], 1)
+        self.assertEqual([entry["hook_id"] for entry in report_out["agent_hooks"]], [SETTINGS])
+        # One margin, measured once — the same fingerprint listed twice reads as
+        # two independent measurements agreeing.
+        self.assertEqual(len(report_out["selectivity"]), 1)
+        self.assertIn("agent invocations: 1", "\n".join(render(report_out)))
+
+    def test_the_report_says_how_many_runs_the_ledger_holds_for_the_version(self):
+        """The alternative to folding the other runs in is not hiding them."""
+        ledger = runs_ledger(
+            ("439", "T1", hook_resolution(REELS), settings_hook()),
+            ("439", "T2", hook_resolution(REELS), settings_hook()),
+        )
+        report_out = cost_report(ledger, "439")
+        self.assertEqual(
+            report_out["run"],
+            {
+                "ordinal": 2,
+                "of": 2,
+                "recorded_at": "T2",
+                "hooks": 2,
+                "agent_invocations": 1,
+                "selected": SELECTED_LATEST,
+            },
+        )
+        self.assertEqual([item["ordinal"] for item in report_out["runs"]], [1, 2])
+        self.assertEqual([item["recorded_at"] for item in report_out["runs"]], ["T1", "T2"])
+
+        text = "\n".join(render(report_out))
+        self.assertIn("run 2 of 2 for 439, recorded T2", text)
+        self.assertIn("1 other run(s) for 439 are in this ledger", text)
+        self.assertIn("NOT ONE of their records is counted below", text)
+        self.assertIn("run 1   T1", text)
+
+    def test_a_version_with_a_single_run_behaves_exactly_as_before(self):
+        ledger = ledger_of((VERSION, hook_resolution(), settings_hook()))
+        report_out = cost_report(ledger, VERSION)
+        self.assertEqual(report_out["now"]["hooks"], 2)
+        self.assertEqual(report_out["now"]["agent_invocations"], 1)
+        self.assertEqual(report_out["run"]["ordinal"], 1)
+        self.assertEqual(report_out["run"]["of"], 1)
+        text = "\n".join(render(report_out))
+        self.assertIn("run 1 of 1 for 439", text)
+        self.assertIn("the only run this ledger holds", text)
+        self.assertNotIn("other run(s)", text)
+
+    def test_an_unstamped_ledger_is_one_run_rather_than_none(self):
+        """Hand-built records carry no stamp. That is one run, and it says so."""
+        ledger = CostLedger()
+        ledger.record(HookCost(REELS, VERSION, ROUTE_MECHANICAL, "resolved"))
+        report_out = cost_report(ledger, VERSION)
+        self.assertEqual(report_out["run"]["of"], 1)
+        self.assertEqual(report_out["run"]["recorded_at"], "")
+        self.assertIn(f"recorded {UNSTAMPED}", "\n".join(render(report_out)))
+
+    def test_previous_compares_the_latest_run_of_each_version(self):
+        ledger = runs_ledger(
+            ("430", "A1", hook_resolution(), settings_hook(), settings_hook()),
+            ("430", "A2", hook_resolution(), settings_hook()),
+            ("439", "B1", hook_resolution(), settings_hook()),
+        )
+        report_out = cost_report(ledger, "439")
+        self.assertEqual(report_out["previous_version"], "430")
+        self.assertEqual(report_out["previous_run"]["ordinal"], 2)
+        self.assertEqual(report_out["previous_run"]["of"], 2)
+        self.assertEqual(report_out["previous"]["agent_invocations"], 1)
+        self.assertEqual(report_out["previous"]["hooks"], 2)
+        self.assertIn("(was 1 on 430, its latest of 2 run(s))", "\n".join(render(report_out)))
+
+    def test_the_verdict_comes_from_the_compared_runs_and_not_from_totals(self):
+        """A retry must not be able to move the verdict in either direction.
+
+        Summed, the first ledger reads FALLING (430 cost 2, 439 cost 1) and the
+        pipeline looks like it learned something between ports; the second reads
+        RISING (439 cost 2, 430 cost 1) and looks like a regression. Both are the
+        same fact: somebody ran a port twice. Run against run, both are FLAT —
+        which is the honest answer and the one the flowchart calls not learning.
+        """
+        retried_before = runs_ledger(
+            ("430", "A1", hook_resolution(), settings_hook()),
+            ("430", "A2", hook_resolution(), settings_hook()),
+            ("439", "B1", hook_resolution(), settings_hook()),
+        )
+        self.assertEqual(
+            sum(1 for cost in retried_before.costs_for("430") if cost.needed_agent), 2
+        )
+        report_out = cost_report(retried_before, "439")
+        self.assertEqual(report_out["delta_agent_invocations"], 0)
+        self.assertEqual(report_out["verdict"], VERDICT_FLAT)
+        text = "\n".join(render(report_out))
+        self.assertIn("FLAT against 430", text)
+        self.assertNotIn("falling", text)
+
+        retried_after = runs_ledger(
+            ("430", "A1", hook_resolution(), settings_hook()),
+            ("439", "B1", hook_resolution(), settings_hook()),
+            ("439", "B2", hook_resolution(), settings_hook()),
+        )
+        self.assertEqual(cost_report(retried_after, "439")["verdict"], VERDICT_FLAT)
+        self.assertNotIn("RISING", "\n".join(render(cost_report(retried_after, "439"))))
+
+    def test_a_real_fall_between_ports_is_still_reported_as_falling(self):
+        """The positive control: run-scoping must not make every verdict FLAT.
+
+        A guard that only ever reports "no change" would pass every test above and
+        report a pipeline that had genuinely stopped needing an agent as one that
+        had not learned anything.
+        """
+        ledger = runs_ledger(
+            ("430", "A1", hook_resolution(), settings_hook()),
+            ("430", "A2", hook_resolution(), settings_hook()),
+            ("439", "B1", hook_resolution(), settings_hook(found_by="by_literal")),
+        )
+        report_out = cost_report(ledger, "439")
+        self.assertEqual(report_out["verdict"], VERDICT_FALLING)
+        self.assertEqual(report_out["delta_agent_invocations"], -1)
+        self.assertEqual(report_out["retired"], [SETTINGS])
+
+    def test_an_earlier_run_with_more_hooks_does_not_leak_into_the_later_report(self):
+        """The attack: a first attempt that got FURTHER than the one that shipped.
+
+        Attempt one resolved three hooks and paid an agent for one of them;
+        the re-run covered two and paid nothing. Every list in the report is built
+        by comprehension over the records, so a single unscoped one puts a hook
+        that this port never touched into this port's cost — and it is the agent
+        count, the number the whole module exists to make falsifiable, that it
+        inflates.
+        """
+        settings_with_guard = settings_hook(
+            supplied(guard_answered(), winner=GUARD), found_by="named", descriptor=SHELL
+        )
+        ledger = runs_ledger(
+            (
+                "439",
+                "T1",
+                hook_resolution(REELS),
+                hook_resolution(CONTEXT, found_by="named", descriptor=SHELL),
+                settings_with_guard,
+            ),
+            (
+                "439",
+                "T2",
+                hook_resolution(REELS),
+                hook_resolution(CONTEXT, found_by="named", descriptor=SHELL),
+            ),
+        )
+        self.assertEqual(len(ledger.costs_for("439")), 5)
+
+        report_out = cost_report(ledger, "439")
+        self.assertEqual(report_out["now"]["hooks"], 2)
+        self.assertEqual(report_out["now"]["agent_invocations"], 0)
+        self.assertEqual(report_out["agent_hooks"], [])
+        self.assertEqual(report_out["now"]["by_need"][NEED_CAPTURE], 0)
+        # The guard ran in the first attempt only: reporting it as holding now
+        # would be evidence about a rule taken from a run that is not this one.
+        self.assertEqual(report_out["holding"], [])
+        self.assertEqual({entry["hook_id"] for entry in report_out["selectivity"]}, {REELS})
+        text = "\n".join(render(report_out))
+        self.assertNotIn(SETTINGS, text)
+        self.assertNotIn(GUARD, text)
+        self.assertIn("none — every hook resolved without one", text)
+
+    def test_the_latest_run_is_reported_even_when_an_earlier_one_was_cheaper(self):
+        """Latest, not best — and the choice is in the output rather than implied.
+
+        Reporting a version's cheapest attempt would make this number one that
+        cannot rise, and a number that cannot rise is a press release rather than
+        a measurement. So the expensive latest run is the one counted, and the
+        cheaper attempt is named next to it so nobody has to take that on trust.
+        """
+        ledger = runs_ledger(
+            ("439", "T1", hook_resolution(), settings_hook(found_by="by_literal")),
+            ("439", "T2", hook_resolution(), settings_hook()),
+        )
+        report_out = cost_report(ledger, "439")
+        self.assertEqual(report_out["now"]["agent_invocations"], 1)
+        self.assertEqual(report_out["runs"][0]["agent_invocations"], 0)
+        text = "\n".join(render(report_out))
+        self.assertIn("Reporting the LATEST run whether or not it was the best one", text)
+        self.assertIn("run 1 cost fewer agent invocations (0)", text)
+        self.assertIn("press release", text)
+
+    def test_an_earlier_run_can_be_reported_deliberately_and_says_that_it_was(self):
+        ledger = runs_ledger(
+            ("439", "T1", hook_resolution(), settings_hook()),
+            ("439", "T2", hook_resolution()),
+        )
+        report_out = cost_report(ledger, "439", run=1)
+        self.assertEqual(report_out["run"]["ordinal"], 1)
+        self.assertEqual(report_out["run"]["selected"], SELECTED_EXPLICIT)
+        self.assertEqual(report_out["now"]["agent_invocations"], 1)
+        self.assertIn("because it was asked for", "\n".join(render(report_out)))
+        # By stamp as well as by ordinal, since the stamp is what the ledger holds.
+        self.assertEqual(cost_report(ledger, "439", run="T1")["run"]["ordinal"], 1)
+        self.assertEqual(cost_report(ledger, "439", run=2)["now"]["agent_invocations"], 0)
+
+    def test_a_run_selector_that_matches_nothing_is_refused_rather_than_defaulted(self):
+        """A silent fallback would label a report as a run it was not computed from."""
+        ledger = runs_ledger(("439", "T1", hook_resolution()))
+        for selector in (2, 0, -1, "T9"):
+            with self.subTest(selector=selector), self.assertRaises(DecisionError):
+                cost_report(ledger, "439", run=selector)
+
+    def test_the_runs_of_a_version_are_ordered_by_append_and_never_by_timestamp(self):
+        """Sorting the stamps would compare '+05:30' against 'Z'.
+
+        The file is append-only, so its order IS the order the runs happened, and
+        deriving 'latest' from string order would hand the word to the wrong run.
+        """
+        ledger = runs_ledger(
+            ("439", "2026-08-02T22:00:00+05:30", hook_resolution()),
+            ("439", "2026-08-02T17:00:00+00:00", hook_resolution()),
+        )
+        self.assertEqual(
+            [run.recorded_at for run in ledger.runs_for("439")],
+            ["2026-08-02T22:00:00+05:30", "2026-08-02T17:00:00+00:00"],
+        )
+        self.assertEqual(ledger.latest_run("439").recorded_at, "2026-08-02T17:00:00+00:00")
+        self.assertEqual(sorted(["2026-08-02T22:00:00+05:30", "2026-08-02T17:00:00+00:00"])[-1],
+                         "2026-08-02T22:00:00+05:30")  # what sorting would have chosen
+
+    def test_two_versions_stamped_alike_are_two_runs_and_not_one(self):
+        """The run key is (version, recorded_at), because the stamp is a caller's
+        value rather than a clock reading and two ports can carry the same one."""
+        ledger = runs_ledger(
+            ("430", STAMP, hook_resolution(), settings_hook()),
+            ("439", STAMP, hook_resolution()),
+        )
+        self.assertEqual(len(ledger.runs_for("430")), 1)
+        self.assertEqual(len(ledger.runs_for("439")), 1)
+        self.assertEqual(cost_report(ledger, "439")["now"]["hooks"], 1)
+        self.assertEqual(cost_report(ledger, "439")["previous"]["agent_invocations"], 1)
+
+
+class RealLedgerTests(AgentCostTestCase):
+    """Against `manifest/agent_cost.jsonl` — the two-run data that exposed this.
+
+    Copied into a temp directory rather than read in place: it is real recorded
+    evidence of two real 439 attempts, and a test run may not be the reason it
+    changes.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.assertTrue(
+            REAL_LEDGER.exists(),
+            f"{REAL_LEDGER} is committed recorded data and this test is about it; a "
+            "skip here would be a test that cannot fail",
+        )
+        self.copy = self.tmp / "manifest" / "agent_cost.jsonl"
+        self.copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REAL_LEDGER, self.copy)
+        self.ledger = agent_cost_module.open_ledger(self.copy)
+
+    def test_the_real_ledger_holds_two_439_runs_distinguished_by_their_stamp(self):
+        """The claim the whole fix rests on, checked against the file itself."""
+        runs = self.ledger.runs_for("439")
+        self.assertGreaterEqual(len(runs), 2)
+        self.assertTrue(all(isinstance(run, CostRun) for run in runs))
+        self.assertEqual({run.of for run in runs}, {len(runs)})
+        self.assertEqual([run.ordinal for run in runs], list(range(1, len(runs) + 1)))
+        self.assertEqual([run.recorded_at for run in runs[:2]], [REAL_RUN_ONE, REAL_RUN_TWO])
+        self.assertEqual([len(run.costs) for run in runs[:2]], [7, 7])
+        self.assertEqual(sum(len(run.costs) for run in runs), len(self.ledger.costs_for("439")))
+        for run in runs:
+            self.assertEqual({cost.recorded_at for cost in run.costs}, {run.recorded_at})
+
+    def test_the_real_report_counts_seven_hooks_and_two_agent_invocations(self):
+        """What the defect printed: 14 hooks, 4 agent invocations, 7 hooks listed twice."""
+        report_out = cost_report(self.ledger, "439", run=2)
+        self.assertEqual(report_out["now"]["hooks"], 7)
+        self.assertEqual(report_out["now"]["agent_invocations"], 2)
+        self.assertEqual(
+            report_out["now"]["routes"],
+            {
+                ROUTE_NOT_RESOLVED: 0,
+                ROUTE_AGENT_PROPOSAL: 2,
+                ROUTE_AGENT_SUPPLIER: 0,
+                ROUTE_DETERMINISTIC_SUPPLIER: 0,
+                ROUTE_MECHANICAL: 5,
+                ROUTE_ALREADY_APPLIED: 0,
+            },
+        )
+        listed = [entry["hook_id"] for entry in report_out["agent_hooks"]]
+        self.assertEqual(len(listed), len(set(listed)))
+        self.assertEqual(
+            listed, ["install_settings_long_click", "install_settings_long_click_actionbar"]
+        )
+        # Every margin measured once. The defect listed each of them twice, which
+        # reads as two runs agreeing about a fingerprint.
+        subjects = [(entry["hook_id"], entry["subject"]) for entry in report_out["selectivity"]]
+        self.assertEqual(len(subjects), len(set(subjects)))
+        self.assertLess(report_out["now"]["hooks"], len(self.ledger.costs_for("439")))
+
+    def test_the_failed_attempt_is_still_on_file_and_reportable(self):
+        """It cost what it cost. The fix is a change of reading, not a deletion."""
+        first = cost_report(self.ledger, "439", run=1)
+        self.assertEqual(first["now"]["hooks"], 7)
+        self.assertEqual(first["now"]["routes"][ROUTE_NOT_RESOLVED], 1)
+        self.assertEqual(
+            [entry["outcome"] for entry in first["agent_hooks"]], ["resolved", "needs_agent"]
+        )
+        # ...and it is the difference between the two attempts, which the summed
+        # report could not show: the re-run resolved what the first one escalated.
+        latest = cost_report(self.ledger, "439")
+        self.assertEqual(latest["now"]["routes"][ROUTE_NOT_RESOLVED], 0)
+
+    def test_the_cli_reports_one_run_and_lists_the_other(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = agent_cost_module.main(["report", "439", "--ledger", str(self.copy)])
+        text = buffer.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("(7 hook(s) resolved against this decode)", text)
+        self.assertIn("agent invocations: 2", text)
+        self.assertIn(f"run 2 of 2 for 439, recorded {REAL_RUN_TWO}", text)
+        self.assertIn(REAL_RUN_ONE, text)
+        self.assertNotIn("agent invocations: 4", text)
+
+    def test_the_versions_subcommand_shows_each_attempt_and_counts_one(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = agent_cost_module.main(["versions", "--ledger", str(self.copy)])
+        text = buffer.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("7 hook(s)", text)
+        self.assertNotIn("14 hook(s)", text)
+        self.assertIn("[latest of 2 run(s)]", text)
+        self.assertIn(f"run 1   {REAL_RUN_ONE}", text)
+        self.assertIn(f"run 2   {REAL_RUN_TWO}", text)
+
+    def test_the_cli_refuses_a_run_that_does_not_exist(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = agent_cost_module.main(["report", "439", "--run", "99", "--ledger", str(self.copy)])
+        self.assertEqual(code, 2)
+        self.assertIn("run 99 does not exist", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
 
 
 # -------------------------------------------------------------------- the ledger
