@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 2033 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 2100 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -167,6 +167,39 @@ to "an agent ran" rather than "the manifest is wrong".
 **And the strategic limit**: a supplier re-derives from scratch every version and **nothing
 accumulates**. This closes the structural gap in stage 5 but does not move
 agent-invocations-per-port. It is a prerequisite for stage 10's second half, not a substitute.
+
+## 7 of 7 hooks resolve on both 430 and 439 — with one runtime check outstanding
+
+`manifest/hooks.json` now declares `supplied_captures` for `install_settings_long_click` and
+`requires_proposal` is gone. Both versions resolve all seven hooks, the deterministic supplier
+winning on both with no agent fallback and every host descriptor byte-identical to before.
+
+**The outstanding check is a device test, and it is not the one that was run this morning.**
+That asked *does this hook run at all* (failure mode: inert). This asks *does it run only where
+it should* (failure mode: over-broad). `A00` builds the action-bar ImageView for **every**
+profile model, so an unguarded attach reaches every icon on every profile. The test: long-press
+on the signed-in user's own profile must open the dialog (positive control), and long-press on
+**another user's** profile must do nothing. Procedure in the scratch notes; APK built and
+verified at `work/439-full-allseven/dfinsta_439_allseven.apk`, SHA-256 `8442b73e…`.
+
+**The probe now sits OUTSIDE the guard**, deliberately: `runtime_identity`'s contract is that
+the site reports execution even if a later instruction throws. The consequence, which matters
+for reading the test: `h_install_settings_long_click` fires on *both* profiles, because the
+site executes on both. **The identity line is not the oracle here — the screencap is.**
+
+## Agent invocations per port is now measured, and the first reading was FLAT
+
+`python -m dfinsta_pipeline.agent_cost report <version>`. The flowchart's central claim —
+agent invocations fall with every port, and a flat count means the pipeline is not learning —
+had never been measured. First real reading over 340/430/439: **FLAT**, 2 on 439 and 2 on 430.
+The claim's own failure state, first try. Selectivity margins are trended alongside it, so a
+fingerprint narrowing toward `1 -> 1` is visible before it reaches zero.
+
+Four honest limits: the rot signal is a differential so real coverage starts at the *third*
+port; the capture-supplier margin is read back with a regex over prose and fails closed by
+disappearing (fix: a typed `measured` field on `capture_supply.Supplied`); it counts hooks
+that needed an agent, not model calls; and **nothing calls `record_run` yet**, so this is a
+measurable claim rather than a measured one.
 
 ## Immediate next steps, in order
 
