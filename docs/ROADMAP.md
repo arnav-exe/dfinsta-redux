@@ -154,9 +154,10 @@ enumerating its violations.
       (`LX/077K`->`LX/0DnT`, `LX/06X7`->`LX/0Di2`, `LX/05t2`->`LX/04tC`), and the custom
       code needed `classes21.dex` because 439 already ships `classes20`.
 - [ ] Turn the ad-hoc mapping workflow into a reusable resolver that emits candidates +
-      evidence. **Half done**: `proposer.py` holds the sandbox, the prompts and the parsing,
-      and `proposals.py` is a real stage — but the agent call itself is still a seam a human
-      fills by hand, so no run produces its own candidates end to end.
+      evidence. **The agent call is filled** (`agent_runner.py` over `sandbox_tools.py`), and one
+      real run against 439 navigated the decode and returned a candidate. What has never run is
+      the rest of the chain: k proposers, agreement by effect, the mechanical validator, the
+      adversarial verifier. Until it does, a single proposal is a candidate and nothing more.
 
 ### What per-hook identity found on its first run
 
@@ -235,7 +236,11 @@ Design and the experiment: [`docs/STAGE_4_DESIGN.md`](STAGE_4_DESIGN.md).
       because the assessment has no path into CAS as a recorded operation. See "Immediate
       next three".
 - [ ] Handle changed features: shopping dissolved into other endpoints; decide block vs drop
-- [ ] Google ADK, scoped narrowly to these judgement calls — apply/verify stays deterministic
+- [x] Decide the agent runtime — **not** Google ADK, by measurement rather than by the plan.
+      +55 packages and +143 MiB for a program one line shorter, no confinement help, and
+      independence across k runs that is opt-in and fails *silently* by contaminating later
+      runs. See [`docs/PROPOSER_RUNTIME.md`](PROPOSER_RUNTIME.md), which records the revisit
+      trigger: ADK becomes right if this ever needs agent transfer or shared specialist state.
 
 ## 4. Runtime truth — cross-cutting
 
