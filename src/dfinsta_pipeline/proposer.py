@@ -278,6 +278,50 @@ indistinguishable.
 JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _json_objects(text: str) -> list[str]:
+    """Every balanced top-level `{...}` in *text*, in order.
+
+    A greedy `\\{.*\\}` was enough for hand-collected answers and is wrong for
+    real ones. The first closed-loop run returned a draft object, then prose,
+    then a revised object; the greedy match spanned from the first brace to the
+    last and produced "Extra data", so a proposal that had been reached
+    correctly was discarded as malformed.
+
+    Braces are counted rather than matched with a regex because JSON nests, and
+    string contents are skipped so that a brace inside a smali payload -- which
+    is where they live, in `invoke-static {v0}, ...` -- cannot unbalance the
+    scan. That case is not hypothetical: every payload this schema carries is
+    full of them.
+    """
+
+    objects: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for index, character in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif character == "}":
+            if depth:
+                depth -= 1
+                if depth == 0:
+                    objects.append(text[start : index + 1])
+    return objects
+
+
 def parse_proposal(hook_id: str, proposer: str, response: str | Mapping[str, Any]) -> Proposal:
     """Turn one agent response into a checked `Proposal`.
 
@@ -286,13 +330,29 @@ def parse_proposal(hook_id: str, proposer: str, response: str | Mapping[str, Any
     later as "anchor not found".
     """
     if isinstance(response, str):
-        match = JSON_BLOCK.search(response)
-        if match is None:
+        candidates = _json_objects(response)
+        if not candidates:
             raise ProposalError(f"{proposer} returned no JSON object")
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError as error:
-            raise ProposalError(f"{proposer} returned unparseable JSON: {error}") from error
+        # The LAST object, not the first. An agent that revises itself leaves the
+        # draft behind, and the draft is the answer it decided against -- taking
+        # it would grade the wrong proposal, and silently, because a draft is
+        # well-formed and plausible. Whatever it settled on is what it proposed.
+        errors: list[str] = []
+        data = None
+        for candidate in reversed(candidates):
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError as error:
+                errors.append(str(error))
+                continue
+            if isinstance(parsed, dict):
+                data = parsed
+                break
+            errors.append("JSON value is not an object")
+        if data is None:
+            raise ProposalError(
+                f"{proposer} returned unparseable JSON: {errors[0] if errors else 'no object'}"
+            )
     else:
         data = dict(response)
     unknown = set(data) - set(PROPOSAL_SCHEMA["properties"])

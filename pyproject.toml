@@ -11,5 +11,15 @@ dependencies = [
   "temporalio==1.30.0",
 ]
 
+# Stage 5a only. Kept optional because everything else — resolve, apply, build,
+# verify, the gates — must run with no model available at all, and because this
+# one drives the `claude` CLI, which is an interactively-authenticated program
+# and not something the deterministic spine may come to depend on.
+# See docs/PROPOSER_RUNTIME.md.
+[project.optional-dependencies]
+proposers = [
+  "claude-agent-sdk>=0.2",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
