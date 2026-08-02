@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 2100 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 2170 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -199,11 +199,22 @@ had never been measured. First real reading over 340/430/439: **FLAT**, 2 on 439
 The claim's own failure state, first try. Selectivity margins are trended alongside it, so a
 fingerprint narrowing toward `1 -> 1` is visible before it reaches zero.
 
-Four honest limits: the rot signal is a differential so real coverage starts at the *third*
-port; the capture-supplier margin is read back with a regex over prose and fails closed by
-disappearing (fix: a typed `measured` field on `capture_supply.Supplied`); it counts hooks
-that needed an agent, not model calls; and **nothing calls `record_run` yet**, so this is a
-measurable claim rather than a measured one.
+`record_run` is now called by `driver.py`, and `manifest/agent_cost.jsonl` holds real data:
+**439 run 2 of 2 cost 2 agent invocations against 5 mechanical hooks.** The verdict is
+`UNTESTABLE` until a second version is ported, which is correct — the claim is about a
+sequence.
+
+Three honest limits remain: the rot signal is a differential so real coverage starts at the
+*third* port; the capture-supplier margin is read back with a regex over prose and fails closed
+by *disappearing* (fix: a typed `measured` field on `capture_supply.Supplied`); and it counts
+hooks that needed an agent, not model calls.
+
+**A defect the first real run exposed**: `cost_report` originally aggregated a version's whole
+history, so re-running 439 reported 14 hooks and 4 invocations. The claim is invocations per
+*port*, and two attempts at one version are not two ports — a metric that inflates with retries
+flatters or damns the project by accident. Fixed by keying a run on `(version, recorded_at)`,
+which needed no schema change because `record_run` already stamps every record of a run
+identically. The ledger keeps the failed attempt; only the reading changed.
 
 ## Immediate next steps, in order
 

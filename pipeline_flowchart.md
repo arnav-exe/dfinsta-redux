@@ -121,9 +121,9 @@ resolves mechanically, **no agent runs at all**.
 | Evidence ledger | done, phased pre-apply / post-build; records a host agreement as well as a whole-patch one |
 | 6-8 Apply / Build / Static verify | done, target-neutral, proven on 430 and 439 |
 | 9 Runtime verify | probes + per-hook identity done, own-profile guard device-verified; **differential vs N−1 still has no producer** |
-| 10 Manifest update | Decision Memory half done (`manifest_update.py`); **agent cost is now measured** (`agent_cost.py`) and its first reading was FLAT; the proposal-to-pattern generaliser is not built |
+| 10 Manifest update | Decision Memory half done (`manifest_update.py`); **agent cost is recorded on every port** (`agent_cost.py`, called by the driver) — 439 cost 2 agent invocations against 5 mechanical hooks, verdict `UNTESTABLE` until a second version is ported; the proposal-to-pattern generaliser is not built |
 | 11 Final report | not started |
-| Host discovery in the driver | the narrowed question exists (`host_prompt`); wiring it into a run is the last hand-off |
+| Host discovery in the driver | **done** (`discovery.py`, `--discover-hosts`). 439 ported unattended: 2-of-2 on one settings host, 3-of-3 on the other, neither refuted, gate passed honestly |
 | Answering a gate | done — `submission.py` |
 
 ---
