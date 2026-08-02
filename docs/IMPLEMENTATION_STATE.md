@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 1850 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 1933 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -52,6 +52,48 @@ build over the working 439 one removed the settings dialog, which is the ONLY wa
 reach the toggles — so the toggles were left off and unreachable until the full build was
 reinstalled. Test builds go on the phone only when they carry the settings hooks, or with
 the full build reinstalled straight afterwards.
+
+## The settings hooks, after the 2026-08-02 session
+
+**6 of 7 hooks resolve outright on 439** (was 5). `install_settings_long_click_actionbar` was
+promoted by the baksmali trailing-comment fix. The seventh,
+`install_settings_long_click`, now matches its host **exactly once** on both 439 (`LX/0DnT;`)
+and 430 (`LX/077K;`) — its 3-line anchor was the generic "build a listener, attach it" idiom
+and matched 3 times on 439 and 2 times on 430. Two lines fixed both:
+
+    invoke-virtual <view>, <lp>  Landroid/view/View;->setLayoutParams(...)
+    return-object <view>
+
+Only the site that builds the Options ImageView is followed by `setLayoutParams` on the same
+register the listener was attached to *and* then returns it. The other-user **follow button**
+(`FadeInFollowButton`) calls its own setup method instead — attaching there would put the
+DFInsta dialog on a stranger's Follow button. The mode moved `insert_after` → `replace`,
+because an anchor ending at `return-object` would otherwise place the payload past the return:
+statically perfect, runtime-inert. The 5-line anchor is unique across the *entire* decode
+(1 class, vs 87 on 439 / 110 on 430 for the 3-line form), so it now identifies the host too.
+
+**`requires_proposal` stays `true`, and this is a real negative result.** The own-profile
+guard is not expressible in the manifest: the model register binds to a *different capture
+name* per version (`<b>`/p4 on 439, `<d>`/p3 on 430, because the synthetic listener's `<init>`
+argument order swapped), and the self-profile type (`LX/077N;` → `LX/0Dxw;`) appears on no
+line adjacent to the site. A00 builds the ImageView for every action-bar model, so an
+unguarded attach hits every icon on every profile — the guard is load-bearing, not decoration.
+
+## Two things to fix before host discovery is wired through
+
+- **`evidence.agreement_claim` cannot record a host agreement.** It counts a proposal as an
+  answer only if it names a descriptor **and** a non-empty anchor, so two agreeing host
+  proposers return `not_exercised`. It fails safe — hooks stall rather than ship — which is
+  exactly why nobody would notice. Widen it first.
+- **`collect` picks its verification subject by counting submissions, not proposers**, so one
+  agent answering three times decides what the adversarial verifier examines. `assess`
+  re-decides, so nothing ships wrong, but the verification effort goes to the loudest voice.
+
+## A test-isolation bug, pre-existing
+
+`tests/test_phase_a_history_corpus.py` **fails when run alone** (`RuntimeError: Failed
+validating workflow PortRunWorkflow`) and passes inside the full suite: it depends on an
+import another module performs first. The suite being green hides it.
 
 ## Immediate next steps, in order
 
