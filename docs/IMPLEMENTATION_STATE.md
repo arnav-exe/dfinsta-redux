@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 1536 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 1674 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -19,7 +19,8 @@ Stage numbers refer to `pipeline_flowchart.md`.
 | 3 Feature discovery | **done** — stable-string layer only | `src/dfinsta_pipeline/surface_diff.py` (+95 tests) |
 | **4a Assessment** | **done** | `src/dfinsta_pipeline/assessment.py` (+92 tests) |
 | **4b Gate contracts** | **done** — Activities and Workflow NOT written | `src/dfinsta_pipeline/feature_gate.py` (+54 tests) |
-| Gate 1 | contracts only; nothing raises it yet | — |
+| Gate 1 | contracts only; **nothing raises it, and nothing can** — no producer | — |
+| **Answering a gate** | **done** — the trusted submission client | `src/dfinsta_pipeline/submission.py`, [`docs/SUBMISSION_CLIENT.md`](SUBMISSION_CLIENT.md) |
 | **5 Resolve** | **done** — 5/7 hooks resolve mechanically on 430 and 439, hosts included | `src/dfinsta_pipeline/resolve.py` (+61 tests), `hook_index.py` (+95) |
 | **5a Proposers / 5b verifier** | **done as a stage** | `src/dfinsta_pipeline/proposals.py` |
 | **5c Mechanical validator** | **done** | `tools/resolver/validate_candidates.py` (+8 mutation tests) |
@@ -54,17 +55,51 @@ the full build reinstalled straight afterwards.
 
 ## Immediate next steps, in order
 
-1. **A trusted submission client.** The gate contracts exist but nothing raises the gate
-   and no human can answer it: `execute_update` appears only in tests. This blocks stage 4
-   end to end and is the smallest thing that unblocks the most.
-2. **The gate's Activities and Workflow.** Follow `docs/STAGE_4_DESIGN.md` and the pattern
-   in `src/dfinsta_pipeline/replay_gate.py` / `replay_workflow.py`: a preparation Activity
-   returning only the request hash, a new `@workflow.defn` class (never new fields on
-   `WorkflowStatus`/`RunResult`), and an admitting Activity that re-derives independently.
+1. **Give the feature gate a producer.** This is the real blocker for stage 4, and it is
+   not the wiring task the previous version of this list assumed. `feature_gate.py` and
+   `assessment.py` are each imported by nothing but their own tests. Stage 4a computes an
+   assessment in the **driver** world — a plain Python pipeline over a decode — while the
+   gate expects that assessment to exist in CAS as a completed **ledger** operation in the
+   Temporal world. Nothing joins those two worlds today. The missing link is an Activity
+   that records a stage 4a assessment as a ledger operation, and the design question it
+   raises (where the standalone driver and the durable pipeline meet) is worth answering
+   deliberately. Writing the gate's Workflow first would produce a Workflow with nothing to
+   gate on.
+2. **Then the gate's Activities and Workflow.** Follow `docs/STAGE_4_DESIGN.md` and the
+   pattern in `src/dfinsta_pipeline/replay_gate.py` / `replay_workflow.py`: a preparation
+   Activity returning only the request hash, a new `@workflow.defn` class (never new fields
+   on `WorkflowStatus`/`RunResult`), and an admitting Activity that re-derives
+   independently. The client already has the seam for it: register a `GateKind` whose
+   resolver reproduces `FeatureGateRequestV1` and whose update carries
+   `FeatureGateSubmissionV1` rather than a bare `GateDecision`.
 3. **Differential vs N−1** — the last evidence kind with no producer.
 4. **Close the proposer loop.** `proposer.py` has the sandbox, prompts and parsing, but the
    agent call is a seam a human currently fills by hand.
 5. **Settle the three hooks that appear to do nothing** — see below.
+
+## Answering a gate is no longer hypothetical
+
+`python -m dfinsta_pipeline.submission show|submit <workflow-id>` is the trusted submission
+client, built 2026-08-02. Design record: [`docs/SUBMISSION_CLIENT.md`](SUBMISSION_CLIENT.md).
+The rule it is built from — **re-derive the subject from recorded state, and refuse to let a
+human sign a hash you cannot reproduce** — is what distinguishes it from the standalone
+replay CLI this project designed, reviewed and deleted for self-asserting its hashes.
+
+Two consequences that will look surprising until you know why:
+
+- **`PortRunWorkflow`'s `phase-a-approval` gate is deliberately unanswerable.** Its subject
+  is `canonical_sha256(spec)` plus two operation outputs, and the ledger indexes operations
+  by content hash rather than by run, so a client holding only a run id cannot reach them.
+  It is not registered, and the client says so and stops rather than trusting the published
+  hashes.
+- **`Ledger(path, read_only=True)`** exists for this client: `mode=ro`, no schema
+  statements, all eight mutating methods guarded. The client cannot create the state it is
+  checking. `configure_runtime(..., read_only=True)` is how the production derivation
+  helpers are reused rather than reimplemented.
+
+It also uncovered that **`prepare_replay_verification_gate_activity` had never run against
+real recorded state** — every existing test stubbed it. `tests/test_submission_resolver.py`
+is the first test that drives that derivation over a real ledger and content store.
 ## Three hooks that appear to do nothing
 
 Found this session, all by machinery built this session. None is settled; each needs a

@@ -215,8 +215,16 @@ Design and the experiment: [`docs/STAGE_4_DESIGN.md`](STAGE_4_DESIGN.md).
       `delivery/background_prefetch` path co-located with exactly the Reels endpoints we
       block, and `clips/discover/interest/stream/` spreading from 2 classes to 5 — the same
       shape as the Shopping dissolution.
-- [ ] Assess whether a new feature is addictive, from evidence rather than assertion
-- [ ] Present conclusion **plus grounding evidence** at a durable human gate (gates last hours to days)
+- [x] Assess whether a new feature is addictive, from evidence rather than assertion
+      (`src/dfinsta_pipeline/assessment.py`). No composite score: a calibration experiment
+      run first ruled that out, six of seven signals being noise with the random control
+      landing *between* the labelled groups. What works is Instagram's own curated endpoint
+      arrays, found by content and never by class name.
+- [ ] Present conclusion **plus grounding evidence** at a durable human gate (gates last hours to days).
+      The contracts exist and a human can now answer a gate
+      ([`docs/SUBMISSION_CLIENT.md`](SUBMISSION_CLIENT.md)) — but nothing *raises* this one,
+      because the assessment has no path into CAS as a recorded operation. See "Immediate
+      next three".
 - [ ] Handle changed features: shopping dissolved into other endpoints; decide block vs drop
 - [ ] Google ADK, scoped narrowly to these judgement calls — apply/verify stays deterministic
 
@@ -252,12 +260,22 @@ stopping at the first stage that cannot produce what the next needs.
 
 ## Immediate next three
 
-1. **Drive the phone.** Join `evidence.probe_claim` to `tools/device_validation/runner.py`
-   so `runtime_probe` and `differential` can exist. Nothing can pass the release gate until
-   they do, and this is what separates "a build" from "a build that works".
+1. **Give the feature gate a producer.** `feature_gate.py` and `assessment.py` are each
+   imported by nothing but their own tests. Stage 4a computes an assessment in the *driver*
+   world; the gate expects it in CAS as a completed ledger operation in the *Temporal*
+   world, and nothing joins the two. The missing link is an Activity that records a stage 4a
+   assessment as a ledger operation — a design question about where the driver and the
+   durable pipeline meet, not a wiring task. Until it exists, "the gate's Activities and
+   Workflow" has nothing to gate on.
 2. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference, so `install_settings_long_click` stops being excluded from runs.
-3. Feature discovery and the addictiveness gate (section 3), which is still untouched.
+3. **Differential vs N−1** — the last evidence kind with no producer.
+
+A gate can now be answered: [`docs/SUBMISSION_CLIENT.md`](SUBMISSION_CLIENT.md). The rule
+it is built from is that the client re-derives the gate subject from recorded state and
+refuses to let a human sign a hash it cannot reproduce — so `PortRunWorkflow`'s
+`phase-a-approval`, whose subject this client cannot reach, is deliberately *not*
+registered and is refused rather than trusted.
 
 ## The decision worth making early
 

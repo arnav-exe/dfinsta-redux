@@ -82,6 +82,15 @@ entry for a *different* subject is ignored rather than reused: the gate may have
 been re-raised over changed bytes, and reusing the old answer would be a stale
 approval arriving through the client's own cache.
 
+**A read-only open is not filesystem-inert, and that is fine.** On a WAL database SQLite
+creates `ledger.sqlite3-shm` and an empty `-wal` beside the ledger, and a read-only
+connection cannot checkpoint them away on close, so both survive. The authority file itself
+is byte-identical — asserted by size, nanosecond mtime *and* digest, with a positive control
+proving a real write moves all three. Two operational consequences: the state-root directory
+must be writable, and a `?immutable=1` "optimisation" would be a silent correctness bug,
+because it makes a reader skip the `-wal` and answer from stale bytes. There is a test that
+catches exactly that.
+
 **A confirmation token proves a human read it.** `submit` requires at least
 twelve characters of the *derived* subject hash. It is not a security control —
 the subject is already verified — it is the difference between a human having
