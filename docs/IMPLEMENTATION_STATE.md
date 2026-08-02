@@ -174,13 +174,17 @@ agent-invocations-per-port. It is a prerequisite for stage 10's second half, not
 `requires_proposal` is gone. Both versions resolve all seven hooks, the deterministic supplier
 winning on both with no agent fallback and every host descriptor byte-identical to before.
 
-**The outstanding check is a device test, and it is not the one that was run this morning.**
-That asked *does this hook run at all* (failure mode: inert). This asks *does it run only where
-it should* (failure mode: over-broad). `A00` builds the action-bar ImageView for **every**
-profile model, so an unguarded attach reaches every icon on every profile. The test: long-press
-on the signed-in user's own profile must open the dialog (positive control), and long-press on
-**another user's** profile must do nothing. Procedure in the scratch notes; APK built and
-verified at `work/439-full-allseven/dfinsta_439_allseven.apk`, SHA-256 `8442b73e…`.
+**The guard was device-tested and holds.** Own profile: the dialog opens (positive control).
+Another user's profile: Instagram's own sheet — Restrict / Block / Report — and no DFInsta
+dialog. Fresh launch: 10 canonical blocks. That test was the right one because `A00` builds the
+action-bar ImageView for **every** profile model, so an unguarded attach would reach every icon
+on every profile; the morning's test asked the opposite question (inert vs over-broad).
+
+A correction worth keeping: I predicted the probe would fire on both profiles and concluded
+logcat could not be the oracle. Right conclusion, wrong mechanism — `runtime_identity` dedups
+with `putIfAbsent`, so **each hook logs at most once per process**, and the absence on the
+second profile said nothing either way. Check an instrument's own semantics before designing a
+differential around it.
 
 **The probe now sits OUTSIDE the guard**, deliberately: `runtime_identity`'s contract is that
 the site reports execution even if a later instruction throws. The consequence, which matters
@@ -393,9 +397,11 @@ Decodes (read-only, under gitignored `work/`):
 `work/439-explore/stock-439`, `work/430-clean-build-v2/stock-430`.
 Sandboxes outside the repo: `/home/arnav/dfinsta-holdout-clean`, `/home/arnav/dfinsta-439-map`.
 
-Current shipped artifact: `work/439-build-v1/dfinsta_439.apk`,
-SHA-256 `d3d5ebcfe79fe7b08cd2826aa8bb172ef3f3ee768fa52b9cab34c85266575637`,
-installed and confirmed working on the phone.
+Current shipped artifact: `work/439-full-allseven/dfinsta_439_allseven.apk`,
+SHA-256 `8442b73e67dd7cdea7e199dc754777236b45b88663e0e6fdfdb8db2587ded9d7`,
+installed and confirmed working on the phone 2026-08-02 — seven hooks, per-hook identity, and
+a device-verified own-profile guard. It replaces `d3d5ebcf…`, which had neither the guard nor
+any probe instrumentation.
 
 ## Known open items
 
