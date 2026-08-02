@@ -216,6 +216,20 @@ flatters or damns the project by accident. Fixed by keying a run on `(version, r
 which needed no schema change because `record_run` already stamps every record of a run
 identically. The ledger keeps the failed attempt; only the reading changed.
 
+## The unattended build is byte-identical to the hand-verified one
+
+Compared `work/439-autonomous` (produced with `--discover-hosts`, no human input) against
+`work/439-full-allseven` (hosts supplied by hand, guard device-verified):
+
+- identical resolved hosts for all seven hooks
+- identical `host-hooks.json`
+- **every patched class byte-identical** — `X/0DnT.smali`, `X/0Di2.smali`, `X/04tC.smali`
+
+So the device evidence gathered against `8442b73e…` — the own-profile guard holding, ten
+canonical blocks — carries over: the autonomous run patched the same bytes. It also means a
+differential between these two would be vacuously "identical"; the useful differential is
+against a *previous version's* known-good build, not a second build of the same one.
+
 ## The suite was audited, and the count was hiding the real gap
 
 2026-08-02, after the suite grew 1536 → 2170 in a day. **Not padded**: no duplication (largest
