@@ -114,14 +114,16 @@ resolves mechanically, **no agent runs at all**.
 | 3 Surface diff | done — `surface_diff.py` |
 | 4a Assess | done — `assessment.py` |
 | 4b Gate 1 contracts | done — `feature_gate.py`. **Nothing raises it, and nothing can**: no producer joins stage 4a to CAS |
-| 5 Resolve | done — 5 of 7 hooks fully mechanical on 430 *and* 439, hosts included |
-| 5a/5b Proposer + verifier | stage done; the agent call filled 2026-08-02, one real run, **the full k-of-n + verifier chain has never run together** |
+| 5 Resolve | done — **7 of 7 hooks resolve mechanically on 430 *and* 439**, given their hosts |
+| 5 · capture supply | done — `capture_supply.py`. A payload capture the anchor cannot bind is filled by a supplier chain, deterministic first, agent as fallback. A decline is a returned value; a failure is an exception |
+| 5a/5b Proposer + verifier | done, and the full k-of-n + verifier chain has run for real: 2-of-3 on the host, 1-of-3 by effect, both verifiers failed to refute — one signal passed, one did not, gate correctly shut |
 | 5c Mechanical validator | done, with mutation tests |
-| Evidence ledger | done, phased pre-apply / post-build |
+| Evidence ledger | done, phased pre-apply / post-build; records a host agreement as well as a whole-patch one |
 | 6-8 Apply / Build / Static verify | done, target-neutral, proven on 430 and 439 |
-| 9 Runtime verify | probes + per-hook identity done; **differential vs N−1 has no producer** |
-| 10 Manifest update | **not started — and it is the highest-value thing left** |
+| 9 Runtime verify | probes + per-hook identity done, own-profile guard device-verified; **differential vs N−1 still has no producer** |
+| 10 Manifest update | Decision Memory half done (`manifest_update.py`); **agent cost is now measured** (`agent_cost.py`) and its first reading was FLAT; the proposal-to-pattern generaliser is not built |
 | 11 Final report | not started |
+| Host discovery in the driver | the narrowed question exists (`host_prompt`); wiring it into a run is the last hand-off |
 | Answering a gate | done — `submission.py` |
 
 ---
@@ -261,7 +263,13 @@ Instagram groups with the feed that DFInsta does not block, including
 `feed/injected_reels_media/`.
 
 **5 Resolve** — anchors are patterns with `<name:kind>` captures; payloads
-template off them. Hosts come from a `co_literals` intersection: `clips/discover/`
+template off them. Where a payload needs a value no anchor can bind — the
+settings hook's own-profile guard needs a model register and a self-profile type
+— a **supplier** fills it: deterministic first, agent as fallback, and a
+supplier that cannot prove its precondition **declines** rather than guessing.
+The deterministic one for that guard was derived from 430 and 439 and has zero
+reach below 430, which a 340/300 holdout established; its precondition doubles
+as the *selector* saying which of the two settings hooks a version can host. Hosts come from a `co_literals` intersection: `clips/discover/`
 alone appears in 19 classes on 439, but exactly one class carries all three Reels
 endpoints. If a version splits them the intersection empties and the stage
 escalates — which is the escalation working as designed.
