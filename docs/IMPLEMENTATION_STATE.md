@@ -233,34 +233,48 @@ total made the suite look healthier. **Read coverage by module, not the test cou
 
 ## Immediate next steps, in order
 
-1. **Give the feature gate a producer.** This is the real blocker for stage 4, and it is
-   not the wiring task the previous version of this list assumed. `feature_gate.py` and
-   `assessment.py` are each imported by nothing but their own tests. Stage 4a computes an
-   assessment in the **driver** world — a plain Python pipeline over a decode — while the
-   gate expects that assessment to exist in CAS as a completed **ledger** operation in the
-   Temporal world. Nothing joins those two worlds today. The missing link is an Activity
-   that records a stage 4a assessment as a ledger operation, and the design question it
-   raises (where the standalone driver and the durable pipeline meet) is worth answering
-   deliberately. Writing the gate's Workflow first would produce a Workflow with nothing to
-   gate on.
-2. **Then the gate's Activities and Workflow.** Follow `docs/STAGE_4_DESIGN.md` and the
-   pattern in `src/dfinsta_pipeline/replay_gate.py` / `replay_workflow.py`: a preparation
-   Activity returning only the request hash, a new `@workflow.defn` class (never new fields
-   on `WorkflowStatus`/`RunResult`), and an admitting Activity that re-derives
-   independently. The client already has the seam for it: register a `GateKind` whose
-   resolver reproduces `FeatureGateRequestV1` and whose update carries
-   `FeatureGateSubmissionV1` rather than a bare `GateDecision`.
-3. **Differential vs N−1** — the last evidence kind with no producer.
-4. **The proposer chain has now run end to end, and the gate correctly did not open.**
-   `install_settings_long_click` on 439, k=3 concurrent and blind, sandbox with the answers
-   physically absent: two proposers independently reached `LX/0DnT;` — the known live host —
-   and one was dropped for inventing a schema field. But **agreement by effect was 1 of 3**:
-   the two surviving proposals differ in anchor length and payload, so `Proposal.effect_key`
-   separates them and `assess` refuses. Two adversarial verifiers, shown the claim and never
-   the rationale, each **failed to refute** it. So one required signal passed and the other
-   did not, which is the design working. What is left is to raise k, or to accept that the
-   host is agreed and the *patch* is what needs the manifest's shape to constrain it.
-5. **Settle the three hooks that appear to do nothing** — see below.
+Reordered 2026-08-02 after 439 ported itself unattended. The ordering follows one question:
+what makes the *next* port cheaper, not what adds capability.
+
+1. **Test `probes.py`.** 343 statements, zero tests — see the audit above. It produces the
+   evidence standing between a build and a release, and it is the only check that catches a
+   patch which is present and never executes. Needs a fake device runner; the suite must never
+   touch a phone.
+
+2. **Stage 10's generaliser — turn a discovered host into a fingerprint.** This is the only
+   thing that will make the agent count fall, and the unattended run handed us the route: the
+   proposers cited **durable evidence**, not just a class. `LX/0DnT;` was identified by the
+   source string `'ProfileActionBarViewBinder.bindUsernameTitle…'`, and both settings hosts by
+   drawable `instagram_menu_outline_24`. That is `by_literal` material, and we measured it,
+   printed it and discarded it. Two hard parts: the candidate literal must be **verified to
+   select the same class on a different version** before it may be proposed (one version is a
+   coincidence), and the manifest currently requires a `by_literal` literal to appear in
+   `semantic_deps` *and* in the anchor, which holds for the Reels hooks and not for a systrace
+   string. The generaliser must **propose, never commit** — promoting a host on one run's
+   strength is the confident-and-wrong failure this project keeps paying for.
+
+3. **Differential vs N−1** — the last evidence kind with no producer, and now cheap: two
+   probe-instrumented 439 builds exist to compare (`8442b73e…` and the unattended
+   `work/439-autonomous/dfinsta.apk`).
+
+4. **Port 440 when it exists.** The cost verdict is `UNTESTABLE` until a second version, which
+   is correct rather than a placeholder — the claim is about a sequence. **Without step 2, 440
+   will read FLAT**: same two hooks, same two invocations. That prediction is the point of
+   doing step 2 first.
+
+5. **Give the feature gate a producer.** `feature_gate.py` and `assessment.py` are each
+   imported by nothing but their own tests. Stage 4a computes an assessment in the **driver**
+   world while the gate expects it in CAS as a completed **ledger** operation in the Temporal
+   world, and nothing joins them. The missing link is an Activity that records a stage 4a
+   assessment as a ledger operation — a design question about where the standalone driver and
+   the durable pipeline meet, not a wiring task. Then the gate's Activities and Workflow, per
+   `docs/STAGE_4_DESIGN.md`: a preparation Activity returning only the request hash, a new
+   `@workflow.defn` class (never new fields on `WorkflowStatus`/`RunResult`), and an admitting
+   Activity that re-derives independently. The submission client already has the seam — a
+   `GateKind` whose resolver reproduces `FeatureGateRequestV1`.
+
+6. **Operational hardening**: an opt-in real run through the registered Workflow, a
+   non-destructive cancellation path, heartbeats in the replay Activities.
 
 ## Answering a gate is no longer hypothetical
 
