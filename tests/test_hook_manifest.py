@@ -3010,34 +3010,43 @@ class DesignIntentTests(unittest.TestCase):
                     all(host.kind in {"named", "by_literal"} for host in hook.hosts)
                 )
 
-    def test_both_ui_hooks_are_declared_by_agent(self):
-        """The two hooks that cost an agent invocation per port — for now.
+    def test_both_ui_hooks_are_declared_by_anchor(self):
+        """The manifest has no `by_agent` fingerprint left, and that is measured.
 
-        This is the number `agent_cost` reports, so it is asserted rather than
-        assumed. It is also the assertion that changes when the `by_anchor`
-        promotion is committed, and it is written to fail loudly at that moment
-        rather than to accommodate it in advance:
+        Committed 2026-08-02, replacing the previous expectation of `by_agent`.
+        The argument, inherited deliberately rather than assumed:
 
-        Both anchors were measured on 2026-08-02 to match exactly ONE class in
-        the whole decode, on 439 and on 430 alike, and that class is the known
-        host each time — so `HostFingerprint(kind="by_anchor")` now exists and
-        `resolve.search_hosts` resolves it mechanically. `work/by-anchor-proposal.json`
-        holds the two manifest entries. Committing them makes the expected kind
-        `by_anchor`, drops the manifest's last two `by_agent` fingerprints, and
-        makes this test fail — which is the point. Whoever commits the manifest
-        change updates the expectation here in the same change, and inherits the
-        argument for it: the anchor is the patch site, verified on two versions,
-        and the alternative is trusting an agent every port.
+        Both anchors match exactly ONE class in the whole decode, on 439 and on
+        430 alike, and that class is the known host each time — 1 of 181,421 and
+        1 of 179,190, cross-checked against a full unprefiltered match with no
+        shared code. So the host is found by the manifest's own anchor pattern,
+        re-matched against the target decode on every port.
 
-        Anticipating it — accepting `by_agent` OR `by_anchor` — would mean the
-        manifest silently reverting to `by_agent` never failed anything, and this
-        test's only job is to notice.
+        This drops `proposer_agreement` and `adversarial_verified` for these two
+        hooks, and that is the part worth arguing. Those exist because an agent's
+        descriptor is an assertion nothing else checks, and a 430 descriptor
+        still names a live class in 439. Here **nothing is carried between
+        versions**, and the pattern is the same text the patch is spliced into —
+        so a version where it stops identifying the host is a version where it
+        stops identifying the *site*, and the hook escalates rather than
+        resolving somewhere wrong.
+
+        Asserted as an exact set rather than "no `by_agent`", so a third kind
+        appearing here has to be argued for too. If this ever fails because a
+        hook went back to `by_agent`, that is a real regression: it means a port
+        started costing an agent invocation again, which is the number
+        `agent_cost` exists to drive down.
         """
         ui = [hook for hook in self.hooks if hook.tier == "ui"]
         self.assertEqual(len(ui), 2)
         for hook in ui:
             with self.subTest(hook=hook.hook_id):
-                self.assertEqual([host.kind for host in hook.hosts], ["by_agent"])
+                self.assertEqual([host.kind for host in hook.hosts], ["by_anchor"])
+        self.assertEqual(
+            [host.kind for hook in self.hooks for host in hook.hosts if host.kind == "by_agent"],
+            [],
+            "no hook may cost an agent invocation to locate its host",
+        )
 
     def test_robust_anchors_capture_the_parts_the_430_439_diff_showed_moving(self):
         hooks = {hook.hook_id: hook for hook in self.hooks}

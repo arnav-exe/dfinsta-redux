@@ -227,6 +227,13 @@ def _signals(found_by: str, descriptor: str) -> tuple[str, ...]:
         return (API_PATH_LITERAL, STRUCTURAL_SHAPE)
     if found_by == "by_agent":
         return (AGENT_PROPOSAL, STRUCTURAL_SHAPE)
+    if found_by == "by_anchor":
+        # The anchor is the WHOLE fingerprint here rather than half of it, so
+        # there is no second signal to name. `STRUCTURAL_SHAPE` alone is the
+        # honest record, and it is the strongest of the three: nothing is
+        # carried across versions, the pattern is re-matched against the target
+        # decode, and the thing it matches is the site the patch is spliced into.
+        return (STRUCTURAL_SHAPE,)
     return (STRUCTURAL_SHAPE,)
 
 
@@ -270,6 +277,15 @@ def _technique(found_by: str, descriptor: str, literals: tuple[str, ...]) -> str
             "agent invocation per port, which is the number stage 10 exists to drive "
             "down — generalising the proposal into an anchor pattern with captures is "
             "what would retire it."
+        )
+    if found_by == "by_anchor":
+        return (
+            "resolve the host by the manifest anchor pattern itself: scan the decode for "
+            "the class whose body matches it, and require exactly one. Nothing points at "
+            "the host in advance and nothing is carried across versions — the pattern is "
+            "re-matched against the target decode every port, and what it matches is the "
+            "site the patch is spliced into, so a host that resolves is a host the patch "
+            "will apply to. Deterministic end to end: no agent was involved."
         )
     return (
         f"the host search reported kind {found_by!r}, which this stage has no description "
