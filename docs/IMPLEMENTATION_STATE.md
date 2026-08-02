@@ -216,6 +216,21 @@ flatters or damns the project by accident. Fixed by keying a run on `(version, r
 which needed no schema change because `record_run` already stamps every record of a run
 identically. The ledger keeps the failed attempt; only the reading changed.
 
+## The suite was audited, and the count was hiding the real gap
+
+2026-08-02, after the suite grew 1536 → 2170 in a day. **Not padded**: no duplication (largest
+near-duplicate name cluster is 4), 1 test per 6.3 source statements, ~43 of them explicit
+positive controls. About 5–8% could be consolidated by parameterising "family" clusters, and
+that was argued against: a parameterised failure says "case 3 failed", a named test says
+"already_applied produces no record", and this project's recurring failure is silently-green
+tests.
+
+**The finding**: `probes.py` — 343 statements, **zero tests**, no test file, nothing importing
+it. That is the module producing `runtime_probe` evidence, the check between a build and a
+release. `agent_runner.py` was at 38%, `proposer.py` at 71%. A day of adding tests to a
+reporting module left the module that decides whether a hook *works* untested, and the growing
+total made the suite look healthier. **Read coverage by module, not the test count.**
+
 ## Immediate next steps, in order
 
 1. **Give the feature gate a producer.** This is the real blocker for stage 4, and it is
