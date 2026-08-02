@@ -83,14 +83,44 @@ AWARE_TRACE_FIELD = (
     '"error_message":"fault_message: Blocked by DFInsta setting"}]}]'
 )
 
-#: The readable form of that same history. Verbatim `logcat_stories_OFF.txt:2201`
-#: — an OFF-side capture narrating an ON-side block, and *not* indented.
-AWARE_TRACE_NARRATION = (
-    "08-01 01:57:54.508  8646  8685 E IgFunctionalErrorEvent: After 14 seconds, "
-    "user tapped feed_tab to PTR on module feed_timeline, then App responded with: "
-    "Loading indicator shown and didn't stop,played 1 video, network issues: "
-    "Network request IgStreamingApi feed/reels_tray/ failed with 0, error message: "
-    "fault_message: Blocked by DFInsta setting."
+#: The readable form of that same history: an indented field whose value spans
+#: lines, and whose continuations logcat emits UN-indented under the same tag.
+#: Verbatim `logcat_stories_OFF.txt:2200-2201` with its opening field line — an
+#: OFF-side capture narrating ON-side blocks. A narration line never occurs
+#: without the field that opened it, so a one-line fixture would be a shape the
+#: device does not produce.
+AWARE_TRACE_NARRATION = "\n".join(
+    [
+        "08-01 01:57:54.508  8646  8685 E IgFunctionalErrorEvent: "
+        "\t aware_trace_readable = During the current app session, user tapped "
+        "feed_tab to PTR on module feed_timeline, then App responded",
+        "08-01 01:57:54.508  8646  8685 E IgFunctionalErrorEvent: After 14 seconds, "
+        "user tapped feed_tab to PTR on module feed_timeline, then App responded with: "
+        "Loading indicator shown and didn't stop,played 1 video, network issues: "
+        "Network request IgStreamingApi feed/reels_tray/ failed with 0, error message: "
+        "fault_message: Blocked by DFInsta setting.",
+        "08-01 01:57:54.508  8646  8685 E IgFunctionalErrorEvent: After 6 seconds, "
+        "user vertically scrolled list to PTR on module feed_timeline, then App "
+        "responded with: vertical scroll animation started and stopped,"
+        "Pull-to-refresh loading indicator shown for 1084 ms,played 1 video, network "
+        "issues: Network request IgStreamingApi feed/reels_tray/ failed with 0, "
+        "error message: fault_message: Blocked by DFInsta setting.",
+    ]
+)
+
+#: The body of a real block payload, in order: a header line, the exception, then
+#: the stack. `logcat_feed_ON.txt:2-4`. The exception is the SECOND line, which is
+#: why "the first line of the payload" is not the rule.
+BLOCK_PAYLOAD = "\n".join(
+    [
+        "08-01 01:43:51.185 30503 30503 E IgFunctionalErrorEvent: FEED_NOT_LOADING",
+        LIVE_BLOCK,
+        "08-01 01:43:51.185 30503 30503 E IgFunctionalErrorEvent: "
+        "\tat com.dfinstagram.hooks.throwIfBlocked(dex-id-d6a6cb93e09)",
+        "08-01 01:43:51.185 30503 30503 E IgFunctionalErrorEvent: "
+        "\tat com.instagram.api.tigon.TigonServiceLayer.startRequest(:49)",
+        FAILURE_REASON_ECHO,
+    ]
 )
 
 AWAKE = "mAwake=true mDreamingLockscreen=false"
@@ -294,11 +324,46 @@ class CountSignalTests(unittest.TestCase):
         self.assertEqual((count.raw, count.canonical), (1, 0))
         self.assertEqual(count.lines, ())
 
-        # A control on the discriminator itself: the same text, un-indented, is
-        # the live event and is counted. The rule is structural, not a blocklist
-        # of field names, so it must not key on `aware_trace` appearing at all.
+        # A control on the discriminator itself: the same text, un-indented and
+        # opening its own payload, is an event and is counted. The rule is
+        # positional, not a blocklist of field names, so it must not key on
+        # `aware_trace` appearing at all.
         live = count_signal(AWARE_TRACE_FIELD.replace(": \t aware", ": aware"), BARE_SIGNAL)
         self.assertEqual(live.canonical, 1)
+
+    def test_an_unindented_narration_of_a_past_block_is_not_a_live_event(self):
+        """The third contaminating form, and the one indentation alone missed.
+
+        `aware_trace_readable` spills its value across continuation lines, and
+        logcat gives each its own `TAG:` prefix — so the narration arrives as an
+        un-indented message body. What places it is the payload: the field entry
+        that opened it has already ended the body of that log entry.
+
+        Until 2026-08-02 these counted as live events, and the module docstring
+        claimed off-side canonical counts of 0 that it did not produce:
+        `logcat_explore_OFF.txt` read 3 raw / 2 canonical and
+        `logcat_stories_OFF.txt` 2 / 2.
+        """
+        count = count_signal(AWARE_TRACE_NARRATION, BARE_SIGNAL)
+        self.assertEqual((count.raw, count.canonical), (2, 0))
+        self.assertEqual(count.lines, ())
+
+    def test_the_body_of_a_payload_is_counted_however_far_into_it_the_event_sits(self):
+        """The control for the rule above, and the reason it is not "first line".
+
+        A real block payload opens with `FEED_NOT_LOADING`; the exception is the
+        second line and the stack starts the third. A rule that counted only the
+        first line of an entry, or that stopped at the first line of any kind,
+        would count zero live blocks and read as a permanent clean pass.
+        """
+        count = count_signal(BLOCK_PAYLOAD, BARE_SIGNAL)
+        self.assertEqual((count.raw, count.canonical), (2, 1))
+        self.assertEqual(count.lines, (LIVE_BLOCK.strip(),))
+
+        # And a second payload is a second event, not a continuation of the first:
+        # the entry key changes with the timestamp.
+        pair = BLOCK_PAYLOAD + "\n" + BLOCK_PAYLOAD.replace("01:43:51.185", "01:43:54.216")
+        self.assertEqual(count_signal(pair, BARE_SIGNAL).canonical, 2)
 
 
 # ------------------------------------------------------- the delta, both ways
@@ -320,7 +385,13 @@ class TwoDirectionalDeltaTests(unittest.TestCase):
         """
         hook = make_hook("tigon_url_block", Probe("logcat_delta", BARE_SIGNAL, "feed_tab"))
         device = FakeDevice(
-            logcat="\n".join([STARTED, LIVE_BLOCK, FAILURE_REASON_ECHO, LIVE_BLOCK]),
+            logcat="\n".join(
+                [
+                    STARTED,
+                    BLOCK_PAYLOAD,
+                    BLOCK_PAYLOAD.replace("01:43:51.185", "01:43:54.216"),
+                ]
+            ),
             screens=[FEED_SCREEN],
         )
         runner = ProbeRunner(device, actor="device:P3227J000775")
@@ -336,11 +407,11 @@ class TwoDirectionalDeltaTests(unittest.TestCase):
         self.assertIs(claim.detail["requires_two_directional_delta"], True)
         self.assertEqual([item.toggle_state for item in taken], ["enabled", "disabled"])
 
-        # The echo did not inflate the on-side — the claim carries 2, not the 3
+        # The echo did not inflate the on-side — the claim carries 2, not the 4
         # a grep would have found — and the capture window was cleared BEFORE the
         # launch: the blocks fire in the first seconds of startup, so clearing
         # afterwards would discard exactly the window being measured.
-        self.assertEqual(taken[0].count.raw, 3)
+        self.assertEqual(taken[0].count.raw, 4)
         self.assertEqual(taken[0].count.canonical, 2)
         order = [call for call in device.calls if call[:1] in {("am",), ("monkey",), ("logcat",)}]
         self.assertEqual(
@@ -473,6 +544,52 @@ class RefusalTests(unittest.TestCase):
         self.assertIs(result.usable, False)
         self.assertIn("entry control", result.note)
         self.assertNotIn(("tap", 108, 2194), absent.calls)
+
+    def test_a_measurement_whose_foreground_is_unreadable_is_unusable(self):
+        """"Nothing could be shown to be on screen" is not a passing check.
+
+        `if foreground and foreground != self.package` skipped the check whenever
+        `dumpsys activity activities` could not be parsed, so a run where the app
+        might never have appeared was recorded as a usable zero. The note it
+        would have written — `{foreground or 'unknown'} was` — was unreachable,
+        which is what gave the omission away.
+        """
+        device = FakeDevice(activities="no resumed activity here", screens=[FEED_SCREEN])
+        runner = ProbeRunner(device)
+        self.assertEqual(runner.foreground_package(), "")
+
+        result = runner.measure(self.hook, SURFACES["feed_tab"], "enabled")
+
+        self.assertIs(result.usable, False)
+        self.assertIn("unknown", result.note)
+
+    def test_a_probe_that_is_not_a_delta_refuses_on_an_unusable_screen_too(self):
+        """`startup_no_fatal` and `ui_dialog` took the walk without ever asking.
+
+        Behind a keyguard the app cannot reach the foreground, so `StartupProbe`
+        recorded `failed` — a measurement that could not be taken, filed as a
+        defect in the hook. Both now refuse, as `ProbeRunner.measure` and
+        `IdentityProbe.measure_identities` already did.
+        """
+        startup = make_hook("set_app_context", STARTUP_PROBE)
+        settings = make_hook("install_settings_long_click", DIALOG_PROBE)
+        locked = dict(
+            window=LOCKED,
+            activities="topResumedActivity=... com.android.systemui/.Keyguard",
+            logcat=STARTED,
+        )
+
+        device = FakeDevice(**locked)
+        with self.assertRaises(ProbeNotTaken) as caught:
+            StartupProbe(device).claim(startup)
+        self.assertIn("locked", str(caught.exception))
+        self.assertEqual(device.calls, [("dumpsys", "window")])
+
+        device = FakeDevice(screens=[PROFILE_SCREEN, OPTIONS_SCREEN, ""], **locked)
+        with self.assertRaises(ProbeNotTaken) as caught:
+            DialogProbe(device).claim(settings, f"{PACKAGE}:id/profile_tab")
+        self.assertIn("locked", str(caught.exception))
+        self.assertEqual(device.calls, [("dumpsys", "window")])
 
     def test_the_cli_reports_not_measured_instead_of_a_count(self):
         """The path a human actually runs, and where the silent 0/0 happened.
@@ -813,71 +930,6 @@ class AbsenceControlTests(unittest.TestCase):
         self.assertIn(
             "long_press", [call[0] for call in device.calls if isinstance(call[0], str)]
         )
-
-
-# --------------------------------------------------------------- known defects
-
-
-class KnownDefectTests(unittest.TestCase):
-    """Behaviours this module documents as required and does not yet deliver.
-
-    Each is `expectedFailure`: the assertion is what the module says must happen.
-    Fixing one turns it into an unexpected success, which unittest reports as a
-    failure — so the fix cannot land without this file being updated.
-    """
-
-    @unittest.expectedFailure
-    def test_an_unindented_narration_of_a_past_block_counts_as_live(self):
-        """The structural rule misses the third contaminating form.
-
-        `aware_trace_readable` spills its value across continuation lines, and
-        logcat gives each its own `TAG:` prefix — so the narration arrives as an
-        un-indented message body and reads as a live event. Measured against this
-        repo's own captures with the docstring's bare signal:
-        `logcat_explore_OFF.txt` gives 3 raw / 2 canonical and
-        `logcat_stories_OFF.txt` 2 raw / 2 canonical, where the module docstring
-        claims 3/0 and 2/0. It does not bite today only because the manifest
-        declares the signal with its `java.io.IOException: ` prefix, which no
-        contaminating form carries — i.e. the off-side reads zero because of the
-        signal string, not because of this guard.
-        """
-        count = count_signal(AWARE_TRACE_NARRATION, BARE_SIGNAL)
-        self.assertEqual(count.raw, 1)
-        self.assertEqual(count.canonical, 0)
-
-    @unittest.expectedFailure
-    def test_a_startup_probe_on_a_locked_phone_refuses_instead_of_failing(self):
-        """`StartupProbe` never asks whether the screen is usable.
-
-        Behind a keyguard the app cannot reach the foreground, so the probe
-        reports `failed` — a measurement that could not be taken, recorded as a
-        defect in the hook. `ProbeNotTaken` names exactly this condition ("the
-        phone was locked, the app never reached the foreground") as one that must
-        not enter the ledger at all.
-        """
-        hook = make_hook("set_app_context", STARTUP_PROBE)
-        device = FakeDevice(
-            window=LOCKED, activities="topResumedActivity=... com.android.systemui/.Keyguard",
-            logcat=STARTED,
-        )
-        claim, _ = StartupProbe(device).claim(hook)
-        self.assertIsNot(claim.verdict, Verdict.FAILED)
-
-    @unittest.expectedFailure
-    def test_a_measurement_whose_foreground_is_unreadable_is_unusable(self):
-        """`measure` accepts an empty foreground as if the app had been up.
-
-        `if foreground and foreground != self.package` skips the check whenever
-        `dumpsys activity activities` cannot be parsed, so a run where nothing
-        could be shown to be on screen is recorded as a usable zero. The note it
-        would have written (`{foreground or 'unknown'} was`) is proof the empty
-        case was meant to be caught: that branch cannot be reached today.
-        """
-        device = FakeDevice(activities="no resumed activity here", screens=[FEED_SCREEN])
-        hook = make_hook("tigon_url_block", DELTA_PROBE)
-        result = ProbeRunner(device).measure(hook, SURFACES["feed_tab"], "enabled")
-        self.assertEqual(ProbeRunner(device).foreground_package(), "")
-        self.assertIs(result.usable, False)
 
 
 if __name__ == "__main__":  # pragma: no cover

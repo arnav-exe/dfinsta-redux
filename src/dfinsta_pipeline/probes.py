@@ -11,18 +11,50 @@ searching DEX bytes for a string form DEX does not store.
 Two rules here are load-bearing and both were learned by getting them wrong.
 
 **Counting is not grepping.** ``grep -c "Blocked by DFInsta"`` over-counts by
-roughly two. Every live block emits the exception line *and* a
-``NETWORK_FAILURE_REASON`` field carrying the same text, and Instagram
-additionally batches an ``aware_trace`` history that re-narrates past events at a
-*later* cold start — so a phase can inherit hits belonging to the previous one.
-Measured on the device: 8 raw / 4 canonical with the toggle on, and on the
-off-side 3 raw / 0 canonical for Explore and 2 raw / 0 for Stories. Raw counts
-alone would have reported a leak that does not exist.
+roughly two, and the obvious fix — ignore indented lines — is not enough either.
+An `IgFunctionalErrorEvent` payload has three parts and only the first is the
+event: a message body, then an indented stack, then indented ``field = value``
+entries. A field whose value spans lines has its continuations logged as
+*un-indented* messages under the same tag, so the third contaminating form looks
+exactly like a live event until you notice where in the payload it sits.
 
-The discriminator is structural rather than a heuristic: the live exception is
-the message body, while both contaminating forms are tab-indented field entries
-inside an event payload. :func:`count_signal` returns both numbers so the
-difference stays visible instead of being quietly subtracted.
+All three carry the signal text:
+
+* ``\t NETWORK_FAILURE_REASON = Blocked by DFInsta setting`` — the same block
+  restated as a field of its own event.
+* ``\t aware_trace = [{… "error_message":"fault_message: Blocked by DFInsta
+  setting" …}]`` — a batched history, as JSON.
+* ``After 8 seconds, user vertically scrolled … error message: fault_message:
+  Blocked by DFInsta setting.`` — the readable form of that same history, spilled
+  across continuation lines of ``\t aware_trace_readable =``. Instagram flushes it
+  at a *later* cold start, so a phase inherits hits belonging to the previous one.
+
+The discriminator is therefore positional, rather than a heuristic or a blocklist
+of field names: a live event is a line in the **message body** of its payload —
+un-indented, and before the first indented line of the same log entry, where an
+entry is everything sharing one timestamp, pid, tid and tag. The stack and every
+field entry are indented, so the first indent ends the body and nothing after it
+can be a new event.
+
+Measured over this repo's own captures in
+``work/device-runner/newkey-430-contrasts/``, with the bare signal
+``Blocked by DFInsta setting`` (raw / canonical)::
+
+    logcat_feed_ON.txt       8 / 4      logcat_explore_OFF.txt   3 / 0
+    logcat_explore_ON.txt   10 / 5      logcat_stories_OFF.txt   2 / 0
+    logcat_stories_ON.txt    6 / 3
+
+Raw counts alone would have reported an off-side leak that does not exist.
+:func:`count_signal` returns both numbers so the difference stays visible instead
+of being quietly subtracted.
+
+Note what the off-side zeros do *not* rest on. The manifest declares this signal
+as ``java.io.IOException: Blocked by DFInsta setting``, and that prefix already
+excludes all three contaminating forms at the raw level; the structural rule is
+what makes the bare form safe too. It did not, until 2026-08-02: indentation
+alone let the narration through and both off-sides really read 2 canonical. The
+numbers above are the first this docstring has stated that reproduce against the
+captures they name.
 
 **A delta must move both ways.** Zero signal with the toggle on *and* zero with
 it off does not mean the hook passed; it means the probe cannot see this hook.
@@ -68,10 +100,12 @@ class ProbeNotTaken(RuntimeError):
     from those conditions must not enter the ledger at all.
     """
 
-#: A logcat line is `date time pid tid LEVEL TAG: message`. Only the message is
-#: interesting, and only whether it *starts* the entry or is a field inside one.
+#: A logcat line is `date time pid tid LEVEL TAG: message`. The message is what
+#: is interesting; the rest identifies which log entry the message belongs to,
+#: because one multi-line payload arrives as many lines sharing all four.
 LOGCAT_LINE = re.compile(
-    r"^\s*\S+\s+\S+\s+\d+\s+\d+\s+[VDIWEFS]\s+(?P<tag>[^:]*):\s?(?P<message>.*)$"
+    r"^\s*(?P<stamp>\S+\s+\S+)\s+(?P<pid>\d+)\s+(?P<tid>\d+)\s+[VDIWEFS]\s+"
+    r"(?P<tag>[^:]*):\s?(?P<message>.*)$"
 )
 
 
@@ -98,29 +132,64 @@ class SignalCount:
 def count_signal(logcat: str, signal: str) -> SignalCount:
     """Count a probe signal in logcat, separating live events from re-narration.
 
-    ``canonical`` counts only lines whose *message* is the event — an un-indented
-    message body. A field entry inside an event payload is tab-indented, which is
-    what both contaminating forms look like:
+    ``canonical`` counts only lines in the *message body* of their log entry.
+    A payload runs body, then stack, then fields, and the whole of it arrives as
+    consecutive lines sharing one timestamp, pid, tid and tag::
 
+        E IgFunctionalErrorEvent: FEED_NOT_LOADING
         E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+        E IgFunctionalErrorEvent: \tat com.dfinstagram.hooks.throwIfBlocked(…)
         E IgFunctionalErrorEvent: \t NETWORK_FAILURE_REASON = Blocked by DFInsta setting
-        E IgFunctionalErrorEvent: \t aware_trace_readable = During the current app session…
 
-    The first is a block that happened. The second is the same block restated,
-    and the third belongs to a batched history flushed one phase late.
+    The second line is a block that happened; the fourth is the same block
+    restated. The first indented line — here the stack — ends the body, and every
+    line after it belongs to the payload however it is indented. That last part
+    is what catches the third form, whose continuations are *not* indented::
+
+        E IgFunctionalErrorEvent: \t aware_trace_readable = During the current app session…
+        E IgFunctionalErrorEvent: After 8 seconds, user vertically scrolled … fault_message: Blocked by DFInsta setting.
+
+    A line that is not a logcat line at all has no payload to sit in and is
+    judged on indentation alone, so this still counts sensibly over a grep-
+    filtered log or a hand-made fixture.
+
+    The known limit: two separate events from one tag, pid and tid inside the
+    same millisecond merge into one entry, and the second one's body is read as a
+    continuation of the first. That under-counts, which is the safe direction —
+    a lost hit weakens a delta towards `inconclusive`, whereas the over-count it
+    replaces turned an off-side zero into a phantom leak and read as `failed`.
     """
     pattern = re.compile(signal)
     raw = 0
     canonical = 0
     kept: list[str] = []
+    #: Log entries whose body has ended, i.e. that have had an indented line.
+    in_fields: set[tuple[str, str, str, str]] = set()
     for line in logcat.splitlines():
+        match = LOGCAT_LINE.match(line)
+        if match is None:
+            entry, message = None, line
+        else:
+            entry = (
+                match.group("stamp"),
+                match.group("pid"),
+                match.group("tid"),
+                match.group("tag"),
+            )
+            message = match.group("message")
+        indented = message[:1] in {" ", "\t"}
+        # Read before the write: the first indented line ENDS the body, so it is
+        # not itself part of one.
+        body = entry is None or entry not in in_fields
+        if indented and entry is not None:
+            in_fields.add(entry)
         if not pattern.search(line):
             continue
         raw += 1
-        match = LOGCAT_LINE.match(line)
-        message = match.group("message") if match else line
-        # An indented message is a field inside an event, not the event.
-        if message[:1] in {" ", "\t"}:
+        # An indented message is a field or a stack frame; an un-indented one
+        # after the body has ended is a continuation of a multi-line field value.
+        # Neither is an event.
+        if indented or not body:
             continue
         canonical += 1
         kept.append(line.strip())
@@ -382,7 +451,12 @@ class ProbeRunner:
         count = count_signal(self.device.logcat_dump(), hook.probe.signal)
 
         notes = []
-        if foreground and foreground != self.package:
+        if foreground != self.package:
+            # An unreadable foreground is not a passing check. It means nothing
+            # could be shown to have been on screen, which is the same fact as
+            # the wrong app being there: this capture is not of what was meant to
+            # be measured. Guarding on `foreground and ...` made the empty case
+            # a usable zero and left the 'unknown' below unreachable.
             notes.append(f"{self.package} was not foreground ({foreground or 'unknown'} was)")
         if not navigated:
             notes.append("the surface's entry control was not found on screen")
@@ -636,6 +710,13 @@ class StartupProbe(ProbeRunner):
     CONTROL = r"Start proc \d+:com\.instagram\.android"
 
     def measure_startup(self, hook: Hook) -> tuple[AbsenceResult, bool, str]:
+        # Behind a keyguard the app cannot reach the foreground, and this probe
+        # reads that as the app having failed to start — recording a measurement
+        # that could not be taken as a defect in the hook. Refuse instead, the
+        # way `IdentityProbe.measure_identities` and `ProbeRunner.measure` do.
+        usable, why = self.screen_is_usable()
+        if not usable:
+            raise ProbeNotTaken(f"{hook.hook_id}: not measured: {why}")
         self.stop()
         self.device.logcat_clear()
         self.launch()
@@ -708,6 +789,13 @@ class DialogProbe(ProbeRunner):
         self, hook: Hook, profile_selector: str, options_desc: str = "Options"
     ) -> tuple[bool, AbsenceResult]:
         assert hook.probe is not None
+        # Same omission as `StartupProbe`, and cheap to keep consistent: a locked
+        # phone degrades to `inconclusive` here rather than `failed`, but "the
+        # dump could not reach the control" and "the probe was never taken" are
+        # different facts and only one of them is about the hook.
+        usable, why = self.screen_is_usable()
+        if not usable:
+            raise ProbeNotTaken(f"{hook.hook_id}: not measured: {why}")
         self.stop()
         self.launch()
         self.device.sleep(12)
