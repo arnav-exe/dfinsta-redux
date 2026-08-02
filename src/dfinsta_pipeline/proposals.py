@@ -40,6 +40,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
 from .contracts import canonical_sha256
 from .evidence import (
+    FULL_PROPOSAL,
     NO_PROPOSER,
     EvidenceClaim,
     EvidenceKind,
@@ -434,6 +435,54 @@ def one_per_proposer(proposals: Sequence[_Voice]) -> list[_Voice]:
 
 
 @dataclass(frozen=True)
+class Plurality:
+    """The whole-patch answer the most DISTINCT proposers reached, and the count.
+
+    Deliberately not a decision. It names no verdict, because :func:`assess`
+    refuses for reasons the count knows nothing about — a validator that said
+    BROKEN, a verifier that refuted, a payload with no idempotence marker. What
+    it does own is *which* answer the count picks, so that the subject
+    :func:`dfinsta_pipeline.proposer.collect` hands the adversarial verifier and
+    the answer ``assess`` would accept are chosen by one piece of code rather than
+    by two that agree today.
+    """
+
+    key: str
+    group: tuple[Proposal, ...]
+    votes: tuple[Proposal, ...]
+    distinct_answers: int
+
+    @property
+    def share(self) -> float:
+        """The winning group as a fraction of the proposers who answered."""
+        return len(self.group) / len(self.votes) if self.votes else 0.0
+
+
+def plurality(proposals: Sequence[Proposal], hook: Hook | None = None) -> Plurality:
+    """The answer the most distinct proposers reached, one vote per proposer.
+
+    The counterpart of :func:`host_agreement` for whole-patch proposals, and it
+    collapses through the same :func:`one_per_proposer`: k answers from one agent
+    is one answer, whether the count is deciding what to accept or only what to
+    spend an adversarial verifier on. The second is not harmless to get wrong —
+    the refutation is the expensive, load-bearing check, and pointing it at
+    whichever answer was submitted most often means one repeated agent chooses
+    what gets examined.
+
+    With *hook*, groups on :meth:`Proposal.effect_key`, so two proposers who
+    located the same insertion point with anchors of different lengths count as
+    the one answer they are. Ties break on the group key rather than on list
+    order, so the same proposals always select the same subject.
+    """
+    votes = one_per_proposer(proposals)
+    groups = group_by_fingerprint(votes, hook)
+    if not groups:
+        return Plurality("", (), (), 0)
+    key, group = max(groups.items(), key=lambda item: (len(item[1]), item[0]))
+    return Plurality(key, tuple(group), tuple(votes), len(groups))
+
+
+@dataclass(frozen=True)
 class HostAgreement:
     """Which host, if any, independent proposers converged on.
 
@@ -469,13 +518,13 @@ def host_agreement(
     Nothing here breaks a tie by ranking. Two proposers naming two classes is a
     finding for a human, not an input to a ranking function.
 
-    Not wired to :func:`~dfinsta_pipeline.evidence.agreement_claim`, and it cannot
-    be as it stands: that function counts a proposal as having answered only when
-    it names a descriptor *and* a non-empty anchor, so a set of host proposals
-    tallies as zero answered and returns ``not_exercised``. Whoever files this as
-    ledger evidence has to widen that check first — and had better notice, because
-    the failure is silent in the safe direction and would simply stall every
-    by-agent hook.
+    To file the result as ledger evidence, hand
+    :func:`~dfinsta_pipeline.evidence.agreement_claim` the :attr:`votes` of the
+    returned agreement — never the raw proposals — with
+    ``asked=evidence.HOST_ONLY``. Both halves matter: the claim counts what it is
+    given, so uncollapsed proposals would record one repeated agent as a
+    consensus, and the default answer shape wants an anchor no host proposal has,
+    so it would record a clean agreement as ``not_exercised``.
     """
     votes = one_per_proposer(proposals)
     groups: dict[str, list[HostProposal]] = {}
@@ -654,11 +703,10 @@ def assess(
 
     # One vote per proposer, everywhere. Counting a repeated answer as several
     # would let a single confidently-wrong agent manufacture its own consensus.
-    votes = one_per_proposer(proposals)
-    groups = group_by_fingerprint(votes, hook)
-    winner_key, winner_group = max(
-        groups.items(), key=lambda item: (len(item[1]), item[0])
-    )
+    # Shared with `proposer.collect`, so the answer this accepts and the answer
+    # the adversarial verifier was pointed at are the same one.
+    counted = plurality(proposals, hook)
+    votes, winner_group, winner_key = counted.votes, counted.group, counted.key
 
     claims.append(
         agreement_claim(
@@ -668,6 +716,12 @@ def assess(
             # Same keys the decision uses, so the recorded claim cannot disagree
             # with the conclusion drawn from the same proposals.
             keys=[proposal.effect_key(hook) for proposal in votes],
+            # A whole patch was asked for, so a proposal that named a class and
+            # no anchor has not answered. Widening this to the host shape would
+            # let three proposers who agreed only about the class satisfy the
+            # agreement item — measured on 439 as 2 of 3 on the host and 1 of 3
+            # by effect, which is the gap the item exists to catch.
+            asked=FULL_PROPOSAL,
         )
     )
     for proposal in proposals:
@@ -777,7 +831,7 @@ def assess(
             reason=f"{hook.hook_id}: a verifier refuted the proposal — {found}",
         )
 
-    share = len(winner_group) / len(votes)
+    share = counted.share
     if share < agreement_threshold or len(winner_group) < 2:
         if len(votes) < 2:
             reason = (
@@ -789,7 +843,8 @@ def assess(
         else:
             reason = (
                 f"{hook.hook_id}: {len(winner_group)} of {len(votes)} distinct proposers "
-                f"reached the most common answer ({len(groups)} distinct answers overall). "
+                f"reached the most common answer ({counted.distinct_answers} distinct "
+                "answers overall). "
                 "That is genuine ambiguity, and it belongs at a gate rather than being "
                 "broken by ranking."
             )

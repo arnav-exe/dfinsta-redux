@@ -37,11 +37,13 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping as AbstractMapping
+from typing import Any, Callable, Mapping, Sequence
 from unittest import mock
 
 from dfinsta_pipeline.contracts import canonical_sha256
 from dfinsta_pipeline.evidence import (
+    HOST_ONLY,
     EvidenceClaim,
     EvidenceError,
     EvidenceKind,
@@ -49,6 +51,7 @@ from dfinsta_pipeline.evidence import (
     Producer,
     Subject,
     Verdict,
+    agreement_claim,
 )
 from dfinsta_pipeline.hook_manifest import (
     Hook,
@@ -59,6 +62,7 @@ from dfinsta_pipeline.hook_manifest import (
 )
 from dfinsta_pipeline.proposals import (
     Assessment,
+    Plurality,
     Proposal,
     ProposalError,
     Refutation,
@@ -69,8 +73,10 @@ from dfinsta_pipeline.proposals import (
     load_proposals,
     one_per_proposer,
     operations_for,
+    plurality,
     validate_proposals,
 )
+from dfinsta_pipeline.proposer import collect
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -926,6 +932,236 @@ class FakeConsensusTests(unittest.TestCase):
         self.assertTrue(assessment.resolved)
 
 
+SANDBOX = Path("/sandbox/instagram-439")
+
+
+def answer(descriptor: str = "LX/06X7;", anchor: Sequence[str] = ANCHOR) -> str:
+    """One proposer's reply to `proposer_prompt`, as the text a runner returns."""
+    return json.dumps(
+        {
+            "descriptor": descriptor,
+            "smali_path": "smali_classes6/X/06X7.smali",
+            "anchor": list(anchor),
+            "payload": list(PAYLOAD),
+            "evidence": ["smali_classes6/X/06X7.smali:412"],
+        }
+    )
+
+
+class Recorder:
+    """An `AgentRunner` that keeps every prompt it was given."""
+
+    def __init__(self, reply: str):
+        self.reply = reply
+        self.prompts: list[str] = []
+
+    def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self.reply
+
+    @property
+    def only_prompt(self) -> str:
+        assert len(self.prompts) == 1, f"expected one prompt, got {len(self.prompts)}"
+        return self.prompts[0]
+
+
+class RepeatedProposers(AbstractMapping):
+    """A proposer mapping whose `items()` yields the same agent more than once.
+
+    `collect` takes a `Mapping[str, AgentRunner]`, so a plain dict cannot express
+    one agent answering three times — which is why the defect it stands for was
+    survivable rather than shipped. It is one retry loop away from being real:
+    the natural fix for a flaky proposer is to run it again and keep both
+    answers, and `assess` accepts a list of proposals with no such constraint at
+    all. The guard belongs in the selection, not in the shape of the container.
+    """
+
+    def __init__(self, pairs: Sequence[tuple[str, Callable[[str], str]]]):
+        self._pairs = list(pairs)
+
+    def items(self):  # noqa: D102 - deliberately not a set-like ItemsView
+        return iter(self._pairs)
+
+    def __getitem__(self, key: str) -> Callable[[str], str]:
+        for name, runner in self._pairs:
+            if name == key:
+                return runner
+        raise KeyError(key)
+
+    def __iter__(self):
+        seen: set[str] = set()
+        for name, _ in self._pairs:
+            if name not in seen:
+                seen.add(name)
+                yield name
+
+    def __len__(self) -> int:
+        return len({name for name, _ in self._pairs})
+
+
+class PluralityTests(unittest.TestCase):
+    """Which answer the count picks, shared by `assess` and by `collect`."""
+
+    def test_three_submissions_from_one_agent_do_not_out_count_two_proposers(self):
+        proposals = [
+            make_proposal(proposer="agent-a", descriptor="LX/0Di2;"),
+            make_proposal(proposer="agent-a", descriptor="LX/0Di2;", rationale="again"),
+            make_proposal(proposer="agent-a", descriptor="LX/0Di2;", rationale="and again"),
+            make_proposal(proposer="agent-b", descriptor="LX/06X7;"),
+            make_proposal(proposer="agent-c", descriptor="LX/06X7;"),
+        ]
+        counted = plurality(proposals, make_hook())
+        self.assertEqual([item.proposer for item in counted.group], ["agent-b", "agent-c"])
+        self.assertEqual(counted.group[0].descriptor, "LX/06X7;")
+        self.assertEqual([item.proposer for item in counted.votes],
+                         ["agent-a", "agent-b", "agent-c"])
+        self.assertEqual(counted.distinct_answers, 2)
+        self.assertAlmostEqual(counted.share, 2 / 3)
+
+    def test_it_groups_on_what_a_proposal_would_do_when_given_the_hook(self):
+        """Two anchors of different lengths at one insertion point are one answer.
+
+        The 439 run produced exactly this: the two proposers who were right wrote
+        a 2-line anchor and a 4-line anchor for the same site. Counting the raw
+        text calls that a disagreement, and then the verifier is pointed at
+        whichever of them happened to be submitted first.
+        """
+        long_anchor = make_proposal(proposer="agent-a", anchor=("const/4 v13, 0x0", *ANCHOR))
+        short_anchor = make_proposal(proposer="agent-b", anchor=ANCHOR)
+        self.assertNotEqual(long_anchor.fingerprint, short_anchor.fingerprint)
+
+        counted = plurality([long_anchor, short_anchor], make_hook())
+        self.assertEqual(len(counted.group), 2)
+        self.assertEqual(counted.distinct_answers, 1)
+
+        # Without a hook there is no mode to interpret the anchor with, so it
+        # falls back to raw content identity — two answers.
+        self.assertEqual(plurality([long_anchor, short_anchor]).distinct_answers, 2)
+
+    def test_a_tie_selects_the_same_answer_whatever_order_it_is_given(self):
+        # A subject chosen by list order makes the adversarial check's target a
+        # function of how the runners were registered.
+        pair = [
+            make_proposal(proposer="agent-a", descriptor="LX/06X7;"),
+            make_proposal(proposer="agent-b", descriptor="LX/0Di2;"),
+        ]
+        hook = make_hook()
+        self.assertEqual(
+            plurality(pair, hook).group[0].descriptor,
+            plurality(list(reversed(pair)), hook).group[0].descriptor,
+        )
+
+    def test_no_proposals_count_to_nothing_rather_than_raising(self):
+        empty = plurality([], make_hook())
+        self.assertEqual(empty, Plurality("", (), (), 0))
+        self.assertEqual(empty.share, 0.0)
+
+    def test_assess_selects_through_it(self):
+        # The same function, so the answer `assess` accepts cannot drift from the
+        # answer `collect` had verified.
+        proposals = [
+            make_proposal(proposer="agent-a", descriptor="LX/0Di2;"),
+            make_proposal(proposer="agent-b", descriptor="LX/06X7;"),
+            make_proposal(proposer="agent-c", descriptor="LX/06X7;"),
+        ]
+        hook = make_hook()
+        assessment = assess(hook, proposals, DECODE, FakeValidator())
+        self.assertTrue(assessment.resolved)
+        self.assertEqual(assessment.accepted, plurality(proposals, hook).group[0])
+
+
+class VerificationSubjectTests(unittest.TestCase):
+    """What the adversarial verifier is handed is chosen by proposers, not by volume.
+
+    `assess` re-decides afterwards, so a bad choice here ships nothing wrong. It
+    wastes the one check that is neither deterministic nor cheap: the refutation
+    is the only thing in the pipeline that looks for a confidently wrong answer,
+    and every one of these tests is about it being spent on the answer that would
+    actually be applied.
+    """
+
+    def subject_prompt(self, proposers, verifier: Recorder) -> str:
+        run = collect(make_hook(), SANDBOX, "439", proposers, {"verifier-1": verifier})
+        self.assertEqual(len(run.refutations), 1)
+        return verifier.only_prompt
+
+    def test_one_agent_answering_three_times_does_not_choose_the_subject(self):
+        """The requested attack: volume must not select what gets examined.
+
+        Under the old selection — a tally of submissions, keyed by fingerprint —
+        the repeated answer is a group of three against the pair's two, so the
+        verifier is sent to refute the one agent that spoke most often and the
+        answer two independent proposers actually reached is never examined at
+        all.
+        """
+        loud = Recorder(answer("LX/0Di2;", anchor=("iput-object v13, v1, LX/0Di2;->A00:Z",)))
+        seconded = answer("LX/06X7;")
+        proposers = RepeatedProposers(
+            [
+                ("agent-a", loud),
+                ("agent-a", loud),
+                ("agent-a", loud),
+                ("agent-b", Recorder(seconded)),
+                ("agent-c", Recorder(seconded)),
+            ]
+        )
+        verifier = Recorder('{"refuted": false, "finding": "could not break it", "checked": []}')
+        prompt = self.subject_prompt(proposers, verifier)
+
+        self.assertIn("LX/06X7;", prompt)
+        self.assertNotIn("LX/0Di2;", prompt)
+        # The loud agent did submit three times; it is the selection that refuses
+        # to count them, not the collection.
+        self.assertEqual(len(loud.prompts), 3)
+
+    def test_the_subject_is_the_agreed_answer_and_not_the_first_one_listed(self):
+        """Reachable today, with no repetition at all.
+
+        Three distinct proposers, two of whom reached the same site with anchors
+        of different lengths. Tallying raw fingerprints makes that three groups
+        of one, and `max(..., key=len)` then returns whichever was inserted
+        first — so registering the odd one out ahead of the other two decides
+        what the verifier examines.
+        """
+        odd = Recorder(answer("LX/0Di2;", anchor=("iput-object v13, v1, LX/0Di2;->A00:Z",)))
+        proposers = {
+            "agent-c": odd,
+            "agent-a": Recorder(answer("LX/06X7;", anchor=("const/4 v13, 0x0", *ANCHOR))),
+            "agent-b": Recorder(answer("LX/06X7;", anchor=ANCHOR)),
+        }
+        verifier = Recorder('{"refuted": false, "finding": "could not break it", "checked": []}')
+        prompt = self.subject_prompt(proposers, verifier)
+
+        self.assertIn("LX/06X7;", prompt)
+        self.assertNotIn("LX/0Di2;", prompt)
+
+    def test_the_verifier_sees_the_answer_assess_would_accept(self):
+        # The two stages share `plurality`, so this is a statement about one
+        # selection rather than two that agree today.
+        proposers = {
+            "agent-c": Recorder(answer("LX/0Di2;", anchor=("iput-object v13, v1, LX/0Di2;->A00:Z",))),
+            "agent-a": Recorder(answer("LX/06X7;", anchor=("const/4 v13, 0x0", *ANCHOR))),
+            "agent-b": Recorder(answer("LX/06X7;", anchor=ANCHOR)),
+        }
+        verifier = Recorder('{"refuted": false, "finding": "could not break it", "checked": []}')
+        run = collect(make_hook(), SANDBOX, "439", proposers, {"verifier-1": verifier})
+
+        assessment = assess(make_hook(), list(run.proposals), DECODE, FakeValidator())
+        self.assertTrue(assessment.resolved)
+        prompt = verifier.only_prompt
+        self.assertIn(assessment.accepted.descriptor, prompt)
+        for line in assessment.accepted.anchor:
+            self.assertIn(line, prompt)
+
+    def test_a_lone_proposer_is_still_verified(self):
+        # The selection must not refuse to name a subject when there is nothing
+        # to agree with: an unverified single answer is worse than a verified one
+        # that `assess` will refuse for want of corroboration.
+        verifier = Recorder('{"refuted": true, "finding": "wrong class", "checked": []}')
+        prompt = self.subject_prompt({"agent-a": Recorder(answer("LX/06X7;"))}, verifier)
+        self.assertIn("LX/06X7;", prompt)
+
+
 class ClaimEmissionTests(unittest.TestCase):
     """Every proposal produces evidence from a producer that is not the proposer."""
 
@@ -946,6 +1182,36 @@ class ClaimEmissionTests(unittest.TestCase):
         for claim in assessment.claims:
             with self.subTest(kind=claim.kind.value):
                 self.assertEqual(claim.hook_id, self.hook.hook_id)
+
+    def test_the_agreement_claim_says_a_whole_patch_was_what_was_asked_for(self):
+        """Mutation: `assess` asks `agreement_claim` for the host shape instead.
+
+        It is the obvious way to make an inconvenient disagreement go away, and
+        it is the 439 result exactly — 2 of 3 proposers reached the right class
+        and 1 of 3 agreed once the anchors and payloads were compared. Under the
+        mutant those two count as corroborating each other while proposing
+        different patches, and `proposer_agreement` goes green on an answer
+        nobody seconded.
+        """
+        proposals = [
+            make_proposal(proposer="agent-a", anchor=("const/4 v13, 0x0",)),
+            make_proposal(proposer="agent-b", anchor=("const/4 v9, 0x0",)),
+        ]
+        assessment = assess(self.hook, proposals, DECODE, FakeValidator())
+        claim = only_claim(assessment, EvidenceKind.PROPOSER_AGREEMENT)
+        self.assertEqual(claim.detail["asked"], "full_proposal")
+        self.assertIsNot(claim.verdict, Verdict.PASSED)
+        self.assertFalse(assessment.resolved)
+
+        # The mutant's own arithmetic: the same two answers, scored by the class
+        # alone, agree — which is why the shape has to be stated rather than
+        # inferred from whatever the proposals happen to contain.
+        downgraded = agreement_claim(
+            self.hook.hook_id,
+            [proposal.to_dict() for proposal in proposals],
+            asked=HOST_ONLY,
+        )
+        self.assertIs(downgraded.verdict, Verdict.PASSED)
 
     def test_the_deterministic_claims_name_the_validator_as_their_actor(self):
         # Not the proposer: the ledger refuses a claim whose actor proposed the hook.

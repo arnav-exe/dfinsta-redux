@@ -61,6 +61,7 @@ from .proposals import (
     ProposalError,
     Refutation,
     host_agreement,
+    plurality,
 )
 
 #: What a proposer must return. Kept small: a host, an anchor, a payload, and the
@@ -715,10 +716,12 @@ def collect(
     refutations: list[Refutation] = []
     if proposals and verifiers:
         # Verify the most-agreed answer; that is the one that would be applied.
-        tally: dict[str, list[Proposal]] = {}
-        for proposal in proposals:
-            tally.setdefault(proposal.fingerprint, []).append(proposal)
-        subject = max(tally.values(), key=len)[0]
+        # Through `plurality`, for the same two reasons `collect_hosts` routes
+        # through `host_agreement`: one vote per proposer, so a repeated agent
+        # cannot choose what the expensive adversarial check is spent on, and
+        # grouping by effect, so the subject is the answer `assess` would accept
+        # rather than whichever wording happened to be submitted first.
+        subject = plurality(proposals, hook).group[0]
         for name, run in verifiers.items():
             if name in proposers:
                 # A verifier that also proposed is not independent evidence, and

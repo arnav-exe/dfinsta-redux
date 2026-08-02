@@ -635,36 +635,142 @@ def deterministic_claim(
     )
 
 
+@dataclass(frozen=True)
+class AnswerShape:
+    """What a complete answer to one kind of question looks like.
+
+    Agreement is measured over answers, and a proposal missing the thing it was
+    asked for did not answer. That rule is not negotiable — counting empty
+    answers as agreeing lets two proposers that failed outright out-vote one that
+    succeeded, on the hash of an empty answer, which is "absence is a pass" in
+    the one place this module most forbids it. But *which* fields make an answer
+    complete depends on what was asked.
+
+    Two questions are asked in this pipeline. ``proposer.proposer_prompt`` asks
+    for a whole patch, and an answer to it names a host and an anchor.
+    ``proposer.host_prompt`` asks only which class, deliberately: the manifest
+    already owns the anchor pattern and the payload template, and asking an agent
+    to reinvent them manufactures the variance that then reads as disagreement.
+    Measured on 439 — 2 of 3 proposers reached the correct host, 1 of 3 agreed
+    once anchors and payloads were compared. Judging a host answer by the
+    whole-patch shape scores it on fields nobody asked it for, so every host
+    agreement tallies as zero answered and comes back ``not_exercised``.
+
+    So a caller names the question rather than relaxing the check, and the named
+    fields do both jobs: a proposal answers only if all of them are present, and
+    identity for the tally is over exactly those fields and no others. One list,
+    so a question can never be scored on a field it did not ask about.
+    """
+
+    #: Recorded on the claim, so a gate can tell a host agreement from a
+    #: whole-patch one rather than having to infer it from the summary.
+    name: str
+    #: Every field an answer must carry, and the whole of its identity.
+    fields: tuple[str, ...]
+    #: How the summary names what the unanswered proposals were missing.
+    wanted: str
+
+    def answered(self, proposal: Mapping[str, Any]) -> bool:
+        """Did this proposal supply everything the question asked for?
+
+        Whitespace is not an answer, and neither is an empty list: an agent that
+        returns ``{"descriptor": "  "}`` found nothing and said so at length.
+        """
+        return all(_supplied(proposal.get(field)) for field in self.fields)
+
+    def identity(self, proposal: Mapping[str, Any]) -> str:
+        """Content hash of the asked-for fields, and of nothing else.
+
+        Two host proposals that name the same class agree, whatever else their
+        dicts carry, because the class is the entire question. Hashing a field
+        the question did not ask about would split a genuine agreement.
+        """
+        return canonical_sha256(
+            {field: _comparable(proposal.get(field)) for field in self.fields}
+        )
+
+
+def _supplied(value: Any) -> bool:
+    """Is this field an answer, rather than the absence of one?
+
+    Whitespace is not an answer — an agent that returns ``{"descriptor": "  "}``
+    found nothing and formatted it — and neither is an empty anchor, which names
+    no site to inject at. Every other empty form (``None``, ``[]``, ``()``, an
+    absent key) is absence too, so the rule is truthiness with strings stripped
+    first.
+    """
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def _comparable(value: Any) -> Any:
+    """Normalise a field for hashing, so the container type decides nothing.
+
+    Callers thread proposals through JSON and through dataclasses; a tuple anchor
+    and an equal list anchor are the same answer.
+    """
+    if isinstance(value, tuple):
+        return list(value)
+    return value
+
+
+#: An answer to "where does this patch go and what does it say" — the shape
+#: `PROPOSAL_SCHEMA` asks for. The default, because widening what counts as an
+#: answer must be a thing a call site says out loud.
+FULL_PROPOSAL = AnswerShape(
+    "full_proposal", ("descriptor", "anchor"), "both a host and an anchor"
+)
+
+#: An answer to "which class" — the shape `HOST_SCHEMA` asks for. There is no
+#: anchor to require because none was requested; see :class:`AnswerShape`.
+HOST_ONLY = AnswerShape("host", ("descriptor",), "a host class")
+
+
 def agreement_claim(
     hook_id: str,
     proposals: Sequence[Mapping[str, Any]],
     actor: str = "resolve.proposer_agreement",
     threshold: float = 0.5,
     keys: Sequence[str] | None = None,
+    asked: AnswerShape = FULL_PROPOSAL,
 ) -> EvidenceClaim:
     """Agreement across k independent proposers, computed rather than asserted.
 
-    Agreement is on the *descriptor plus anchor* a proposer arrived at, never on
-    a self-reported score. Unanimity is not required — the holdout that justified
-    building this had two of three proposers reach the hard settings site and the
-    third fail outright — but a plurality below ``threshold`` is genuine ambiguity
-    and must reach a human.
+    Agreement is on what a proposer arrived at, never on a self-reported score —
+    the *descriptor plus anchor* for a whole-patch proposal, the descriptor alone
+    when *asked* is :data:`HOST_ONLY` and a class is the whole question.
+    Unanimity is not required — the holdout that justified building this had two
+    of three proposers reach the hard settings site and the third fail outright —
+    but a plurality below ``threshold`` is genuine ambiguity and must reach a
+    human.
+
+    The claim is a ``proposer_agreement`` either way. What it catches, who may
+    produce it and when it can exist are identical for both questions; only the
+    shape of an answer differs, and that is data about this claim rather than a
+    second kind of evidence. ``detail["asked"]`` records which question it
+    answers, so a gate is never shown agreement about a class and left to assume
+    agreement about a patch.
+
+    *proposals* must already be one per proposer. This counts what it is given:
+    the same agent's answer three times is three votes here, which is why
+    ``assess`` and ``host_agreement`` collapse through
+    :func:`~dfinsta_pipeline.proposals.one_per_proposer` before calling.
     """
-    # A proposal with no host or no anchor found nothing. Counting those as
-    # agreeing lets two proposers that failed outright out-vote one that
-    # succeeded, on the hash of an empty answer — "absence is a pass" in the one
-    # place this module most forbids it.
     if keys is not None and len(keys) != len(proposals):
         raise EvidenceError(
             f"{hook_id}: {len(keys)} agreement keys for {len(proposals)} proposals; "
             "a mismatched pairing would tally the wrong answers together"
         )
     indexed = list(enumerate(proposals))
+    # A proposal that did not supply what was asked for found nothing. Counting
+    # those as agreeing lets two proposers that failed outright out-vote one that
+    # succeeded, on the hash of an empty answer — "absence is a pass" in the one
+    # place this module most forbids it.
     answered = [
         (position, proposal)
         for position, proposal in indexed
-        if str(proposal.get("descriptor") or "").strip()
-        and list(proposal.get("anchor", ()))
+        if asked.answered(proposal)
     ]
     if not answered:
         return EvidenceClaim(
@@ -676,9 +782,9 @@ def agreement_claim(
             summary=(
                 "no proposals to compare"
                 if not proposals
-                else f"none of {len(proposals)} proposals named both a host and an anchor"
+                else f"none of {len(proposals)} proposals named {asked.wanted}"
             ),
-            detail={"proposals": len(proposals), "answered": 0},
+            detail={"proposals": len(proposals), "answered": 0, "asked": asked.name},
         )
     tally: dict[str, int] = {}
     for position, proposal in answered:
@@ -687,16 +793,7 @@ def agreement_claim(
         # with anchors of different lengths; tallying raw text calls that a
         # disagreement, and then this claim contradicts the decision made from
         # the same proposals.
-        key = (
-            keys[position]
-            if keys is not None
-            else canonical_sha256(
-                {
-                    "descriptor": proposal.get("descriptor"),
-                    "anchor": list(proposal.get("anchor", ())),
-                }
-            )
-        )
+        key = keys[position] if keys is not None else asked.identity(proposal)
         tally[key] = tally.get(key, 0) + 1
     best_key, best_count = max(tally.items(), key=lambda item: (item[1], item[0]))
     # Share is over everyone who was asked, not only those who answered: two of
@@ -721,6 +818,10 @@ def agreement_claim(
             "threshold": threshold,
             "distinct_answers": len(tally),
             "winning_fingerprint": best_key,
+            # Which question this agreement answers. A host agreement and a
+            # whole-patch agreement satisfy the same required item, so the record
+            # has to say which one a gate is looking at.
+            "asked": asked.name,
         },
     )
 

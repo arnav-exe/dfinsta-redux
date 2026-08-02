@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from dfinsta_pipeline.evidence import Verdict, agreement_claim
+from dfinsta_pipeline.evidence import HOST_ONLY, Verdict, agreement_claim
 from dfinsta_pipeline.hook_manifest import Hook, HostFingerprint, load_manifest
 from dfinsta_pipeline.proposals import (
     CLASS_DESCRIPTOR,
@@ -552,34 +552,61 @@ class HostAgreementTests(unittest.TestCase):
         )
         self.assertTrue(agreement.agreed)
 
-    def test_the_ledger_cannot_yet_record_a_host_agreement(self):
-        """A stated gap, measured rather than assumed. Not a design.
+    def test_the_ledger_records_a_host_agreement_when_it_is_told_what_was_asked(self):
+        """The recipe `host_agreement`'s docstring gives, pinned by a test.
 
-        `evidence.agreement_claim` counts a proposal as having answered only when
-        it names a descriptor AND a non-empty anchor, so two proposers who agree
-        on a host tally as zero answered and the claim comes back
-        `not_exercised`. `host_agreement`'s docstring says so; this is what says
-        so when someone changes it. The failure is silent in the safe direction —
-        every by-agent hook simply stalls at the gate — which is exactly the kind
-        that goes unnoticed until a port is blocked on it.
+        This replaces a test that measured the gap: `agreement_claim` used to
+        count a proposal as having answered only when it named a descriptor AND a
+        non-empty anchor, so two proposers who agreed on a host tallied as zero
+        answered and the claim came back `not_exercised`. It failed safe — every
+        by-agent hook simply stalled at the gate — which is exactly the kind of
+        failure that goes unnoticed until a port is blocked on it.
 
-        When `agreement_claim` learns about host proposals, delete this test and
-        the paragraph in `host_agreement` together.
+        Both halves of the recipe are load-bearing, so both are asserted: the
+        votes rather than the raw proposals, and the shape of the question.
         """
         agreeing = [make_host(proposer="agent-a"), make_host(proposer="agent-b")]
-        self.assertTrue(host_agreement(agreeing).agreed)
-        claim = agreement_claim("hook", [item.to_dict() for item in agreeing])
-        self.assertIs(claim.verdict, Verdict.NOT_EXERCISED)
-        self.assertFalse(claim.verdict.satisfies)
-        self.assertIn("named both a host and an anchor", claim.summary)
-        # Positive control: the same function does pass on answers that carry an
-        # anchor, so the result above is about the host shape and not about the
-        # call being wrong.
-        with_anchor = [
-            {**item.to_dict(), "anchor": ["iput-object v13, v1, LX/09rb;->A0H:I"]}
-            for item in agreeing
-        ]
-        self.assertIs(agreement_claim("hook", with_anchor).verdict, Verdict.PASSED)
+        agreement = host_agreement(agreeing)
+        self.assertTrue(agreement.agreed)
+
+        claim = agreement_claim(
+            "hook", [item.to_dict() for item in agreement.votes], asked=HOST_ONLY
+        )
+        self.assertIs(claim.verdict, Verdict.PASSED)
+        self.assertTrue(claim.verdict.satisfies)
+        self.assertEqual(claim.detail["agreed"], 2)
+        self.assertEqual(claim.detail["asked"], "host")
+
+        # Told nothing, it still judges by the whole-patch shape, and a host
+        # proposal has not answered that question. The widening is something a
+        # call site says, never something inferred from the proposals.
+        default = agreement_claim("hook", [item.to_dict() for item in agreement.votes])
+        self.assertIs(default.verdict, Verdict.NOT_EXERCISED)
+        self.assertIn("both a host and an anchor", default.summary)
+
+    def test_the_votes_are_what_the_claim_must_be_given(self):
+        """The other half of the recipe, and the one with a failure mode.
+
+        `agreement_claim` counts what it is handed. Given the raw proposals, one
+        agent run three times files `proposer_agreement` as `passed` reading "3
+        of 3", and the ledger — the artifact a human reads and the thing
+        `readiness()` consults — records a consensus that never existed.
+        """
+        repeated = [make_host(proposer="agent-a") for _ in range(3)]
+        agreement = host_agreement(repeated)
+        self.assertFalse(agreement.agreed)
+
+        honest = agreement_claim(
+            "hook", [item.to_dict() for item in agreement.votes], asked=HOST_ONLY
+        )
+        self.assertIsNot(honest.verdict, Verdict.PASSED)
+        self.assertEqual(honest.detail["proposals"], 1)
+
+        forged = agreement_claim(
+            "hook", [item.to_dict() for item in repeated], asked=HOST_ONLY
+        )
+        self.assertIs(forged.verdict, Verdict.PASSED)
+        self.assertEqual(forged.detail["agreed"], 3)
 
     def test_one_per_proposer_is_the_single_place_the_collapse_happens(self):
         # Shared with `assess`, so a mutation that lets one voice count twice

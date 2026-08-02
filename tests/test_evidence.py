@@ -19,6 +19,11 @@ have positive tests, from the direction a broken implementation would take, so
 that "the guard is present" and "the guard bites" stay separate claims. Each of
 its docstrings says what would reach a device if that guard were removed.
 
+`AnswerShapeAgreementTests` covers the one place where "absence is never a pass"
+had to be made narrower without being weakened: agreement is scored against the
+question that was asked, so a host proposal answering "which class" counts, while
+a proposal that supplied nothing still does not — in either shape.
+
 `KnownGapTests` pins four behaviours that are reported rather than fixed. Each
 records what today's code does so a future fix fails loudly instead of silently
 changing what the ledger certifies.
@@ -34,8 +39,11 @@ from dfinsta_pipeline.evidence import (
     AGENT_REQUIREMENTS,
     ALLOWED_PRODUCERS,
     CATCHES,
+    FULL_PROPOSAL,
+    HOST_ONLY,
     MECHANICAL_REQUIREMENTS,
     SCHEMA_VERSION,
+    AnswerShape,
     EvidenceClaim,
     EvidenceError,
     EvidenceKind,
@@ -1313,6 +1321,296 @@ class AgreementClaimTests(unittest.TestCase):
     def test_the_summary_states_the_count_out_of_the_total(self):
         claim = agreement_claim("hook.x", [self.SITE, dict(self.SITE), self.OTHER])
         self.assertIn("2 of 3", claim.summary)
+
+
+class AnswerShapeAgreementTests(LedgerTestCase):
+    """Agreement is scored against the question that was actually asked.
+
+    Two questions exist. `proposer.proposer_prompt` asks for a whole patch;
+    `proposer.host_prompt` asks only which class, because the manifest owns the
+    anchor and the payload and asking an agent to reinvent them manufactures the
+    variance that reads as disagreement — measured on 439 as 2 of 3 proposers on
+    the host and 1 of 3 once anchors and payloads were compared.
+
+    Scoring a host answer by the whole-patch shape made every host agreement
+    `not_exercised`, so the by-agent hooks stalled at the gate with the ledger
+    reporting that nothing had been measured. These tests pin the widening AND
+    the thing it must not cost: an answer that supplied nothing still does not
+    count as agreeing, in either shape.
+    """
+
+    #: One host proposer's answer, in the shape `HostProposal.to_dict` writes.
+    HOST = {
+        "hook_id": "install_settings_long_click_actionbar",
+        "proposer": "agent-a",
+        "descriptor": "LX/06X7;",
+        "smali_path": "smali_classes6/X/06X7.smali",
+        "evidence": ["smali_classes6/X/06X7.smali:412"],
+        "alternatives": [],
+        "unresolved": [],
+    }
+
+    #: One whole-patch answer, for the half of each comparison that is unchanged.
+    PATCH = {
+        "proposer": "agent-a",
+        "descriptor": "LX/05t2;",
+        "anchor": ["iput-object {v0}, p0, LX/05t2;->A00:Z"],
+    }
+
+    def hosts(self, *descriptors: str) -> list[dict[str, object]]:
+        """One host proposal per descriptor, each from a differently named agent."""
+        return [
+            dict(self.HOST, proposer=f"agent-{index}", descriptor=descriptor)
+            for index, descriptor in enumerate(descriptors)
+        ]
+
+    def test_two_of_three_host_proposers_agreeing_produce_a_real_verdict(self):
+        """The blocking case: a clean host agreement used to come back unmeasured.
+
+        It failed safe — the hook stalled rather than shipped — which is exactly
+        why nobody would notice it from a green run.
+        """
+        claim = agreement_claim(
+            "hook.host", self.hosts("LX/06X7;", "LX/06X7;", "LX/0Di2;"), asked=HOST_ONLY
+        )
+        self.assertIs(claim.verdict, Verdict.PASSED)
+        self.assertIsNot(claim.verdict, Verdict.NOT_EXERCISED)
+        self.assertEqual(claim.detail["answered"], 3)
+        self.assertEqual(claim.detail["agreed"], 2)
+        self.assertEqual(claim.detail["share"], 0.6667)
+        self.assertEqual(claim.detail["distinct_answers"], 2)
+        self.assertIn("2 of 3", claim.summary)
+
+    def test_the_agreed_host_actually_satisfies_the_ledger_item(self):
+        # The point of the fix is not the verdict but what it unblocks: the
+        # required `proposer_agreement` item goes green off a host agreement.
+        subject = self.agent("hook.host.ledger")
+        ledger = self.ledger(subject)
+        self.satisfy(
+            ledger, subject, skip=frozenset({EvidenceKind.PROPOSER_AGREEMENT})
+        )
+        ledger.record(
+            agreement_claim(
+                subject.hook_id, self.hosts("LX/06X7;", "LX/06X7;"), asked=HOST_ONLY
+            )
+        )
+        self.assertIs(ledger.readiness(subject.hook_id).ready, True)
+
+    def test_a_host_agreement_is_still_one_kind_of_proposer_agreement(self):
+        """One kind, two answer shapes — the shape is data on the claim.
+
+        Splitting `EvidenceKind` would make `AGENT_REQUIREMENTS`, which is every
+        kind, demand both a host agreement and a whole-patch one from every
+        agent-resolved hook. A hook resolved by host discovery has no whole-patch
+        agreement to give and would stall forever: the same failure, rebuilt.
+        """
+        for asked in (FULL_PROPOSAL, HOST_ONLY):
+            with self.subTest(asked=asked.name):
+                claim = agreement_claim(
+                    "hook.host", self.hosts("LX/06X7;", "LX/06X7;"), asked=asked
+                )
+                self.assertIs(claim.kind, EvidenceKind.PROPOSER_AGREEMENT)
+                self.assertIs(claim.producer, Producer.STATISTICS)
+                self.assertIn(claim.kind, AGENT_REQUIREMENTS)
+
+    def test_the_claim_records_which_question_it_answers(self):
+        """A gate must never be shown agreement about a class as agreement about a patch."""
+        host = agreement_claim(
+            "hook.host", self.hosts("LX/06X7;", "LX/06X7;"), asked=HOST_ONLY
+        )
+        patch = agreement_claim("hook.x", [dict(self.PATCH), dict(self.PATCH)])
+        self.assertEqual(host.detail["asked"], "host")
+        self.assertEqual(patch.detail["asked"], "full_proposal")
+        # Including when nothing answered, which is the case a reader is most
+        # likely to be trying to explain.
+        self.assertEqual(
+            agreement_claim("hook.host", [], asked=HOST_ONLY).detail["asked"], "host"
+        )
+
+    def test_the_default_question_still_demands_an_anchor(self):
+        """Widening had to be something a call site says out loud.
+
+        `assess` compares whole patches, and three proposers who agreed only on
+        the class are exactly the 439 result that `assess` was right to refuse.
+        If the host shape were the default, that refusal would silently become a
+        pass.
+        """
+        claim = agreement_claim("hook.host", self.hosts("LX/06X7;", "LX/06X7;"))
+        self.assertIs(claim.verdict, Verdict.NOT_EXERCISED)
+        self.assertIn("both a host and an anchor", claim.summary)
+        self.assertEqual(claim.detail["answered"], 0)
+
+    def test_a_descriptor_with_an_empty_anchor_still_did_not_answer(self):
+        # The original property, unchanged: naming a class is not identifying a
+        # site to inject at, and a patch was what was asked for.
+        for anchor in ([], (), None):
+            with self.subTest(anchor=anchor):
+                claim = agreement_claim(
+                    "hook.x",
+                    [
+                        {"descriptor": "LX/05t2;", "anchor": anchor},
+                        {"descriptor": "LX/05t2;", "anchor": anchor},
+                    ],
+                )
+                self.assertIs(claim.verdict, Verdict.NOT_EXERCISED)
+
+    def test_identity_is_over_the_asked_for_fields_and_no_others(self):
+        """Two host answers naming one class agree, whatever else their dicts carry.
+
+        Hashing a field the question did not ask about would split a genuine
+        agreement — and the anchor is precisely the field the host question left
+        out because it varies for reasons that are not disagreement.
+        """
+        pair = [
+            dict(self.HOST, proposer="agent-a", anchor=["iput-object v13, v1, LX/09rb;->A0H:I"]),
+            dict(self.HOST, proposer="agent-b", anchor=["const-string v2, \"options\"", "nop"]),
+        ]
+        as_host = agreement_claim("hook.host", pair, asked=HOST_ONLY)
+        self.assertIs(as_host.verdict, Verdict.PASSED)
+        self.assertEqual(as_host.detail["distinct_answers"], 1)
+
+        # And the same two answers, judged as whole patches, are two answers.
+        as_patch = agreement_claim("hook.host", pair)
+        self.assertIs(as_patch.verdict, Verdict.INCONCLUSIVE)
+        self.assertEqual(as_patch.detail["distinct_answers"], 2)
+
+    def test_one_host_proposer_is_not_corroboration(self):
+        # `best_count > 1` survives the widening: a share of 100% over a sample
+        # of one is arithmetic, and one confidently wrong agent is the failure
+        # this project has actually shipped.
+        claim = agreement_claim("hook.host", self.hosts("LX/06X7;"), asked=HOST_ONLY)
+        self.assertIs(claim.verdict, Verdict.INCONCLUSIVE)
+        self.assertEqual(claim.detail["share"], 1.0)
+        self.assertEqual(claim.detail["agreed"], 1)
+
+    def test_a_host_plurality_below_the_threshold_still_escalates(self):
+        # Two of five is the largest group and still weak corroboration; genuine
+        # ambiguity belongs at a gate rather than being broken by ranking.
+        claim = agreement_claim(
+            "hook.host",
+            self.hosts("LX/06X7;", "LX/06X7;", "LX/0Di2;", "LX/0Di3;", "LX/0Di4;"),
+            asked=HOST_ONLY,
+        )
+        self.assertIs(claim.verdict, Verdict.INCONCLUSIVE)
+        self.assertIs(claim.verdict.satisfies, False)
+        self.assertEqual(claim.detail["share"], 0.4)
+        self.assertEqual(claim.detail["agreed"], 2)
+
+        # And the threshold is still the thing deciding it.
+        self.assertIs(
+            agreement_claim(
+                "hook.host",
+                self.hosts("LX/06X7;", "LX/06X7;", "LX/0Di2;", "LX/0Di3;", "LX/0Di4;"),
+                threshold=0.4,
+                asked=HOST_ONLY,
+            ).verdict,
+            Verdict.PASSED,
+        )
+
+    def test_the_keys_length_guard_fires_for_either_question(self):
+        # A mismatched pairing tallies one proposer's answer under another's key,
+        # so the recorded claim describes an agreement nobody reached.
+        for asked in (FULL_PROPOSAL, HOST_ONLY):
+            for keys in ([], ["a"], ["a", "b", "c"]):
+                with self.subTest(asked=asked.name, keys=len(keys)):
+                    with self.assertRaises(EvidenceError) as caught:
+                        agreement_claim(
+                            "hook.host",
+                            self.hosts("LX/06X7;", "LX/06X7;"),
+                            keys=keys,
+                            asked=asked,
+                        )
+                    self.assertIn("agreement keys", str(caught.exception))
+
+    def test_supplied_keys_still_decide_the_tally(self):
+        # The `keys` seam is unchanged by the widening: what a proposal would DO
+        # still beats the text it quoted, in either shape.
+        split = agreement_claim(
+            "hook.host",
+            self.hosts("LX/06X7;", "LX/06X7;"),
+            keys=["effect-1", "effect-2"],
+            asked=HOST_ONLY,
+        )
+        self.assertIs(split.verdict, Verdict.INCONCLUSIVE)
+        self.assertEqual(split.detail["distinct_answers"], 2)
+
+    def test_two_proposers_that_named_no_class_cannot_out_vote_one_that_did(self):
+        """ATTACK. Mutation: score a host answer as answered whatever it contains.
+
+        This is the guard the widening most endangers, because the obvious way
+        to let host proposals through is to stop asking for anything at all.
+        Under that mutant the two agents that gave up hash to the same empty
+        answer, out-vote the one that found the class, and the ledger records
+        `passed` with `winning_fingerprint` naming the hash of nothing — a
+        by-agent hook certified as corroborated by two proposers that failed.
+        """
+        gave_up = [
+            {"proposer": "agent-a", "descriptor": None, "unresolved": ["no candidate"]},
+            {"proposer": "agent-b", "descriptor": "   ", "unresolved": ["gave up"]},
+        ]
+        found = dict(self.HOST, proposer="agent-c")
+        claim = agreement_claim("hook.host", [*gave_up, found], asked=HOST_ONLY)
+
+        self.assertIsNot(claim.verdict, Verdict.PASSED)
+        self.assertIs(claim.verdict.satisfies, False)
+        self.assertEqual(claim.detail["answered"], 1)
+        self.assertEqual(claim.detail["agreed"], 1)
+        # The one real answer is what won, not the pair of empty ones.
+        self.assertEqual(claim.detail["winning_fingerprint"], HOST_ONLY.identity(found))
+        self.assertNotEqual(
+            claim.detail["winning_fingerprint"], HOST_ONLY.identity(gave_up[0])
+        )
+
+        # Nothing but empty answers reports that nothing was measured.
+        for empty in ([], [{}, {}], gave_up):
+            with self.subTest(empty=len(empty)):
+                self.assertIs(
+                    agreement_claim("hook.host", empty, asked=HOST_ONLY).verdict,
+                    Verdict.NOT_EXERCISED,
+                )
+
+        # And the ledger will not let that claim make a hook ready, with every
+        # other required item already satisfied.
+        subject = self.agent("hook.host.attack")
+        ledger = self.ledger(subject)
+        self.satisfy(ledger, subject, skip=frozenset({EvidenceKind.PROPOSER_AGREEMENT}))
+        ledger.record(
+            agreement_claim(subject.hook_id, [*gave_up, found], asked=HOST_ONLY)
+        )
+        readiness = ledger.readiness(subject.hook_id)
+        self.assertIs(readiness.ready, False)
+        blockers = [item.kind for item in readiness.statuses if not item.satisfied]
+        self.assertEqual(blockers, [EvidenceKind.PROPOSER_AGREEMENT])
+
+    def test_an_answer_shape_names_its_own_question(self):
+        # The parameter exists so a call site reads as "this was a host
+        # question", not as "skip a check". Both constants say which.
+        self.assertEqual((FULL_PROPOSAL.name, FULL_PROPOSAL.fields),
+                         ("full_proposal", ("descriptor", "anchor")))
+        self.assertEqual((HOST_ONLY.name, HOST_ONLY.fields), ("host", ("descriptor",)))
+        self.assertIsInstance(HOST_ONLY, AnswerShape)
+
+    def test_a_shape_answers_only_when_every_asked_for_field_is_supplied(self):
+        shape = AnswerShape("both", ("descriptor", "anchor"), "a host and an anchor")
+        self.assertIs(shape.answered({"descriptor": "LX/05t2;", "anchor": ["x"]}), True)
+        for missing in (
+            {"descriptor": "LX/05t2;"},
+            {"anchor": ["x"]},
+            {"descriptor": "LX/05t2;", "anchor": []},
+            {"descriptor": " ", "anchor": ["x"]},
+            {"descriptor": None, "anchor": ["x"]},
+            {},
+        ):
+            with self.subTest(missing=sorted(missing)):
+                self.assertIs(shape.answered(missing), False)
+
+    def test_a_tuple_field_and_an_equal_list_field_are_one_answer(self):
+        # Callers thread proposals through JSON and through dataclasses; the
+        # container type must not decide whether two proposers agreed.
+        self.assertEqual(
+            FULL_PROPOSAL.identity({"descriptor": "LX/05t2;", "anchor": ("a", "b")}),
+            FULL_PROPOSAL.identity({"descriptor": "LX/05t2;", "anchor": ["a", "b"]}),
+        )
 
 
 # ----------------------------------------------------------------- persistence
