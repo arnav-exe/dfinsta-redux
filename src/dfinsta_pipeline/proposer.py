@@ -374,16 +374,28 @@ def parse_proposal(hook_id: str, proposer: str, response: str | Mapping[str, Any
 
 def parse_verdict(hook_id: str, verifier: str, response: str | Mapping[str, Any]) -> Refutation:
     if isinstance(response, str):
-        match = JSON_BLOCK.search(response)
-        if match is None:
+        # The same balanced scan `parse_proposal` uses, and for the same reason:
+        # a greedy `\{.*\}` spans from the first brace to the last, so a verifier
+        # that reasons in one JSON object and concludes in another produces
+        # "Extra data" and is recorded as having refuted the claim. That fails
+        # closed, which is right, but it discards a real verdict and reports a
+        # refutation nobody made. Both verifiers in the first real run hit it.
+        candidates = _json_objects(response)
+        data = None
+        error: Exception | None = None
+        for candidate in reversed(candidates):
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError as failure:
+                error = failure
+                continue
+            if isinstance(parsed, dict) and "refuted" in parsed:
+                data = parsed
+                break
+        if data is None:
             # A verifier that produced nothing usable has not cleared anything.
-            return Refutation(
-                hook_id, verifier, True, "verifier returned no parseable verdict"
-            )
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError as error:
-            return Refutation(hook_id, verifier, True, f"unparseable verdict: {error}")
+            reason = f"unparseable verdict: {error}" if error else "no verdict object"
+            return Refutation(hook_id, verifier, True, reason)
     else:
         data = dict(response)
     return Refutation(
