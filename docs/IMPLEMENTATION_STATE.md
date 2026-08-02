@@ -79,6 +79,35 @@ argument order swapped), and the self-profile type (`LX/077N;` → `LX/0Dxw;`) a
 line adjacent to the site. A00 builds the ImageView for every action-bar model, so an
 unguarded attach hits every icon on every profile — the guard is load-bearing, not decoration.
 
+## The last non-mechanical fact, and how far the rule for it reaches
+
+The one thing `install_settings_long_click` still needs an agent for is the own-profile
+guard's type. On **430 and 439** it is derivable: the host method tests the model against ~10
+obfuscated subtypes, and exactly one of them is a class whose constructor loads the drawable
+named `instagram_menu_outline_24`. 439 → 10 candidates, 1 hit (`LX/0Dxw;`); 430 → 11
+candidates, 1 hit (`LX/077N;`). The drawable alone is not enough (14 classes load it per
+version); the intersection is. Same shape as `co_literals`.
+
+**Held out against 340 and 300: zero reach below 430, structurally.** No `ProfileActionBar`
+exists on either, no model-subtype family, and `instagram_menu_outline_24` is absent — 340 has
+only `instagram_menu_pano_outline_24`, a genuinely different asset. 340's action bar is the
+legacy config-object design where self/other is decided by an `instance-of` on the *fragment*
+(`LX/DA4;`, `SelfFragment`), which carries no drawable at all.
+
+**430 and 439 are therefore not two independent confirmations** — both of the rule's keys fail
+together on 340 because both are consequences of one architectural rewrite. Two versions
+sharing an architecture are closer to one data point. Treat it as a **430+ rule with an
+explicit precondition**: check for `com/instagram/profile/actionbar/ProfileActionBar` first.
+
+That precondition is the more useful half: its presence is the **selector** between the two
+settings hooks — which one a version can host. Ground truth agrees: DFInsta 1.4.1 targeted 340,
+patched the legacy host, and shipped **no own-profile guard at all**.
+
+Separately and positively: the *other* hook's 5-line anchor matched `LX/66Y;` on 340 — the
+exact class and field the shipped 1.4.1 build patched — found mechanically ~90 versions back,
+at reduced selectivity (3 candidates rather than 1). **Anchors transfer further than
+fingerprints built on resource names.**
+
 ## Two things to fix before host discovery is wired through
 
 - **`evidence.agreement_claim` cannot record a host agreement.** It counts a proposal as an
