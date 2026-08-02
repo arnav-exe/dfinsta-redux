@@ -24,14 +24,19 @@ about it. So nothing in this module believes a proposal. Every proposal is:
 and each of those emits an :mod:`~dfinsta_pipeline.evidence` claim from a
 producer that is not the proposer. A proposal that survives all three is an
 operation. Anything else is an escalation with the disagreement attached.
+
+:class:`HostProposal` answers a deliberately narrower question — which class,
+and nothing else — because that is the only fact that genuinely varies between
+versions. Its docstring records the measurement that prompted it.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
 from .contracts import canonical_sha256
 from .evidence import (
@@ -236,6 +241,96 @@ class Refutation:
             )
 
 
+#: A host is a CLASS, so ``L...;`` and nothing else. Not an array (``[LX/0aaa;``),
+#: not a primitive (``I``), and not method-qualified (``LX/0aaa;->AP1``) — which is
+#: the form an agent naturally writes when it has found the *site* and is naming
+#: it. :func:`dfinsta_pipeline.resolve.search_hosts` looks a proposed descriptor up
+#: in the index verbatim, so any of those finds nothing and is reported as "does
+#: not exist in this version" — a version-drift diagnosis for a typing mistake.
+#: ``-`` is permitted because d8 emits ``-$$Lambda$...`` classes and one could
+#: legitimately be a host.
+CLASS_DESCRIPTOR = re.compile(r"^L[A-Za-z0-9_$-]+(?:/[A-Za-z0-9_$-]+)*;$")
+
+
+@dataclass(frozen=True)
+class HostProposal:
+    """One agent's answer to the only fact that genuinely varies: WHICH class.
+
+    A :class:`Proposal` asks an agent to invent an entire patch. The manifest
+    already owns the shape of one — an anchor pattern with typed captures and a
+    payload template — and six of the seven hooks resolve mechanically from that
+    shape once the host is known; ``resolve.Outcome.NEEDS_AGENT`` is returned
+    precisely when the missing fact is the host and nothing else.
+
+    Asking for the whole patch therefore manufactures variance, and variance is
+    what kills k-of-n agreement. Measured on the first full k-proposer run against
+    439: **2 of 3 proposers reached the correct host**, and **1 of 3 agreed by
+    effect** — one wrote a 2-line anchor with a 16-line payload, another a 4-line
+    anchor with a 2-line payload, and :meth:`Proposal.effect_key` separated them,
+    so ``assess`` refused. Correctly: it was asked to compare patches. It was the
+    question that was wrong.
+
+    So this carries a host and the evidence for it, and nothing else. Agreement is
+    over :attr:`descriptor` alone — see :func:`host_agreement`.
+    """
+
+    hook_id: str
+    proposer: str
+    descriptor: str
+    smali_path: str = ""
+    evidence: tuple[str, ...] = ()
+    alternatives: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.hook_id.strip():
+            raise ProposalError("host proposal needs a hook_id")
+        if not self.proposer.strip():
+            raise ProposalError(
+                f"{self.hook_id}: host proposal needs a proposer id, or its evidence "
+                "cannot be checked for independence"
+            )
+        if not self.descriptor.strip():
+            raise ProposalError(f"{self.hook_id}: host proposal needs a host descriptor")
+        if not CLASS_DESCRIPTOR.match(self.descriptor):
+            raise ProposalError(
+                f"{self.hook_id}: {self.descriptor!r} is not a smali class descriptor. "
+                "It must be exactly `Lpackage/Name;` as the decode writes it — a method "
+                "suffix, a missing semicolon or an array prefix resolves to no class at "
+                "all, and the Resolve stage reports that as the class not existing in "
+                "this version rather than as a malformed answer."
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hook_id": self.hook_id,
+            "proposer": self.proposer,
+            "descriptor": self.descriptor,
+            "smali_path": self.smali_path,
+            "evidence": list(self.evidence),
+            "alternatives": list(self.alternatives),
+            "unresolved": list(self.unresolved),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> HostProposal:
+        return cls(
+            hook_id=data["hook_id"],
+            proposer=data["proposer"],
+            descriptor=data["descriptor"],
+            smali_path=data.get("smali_path", ""),
+            evidence=tuple(data.get("evidence", ())),
+            alternatives=tuple(data.get("alternatives", ())),
+            unresolved=tuple(data.get("unresolved", ())),
+        )
+
+
+#: The two shapes an agent's answer can take. Constrained rather than bound to a
+#: protocol, because there are exactly two and naming them keeps
+#: :func:`one_per_proposer` honest about what it accepts.
+_Voice = TypeVar("_Voice", Proposal, HostProposal)
+
+
 @dataclass
 class Assessment:
     """Everything known about one hook's proposals, and whether one may be used."""
@@ -320,15 +415,109 @@ def validate_proposals(
     return results
 
 
-def one_per_proposer(proposals: Sequence[Proposal]) -> list[Proposal]:
-    """First answer from each proposer, so one voice cannot count as several."""
+def one_per_proposer(proposals: Sequence[_Voice]) -> list[_Voice]:
+    """First answer from each proposer, so one voice cannot count as several.
+
+    Accepts either kind of answer. It reads nothing but ``proposer``, and the rule
+    it enforces — k answers from one agent is one answer — is identical whether
+    the agent proposed a whole patch or only a host. Sharing it means a mutation
+    that lets one proposer count twice breaks both paths at once, rather than one
+    path quietly keeping a guard the other lost.
+    """
     seen: set[str] = set()
-    out: list[Proposal] = []
+    out: list[_Voice] = []
     for proposal in proposals:
         if proposal.proposer not in seen:
             seen.add(proposal.proposer)
             out.append(proposal)
     return out
+
+
+@dataclass(frozen=True)
+class HostAgreement:
+    """Which host, if any, independent proposers converged on.
+
+    ``agreed_descriptor`` is ``None`` unless the rule passed, and it is the only
+    field naming a descriptor. That is deliberate: a caller reading the plurality
+    answer has to go through :attr:`group`, where the count is visible, rather
+    than through a field whose name reads like a decision.
+    """
+
+    agreed_descriptor: str | None
+    group: tuple[HostProposal, ...]
+    votes: tuple[HostProposal, ...]
+    distinct_answers: int
+    reason: str = ""
+
+    @property
+    def agreed(self) -> bool:
+        return self.agreed_descriptor is not None
+
+
+def host_agreement(
+    proposals: Sequence[HostProposal], threshold: float = 0.5
+) -> HostAgreement:
+    """The host at least two DISTINCT proposers reached, or why there is none.
+
+    The same rule :func:`assess` applies, over the descriptor alone: collapse to
+    one vote per proposer, take the plurality, and require both that it clears
+    *threshold* and that **at least two distinct proposers** are in it. The second
+    condition is not implied by the first — one proposer answering while two
+    abstain is a share of 1.0 — and it is the whole point, because a single
+    confidently-wrong agent is the failure this project has actually shipped.
+
+    Nothing here breaks a tie by ranking. Two proposers naming two classes is a
+    finding for a human, not an input to a ranking function.
+
+    Not wired to :func:`~dfinsta_pipeline.evidence.agreement_claim`, and it cannot
+    be as it stands: that function counts a proposal as having answered only when
+    it names a descriptor *and* a non-empty anchor, so a set of host proposals
+    tallies as zero answered and returns ``not_exercised``. Whoever files this as
+    ledger evidence has to widen that check first — and had better notice, because
+    the failure is silent in the safe direction and would simply stall every
+    by-agent hook.
+    """
+    votes = one_per_proposer(proposals)
+    groups: dict[str, list[HostProposal]] = {}
+    for proposal in votes:
+        groups.setdefault(proposal.descriptor, []).append(proposal)
+    if not groups:
+        return HostAgreement(None, (), (), 0, "no host proposals were produced")
+
+    descriptor, group = max(groups.items(), key=lambda item: (len(item[1]), item[0]))
+    share = len(group) / len(votes)
+    if len(group) < 2:
+        if len(votes) < 2:
+            reason = (
+                "only one proposer answered, so there is nothing to corroborate it. "
+                "Agreement across independent proposers is a required item of "
+                "evidence, and a single answer cannot supply it however good it looks."
+            )
+        else:
+            reason = (
+                f"{len(group)} of {len(votes)} distinct proposers reached the most "
+                f"common host ({len(groups)} distinct hosts overall). That is genuine "
+                "ambiguity, and it belongs at a gate rather than being broken by ranking."
+            )
+        return HostAgreement(None, tuple(group), tuple(votes), len(groups), reason)
+    if share < threshold:
+        return HostAgreement(
+            None,
+            tuple(group),
+            tuple(votes),
+            len(groups),
+            f"{len(group)} of {len(votes)} distinct proposers reached {descriptor} "
+            f"({share:.0%}), below the {threshold:.0%} agreement threshold; "
+            f"{len(groups)} distinct hosts were proposed",
+        )
+    return HostAgreement(
+        descriptor,
+        tuple(group),
+        tuple(votes),
+        len(groups),
+        f"{len(group)} of {len(votes)} distinct proposers independently reached "
+        f"{descriptor}",
+    )
 
 
 #: Everything that has to hold for the anchor to be a usable, unique, unpatched
