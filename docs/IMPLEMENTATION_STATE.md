@@ -386,6 +386,19 @@ DEX bytes for a smali string form that does not exist there. **A DEX stores meth
 as separate class/name/proto indices** — only type descriptors and bare method names are
 literal strings.
 
+**The canonical-counting guard is incomplete, and was being carried by the signal string.**
+`probes.py` had 343 statements and zero tests until 2026-08-02; testing it found three defects.
+The documented rule — an un-indented message is a live event, an indented echo or re-narration
+is not — misses a third form: `aware_trace_readable` spills across continuation lines, each
+prefixed `TAG: `, so a *past* block's narration arrives **un-indented** carrying
+`fault_message: …`. Measured on this repo's own captures, `logcat_explore_OFF.txt` returns 2
+canonical where the module's docstring claims 0. It does not bite only because the manifest
+declares the signal with its `java.io.IOException: ` prefix — so the off-side reads zero
+because of the signal text, not the guard. A hook declaring the bare text (as every docstring
+example does) would see a phantom off-side and report a working hook as `failed`.
+Also found: `StartupProbe` records `failed` rather than refusing when the screen is unusable,
+and `ProbeRunner.measure` treats an *unreadable* foreground as a usable zero.
+
 **Probes are per-hook and must move both ways.** Logcat block-counting proves feed,
 Explore, Stories — and is structurally blind to Reels, because `replaceReelsEndpoint`
 blanks the endpoint upstream of the block. Zero signal in both directions means the probe
