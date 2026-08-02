@@ -36,6 +36,23 @@ broken implementation would take, so "the guard exists" and "the guard bites"
 stay separate claims. `KnownGapTests` pins four defects this suite found, which
 are reported rather than fixed; each records what today's code does so a future
 fix fails loudly instead of silently changing what gets built.
+
+The `Discovery*` classes cover stage 5a, and every one of them injects a fake
+`AgentRunner`. **No test here may depend on a model, an API key or the `claude`
+CLI**: the deterministic spine must run where none of the three exist, and a
+suite that reached a network would be measuring the network. What they do
+exercise for real is the sandbox — `proposer.build_sandbox` hardlinks the
+synthetic decode into the scratch tree, so the refusals that keep the answers
+physically absent are executed rather than described.
+
+Two of them are worth reading before changing anything here. `DiscoveryStallTests`
+pins the difference between the two ways discovery can fail: proposers who
+disagree produce NO host, so the hook stays escalated and the run stops at
+Resolve, while a verifier who refutes leaves the agreed host in place and a
+failed claim beside it, so the hook resolves and stalls at the gate with the
+finding attached. `DiscoveryBudgetTests` pins that a hook the cap never reached
+is reported as *skipped* and never as *unresolved* — silent truncation reads as
+"covered everything", which is the one lie a budget report must not tell.
 """
 
 from __future__ import annotations
@@ -46,12 +63,14 @@ import io
 import json
 import shutil
 import tempfile
+import threading
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from dfinsta_pipeline import driver
+from dfinsta_pipeline.discovery import Discovery
 from dfinsta_pipeline.driver import (
     FIELD_TARGET,
     STAGES,
@@ -322,6 +341,23 @@ class DriverCase(unittest.TestCase):
         self.addCleanup(setattr, driver, "run_command", original)
         driver.run_command = self._record_command
 
+        # Stage 10 writes two files that deliberately live next to the manifest
+        # rather than in the run directory, because what a port learned and what
+        # it cost are worth nothing unless they outlive the decode. `run_port`
+        # redirects both into the scratch directory; this asserts no test ever
+        # creates the real ones, because a suite that appends to a committed
+        # ledger makes its own runs look like measured ports.
+        committed = [RunPaths(self.base).decision_memory, RunPaths(self.base).cost_ledger]
+        before = {path: path.exists() for path in committed}
+        self.addCleanup(
+            lambda: [
+                self.assertIs(
+                    path.exists(), state, f"the suite wrote to the committed {path}"
+                )
+                for path, state in before.items()
+            ]
+        )
+
         self.custom_code = self.base / "custom-code"
         classes = self.custom_code / "newCode" / "com" / "dfinstagram"
         classes.mkdir(parents=True)
@@ -427,6 +463,16 @@ class DriverCase(unittest.TestCase):
     def resolve(self, hooks: Sequence[Hook], fixture: Fixture, proposals=None):
         return resolve_manifest(hooks, fixture.index, fixture.decode, proposals)
 
+    def run_paths(self, out: str, fixture: Fixture) -> RunPaths:
+        """A run directory, with both stage-10 stores redirected into the scratch tree."""
+        return RunPaths(
+            self.base / out,
+            fixture.decode,
+            fixture.index_dir,
+            memory_path=self.base / "decisions.jsonl",
+            ledger_path=self.base / "agent_cost.jsonl",
+        )
+
     def run_port(self, fixture: Fixture, hooks: Sequence[Hook], **kwargs) -> RunResult:
         """Call `port` over a reused decode and index, capturing what it printed."""
         out = kwargs.pop("out", "run")
@@ -435,7 +481,7 @@ class DriverCase(unittest.TestCase):
             with contextlib.redirect_stdout(stream):
                 return port(
                     apk=self.base / "stock.apk",
-                    paths=RunPaths(self.base / out, fixture.decode, fixture.index_dir),
+                    paths=self.run_paths(out, fixture),
                     hooks=list(hooks),
                     apktool=self.base / "apktool_2.9.3.jar",
                     framework_apk=kwargs.pop(
@@ -1756,6 +1802,1097 @@ class ReportedDefectTests(DriverCase):
                 match = FIELD_TARGET.search(line)
                 self.assertIsNotNone(match)
                 self.assertEqual(match.group("descriptor"), expected)
+
+
+# ------------------------------------------------------------- host discovery
+
+
+STAMP = "2026-08-02T12:00:00+00:00"
+#: A second `by_agent` host, so the budget can be given more hooks than it covers.
+SETTINGS_TWO = "LX/0Di3;"
+#: Two classes no fixture contains: what a proposer names when it is wrong. Both
+#: sort BEFORE the real host, so a three-way split whose "most common" answer is
+#: picked by ranking would pick the real one and resolve — which is exactly the
+#: rewrite `DiscoveryMutationTests` has to be able to see.
+WRONG = "LX/0Aaa;"
+ALSO_WRONG = "LX/0Bbb;"
+
+AGENT_HOOK_TWO = Hook(
+    hook_id="install_probe_settings_shortcut",
+    intent="add the mod's shortcut to the profile action bar",
+    tier="ui",
+    strategy="replace the listener construction and the field store",
+    semantic_deps=(),
+    hosts=(HostFingerprint("by_agent", note="no literal and no stable type point here"),),
+    anchor=AGENT_HOOK.anchor,
+    payload=(
+        "    new-instance <l>, Lcom/dfinstagram/SettingsShortcut;",
+        "    iput-object <l>, <o>, <owner>->A0H:Landroid/view/View$OnLongClickListener;",
+    ),
+    marker="Lcom/dfinstagram/SettingsShortcut;",
+    expected_marker_count=1,
+    mode="replace",
+)
+
+
+def host_answer(descriptor: str, path: str = "smali_classes3/X/0Di2.smali", **extra) -> str:
+    """One proposer's answer, in the shape `proposer.HOST_SCHEMA` asks for."""
+    return json.dumps(
+        {
+            "descriptor": descriptor,
+            "smali_path": path,
+            "evidence": ["listed the tree", "read the class and followed the field"],
+            **extra,
+        }
+    )
+
+
+def verdict(refuted: bool, finding: str = "looked and could not break it") -> str:
+    return json.dumps({"refuted": refuted, "finding": finding, "checked": ["the class"]})
+
+
+class FakeAgent:
+    """One scripted agent run. Records what it was asked, so a retry is visible."""
+
+    def __init__(self, reply: Any, before: Any = None):
+        self.reply = reply
+        self.before = before
+        self.prompts: list[str] = []
+
+    def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if self.before is not None:
+            self.before()
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+
+class Agents:
+    """A `discovery.RunnerFactory` over scripted replies, keyed by runner name.
+
+    Every runner the driver builds is kept, so a test can assert what each was
+    asked, that it was asked once, and — for the hooks a budget never reached —
+    that nothing was asked at all. No network, no model, no `claude` CLI: the
+    suite must not depend on any of the three.
+    """
+
+    def __init__(
+        self,
+        replies: Mapping[str, Any],
+        before: Any = None,
+        before_prefix: str = "proposer",
+    ):
+        self.replies = dict(replies)
+        self.before = before
+        self.before_prefix = before_prefix
+        self.built: list[tuple[str, FakeAgent]] = []
+        self.sandboxes: list[Path] = []
+
+    def __call__(self, name: str, sandbox: Path) -> FakeAgent:
+        if name not in self.replies:
+            raise AssertionError(f"the driver built an unexpected runner {name!r}")
+        self.sandboxes.append(sandbox)
+        hold = self.before if name.startswith(self.before_prefix) else None
+        agent = FakeAgent(self.replies[name], hold)
+        self.built.append((name, agent))
+        return agent
+
+    @property
+    def calls(self) -> int:
+        return sum(len(agent.prompts) for _, agent in self.built)
+
+    def prompts(self, prefix: str = "") -> list[str]:
+        return [
+            prompt
+            for name, agent in self.built
+            if name.startswith(prefix)
+            for prompt in agent.prompts
+        ]
+
+
+def agreeing(descriptor: str = SETTINGS, refuted: bool = False) -> Agents:
+    """Three proposers that agree, and one verifier that does not refute."""
+    return Agents(
+        {
+            "proposer-1": host_answer(descriptor),
+            "proposer-2": host_answer(descriptor),
+            "proposer-3": host_answer(descriptor),
+            "verifier-1": verdict(refuted),
+        }
+    )
+
+
+class DiscoveryCase(DriverCase):
+    """Shared wiring: a `by_agent` hook, scripted agents, and no network anywhere."""
+
+    def discover(self, agents: Agents, **kwargs) -> Discovery:
+        return Discovery(
+            version=kwargs.pop("version", "439"),
+            runner=agents,
+            sandbox_root=kwargs.pop("sandbox_root", self.base / "sandbox-root"),
+            **kwargs,
+        )
+
+    def run_discovery(
+        self,
+        agents: Agents,
+        hooks: Sequence[Hook] = (CONTEXT_HOOK, AGENT_HOOK),
+        fixture: Fixture | None = None,
+        settings: Discovery | None = None,
+        **kwargs,
+    ) -> RunResult:
+        fixture = fixture or self.agent_fixture()
+        return self.run_port(
+            fixture,
+            list(hooks),
+            discovery=settings or self.discover(agents),
+            version=kwargs.pop("version", "439"),
+            recorded_at=kwargs.pop("recorded_at", STAMP),
+            **kwargs,
+        )
+
+    def evidence_claims(self, out: str = "run") -> list[dict[str, Any]]:
+        path = self.base / out / "evidence.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def claims_of(self, kind: str, out: str = "run") -> list[dict[str, Any]]:
+        return [claim for claim in self.evidence_claims(out) if claim["kind"] == kind]
+
+    def discovery_json(self, out: str = "run") -> dict[str, Any]:
+        return json.loads((self.base / out / "discovery.json").read_text())
+
+
+class DiscoveryDefaultTests(DiscoveryCase):
+    """Off unless asked for, and identical to yesterday's driver when it is off."""
+
+    def test_discovery_is_off_by_default(self):
+        """A flag that quietly costs money is the wrong default.
+
+        Pinned on the signature rather than by reading the CLI, because the
+        default is what every existing caller — the Temporal activity included —
+        silently gets.
+        """
+        self.assertIsNone(inspect.signature(port).parameters["discovery"].default)
+
+    def test_without_the_flag_the_driver_behaves_exactly_as_it_did(self):
+        """The deterministic path is the default and nothing about it moved.
+
+        Same stop, same stage, same escalation as before this stage existed, and
+        no discovery artifact to suggest something was tried.
+        """
+        fixture = self.agent_fixture()
+        result = self.run_port(fixture, [CONTEXT_HOOK, AGENT_HOOK])
+        self.assertIs(result.ok, False)
+        self.assertEqual(result.stage_reached, "resolve")
+        self.assertEqual(result.escalations, (AGENT_HOOK.hook_id,))
+        self.assertNotIn("discovery", result.artifacts)
+        self.assertFalse((self.base / "run" / "discovery.json").exists())
+        self.assertEqual(self.claims_of("proposer_agreement"), [])
+
+    def test_discovery_only_runs_for_a_hook_that_is_missing_a_HOST(self):
+        """Not for every escalation: the narrow question is the whole point.
+
+        `agent_cost` files an escalation as needing a host, a capture or a whole
+        patch, decided structurally. Discovery answers exactly the first, and the
+        two stages must agree about which that is — a hook whose host is known
+        and whose payload needs a value no anchor can bind is not a question k
+        agents can be asked "which class".
+        """
+        from dfinsta_pipeline import agent_cost
+        from dfinsta_pipeline.discovery import needs_a_host
+
+        fixture = self.agent_fixture()
+        report = self.resolve([CONTEXT_HOOK, AGENT_HOOK, MISSING_HOOK], fixture)
+        for item in report.resolutions:
+            with self.subTest(hook=item.hook_id):
+                needs, _ = agent_cost._needs(item) if item.outcome is Outcome.NEEDS_AGENT else ((), "")
+                self.assertIs(
+                    needs_a_host(item),
+                    agent_cost.NEED_HOST in needs,
+                    f"{item.hook_id} is {item.outcome.value}: the two stages disagree "
+                    "about whether an agent is being asked for a host",
+                )
+        # And concretely: the by_agent hook yes, the missing named host no.
+        by_id = {item.hook_id: item for item in report.resolutions}
+        self.assertIs(needs_a_host(by_id[AGENT_HOOK.hook_id]), True)
+        self.assertIs(needs_a_host(by_id[MISSING_HOOK.hook_id]), False)
+        self.assertIs(needs_a_host(by_id[CONTEXT_HOOK.hook_id]), False)
+
+
+class DiscoveryAgreementTests(DiscoveryCase):
+    """k proposers agree, a verifier fails to break it, and the hook resolves."""
+
+    def test_two_of_three_agreeing_resolves_the_hook(self):
+        """The holdout that justified building this was 2 of 3, not 3 of 3.
+
+        Two proposers reached the hard settings host and the third failed
+        outright, so unanimity is the wrong bar; what `host_agreement` requires
+        is two DISTINCT proposers in the winning group, which is the condition a
+        single confidently-wrong agent cannot satisfy.
+        """
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": host_answer(WRONG),
+                "proposer-3": host_answer(SETTINGS),
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        result = self.run_discovery(agents)
+        self.assertIs(result.ok, True, result.stopped_because)
+        self.assertEqual(result.stage_reached, "build")
+        self.assertEqual(self.discovery_json()["hosts"], {AGENT_HOOK.hook_id: SETTINGS})
+
+        resolution = json.loads((self.base / "run" / "resolution.json").read_text())
+        settled = {item["hook_id"]: item for item in resolution["resolutions"]}
+        self.assertEqual(settled[AGENT_HOOK.hook_id]["outcome"], "resolved")
+        self.assertEqual(settled[AGENT_HOOK.hook_id]["descriptor"], SETTINGS)
+
+    def test_the_agreement_claim_is_filed_and_says_which_question_it_answers(self):
+        """The evidence, not only the outcome: an outcome can be right for the wrong reason.
+
+        A host agreement judged by the whole-patch shape is scored on an anchor
+        nobody asked for and comes back `not_exercised` — a clean agreement filed
+        as no agreement at all — so `asked` is checked, not just the verdict.
+        """
+        self.run_discovery(agreeing())
+        claims = self.claims_of("proposer_agreement")
+        self.assertEqual(len(claims), 1)
+        claim = claims[0]
+        self.assertEqual(claim["hook_id"], AGENT_HOOK.hook_id)
+        self.assertEqual(claim["verdict"], "passed")
+        self.assertEqual(claim["producer"], "statistics")
+        self.assertEqual(claim["detail"]["asked"], "host")
+        self.assertEqual(claim["detail"]["agreed"], 3)
+        self.assertEqual(claim["detail"]["proposals"], 3)
+        self.assertEqual(claim["detail"]["distinct_answers"], 1)
+        # Produced by something that is not the proposer, which is the whole
+        # reason the ledger distinguishes producers at all.
+        self.assertNotIn("proposer", claim["actor"])
+
+    def test_the_refutation_is_filed_as_its_own_claim(self):
+        """`adversarial_verified` may only come from a verifier agent.
+
+        It is the check that caught a shipped inert hook after three agreeing
+        proposers and every static check said to ship it, so a run that agreed
+        and never filed it must not read like one that survived review.
+        """
+        self.run_discovery(agreeing())
+        claims = self.claims_of("adversarial_verified")
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["verdict"], "passed")
+        self.assertEqual(claims[0]["producer"], "verifier_agent")
+        self.assertEqual(claims[0]["actor"], "verifier-1")
+        self.assertIn("could not break it", claims[0]["summary"])
+
+    def test_the_gate_passes_only_because_all_four_pre_apply_items_exist(self):
+        """A bare `--proposals` host reaches the same class and still stops here.
+
+        The difference is entirely the two claims discovery files, so this is the
+        assertion that discovery earned the pass rather than skipped the check.
+        """
+        self.run_discovery(agreeing())
+        readiness = json.loads((self.base / "run" / "readiness.json").read_text())
+        self.assertIs(readiness["complete"], True)
+        statuses = {
+            status["kind"]: status
+            for status in readiness["hooks"][AGENT_HOOK.hook_id]["statuses"]
+        }
+        self.assertEqual(
+            set(statuses),
+            {"anchor_unique", "registers_safe", "adversarial_verified", "proposer_agreement"},
+        )
+        for kind, status in statuses.items():
+            with self.subTest(kind=kind):
+                self.assertIs(status["satisfied"], True)
+
+    def test_the_hook_is_still_held_to_the_post_build_items(self):
+        """Discovery answers "which class". It says nothing about whether it works."""
+        self.run_discovery(agreeing())
+        self.assertIn("not release-ready", self.printed)
+        self.assertIn("post-build evidence", self.printed)
+
+
+class DiscoveryIndependenceTests(DiscoveryCase):
+    """What the agents are and are not shown, and that they are shown it at once."""
+
+    def test_every_proposer_gets_the_same_prompt_and_no_other_answer(self):
+        """Independence is a property of this loop, not of the agents.
+
+        A runtime that threads one session through k invocations conditions
+        proposer k on proposers 1..k-1, and that surfaces as *agreement* rather
+        than as an error. Running them concurrently must not reintroduce it.
+        """
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": host_answer(WRONG),
+                "proposer-3": host_answer(SETTINGS),
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        self.run_discovery(agents)
+        asked = agents.prompts("proposer")
+        self.assertEqual(len(asked), 3)
+        self.assertEqual(len(set(asked)), 1)
+        for prompt in asked:
+            self.assertNotIn(SETTINGS, prompt)
+            self.assertNotIn(WRONG, prompt)
+        # Positive control: a descriptor CAN reach a prompt — the verifier is
+        # shown one — so the absence above is a property of the proposer prompt
+        # and not of a search that could never have succeeded.
+        self.assertIn(SETTINGS, agents.prompts("verifier")[0])
+
+    def test_no_proposer_is_ever_asked_twice(self):
+        """A retried agent is a correlated one, and correlation reads as agreement."""
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": "I could not work it out.",
+                "proposer-3": RuntimeError("the agent runtime died"),
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        self.run_discovery(agents)
+        for name, agent in agents.built:
+            with self.subTest(agent=name):
+                self.assertEqual(len(agent.prompts), 1)
+
+    def test_the_verifier_sees_the_claim_and_never_the_rationale(self):
+        """A verifier shown a fluent justification agrees with it.
+
+        One holdout proposer justified a correct answer with a fabricated claim
+        about register state; a reviewer reading both would have been reassured
+        by exactly the wrong thing.
+        """
+        agents = agreeing()
+        self.run_discovery(agents)
+        checks = agents.prompts("verifier")
+        self.assertEqual(len(checks), 1)
+        self.assertIn(SETTINGS, checks[0])
+        self.assertIn("REFUTE", checks[0])
+        self.assertNotIn("listed the tree", checks[0])
+        self.assertNotIn("followed the field", checks[0])
+        # Positive control: the rationale exists and was carried this far, so
+        # its absence above is a decision rather than an empty search.
+        recorded = self.discovery_json()["hooks"][0]["run"]["proposals"][0]["evidence"]
+        self.assertIn("listed the tree", recorded)
+
+    def test_the_k_proposers_run_at_the_same_time(self):
+        """Each answer takes minutes; in sequence a run costs k times what it needs to.
+
+        Proved by making every proposer wait for the others: run one after
+        another the barrier is never filled and the wait times out, so this
+        cannot pass on a sequential loop.
+        """
+        barrier = threading.Barrier(3)
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": host_answer(SETTINGS),
+                "proposer-3": host_answer(SETTINGS),
+                "verifier-1": verdict(refuted=False),
+            },
+            before=lambda: barrier.wait(timeout=10),
+        )
+        result = self.run_discovery(agents)
+        self.assertIs(result.ok, True, result.stopped_because)
+        self.assertEqual(self.discovery_json()["hosts"], {AGENT_HOOK.hook_id: SETTINGS})
+
+
+class DiscoverySandboxTests(DiscoveryCase):
+    """The answers must be physically absent, not merely forbidden."""
+
+    def test_the_agents_are_pointed_at_the_sandbox_and_not_at_the_decode(self):
+        """Forbidding a path is not removing it.
+
+        This repository's own history holds the resolved anchor for every version
+        ported so far, so a proposer working in the real tree is answering from
+        the answer key. It gets a hardlinked copy with nothing else reachable
+        from it.
+        """
+        agents = agreeing()
+        fixture = self.agent_fixture()
+        self.run_discovery(agents, fixture=fixture)
+        sandbox = self.discovery_json()["sandbox"]
+        self.assertTrue(sandbox)
+        self.assertNotIn(str(driver.REPOSITORY), sandbox)
+        for prompt in agents.prompts():
+            self.assertIn(str(self.base / "sandbox-root"), prompt)
+            self.assertNotIn(str(fixture.decode), prompt)
+
+    def test_one_sandbox_serves_every_agent_and_is_removed_afterwards(self):
+        """One per run, not one per agent, and not left behind."""
+        agents = agreeing()
+        self.run_discovery(agents)
+        self.assertEqual(len(set(agents.sandboxes)), 1)
+        self.assertEqual(len(agents.sandboxes), 4)
+        self.assertFalse((self.base / "sandbox-root").exists())
+
+    def test_a_sandbox_root_inside_the_repository_is_refused(self):
+        """`build_sandbox` refuses it and the driver does not work around it."""
+        agents = agreeing()
+        settings = self.discover(agents, sandbox_root=driver.REPOSITORY / "work" / "sandbox")
+        with self.assertRaises(DriverError) as caught:
+            self.run_discovery(agents, settings=settings)
+        self.assertIn("does not remove the answers", str(caught.exception))
+        self.assertEqual(agents.calls, 0)
+
+    def test_a_missing_agent_runtime_stops_before_anything_is_spent(self):
+        """"No agent ran" and "the agents found nothing" mean opposite things.
+
+        Without this the run hardlinks the decode, drops k proposers that each
+        failed to start, and files a claim saying no proposals were produced —
+        a runtime failure recorded as a finding about the app.
+        """
+        from dfinsta_pipeline import discovery as discovery_module
+
+        original = discovery_module.find_spec
+        self.addCleanup(setattr, discovery_module, "find_spec", original)
+        discovery_module.find_spec = lambda name: None
+
+        fixture = self.agent_fixture()
+        settings = Discovery(version="439", sandbox_root=self.base / "unused")
+        with self.assertRaises(DriverError) as caught:
+            self.run_port(
+                fixture,
+                [CONTEXT_HOOK, AGENT_HOOK],
+                discovery=settings,
+                version="439",
+                recorded_at=STAMP,
+            )
+        self.assertIn("no agent runtime", str(caught.exception))
+        self.assertIn("not a finding about", str(caught.exception))
+        self.assertFalse((self.base / "unused").exists())
+
+    def test_an_injected_runner_needs_no_runtime_at_all(self):
+        """The preflight must not fire for a caller that brought its own runner,
+        or the suite would depend on a model, an API key and the `claude` CLI."""
+        from dfinsta_pipeline import discovery as discovery_module
+
+        original = discovery_module.find_spec
+        self.addCleanup(setattr, discovery_module, "find_spec", original)
+        discovery_module.find_spec = lambda name: None
+
+        result = self.run_discovery(agreeing())
+        self.assertIs(result.ok, True, result.stopped_because)
+
+    def test_a_root_that_already_exists_is_refused_rather_than_reused(self):
+        """A stale sandbox may hold an answer, so reuse is not an optimisation."""
+        (self.base / "used").mkdir()
+        (self.base / "used" / "someone-elses.txt").write_text("keep me", encoding="utf-8")
+        agents = agreeing()
+        with self.assertRaises(DriverError) as caught:
+            self.run_discovery(
+                agents, settings=self.discover(agents, sandbox_root=self.base / "used")
+            )
+        self.assertIn("refusing to reuse", str(caught.exception))
+        self.assertEqual(agents.calls, 0)
+        # And the refusal did not eat the directory it refused. Cleaning up after
+        # a root this run never created turns a safety refusal into data loss,
+        # which is worse than the reuse it was refusing.
+        self.assertTrue((self.base / "used" / "someone-elses.txt").exists())
+
+
+class DiscoveryStallTests(DiscoveryCase):
+    """Disagreement and refutation both stop the run, by different doors."""
+
+    def test_disagreeing_proposers_force_no_host_at_all(self):
+        """Three answers, three classes: that is a finding for a human.
+
+        Nothing here breaks the tie by ranking, so no host reaches the resolver
+        and the hook stays exactly as escalated as it was — while the measured
+        disagreement is on disk where the next person can read it.
+        """
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": host_answer(WRONG),
+                "proposer-3": host_answer(ALSO_WRONG),
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        result = self.run_discovery(agents)
+        self.assertIs(result.ok, False)
+        self.assertEqual(result.escalations, (AGENT_HOOK.hook_id,))
+        self.assertEqual(self.discovery_json()["hosts"], {})
+
+        resolution = json.loads((self.base / "run" / "resolution.json").read_text())
+        settled = {item["hook_id"]: item for item in resolution["resolutions"]}
+        self.assertEqual(settled[AGENT_HOOK.hook_id]["outcome"], "needs_agent")
+        self.assertIsNone(settled[AGENT_HOOK.hook_id]["descriptor"])
+        # Nothing was composed and nothing was built.
+        self.assertFalse((self.base / "run" / "patch-source").exists())
+        self.assertEqual(self.commands, [])
+
+    def test_the_disagreement_is_filed_as_evidence_rather_than_as_silence(self):
+        """Absence is never a pass, so the measurement is recorded either way."""
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": host_answer(WRONG),
+                "proposer-3": host_answer(ALSO_WRONG),
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        self.run_discovery(agents)
+        claims = self.claims_of("proposer_agreement")
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["verdict"], "inconclusive")
+        self.assertEqual(claims[0]["detail"]["distinct_answers"], 3)
+        self.assertEqual(claims[0]["detail"]["agreed"], 1)
+
+    def test_a_refuting_verifier_stalls_the_hook_at_the_gate(self):
+        """The agreed class is put forward; the objection is what stops it.
+
+        Deliberately not "drop the host and report nothing": the human gets a
+        readiness report naming the class AND the finding, which is strictly more
+        than an unresolved hook tells them. What the gate will not do is let a
+        failed `adversarial_verified` claim through.
+        """
+        result = self.run_discovery(agreeing(refuted=True))
+        self.assertIs(result.ok, False)
+        self.assertEqual(result.stage_reached, "gate")
+        self.assertEqual(result.escalations, (AGENT_HOOK.hook_id,))
+
+        readiness = json.loads((self.base / "run" / "readiness.json").read_text())
+        statuses = {
+            status["kind"]: status
+            for status in readiness["hooks"][AGENT_HOOK.hook_id]["statuses"]
+        }
+        self.assertEqual(statuses["adversarial_verified"]["verdict"], "failed")
+        self.assertIs(statuses["proposer_agreement"]["satisfied"], True)
+        self.assertFalse((self.base / "run" / "patch-source").exists())
+        self.assertEqual(self.commands, [])
+
+    def test_a_refuted_hook_does_not_hide_which_class_was_agreed(self):
+        """The finding is only actionable next to the claim it refutes."""
+        self.run_discovery(agreeing(refuted=True))
+        self.assertEqual(self.discovery_json()["hosts"], {AGENT_HOOK.hook_id: SETTINGS})
+        self.assertEqual(
+            self.discovery_json()["hooks"][0]["refuted_by"], ["verifier-1"]
+        )
+        failed = self.claims_of("adversarial_verified")
+        self.assertEqual(failed[0]["verdict"], "failed")
+
+    def test_a_verifier_that_produces_nothing_usable_has_not_cleared_anything(self):
+        """"I could not check" must not read as "it is fine"."""
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": host_answer(SETTINGS),
+                "proposer-3": host_answer(SETTINGS),
+                "verifier-1": "I ran out of turns.",
+            }
+        )
+        result = self.run_discovery(agents)
+        self.assertIs(result.ok, False)
+        self.assertEqual(result.stage_reached, "gate")
+        self.assertEqual(self.claims_of("adversarial_verified")[0]["verdict"], "failed")
+
+    def test_no_proposal_at_all_leaves_the_hook_where_it_was(self):
+        """Every proposer failing is a smaller sample, never a smaller requirement."""
+        agents = Agents(
+            {
+                "proposer-1": "no json here",
+                "proposer-2": RuntimeError("runtime died"),
+                "proposer-3": "still no json",
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        result = self.run_discovery(agents)
+        self.assertIs(result.ok, False)
+        self.assertEqual(result.escalations, (AGENT_HOOK.hook_id,))
+        agreement = self.claims_of("proposer_agreement")[0]
+        self.assertEqual(agreement["verdict"], "not_exercised")
+        # No proposal parsed, so the expensive adversarial check was never spent.
+        self.assertEqual(agents.prompts("verifier"), [])
+        self.assertEqual(self.claims_of("adversarial_verified"), [])
+
+
+class DiscoveryDroppedProposerTests(DiscoveryCase):
+    """A malformed answer is dropped, never repaired, and k-1 still decides."""
+
+    def test_an_unparseable_proposer_is_dropped_and_the_other_two_decide(self):
+        """One agent inventing a schema field is what happened on the first real run.
+
+        The other two answers were the measurement, and a run that discarded them
+        would have thrown away the result to protect a formality.
+        """
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": host_answer(SETTINGS, confidence=0.9),
+                "proposer-3": host_answer(SETTINGS),
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        result = self.run_discovery(agents)
+        self.assertIs(result.ok, True, result.stopped_because)
+        self.assertEqual(self.discovery_json()["hosts"], {AGENT_HOOK.hook_id: SETTINGS})
+
+        agreement = self.claims_of("proposer_agreement")[0]
+        self.assertEqual(agreement["detail"]["proposals"], 2)
+        self.assertEqual(agreement["detail"]["agreed"], 2)
+        self.assertEqual(agreement["verdict"], "passed")
+
+    def test_the_drop_is_recorded_with_the_reason(self):
+        """A dropped agent and an agent that was never run must not look the same."""
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": "I could not work it out.",
+                "proposer-3": host_answer(SETTINGS),
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        self.run_discovery(agents)
+        failures = self.discovery_json()["hooks"][0]["run"]["failures"]
+        self.assertEqual(len(failures), 1)
+        self.assertIn("proposer-2", failures[0])
+        self.assertIn("ProposalError", failures[0])
+        self.assertIn("proposer-2", self.printed)
+
+    def test_a_single_surviving_answer_cannot_corroborate_itself(self):
+        """k-1 is a smaller sample; k-2 leaves one voice, and one voice is not agreement."""
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": "no json",
+                "proposer-3": "no json either",
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        result = self.run_discovery(agents)
+        self.assertIs(result.ok, False)
+        self.assertEqual(self.discovery_json()["hosts"], {})
+        self.assertEqual(self.claims_of("proposer_agreement")[0]["verdict"], "inconclusive")
+
+
+class DiscoveryBudgetTests(DiscoveryCase):
+    """What a run may spend, and what it must say when it stops spending."""
+
+    def two_agent_hooks(self) -> Fixture:
+        return self.make_decode(
+            {
+                SHELL: ("smali", CLEAN_SHELL),
+                SETTINGS: ("smali_classes3", listener_class(SETTINGS)),
+                SETTINGS_TWO: ("smali_classes3", listener_class(SETTINGS_TWO)),
+            },
+            extra_trees=("smali_classes2",),
+            name="two-agent",
+        )
+
+    def test_the_cap_binds_and_says_so(self):
+        """Silent truncation reads as "covered everything", which is the one lie a
+        budget report must not tell."""
+        agents = agreeing()
+        settings = self.discover(agents, max_agent_calls=4)
+        result = self.run_discovery(
+            agents,
+            hooks=(CONTEXT_HOOK, AGENT_HOOK, AGENT_HOOK_TWO),
+            fixture=self.two_agent_hooks(),
+            settings=settings,
+        )
+        self.assertIs(result.ok, False)
+        report = self.discovery_json()
+        self.assertIs(report["cap_bound"], True)
+        self.assertEqual(report["skipped"], [AGENT_HOOK_TWO.hook_id])
+        self.assertEqual(report["spent"], 4)
+        self.assertIn("cap", report["notice"])
+        # Said in the output, and in the sentence the caller prints.
+        self.assertIn("SKIPPED", self.printed)
+        self.assertIn("cap", result.stopped_because)
+
+    def test_a_skipped_hook_is_not_reported_as_a_finding_about_the_app(self):
+        """A hook the budget never reached is a budget stop, not a disagreement.
+
+        Filing it as one would make the next person go looking for an ambiguity
+        in the app that nobody ever measured.
+        """
+        agents = agreeing()
+        self.run_discovery(
+            agents,
+            hooks=(CONTEXT_HOOK, AGENT_HOOK, AGENT_HOOK_TWO),
+            fixture=self.two_agent_hooks(),
+            settings=self.discover(agents, max_agent_calls=4),
+        )
+        skipped = [
+            item for item in self.discovery_json()["hooks"] if not item["attempted"]
+        ]
+        self.assertEqual(len(skipped), 1)
+        self.assertIsNone(skipped[0]["run"])
+        self.assertIn("not attempted", skipped[0]["reason"])
+        # Nothing was recorded about it, because nothing was measured about it.
+        self.assertEqual(
+            [claim for claim in self.evidence_claims()
+             if claim["hook_id"] == AGENT_HOOK_TWO.hook_id],
+            [],
+        )
+
+    def test_a_hook_is_attempted_whole_or_not_at_all(self):
+        """Running 2 of 3 proposers and calling it "no agreement" reports a budget
+        stop as a finding, so a hook the cap cannot fully cover is not started."""
+        agents = agreeing()
+        self.run_discovery(
+            agents,
+            hooks=(CONTEXT_HOOK, AGENT_HOOK, AGENT_HOOK_TWO),
+            fixture=self.two_agent_hooks(),
+            settings=self.discover(agents, max_agent_calls=6),
+        )
+        # 6 would cover one hook (4) and two thirds of the next. It covers one.
+        self.assertEqual(self.discovery_json()["spent"], 4)
+        self.assertEqual(agents.calls, 4)
+
+    def test_the_default_cap_covers_the_two_ui_hooks_and_no_more(self):
+        """The plan's rule is at most two generations per unresolved intent."""
+        from dfinsta_pipeline.discovery import (
+            DEFAULT_K,
+            DEFAULT_MAX_AGENT_CALLS,
+            DEFAULT_VERIFIERS,
+        )
+
+        self.assertEqual(DEFAULT_MAX_AGENT_CALLS, 2 * (DEFAULT_K + DEFAULT_VERIFIERS))
+
+    def test_a_cap_that_could_never_run_a_hook_is_refused_up_front(self):
+        """Every hook reported as skipped and no agent ever run is not a budget."""
+        with self.assertRaises(ValueError) as caught:
+            Discovery(version="439", k=3, verifiers=1, max_agent_calls=3)
+        self.assertIn("every hook would be reported as skipped", str(caught.exception))
+
+    def test_k_below_two_cannot_corroborate_anything(self):
+        with self.assertRaises(ValueError) as caught:
+            Discovery(version="439", k=1)
+        self.assertIn("cannot corroborate", str(caught.exception))
+
+    def test_discovery_needs_at_least_one_verifier(self):
+        with self.assertRaises(ValueError) as caught:
+            Discovery(version="439", verifiers=0)
+        self.assertIn("adversarial verifier", str(caught.exception))
+
+    def test_the_agreement_bar_is_a_share_and_is_not_a_command_line_flag(self):
+        """Lowering the bar from a command line, at the moment a run refuses, is
+        how a gate gets defeated — and it would leave a claim saying they agreed."""
+        for bad in (0, -0.5, 1.5):
+            with self.subTest(threshold=bad):
+                with self.assertRaises(ValueError):
+                    Discovery(version="439", threshold=bad)
+        flags = io.StringIO()
+        with contextlib.redirect_stdout(flags):
+            with self.assertRaises(SystemExit):
+                main(["--help"])
+        self.assertNotIn("threshold", flags.getvalue())
+
+
+class CostRecordingTests(DiscoveryCase):
+    """Stage 10: what was spent is spent whether or not the port resolved."""
+
+    def recorder(self) -> list[tuple]:
+        calls: list[tuple] = []
+        original = driver.record_run
+        self.addCleanup(setattr, driver, "record_run", original)
+        driver.record_run = lambda *args, **kwargs: calls.append((args, kwargs))
+        return calls
+
+    def test_record_run_is_called_once_with_the_callers_timestamp(self):
+        """Nothing in that layer reads a clock, so a replay rewrites the same line."""
+        calls = self.recorder()
+        fixture = self.three_dex_fixture()
+        result = self.run_port(
+            fixture, [CONTEXT_HOOK, ACTION_BAR_HOOK], version="439", recorded_at=STAMP
+        )
+        self.assertEqual(len(calls), 1)
+        (report, version, stamp), kwargs = calls[0]
+        self.assertIs(report, result.report)
+        self.assertEqual(version, "439")
+        self.assertEqual(stamp, STAMP)
+        self.assertEqual(kwargs["memory_path"], self.base / "decisions.jsonl")
+        self.assertEqual(kwargs["ledger_path"], self.base / "agent_cost.jsonl")
+
+    def test_the_records_actually_reach_the_two_files(self):
+        """A call made and a file not written proves nothing, and looks identical."""
+        fixture = self.three_dex_fixture()
+        self.run_port(
+            fixture, [CONTEXT_HOOK, ACTION_BAR_HOOK], version="439", recorded_at=STAMP
+        )
+        ledger = self.base / "agent_cost.jsonl"
+        self.assertTrue(ledger.exists())
+        records = [json.loads(line) for line in ledger.read_text().splitlines() if line]
+        self.assertEqual({record["kind"] for record in records}, {"hook_cost"})
+        self.assertEqual(
+            {record["record"]["hook_id"] for record in records},
+            {CONTEXT_HOOK.hook_id, ACTION_BAR_HOOK.hook_id},
+        )
+        for record in records:
+            self.assertEqual(record["record"]["recorded_at"], STAMP)
+            self.assertEqual(record["record"]["version"], "439")
+        self.assertTrue((self.base / "decisions.jsonl").exists())
+
+    def test_a_blocked_port_still_records_what_it_spent(self):
+        """A port that recorded what it learned and forgot what it paid is the state
+        the cost ledger exists to end, and a blocked port is where it paid most."""
+        calls = self.recorder()
+        fixture = self.agent_fixture()
+        result = self.run_port(
+            fixture, [CONTEXT_HOOK, AGENT_HOOK], version="439", recorded_at=STAMP
+        )
+        self.assertIs(result.ok, False)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_discovered_host_is_recorded_as_an_agent_invocation(self):
+        """The number stage 10 exists to drive down is agent invocations, so the
+        route a discovered hook took must not read as mechanical."""
+        self.run_discovery(agreeing())
+        records = [
+            json.loads(line)["record"]
+            for line in (self.base / "agent_cost.jsonl").read_text().splitlines()
+            if line
+        ]
+        by_hook = {record["hook_id"]: record for record in records}
+        self.assertEqual(by_hook[AGENT_HOOK.hook_id]["route"], "agent_proposal")
+        self.assertEqual(by_hook[AGENT_HOOK.hook_id]["agent_for"], ["host"])
+        self.assertEqual(by_hook[CONTEXT_HOOK.hook_id]["route"], "mechanical")
+
+    def test_a_run_with_no_version_records_nothing_and_says_so(self):
+        """Refused rather than guessed: decision memory is keyed by (hook, version)
+        and half a key files a record nothing can retrieve."""
+        calls = self.recorder()
+        fixture = self.three_dex_fixture()
+        self.run_port(fixture, [CONTEXT_HOOK, ACTION_BAR_HOOK])
+        self.assertEqual(calls, [])
+        self.assertIn("nothing recorded", self.printed)
+        self.assertFalse((self.base / "agent_cost.jsonl").exists())
+
+    def test_a_version_with_no_timestamp_is_refused(self):
+        fixture = self.three_dex_fixture()
+        with self.assertRaises(DriverError) as caught:
+            self.run_port(fixture, [CONTEXT_HOOK], version="439")
+        self.assertIn("--recorded-at", str(caught.exception))
+
+    def test_discovery_without_a_version_is_refused_before_any_agent_runs(self):
+        """Discovery is the expensive route. Spending without recording what was
+        spent is exactly the state the ledger exists to end."""
+        agents = agreeing()
+        fixture = self.agent_fixture()
+        with self.assertRaises(DriverError) as caught:
+            self.run_port(
+                fixture,
+                [CONTEXT_HOOK, AGENT_HOOK],
+                discovery=self.discover(agents),
+                recorded_at=STAMP,
+            )
+        self.assertIn("--version", str(caught.exception))
+        self.assertEqual(agents.calls, 0)
+
+    def test_the_stage_ten_stores_default_to_the_committed_paths(self):
+        """They outlive the run directory on purpose: a trend measured into a
+        temporary directory is a trend nobody can compare against."""
+        paths = RunPaths(self.base / "run")
+        self.assertEqual(paths.cost_ledger, driver.REPOSITORY / "manifest" / "agent_cost.jsonl")
+        self.assertEqual(
+            paths.decision_memory, driver.REPOSITORY / "manifest" / "decisions.jsonl"
+        )
+
+
+class DiscoveryCliTests(DiscoveryCase):
+    """The flag surface, exercised through `main` because that is where it lives."""
+
+    def test_the_cli_wires_every_discovery_knob_through(self):
+        built: list[Discovery] = []
+        original = driver.discover_hosts
+        self.addCleanup(setattr, driver, "discover_hosts", original)
+
+        def capture(report, hooks, decode, ledger, settings, skip=(), log=print):
+            built.append(settings)
+            return original(report, hooks, decode, ledger, settings, skip, log)
+
+        driver.discover_hosts = capture
+
+        fixture = self.agent_fixture()
+        manifest = write_manifest(self.base / "hooks.json", [CONTEXT_HOOK, AGENT_HOOK])
+        agents = agreeing()
+        # The CLI builds its own `Discovery`, so the fake runner is injected at
+        # the point of construction. No model, no API key, no `claude` CLI: the
+        # suite must not be able to reach a network even by accident.
+        original_class = driver.Discovery
+        self.addCleanup(setattr, driver, "Discovery", original_class)
+        driver.Discovery = lambda **kwargs: original_class(runner=agents, **kwargs)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(
+                [
+                    str(self.base / "stock.apk"),
+                    "--out", str(self.base / "cli"),
+                    "--manifest", str(manifest),
+                    "--custom-code", str(self.custom_code),
+                    "--apktool", str(self.base / "apktool.jar"),
+                    "--framework-apk", str(self.base / "framework-res.apk"),
+                    "--reuse-decode", str(fixture.decode),
+                    "--reuse-index", str(fixture.index_dir),
+                    "--stop-after", "gate",
+                    "--version", "439",
+                    "--recorded-at", STAMP,
+                    "--decision-memory", str(self.base / "decisions.jsonl"),
+                    "--cost-ledger", str(self.base / "agent_cost.jsonl"),
+                    "--discover-hosts",
+                    "--discover-k", "3",
+                    "--discover-verifiers", "1",
+                    "--discover-model", "some-model",
+                    "--max-agent-calls", "6",
+                    "--sandbox-root", str(self.base / "cli-sandbox"),
+                ]
+            )
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(len(built), 1)
+        settings = built[0]
+        self.assertEqual(settings.version, "439")
+        self.assertEqual(settings.k, 3)
+        self.assertEqual(settings.verifiers, 1)
+        self.assertEqual(settings.model, "some-model")
+        self.assertEqual(settings.max_agent_calls, 6)
+        self.assertEqual(settings.sandbox_root, self.base / "cli-sandbox")
+        self.assertIs(settings.keep_sandbox, False)
+
+    def test_the_cli_refuses_discovery_without_a_version(self):
+        fixture = self.agent_fixture()
+        manifest = write_manifest(self.base / "hooks.json", [CONTEXT_HOOK, AGENT_HOOK])
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(
+                [
+                    str(self.base / "stock.apk"),
+                    "--out", str(self.base / "cli-noversion"),
+                    "--manifest", str(manifest),
+                    "--reuse-decode", str(fixture.decode),
+                    "--reuse-index", str(fixture.index_dir),
+                    "--discover-hosts",
+                ]
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("--version", stderr.getvalue())
+
+
+class DiscoveryMutationTests(DiscoveryCase):
+    """The same guards, re-attacked from the direction a plausible rewrite takes."""
+
+    def test_counting_raw_proposals_would_record_a_forged_unanimity(self):
+        """Mutation: hand `agreement_claim` the proposals instead of the votes.
+
+        It reads as the same list and is not: the claim counts what it is given,
+        so one agent answering three times would be filed as three independent
+        proposers reaching one answer — a manufactured consensus, recorded as
+        measured evidence, by an edit of one word.
+        """
+        from dfinsta_pipeline.discovery import file_host_evidence
+        from dfinsta_pipeline.proposals import HostProposal, host_agreement
+        from dfinsta_pipeline.proposer import HostRun
+
+        repeated = [
+            HostProposal(AGENT_HOOK.hook_id, "proposer-1", SETTINGS),
+            HostProposal(AGENT_HOOK.hook_id, "proposer-1", SETTINGS),
+            HostProposal(AGENT_HOOK.hook_id, "proposer-1", SETTINGS),
+        ]
+        run = HostRun(AGENT_HOOK.hook_id, tuple(repeated), ())
+        agreement = host_agreement(repeated)
+        ledger = EvidenceLedger(self.base / "forged.jsonl")
+        file_host_evidence(ledger, AGENT_HOOK.hook_id, run, agreement)
+
+        claim = ledger.claims_for(AGENT_HOOK.hook_id, EvidenceKind.PROPOSER_AGREEMENT)[0]
+        self.assertEqual(claim.detail["proposals"], 1)
+        self.assertEqual(claim.detail["agreed"], 1)
+        self.assertEqual(claim.verdict.value, "inconclusive")
+        self.assertIs(agreement.agreed, False)
+
+    def test_accepting_a_refuted_host_would_build_what_a_verifier_broke(self):
+        """Mutation: treat `refuted` as advisory and carry on.
+
+        The refutation is the check that caught a shipped inert hook after three
+        agreeing proposers and every static check said to ship it. Today's code
+        reaches the gate and stops there; a build command appearing in this test
+        means the objection became a log line.
+        """
+        result = self.run_discovery(agreeing(refuted=True))
+        self.assertEqual(result.stage_reached, "gate")
+        self.assertEqual(self.commands, [])
+        self.assertFalse((self.base / "run" / "dfinsta.apk").exists())
+
+    def test_supplying_the_plurality_host_would_be_discovery_deciding_a_tie(self):
+        """Mutation: when nobody agrees, take the most common answer anyway.
+
+        With three distinct answers the "most common" is whichever sorts first,
+        so this would resolve the hook on one agent's word and file an
+        inconclusive agreement claim beside it — a gate refusing something the
+        resolver already acted on.
+        """
+        agents = Agents(
+            {
+                "proposer-1": host_answer(SETTINGS),
+                "proposer-2": host_answer(WRONG),
+                "proposer-3": host_answer(ALSO_WRONG),
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        self.run_discovery(agents)
+        resolution = json.loads((self.base / "run" / "resolution.json").read_text())
+        settled = {item["hook_id"]: item for item in resolution["resolutions"]}
+        self.assertIsNone(settled[AGENT_HOOK.hook_id]["descriptor"])
+        self.assertEqual(self.discovery_json()["hosts"], {})
+
+    def test_skipping_the_evidence_and_only_re_resolving_would_pass_the_gate_blind(self):
+        """Mutation: supply the agreed host and file nothing.
+
+        The hook would resolve, the anchor and register claims would be recorded
+        by the ordinary path, and the gate would then be judging an agent-proposed
+        hook on mechanical evidence alone. The two claims below are the whole
+        difference between that and a reviewed answer.
+        """
+        self.run_discovery(agreeing())
+        kinds = {claim["kind"] for claim in self.evidence_claims()
+                 if claim["hook_id"] == AGENT_HOOK.hook_id}
+        self.assertEqual(
+            kinds,
+            {"anchor_unique", "registers_safe", "proposer_agreement", "adversarial_verified"},
+        )
+
+    def test_dispatching_a_verifier_before_the_proposals_would_spend_on_nothing(self):
+        """Mutation: build every runner and fire them all at once.
+
+        The verifier's prompt does not exist until there is a claim to refute, so
+        an eager batch spends a real invocation on a question nobody has yet.
+        """
+        agents = Agents(
+            {
+                "proposer-1": "no json here",
+                "proposer-2": "no json here either",
+                "proposer-3": "nor here",
+                "verifier-1": verdict(refuted=False),
+            }
+        )
+        self.run_discovery(agents)
+        self.assertEqual(agents.prompts("verifier"), [])
+        self.assertEqual(self.discovery_json()["spent"], 3)
+
+    def test_re_registering_a_discovered_hook_would_kill_the_run(self):
+        """Mutation: let `record_resolution_evidence` register it a second time.
+
+        Discovery names the agent that actually proposed the host, so a second
+        registration under a synthetic proposer both changes which evidence is
+        required and disagrees about who may produce it. The ledger refuses,
+        loudly, which is why the hook is passed as already registered.
+        """
+        self.run_discovery(agreeing())
+        subjects = {
+            claim["hook_id"] for claim in self.evidence_claims()
+        }
+        self.assertIn(AGENT_HOOK.hook_id, subjects)
+        # The claim that would have been refused: an actor equal to the proposer.
+        for claim in self.evidence_claims():
+            if claim["hook_id"] == AGENT_HOOK.hook_id:
+                self.assertNotIn(claim["actor"], {"proposer-1", "proposer-2", "proposer-3"})
 
 
 if __name__ == "__main__":  # pragma: no cover

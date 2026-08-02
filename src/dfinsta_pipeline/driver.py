@@ -11,6 +11,13 @@ hook lacks externally produced evidence — including the two settings hooks, wh
 have no mechanical fingerprint and need agent proposals supplied with
 ``--proposals``. Stopping there is the design working, not the pipeline failing.
 
+``--discover-hosts`` is the one thing that can answer such a hook without a
+human: it asks k independent agents *which class*, files their agreement and the
+verifier's finding as evidence, and re-resolves. It is off by default because it
+needs the network and spends the user's quota, and it cannot get a hook past the
+gate — a disagreement leaves the hook unresolved and a refutation leaves it with
+a failed claim the gate refuses. See `dfinsta_pipeline.discovery`.
+
 Two things it works out for itself that used to be hand-edited per version, and
 that silently produce a broken APK when wrong:
 
@@ -38,9 +45,19 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .agent_cost import record_run
+from .agent_runner import AgentUnavailable
+from .discovery import (
+    DEFAULT_K,
+    DEFAULT_MAX_AGENT_CALLS,
+    DEFAULT_VERIFIERS,
+    Discovery,
+    discover_hosts,
+)
 from .evidence import (
     PRE_APPLY,
     EvidenceClaim,
@@ -61,6 +78,7 @@ from .proposals import (
     assess,
     load_proposals,
 )
+from .proposer import SandboxError
 from .resolve import Outcome, ResolveReport, resolve_manifest
 from .runtime_identity import (
     PROBE_DESCRIPTOR,
@@ -74,6 +92,16 @@ INDEXER = REPOSITORY / "tools" / "indexer" / "build_index.py"
 BUILDER = REPOSITORY / "tools" / "port_430" / "build.py"
 
 STAGES = ("extract", "index", "resolve", "gate", "compose", "build")
+
+#: Why discovery cannot run unlabelled. Stated once because both the CLI and
+#: `port` refuse for it, and a second wording would let one of them drift into
+#: sounding optional.
+NEEDS_VERSION = (
+    "--discover-hosts needs --version. Discovery is the expensive route — it spends "
+    "the user's quota and takes minutes per proposer — and a run that spends without "
+    "recording what it spent under a version label is exactly the state the cost "
+    "ledger exists to end."
+)
 
 
 class DriverError(RuntimeError):
@@ -211,6 +239,24 @@ class RunPaths:
     #: always decodes the stock APK again for itself.
     reuse_decode: Path | None = None
     reuse_index: Path | None = None
+    #: The two stage-10 files, which deliberately do NOT live in the run
+    #: directory: what a port learned and what it cost are worth nothing unless
+    #: they outlive the decode they were measured on, so both are committed next
+    #: to the manifest. Overridable so a test never writes into the repository.
+    memory_path: Path | None = None
+    ledger_path: Path | None = None
+
+    @property
+    def decision_memory(self) -> Path:
+        return self.memory_path or (REPOSITORY / "manifest" / "decisions.jsonl")
+
+    @property
+    def cost_ledger(self) -> Path:
+        return self.ledger_path or (REPOSITORY / "manifest" / "agent_cost.jsonl")
+
+    @property
+    def discovery(self) -> Path:
+        return self.out / "discovery.json"
 
     @property
     def analysis_decode(self) -> Path:
@@ -457,8 +503,83 @@ def port(
     refutations: Path | None = None,
     stop_after: str = "build",
     require_evidence: bool = True,
+    version: str = "",
+    recorded_at: str = "",
+    discovery: Discovery | None = None,
 ) -> RunResult:
-    """Run the pipeline as far as the evidence allows."""
+    """Run the pipeline as far as the evidence allows, then record what it cost.
+
+    *version* is the label this port is for, such as ``"439"``. It is the key
+    both stage-10 stores are written under, so it is required to record anything
+    and refused when it looks like a path. *recorded_at* is the timestamp those
+    records carry: it comes from the caller because nothing in that layer reads a
+    clock, deliberately, so a Temporal replay rewrites the line already on disk.
+
+    *discovery* turns on stage 5a. Without it the run is exactly what it was
+    before that stage existed — deterministic, offline, and stopping at a hook
+    whose host nothing points at.
+    """
+    if discovery is not None and not version.strip():
+        raise DriverError(NEEDS_VERSION)
+    if version.strip() and not recorded_at.strip():
+        raise DriverError(
+            "--version needs --recorded-at. A cost record stamped with nothing is one "
+            "no trend can order, and this layer must never read the clock for itself."
+        )
+    result = _run_stages(
+        apk=apk,
+        paths=paths,
+        hooks=hooks,
+        apktool=apktool,
+        framework_apk=framework_apk,
+        custom_code=custom_code,
+        proposals=proposals,
+        full_proposals=full_proposals,
+        refutations=refutations,
+        stop_after=stop_after,
+        require_evidence=require_evidence,
+        discovery=discovery,
+    )
+    # Stage 10, once per run and at the end of it, whatever the run concluded.
+    # What a port *learned* is only written when something resolved; what it
+    # *spent* is spent either way, and a blocked port that recorded nothing is
+    # how the agent-invocation count stays at "unknown" forever.
+    if result.report is None:
+        return result
+    if not version.strip():
+        print(
+            "[cost] nothing recorded: pass --version (and --recorded-at) to file what "
+            "this port resolved and what it cost.",
+            flush=True,
+        )
+        return result
+    record_run(
+        result.report,
+        version,
+        recorded_at,
+        memory_path=paths.decision_memory,
+        ledger_path=paths.cost_ledger,
+    )
+    result.artifacts["decision_memory"] = str(paths.decision_memory)
+    result.artifacts["cost_ledger"] = str(paths.cost_ledger)
+    return result
+
+
+def _run_stages(
+    apk: Path,
+    paths: RunPaths,
+    hooks: Sequence[Hook],
+    apktool: Path,
+    framework_apk: Path | None,
+    custom_code: Path,
+    proposals: Mapping[str, Sequence[str]] | None = None,
+    full_proposals: Path | None = None,
+    refutations: Path | None = None,
+    stop_after: str = "build",
+    require_evidence: bool = True,
+    discovery: Discovery | None = None,
+) -> RunResult:
+    """The six stages themselves. Split out so stage 10 has exactly one call site."""
     if stop_after not in STAGES:
         raise DriverError(f"unknown stage {stop_after!r}; expected one of {', '.join(STAGES)}")
     proposals = dict(proposals or {})
@@ -515,6 +636,51 @@ def port(
         artifacts["assessments"] = str(paths.assessments)
 
     report = resolve_manifest(hooks, index, paths.analysis_decode, proposals)
+
+    # 3a. Discovery, only when asked for. A hook that escalated *because nothing
+    #     points at its host* is the one question k agents can answer, and the
+    #     only one they are asked: the manifest already owns the anchor pattern
+    #     and the payload template, and asking for those back manufactures the
+    #     variance that then reads as disagreement.
+    discovered: set[str] = set()
+    notice = ""
+    if discovery is not None:
+        try:
+            found = discover_hosts(
+                report,
+                hooks,
+                paths.analysis_decode,
+                ledger,
+                discovery,
+                skip=set(assessments),
+            )
+        except SandboxError as error:
+            # A sandbox that could not be made isolated is not a degraded run to
+            # continue with: the answers to this exact question are on this
+            # machine, and an agent that can reach them measures nothing.
+            raise DriverError(str(error)) from error
+        except AgentUnavailable as error:
+            # "No agent ran" and "an agent answered badly" look identical in a
+            # results file and mean opposite things about whether the run
+            # measured anything. This one is the former, said as such.
+            raise DriverError(str(error)) from error
+        notice = found.notice
+        discovered = {item.hook_id for item in found.hooks if item.attempted}
+        if found.hooks:
+            paths.discovery.write_text(
+                json.dumps(found.to_dict(), indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            artifacts["discovery"] = str(paths.discovery)
+        for hook_id, descriptor in found.hosts.items():
+            proposals[hook_id] = [*proposals.get(hook_id, ()), descriptor]
+        if found.hosts:
+            # Re-resolve with the agreed hosts in hand. Nothing else changes:
+            # the host is checked against the index and then against the decode
+            # exactly like a mechanically-found candidate, so an agreed class
+            # whose anchor does not match still escalates.
+            report = resolve_manifest(hooks, index, paths.analysis_decode, proposals)
+
     # A hook whose manifest payload is a shape cannot be resolved from the
     # template, so an accepted proposal is what stands in for it.
     by_proposal = {
@@ -542,9 +708,15 @@ def port(
         return RunResult(
             "resolve",
             stopped_because=(
-                f"{len(outstanding)} hook(s) did not resolve — {detail}"
-                if outstanding
-                else "no active hook resolved"
+                (
+                    f"{len(outstanding)} hook(s) did not resolve — {detail}"
+                    if outstanding
+                    else "no active hook resolved"
+                )
+                # A hook the budget never reached looks identical to a hook the
+                # agents could not answer, and reads as the harder finding of the
+                # two. Say which it was, in the sentence a caller prints.
+                + (f" [{notice}]" if notice else "")
             ),
             report=report,
             escalations=outstanding,
@@ -562,7 +734,11 @@ def port(
         proposals,
         paths.analysis_decode,
         hooks,
-        already_registered=assessments.keys(),
+        # Both routes registered their own subject, naming the agent that
+        # actually proposed the host. Re-registering under a synthetic proposer
+        # is refused by the ledger — and rightly: the two registrations would
+        # require different evidence and disagree about who may produce it.
+        already_registered={*assessments, *discovered},
     )
     readiness = ledger.report(PRE_APPLY)
     paths.readiness.write_text(
@@ -789,13 +965,102 @@ def main(argv: list[str] | None = None) -> int:
             "target whose probes do not exist yet; never for a build anyone installs."
         ),
     )
+    parser.add_argument(
+        "--version",
+        default="",
+        help="the label this port is for, e.g. 439. Both stage-10 stores are keyed by "
+        "it, so it is required to record what the run resolved and what it cost, and "
+        "required by --discover-hosts.",
+    )
+    parser.add_argument(
+        "--recorded-at",
+        default=datetime.now(timezone.utc).isoformat(),
+        help="the timestamp the durable records carry. Defaults to now; pass it "
+        "explicitly to re-run a port and write byte-identical records.",
+    )
+    parser.add_argument(
+        "--decision-memory",
+        type=Path,
+        help="where to append what this port learned (default: the committed "
+        "manifest/decisions.jsonl)",
+    )
+    parser.add_argument(
+        "--cost-ledger",
+        type=Path,
+        help="where to append what this port cost (default: the committed "
+        "manifest/agent_cost.jsonl)",
+    )
+    discovery_group = parser.add_argument_group(
+        "host discovery (stage 5a)",
+        "Off by default. It needs the network, spends quota and takes minutes per "
+        "proposer, so it runs only for a hook that escalated because nothing "
+        "mechanical points at its host — and never weakens the evidence gate.",
+    )
+    discovery_group.add_argument(
+        "--discover-hosts",
+        action="store_true",
+        help="ask k agents which class each host-less hook belongs in",
+    )
+    discovery_group.add_argument(
+        "--discover-k", type=int, default=DEFAULT_K, help="independent proposers per hook"
+    )
+    discovery_group.add_argument(
+        "--discover-verifiers",
+        type=int,
+        default=DEFAULT_VERIFIERS,
+        help="adversarial verifiers per hook, each shown the claim and never the rationale",
+    )
+    discovery_group.add_argument("--discover-model", help="model id for the agent runtime")
+    discovery_group.add_argument(
+        "--max-agent-calls",
+        type=int,
+        default=DEFAULT_MAX_AGENT_CALLS,
+        help="total agent invocations this run may make. A hook the cap cannot cover "
+        "is reported as skipped rather than as unresolved.",
+    )
+    discovery_group.add_argument(
+        "--sandbox-root",
+        type=Path,
+        help="where to hardlink the decode for the agents. Must not exist and must be "
+        "outside this repository, which holds the resolved anchors for every version "
+        "ported so far.",
+    )
+    discovery_group.add_argument(
+        "--keep-sandbox", action="store_true", help="do not remove the sandbox afterwards"
+    )
     args = parser.parse_args(argv)
 
     hooks = load_manifest(args.manifest)
+    discovery: Discovery | None = None
+    try:
+        if args.discover_hosts:
+            if not args.version.strip():
+                # Refused here rather than by `Discovery`, so the message names
+                # the flag the user is missing rather than the field it fills.
+                raise DriverError(NEEDS_VERSION)
+            discovery = Discovery(
+                version=args.version,
+                k=args.discover_k,
+                verifiers=args.discover_verifiers,
+                model=args.discover_model,
+                max_agent_calls=args.max_agent_calls,
+                sandbox_root=args.sandbox_root,
+                keep_sandbox=args.keep_sandbox,
+            )
+    except (DriverError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
     try:
         result = port(
             apk=args.apk,
-            paths=RunPaths(args.out, args.reuse_decode, args.reuse_index),
+            paths=RunPaths(
+                args.out,
+                args.reuse_decode,
+                args.reuse_index,
+                memory_path=args.decision_memory,
+                ledger_path=args.cost_ledger,
+            ),
             hooks=hooks,
             apktool=args.apktool,
             framework_apk=args.framework_apk,
@@ -805,6 +1070,9 @@ def main(argv: list[str] | None = None) -> int:
             refutations=args.refutations,
             stop_after=args.stop_after,
             require_evidence=not args.skip_evidence_gate,
+            version=args.version,
+            recorded_at=args.recorded_at,
+            discovery=discovery,
         )
     except (DriverError, ManifestError) as error:
         print(f"error: {error}", file=sys.stderr)
