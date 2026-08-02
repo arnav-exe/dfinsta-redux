@@ -28,6 +28,17 @@ Everything the stage decides is recorded per candidate, including the rejected
 ones, because a gate needs to see what was considered and why it lost — not a
 score.
 
+**One fingerprint kind is answered by the decode, not the Index.** ``by_anchor``
+means "the class whose body matches this hook's own anchor", and no index can
+answer that, so :func:`scan_for_anchor` walks the decode. Exactly one matching
+class is a resolution, none is ``NOT_FOUND``, and more than one is ``AMBIGUOUS``:
+there is deliberately no tiebreak, because the entire value of the kind is that
+the anchor is unique and a winner picked from several would hide the version
+where it stopped being. A byte-level prefilter derived from the anchor's own
+fixed text keeps the pass at seconds rather than minutes; it is an accelerator
+only, and the classes it selects are verified to be the same ones a full match
+over every class selects.
+
 **Some captures come from a supplier, not the anchor.** A hook whose payload needs
 a value no anchor line can bind (see :mod:`dfinsta_pipeline.capture_supply`)
 resolves in two passes: the anchor-only pass locates the site and comes back
@@ -42,6 +53,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
@@ -55,6 +68,7 @@ from .hook_manifest import (
     HostFingerprint,
     ManifestError,
     Resolution,
+    anchor_prefilter,
     assert_distinct,
     find_anchor_hits,
     load_manifest,
@@ -258,14 +272,114 @@ class ResolveReport:
 
 # --------------------------------------------------------------------- search
 
+#: The class one smali file declares. Read from the file rather than taken from
+#: the index, because a `by_anchor` search reaches a file by walking the decode
+#: and the decode is the truth the index is only an accelerator for.
+CLASS_DECLARATION = re.compile(r"^\.class\b[^\n]*?(\S+;)[ \t]*$", re.M)
+
+
+@dataclass(frozen=True)
+class AnchorScan:
+    """What one pass over a decode found for one hook's anchor.
+
+    ``matched`` and ``carrying_marker`` are kept apart because they answer
+    different questions. ``matched`` is the fingerprint's claim — the classes this
+    anchor selects — and its size is what decides resolved / not found /
+    ambiguous. ``carrying_marker`` is the *other* way into a host and exists
+    because ``by_anchor`` is the first fingerprint kind whose search depends on
+    the anchor: for a `replace`-mode hook the payload splices lines into the
+    middle of the anchor, so a decode this pipeline already patched no longer
+    matches, and a search that only looked for matches would report NOT_FOUND
+    where every other kind reports ALREADY_APPLIED. That precedence is the
+    stage's central safety rule and it is not weakened to fit a new kind.
+    """
+
+    matched: tuple[str, ...]
+    carrying_marker: tuple[str, ...]
+    scanned: int
+    survivors: int
+    prefilter: str
+
+    @property
+    def candidates(self) -> tuple[str, ...]:
+        return tuple(sorted(set(self.matched) | set(self.carrying_marker)))
+
+
+def scan_for_anchor(hook: Hook, decode: Path) -> AnchorScan:
+    """Every class in *decode* whose body matches *hook*'s anchor, plus a cost record.
+
+    Two stages, for the same reason :class:`generalise.DecodeLiterals` uses two: a
+    byte-level substring test over every file is what makes one pass over 181,421
+    classes affordable, and the real matcher on the few survivors is what makes
+    the answer exact. Measured on this repo's decodes, prefiltering leaves 986 of
+    181,421 classes on 439 for the profile-bar hook and 26 for the action-bar one;
+    matching all 181,421 instead takes minutes per hook per decode and — verified
+    against both real decodes — returns exactly the same classes.
+
+    The prefilter is derived from the anchor by :func:`hook_manifest.anchor_prefilter`
+    and never hand-written per hook, so it cannot drift from the pattern it
+    accelerates. When the anchor asserts no fixed text long enough to be worth
+    grepping the prefilter is empty and every class is matched: slower, never
+    wrong.
+    """
+    fragment = anchor_prefilter(hook.anchor)
+    needle = fragment.encode("utf-8") if fragment else b""
+    marker = hook.marker.encode("utf-8")
+    matched: list[str] = []
+    applied: list[str] = []
+    scanned = survivors = 0
+
+    for root, _, names in os.walk(decode):
+        for name in names:
+            if not name.endswith(".smali"):
+                continue
+            scanned += 1
+            try:
+                with open(os.path.join(root, name), "rb") as handle:
+                    data = handle.read()
+            except OSError:  # pragma: no cover - a file that vanished mid-scan
+                continue
+            # The marker is tested alongside the fragment rather than relying on
+            # the payload happening to re-emit the anchor: an already-applied host
+            # must be findable whatever the payload did to the site.
+            if needle and needle not in data and marker not in data:
+                continue
+            survivors += 1
+            body = data.decode("utf-8", "replace")
+            declaration = CLASS_DECLARATION.search(body)
+            if declaration is None:  # pragma: no cover - smali without a .class
+                continue
+            descriptor = declaration.group(1)
+            if find_anchor_hits(hook, body):
+                matched.append(descriptor)
+            if hook.marker in body:
+                applied.append(descriptor)
+
+    # Sorted: `os.walk` order is a property of the filesystem, and a candidate
+    # list that changes between runs on one decode would make every downstream
+    # record — the ledger's included — non-reproducible.
+    return AnchorScan(
+        matched=tuple(sorted(matched)),
+        carrying_marker=tuple(sorted(applied)),
+        scanned=scanned,
+        survivors=survivors,
+        prefilter=fragment,
+    )
+
 
 def search_hosts(
     hook: Hook,
     fingerprint: HostFingerprint,
     index: HookIndex,
     proposals: Sequence[str] = (),
+    decode: Path | str | None = None,
 ) -> HostSearch:
-    """Ask the index which classes this fingerprint points at, in this version."""
+    """Ask the index which classes this fingerprint points at, in this version.
+
+    *decode* is required only by ``by_anchor``, which is the one kind the index
+    cannot answer: it holds API-path literals and class paths, and "which classes
+    match this instruction pattern" is neither.
+    """
     if fingerprint.kind == "named":
         descriptor = fingerprint.descriptor
         assert descriptor is not None
@@ -323,6 +437,50 @@ def search_hosts(
             )
         return HostSearch("by_literal", candidates, evidence)
 
+    if fingerprint.kind == "by_anchor":
+        if decode is None:
+            raise ManifestError(
+                f"{hook.hook_id}: a by_anchor fingerprint is resolved against the decode, "
+                "not the index, and no decode was passed. This is a caller contract "
+                "violation, not a property of the target"
+            )
+        scan = scan_for_anchor(hook, Path(decode))
+        candidates = scan.candidates
+        evidence = {
+            "prefilter": scan.prefilter,
+            "classes_scanned": scan.scanned,
+            "classes_prefiltered": scan.survivors,
+            "anchor_matched": list(scan.matched),
+            "carrying_marker": list(scan.carrying_marker),
+        }
+        if not candidates:
+            return HostSearch(
+                "by_anchor",
+                (),
+                evidence,
+                reason=(
+                    f"the anchor matches no class in this decode ({scan.scanned} scanned, "
+                    f"{scan.survivors} carried the derived prefilter {scan.prefilter!r}). "
+                    "For a by_anchor host the anchor is the whole fingerprint, so there is "
+                    "nothing left to fall back on: the pattern has to be re-established "
+                    "against this version rather than widened until something matches"
+                ),
+            )
+        if len(scan.matched) > 1:
+            return HostSearch(
+                "by_anchor",
+                candidates,
+                evidence,
+                reason=(
+                    f"the anchor matches {len(scan.matched)} classes "
+                    f"({', '.join(scan.matched)}). A by_anchor fingerprint claims the "
+                    "anchor is unique across the WHOLE decode — a separate claim from "
+                    "matching once inside the host — and here it is not. Picking one "
+                    "would hide the version that broke the claim"
+                ),
+            )
+        return HostSearch("by_anchor", candidates, evidence)
+
     # by_agent: nothing mechanical points at the host, so a proposal must arrive
     # from outside. It is still checked against the index and then against the
     # decode, exactly like a mechanically-found candidate.
@@ -365,7 +523,7 @@ def resolve_hook(
     ordered: list[tuple[str, str]] = []  # (descriptor, found_by)
     seen: set[str] = set()
     for fingerprint in hook.hosts:
-        search = search_hosts(hook, fingerprint, index, proposals)
+        search = search_hosts(hook, fingerprint, index, proposals, decode)
         searches.append(search)
         for descriptor in search.candidates:
             if descriptor not in seen:

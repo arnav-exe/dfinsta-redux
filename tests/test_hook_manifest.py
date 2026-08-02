@@ -31,8 +31,10 @@ from dfinsta_pipeline.hook_manifest import (
     ManifestError,
     Probe,
     Resolution,
+    anchor_prefilter,
     compile_anchor,
     compile_pattern,
+    find_anchor_hits,
     load_manifest,
     render,
     resolve_in_source,
@@ -350,6 +352,101 @@ class CompileAnchorTests(unittest.TestCase):
                 self.assertEqual(len(compiled), len(hook.anchor))
 
 
+class AnchorPrefilterTests(unittest.TestCase):
+    """The substring a `by_anchor` search greps for before it matches anything.
+
+    Derived from the anchor, never declared beside it: a hand-written fragment is
+    a second statement of what the anchor says, and a too-narrow one fails by
+    finding NOTHING, which reads exactly like "this version moved the site".
+    """
+
+    def test_the_prefilter_is_the_longest_run_of_fixed_text_in_the_anchor(self):
+        self.assertEqual(
+            anchor_prefilter(
+                [
+                    "new-instance <l:reg>, <cls:type>",
+                    "invoke-virtual {<v:reg>, <lp:reg>}, Landroid/view/View;"
+                    "->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V",
+                ]
+            ),
+            "}, Landroid/view/View;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V",
+        )
+
+    def test_an_anchor_with_no_usable_fixed_text_degrades_to_a_full_scan(self):
+        """Empty means "grep nothing away", not "match nothing".
+
+        The separator runs between adjacent captures are `", "` and `"->"`. A
+        prefilter that short survives in essentially every class, so grepping for
+        it costs a pass and buys nothing — and returning it as if it were
+        selective is how an accelerator turns into a wrong answer.
+        """
+        self.assertEqual(anchor_prefilter(["<a:any> <b:any>", "<c:reg>, <d:reg>"]), "")
+        self.assertEqual(anchor_prefilter([]), "")
+
+    def test_the_prefilter_is_present_in_every_class_the_anchor_matches(self):
+        """The soundness property, and the only one that matters.
+
+        A prefilter may keep files the anchor will reject — the real matcher runs
+        on the survivors and throws them out. It may never DISCARD a file the
+        anchor would have matched, which is the same as saying the fragment is a
+        substring of any class body the anchor matches in.
+        """
+        hook = make_hook(
+            anchor=(
+                "new-instance <l:reg>, <cls:type>",
+                "invoke-direct {<l>}, <cls>-><init>()V",
+            ),
+            payload=("    invoke-static {<l>}, LH;->f(Ljava/lang/String;)V",),
+        )
+        fragment = anchor_prefilter(hook.anchor)
+        self.assertEqual(fragment, "invoke-direct {")
+        body = (
+            ".class public LX/0Aaa;\n"
+            ".method public go()V\n"
+            "    .line 4\n"
+            "    new-instance v0, LX/0Bbb;\n"
+            "    invoke-direct {v0}, LX/0Bbb;-><init>()V\n"
+            ".end method\n"
+        )
+        self.assertTrue(find_anchor_hits(hook, body))  # control
+        self.assertIn(fragment, body)
+
+    def test_a_trailing_baksmali_annotation_cannot_hide_the_prefilter(self):
+        """The one place the matched text and the file text differ.
+
+        `strip_comment` removes the annotation baksmali hangs off a constant
+        before matching, so the anchor is matched against a PREFIX of the file
+        line. A fragment taken from the anchor is therefore still a substring of
+        the raw line — but only because the strip truncates from the right, which
+        is worth pinning since 66,169 lines of the 439 decode carry one.
+        """
+        hook = make_hook(anchor=("const <r:reg>, <id:any>",))
+        fragment = anchor_prefilter(hook.anchor)
+        self.assertEqual(fragment, "const")
+        body = (
+            ".class public LX/0Aaa;\n"
+            ".method public go()V\n"
+            "    const v0, 0x7f134a34    # 1.957818E38f\n"
+            ".end method\n"
+        )
+        self.assertTrue(find_anchor_hits(hook, body))  # control
+        self.assertIn(fragment, body)
+
+    def test_both_real_ui_anchors_yield_the_fragment_that_was_measured(self):
+        # The two hooks a by_anchor fingerprint is for. These fragments are what
+        # cut 181,421 classes to 986 and 26 on 439; if an anchor edit changes
+        # them, the measured cost in `resolve.scan_for_anchor` is stale.
+        hooks = {hook.hook_id: hook for hook in load_manifest(MANIFEST)}
+        self.assertEqual(
+            anchor_prefilter(hooks["install_settings_long_click"].anchor),
+            "}, Landroid/view/View;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V",
+        )
+        self.assertEqual(
+            anchor_prefilter(hooks["install_settings_long_click_actionbar"].anchor),
+            ":Landroid/view/View$OnLongClickListener;",
+        )
+
+
 class ReservedConstructorTests(unittest.TestCase):
     """`<init>` / `<clinit>` collide with the capture syntax; they must stay literal."""
 
@@ -535,6 +632,29 @@ class HostFingerprintTests(unittest.TestCase):
         self.assertIsNone(host.descriptor)
         self.assertIsNone(host.literal)
         self.assertEqual(host.note, "located by drawable id")
+
+    def test_by_anchor_needs_neither_descriptor_nor_literal(self):
+        host = HostFingerprint("by_anchor", note="the anchor is unique in the decode")
+        self.assertIsNone(host.descriptor)
+        self.assertIsNone(host.literal)
+        self.assertEqual(host.required_literals, ())
+
+    def test_by_anchor_refuses_a_second_fingerprint_alongside_the_anchor(self):
+        """A `by_anchor` host may not also carry a literal or a descriptor.
+
+        Not tidiness. The kind means "the class whose body matches this anchor",
+        so the anchor is the identity; a literal or a descriptor beside it is a
+        second claim about the same thing with no rule for which wins, and the
+        one that would win in practice is whichever the search happened to
+        consult first.
+        """
+        for field, value in (("literal", "clips/discover/"), ("descriptor", "LX/0DnT;")):
+            with self.subTest(field=field):
+                with self.assertRaises(ManifestError) as caught:
+                    HostFingerprint("by_anchor", **{field: value})
+                message = str(caught.exception)
+                self.assertIn(f"by_anchor fingerprint carries a {field}", message)
+                self.assertIn("second source of truth", message)
 
     def test_unknown_kind_is_rejected(self):
         for bad in ("by_name", "", "NAMED", "by_literals"):
@@ -2891,6 +3011,28 @@ class DesignIntentTests(unittest.TestCase):
                 )
 
     def test_both_ui_hooks_are_declared_by_agent(self):
+        """The two hooks that cost an agent invocation per port — for now.
+
+        This is the number `agent_cost` reports, so it is asserted rather than
+        assumed. It is also the assertion that changes when the `by_anchor`
+        promotion is committed, and it is written to fail loudly at that moment
+        rather than to accommodate it in advance:
+
+        Both anchors were measured on 2026-08-02 to match exactly ONE class in
+        the whole decode, on 439 and on 430 alike, and that class is the known
+        host each time — so `HostFingerprint(kind="by_anchor")` now exists and
+        `resolve.search_hosts` resolves it mechanically. `work/by-anchor-proposal.json`
+        holds the two manifest entries. Committing them makes the expected kind
+        `by_anchor`, drops the manifest's last two `by_agent` fingerprints, and
+        makes this test fail — which is the point. Whoever commits the manifest
+        change updates the expectation here in the same change, and inherits the
+        argument for it: the anchor is the patch site, verified on two versions,
+        and the alternative is trusting an agent every port.
+
+        Anticipating it — accepting `by_agent` OR `by_anchor` — would mean the
+        manifest silently reverting to `by_agent` never failed anything, and this
+        test's only job is to notice.
+        """
         ui = [hook for hook in self.hooks if hook.tier == "ui"]
         self.assertEqual(len(ui), 2)
         for hook in ui:

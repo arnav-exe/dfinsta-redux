@@ -143,6 +143,57 @@ def compile_anchor(lines: Iterable[str]) -> list[tuple[re.Pattern[str], list[str
     return [compile_pattern(line, kinds) for line in lines]
 
 
+#: Shorter than this a fixed run is punctuation — ``", "``, ``"->"``, ``"}, "`` —
+#: which survives in essentially every class and makes a prefilter pure overhead.
+#: :func:`anchor_prefilter` returns ``""`` rather than such a run, and the caller
+#: is then obliged to scan everything: a slow correct search, not a fast wrong one.
+MIN_PREFILTER_LENGTH = 4
+
+
+def anchor_prefilter(lines: Iterable[str]) -> str:
+    """The longest fixed substring an anchor asserts, or ``""`` if it asserts none.
+
+    A ``by_anchor`` host fingerprint means "the class whose body matches this
+    anchor", and answering that literally costs a full pattern match against all
+    181,421 classes of a decode — minutes, per hook, per port. This derives a
+    plain substring from the pattern so a caller can throw most of the decode away
+    with a byte-level ``in`` test first.
+
+    **Why it is sound.** Take any fixed run ``R`` between two captures. If the
+    anchor matched somewhere, the line that matched line *i* was tested against
+    ``^…re.escape(R)…$``, so that line contains ``R`` verbatim; and the line the
+    matcher sees is the raw file line with the outer whitespace and any trailing
+    baksmali annotation removed, which is a contiguous substring of the raw line.
+    So ``R`` is a substring of the file whenever the anchor matches in it. A
+    prefilter that discards a file not containing ``R`` therefore discards only
+    files the anchor could not have matched. The converse is not claimed and is
+    not needed: ``R`` appearing proves nothing, which is why the real matcher
+    still runs on every survivor.
+
+    Derived rather than declared per hook on purpose. A hand-written fragment is a
+    second statement of what the anchor says, and the two would drift the first
+    time an anchor line changed — silently, because a too-narrow prefilter fails
+    by finding *nothing*, which reads exactly like "this version moved the site".
+
+    Returned stripped: whitespace at the edge of a run is whitespace at the edge
+    of a smali line, which the matcher removes before comparing, so it is not part
+    of what the anchor actually asserts.
+    """
+    best = ""
+    for line in lines:
+        position = 0
+        runs = []
+        for match in CAPTURE.finditer(line):
+            runs.append(line[position : match.start()])
+            position = match.end()
+        runs.append(line[position:])
+        for run in runs:
+            text = run.strip()
+            if len(text) >= MIN_PREFILTER_LENGTH and len(text) > len(best):
+                best = text
+    return best
+
+
 def anchor_capture_kinds(lines: Iterable[str]) -> dict[str, str]:
     """Capture name -> declared kind, for one whole anchor.
 
@@ -181,21 +232,39 @@ class HostFingerprint:
     request path carries all three endpoints, so co-location is what actually
     picks the host out. Measured, not assumed; and if a version splits them the
     intersection empties and the caller escalates rather than guessing.
+
+    ``by_anchor`` is the kind for a host nothing *else* points at: it means "the
+    class whose body matches this hook's own anchor". Distinct from
+    ``by_literal``, which means "the class whose anchor contains this literal" —
+    there the literal is the identity and the anchor is the site; here the anchor
+    is both. It carries no ``literal`` and no ``descriptor``, and refuses either,
+    because a second fingerprint alongside the anchor is a second source of truth
+    with no rule for which wins. The uniqueness it claims is over the whole
+    decode; the separate claim that the anchor matches once *within* the winning
+    class stays where it was, in :func:`resolve_in_source`.
     """
 
-    kind: str  # "named" | "by_literal" | "by_agent"
+    kind: str  # "named" | "by_literal" | "by_agent" | "by_anchor"
     descriptor: str | None = None  # kind == "named"
     literal: str | None = None  # kind == "by_literal"
     co_literals: tuple[str, ...] = ()  # kind == "by_literal"
     note: str = ""
 
     def __post_init__(self) -> None:
-        if self.kind not in {"named", "by_literal", "by_agent"}:
+        if self.kind not in {"named", "by_literal", "by_agent", "by_anchor"}:
             raise ManifestError(f"unknown host fingerprint kind {self.kind!r}")
         if self.kind == "named" and not self.descriptor:
             raise ManifestError("named fingerprint needs a descriptor")
         if self.kind == "by_literal" and not self.literal:
             raise ManifestError("by_literal fingerprint needs a literal")
+        if self.kind == "by_anchor" and (self.descriptor or self.literal):
+            carried = "descriptor" if self.descriptor else "literal"
+            raise ManifestError(
+                f"by_anchor fingerprint carries a {carried}; the anchor IS the "
+                "fingerprint, and a second one would be a second source of truth with "
+                "no rule for which wins. If a literal really identifies the host, that "
+                "is a by_literal fingerprint"
+            )
         if self.co_literals and self.kind != "by_literal":
             raise ManifestError(
                 f"co_literals only apply to a by_literal fingerprint, not {self.kind!r}"

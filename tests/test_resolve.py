@@ -21,6 +21,7 @@ order and asserts the answer changes.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import json
 import tempfile
@@ -28,6 +29,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from unittest import mock
 
 from dfinsta_pipeline.hook_index import HookIndex, IndexUnusable
 from dfinsta_pipeline.hook_manifest import (
@@ -45,6 +47,7 @@ from dfinsta_pipeline.resolve import (
     main,
     resolve_hook,
     resolve_manifest,
+    scan_for_anchor,
     search_hosts,
 )
 
@@ -154,6 +157,35 @@ SETTINGS_HOOK_SIBLING = Hook(
     ),
     marker="Lcom/dfinstagram/SettingsWrapper;",
     expected_marker_count=2,
+    mode="replace",
+)
+
+# The same site as SETTINGS_HOOK, found by the anchor itself rather than by an
+# agent's proposal. Its own marker, because a marker is a per-hook stamp and two
+# hooks sharing one make each read the other's patch as its own.
+ANCHOR_HOOK = Hook(
+    hook_id="install_probe_long_click_by_anchor",
+    intent="swap the options-menu listener for the mod's",
+    tier="ui",
+    strategy="replace the listener construction",
+    semantic_deps=(),
+    hosts=(
+        HostFingerprint(
+            "by_anchor", note="the anchor matches exactly one class in the decode"
+        ),
+    ),
+    anchor=(
+        "new-instance <l:reg>, <cls:type>",
+        "invoke-direct {<l>, <a:reg>}, <cls>-><init>(I)V",
+    ),
+    payload=(
+        "    new-instance <l>, <cls>",
+        "    # dfinsta_probe_by_anchor",
+        "    invoke-static {}, Lcom/dfinstagram/probe;->h_probe()V",
+        "    invoke-direct {<l>, <a>}, <cls>-><init>(I)V",
+    ),
+    marker="# dfinsta_probe_by_anchor",
+    expected_marker_count=1,
     mode="replace",
 )
 
@@ -273,6 +305,39 @@ def half_patched_listener_class(descriptor: str) -> str:
 def patched_listener_class(descriptor: str) -> str:
     """The same class after the settings hook landed: both markers present."""
     return listener_class(descriptor, "Lcom/dfinstagram/SettingsWrapper;")
+
+
+def twice_matching_listener_class(descriptor: str) -> str:
+    """One class, two sites the anchor matches. Distinct from two classes matching."""
+    return listener_class(descriptor).replace(
+        "    return-void",
+        "    new-instance v1, LX/0DnA;\n"
+        "\n"
+        "    invoke-direct {v1, p1}, LX/0DnA;-><init>(I)V\n"
+        "\n"
+        "    return-void",
+    )
+
+
+def anchor_patched_listener_class(descriptor: str) -> str:
+    """The host after ANCHOR_HOOK landed, which the anchor no longer matches.
+
+    `replace` splices the DFInsta lines BETWEEN the two anchor lines, so they stop
+    being adjacent in `significant()`'s view and the pattern that found this class
+    can no longer find it. Written out rather than rendered from the payload
+    because that is precisely the state being tested: the marker has to be a
+    second way into the host, or a re-run over a decode this pipeline already
+    patched reports NOT_FOUND where every other fingerprint kind reports
+    ALREADY_APPLIED.
+    """
+    return listener_class(descriptor).replace(
+        "    invoke-direct {v0, p1}, LX/0Dn9;-><init>(I)V",
+        "    # dfinsta_probe_by_anchor\n"
+        "\n"
+        "    invoke-static {}, Lcom/dfinstagram/probe;->h_probe()V\n"
+        "\n"
+        "    invoke-direct {v0, p1}, LX/0Dn9;-><init>(I)V",
+    )
 
 
 # ------------------------------------------------------------------ fixtures
@@ -670,6 +735,155 @@ class SearchHostsTests(FixtureCase):
         payload = json.loads(json.dumps(search.to_dict()))
         self.assertEqual(payload["kind"], "by_literal")
         self.assertEqual(payload["candidates"], [DECOY, HOST])
+
+
+class ByAnchorSearchTests(FixtureCase):
+    """`by_anchor`: the host is the class the anchor matches, and nothing else says so.
+
+    The kind exists because two hooks in `manifest/hooks.json` had no fingerprint
+    at all and cost an agent invocation per port, while their anchors were
+    measured to match exactly one class in the whole decode on both 430 and 439.
+    So the anchor is promoted from "the site inside the host" to "the host as
+    well" — and with that comes a *second* uniqueness claim, over the whole
+    decode, which these tests keep separate from the old one about matching once
+    inside the winning class.
+    """
+
+    def decode_with(self, **classes: str) -> Fixture:
+        return self.make_fixture(classes)
+
+    def search(self, fixture: Fixture, hook: Hook = ANCHOR_HOOK):
+        return search_hosts(hook, hook.hosts[0], fixture.index, decode=fixture.decode)
+
+    def clean_anchor_decode(self) -> Fixture:
+        """One class the anchor matches, and two it does not."""
+        return self.make_fixture(
+            {
+                DECOY: analytics_class(DECOY),
+                HOST: endpoint_class(HOST),
+                CLEAN_TWIN: listener_class(CLEAN_TWIN),
+            }
+        )
+
+    def test_the_anchor_selects_the_one_class_it_matches(self):
+        fixture = self.clean_anchor_decode()
+        search = self.search(fixture)
+        self.assertEqual(search.kind, "by_anchor")
+        self.assertEqual(search.candidates, (CLEAN_TWIN,))
+        self.assertEqual(search.reason, "")
+        # And that candidate goes the whole way, so the kind is not merely a
+        # search that reports something nothing downstream can use.
+        resolution = self.resolve(ANCHOR_HOOK, fixture)
+        self.assertIs(resolution.outcome, Outcome.RESOLVED)
+        self.assertEqual(resolution.descriptor, CLEAN_TWIN)
+
+    def test_the_evidence_records_what_the_prefilter_cost_and_what_it_kept(self):
+        # A gate has to be able to see that the decode really was searched and how
+        # much of it survived, or "one class matched" is indistinguishable from
+        # "one class was looked at".
+        fixture = self.clean_anchor_decode()
+        search = self.search(fixture)
+        self.assertEqual(
+            search.evidence,
+            {
+                "prefilter": "invoke-direct {",
+                "classes_scanned": 3,
+                "classes_prefiltered": 1,
+                "anchor_matched": [CLEAN_TWIN],
+                "carrying_marker": [],
+            },
+        )
+        self.assertEqual(json.loads(json.dumps(search.to_dict()))["kind"], "by_anchor")
+
+    def test_a_decode_the_anchor_matches_nowhere_is_not_found(self):
+        fixture = self.make_fixture({DECOY: analytics_class(DECOY), HOST: endpoint_class(HOST)})
+        resolution = self.resolve(ANCHOR_HOOK, fixture)
+        self.assertIs(resolution.outcome, Outcome.NOT_FOUND)
+        # And it stops the port. Zero matches is the answer a by_anchor hook gives
+        # when its one and only fingerprint failed; letting it through would emit
+        # an operation list quietly missing this hook.
+        self.assertTrue(resolution.escalates)
+        self.assertIn("the anchor matches no class in this decode", resolution.reason)
+        self.assertIn("nothing left to fall back on", resolution.reason)
+        self.assertEqual(resolution.searches[0].evidence["classes_scanned"], 2)
+        # The positive control: the same hook, the same two decoys, plus the host.
+        # Without it "found nothing" could mean the scan never ran.
+        with_host = self.clean_anchor_decode()
+        self.assertIs(self.resolve(ANCHOR_HOOK, with_host).outcome, Outcome.RESOLVED)
+
+    def test_two_classes_matching_the_anchor_escalate_as_ambiguous_naming_both(self):
+        """No tiebreak, deliberately.
+
+        The whole value of the kind is that the anchor is unique across the
+        decode. Picking a winner among several would keep the port moving on the
+        version where that stopped being true, and the wrong class would be
+        patched with something that assembles and verifies.
+        """
+        fixture = self.make_fixture(
+            {
+                CLEAN_TWIN: listener_class(CLEAN_TWIN),
+                HALF_PATCHED: listener_class(HALF_PATCHED, "LX/0DnB;"),
+            }
+        )
+        search = self.search(fixture)
+        self.assertEqual(search.candidates, (HALF_PATCHED, CLEAN_TWIN))
+        self.assertIn("unique across the WHOLE decode", search.reason)
+
+        resolution = self.resolve(ANCHOR_HOOK, fixture)
+        self.assertIs(resolution.outcome, Outcome.AMBIGUOUS)
+        self.assertIsNone(resolution.descriptor)
+        for descriptor in (CLEAN_TWIN, HALF_PATCHED):
+            self.assertIn(descriptor, resolution.reason)
+
+    def test_matching_twice_inside_one_class_is_a_different_failure(self):
+        """The two uniqueness claims are separate and must fail separately.
+
+        One class matching twice is the anchor being ambiguous *inside the host* —
+        the claim `expected_anchor_count` has always made, and the reason the
+        profile-bar anchor grew from three lines to five. Two classes matching
+        once each is the new claim, about the decode. Reporting either as the
+        other would send whoever reads it to fix the wrong end of the pattern.
+        """
+        fixture = self.make_fixture({CLEAN_TWIN: twice_matching_listener_class(CLEAN_TWIN)})
+        search = self.search(fixture)
+        self.assertEqual(search.candidates, (CLEAN_TWIN,))  # ONE class, cross-decode
+        self.assertEqual(search.reason, "")
+
+        resolution = self.resolve(ANCHOR_HOOK, fixture)
+        self.assertIs(resolution.outcome, Outcome.UNRESOLVED)
+        self.assertIn("anchor matched 2 times, expected 1", resolution.reason)
+        self.assertIn("ambiguous in this class", resolution.reason)
+
+    def test_an_already_patched_host_is_still_found_by_its_marker(self):
+        """ALREADY_APPLIED must survive a search that depends on the anchor.
+
+        `by_anchor` is the first fingerprint kind whose host search uses the
+        anchor, and a `replace` payload splices lines through the middle of it. So
+        the class this pipeline already patched no longer matches, and without the
+        marker as a second route the stage would report NOT_FOUND on every re-run
+        over a patched decode — turning the one outcome that means "there is
+        nothing to do" into an escalation.
+        """
+        fixture = self.make_fixture(
+            {CLEAN_TWIN: anchor_patched_listener_class(CLEAN_TWIN)}
+        )
+        search = self.search(fixture)
+        self.assertEqual(search.evidence["anchor_matched"], [])  # control
+        self.assertEqual(search.evidence["carrying_marker"], [CLEAN_TWIN])
+        self.assertEqual(search.candidates, (CLEAN_TWIN,))
+
+        resolution = self.resolve(ANCHOR_HOOK, fixture)
+        self.assertIs(resolution.outcome, Outcome.ALREADY_APPLIED)
+        self.assertEqual(resolution.descriptor, CLEAN_TWIN)
+
+    def test_searching_by_anchor_without_a_decode_is_a_caller_error(self):
+        # The index holds API-path literals and class paths; "which classes match
+        # this instruction pattern" is neither, so there is nothing to degrade to.
+        fixture = self.clean_anchor_decode()
+        with self.assertRaises(ManifestError) as caught:
+            search_hosts(ANCHOR_HOOK, ANCHOR_HOOK.hosts[0], fixture.index)
+        self.assertIn("resolved against the decode", str(caught.exception))
+        self.assertIn("caller contract violation", str(caught.exception))
 
 
 class OutcomePrecedenceTests(FixtureCase):
@@ -1442,6 +1656,39 @@ class MutationTests(FixtureCase):
         # Silently short: nothing in the emitted list mentions the missing hook.
         self.assertNotIn(SETTINGS_HOOK.hook_id, json.dumps(mutant))
 
+    def test_dropping_the_by_anchor_prefilter_selects_exactly_the_same_classes(self):
+        """Mutation: delete the prefilter. The answer must not move.
+
+        This is the only optimisation in the stage that decides what gets looked
+        at, and it fails in the direction that is hardest to notice: a fragment
+        that is too narrow discards the host, the search comes back empty, and the
+        report reads "the anchor matches no class in this decode" — which is
+        indistinguishable from Instagram having moved the site. So the shipped
+        path and the exhaustive one are run against the same decode and required
+        to agree, and the prefilter is required to actually be discarding
+        something, or the comparison is between two identical scans.
+        """
+        fixture = self.make_fixture(
+            {
+                DECOY: analytics_class(DECOY),
+                HOST: endpoint_class(HOST),
+                CLEAN_TWIN: listener_class(CLEAN_TWIN),
+                HALF_PATCHED: anchor_patched_listener_class(HALF_PATCHED),
+            }
+        )
+        fast = scan_for_anchor(ANCHOR_HOOK, fixture.decode)
+        with mock.patch("dfinsta_pipeline.resolve.anchor_prefilter", return_value=""):
+            exhaustive = scan_for_anchor(ANCHOR_HOOK, fixture.decode)
+
+        self.assertEqual(fast.matched, exhaustive.matched)
+        self.assertEqual(fast.carrying_marker, exhaustive.carrying_marker)
+        self.assertEqual(fast.candidates, (HALF_PATCHED, CLEAN_TWIN))
+        # The mutation has to be doing something, or agreement is free.
+        self.assertEqual(fast.scanned, exhaustive.scanned)
+        self.assertLess(fast.survivors, fast.scanned)
+        self.assertEqual(exhaustive.survivors, exhaustive.scanned)
+        self.assertEqual(exhaustive.prefilter, "")
+
     def test_the_already_applied_fixture_would_resolve_if_the_marker_were_absent(self):
         # The counterweight to the first mutation: the ordering only matters
         # because the marker is what distinguishes the host. Strip the patch and
@@ -1568,6 +1815,115 @@ class ReportedDefectTests(FixtureCase):
         with self.assertRaises(ManifestError) as caught:
             report.operations([])
         self.assertIn(CONTEXT_HOOK.hook_id, str(caught.exception))
+
+
+# ----------------------------------------------------------------- real decodes
+
+ROOT = Path(__file__).resolve().parents[1]
+DECODE_439 = ROOT / "work" / "439-explore" / "stock-439"
+DECODE_430 = ROOT / "work" / "430-clean-build-v2" / "stock-430"
+INDEX_439 = ROOT / "work" / "index-439"
+INDEX_430 = ROOT / "work" / "index-430"
+
+#: The hosts two ports established by hand, and the numbers this stage now has to
+#: reach without one. `install_settings_long_click` is the ProfileActionBar
+#: variant, `..._actionbar` the legacy IgActionBar one; Instagram picks between
+#: them at runtime, which is why both ship.
+KNOWN_UI_HOSTS = {
+    "439": (
+        INDEX_439,
+        DECODE_439,
+        {
+            "install_settings_long_click": "LX/0DnT;",
+            "install_settings_long_click_actionbar": "LX/0Di2;",
+        },
+    ),
+    "430": (
+        INDEX_430,
+        DECODE_430,
+        {
+            "install_settings_long_click": "LX/077K;",
+            "install_settings_long_click_actionbar": "LX/06X7;",
+        },
+    ),
+}
+
+HAVE_REAL_DECODES = all(
+    path.is_dir() for path in (DECODE_439, DECODE_430, INDEX_439, INDEX_430)
+)
+
+BY_ANCHOR = HostFingerprint(
+    "by_anchor", note="the class whose body matches this hook's own anchor"
+)
+
+
+@unittest.skipUnless(HAVE_REAL_DECODES, "work/ decodes are absent (gitignored)")
+class RealDecodeByAnchorTests(unittest.TestCase):
+    """The measurement the kind exists for, against the two real decodes.
+
+    Everything else in this file is synthetic, on purpose. This is not: the claim
+    being made is that these two anchors — the manifest's, unmodified — pick out
+    one class each in 181,421, and that the class is the one two hand-done ports
+    arrived at. A fixture cannot say anything about that, because a fixture
+    contains only the classes it was written to contain.
+
+    Only the host fingerprint is swapped for `by_anchor`. The anchor, payload,
+    marker and capture suppliers are the shipped ones, so what passes here is the
+    thing that would ship.
+    """
+
+    #: (version, hook_id) -> the resolution, computed once. Each of the four is a
+    #: full pass over a 1 GB decode, so re-resolving per test would cost the suite
+    #: 25 seconds to answer two questions about the same four results.
+    resolutions: dict[tuple[str, str], HookResolution] = {}
+    class_counts: dict[str, int] = {}
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        hooks = {
+            hook.hook_id: hook
+            for hook in load_manifest(ROOT / "manifest" / "hooks.json")
+        }
+        for version, (index_dir, decode, hosts) in KNOWN_UI_HOSTS.items():
+            index = HookIndex.for_decode(index_dir, decode)
+            cls.class_counts[version] = index.class_count()
+            for hook_id in hosts:
+                hook = dataclasses.replace(hooks[hook_id], hosts=(BY_ANCHOR,))
+                cls.resolutions[version, hook_id] = resolve_hook(hook, index, decode)
+
+    def cases(self):
+        for version, (_, _, hosts) in KNOWN_UI_HOSTS.items():
+            for hook_id, expected in hosts.items():
+                yield version, hook_id, expected, self.resolutions[version, hook_id]
+
+    def test_each_ui_anchor_selects_exactly_the_known_host_on_both_versions(self):
+        for version, hook_id, expected, result in self.cases():
+            with self.subTest(version=version, hook=hook_id):
+                evidence = result.searches[0].evidence
+                # Claim one: the anchor is unique across the whole decode.
+                self.assertEqual(evidence["anchor_matched"], [expected])
+                self.assertEqual(evidence["classes_scanned"], self.class_counts[version])
+                # Claim two: it matches once inside that class, which is what
+                # RESOLVED needs and what `expected_anchor_count` has always meant.
+                self.assertIs(result.outcome, Outcome.RESOLVED, result.reason)
+                self.assertEqual(result.descriptor, expected)
+
+    def test_the_prefilter_discards_almost_the_whole_decode(self):
+        """The reason the search is seconds rather than minutes.
+
+        An upper bound rather than the measured counts (986 and 26 of 181,421 on
+        439), because the exact number is a property of one extracted artifact
+        while "the prefilter is doing its job" is the property worth protecting.
+        A prefilter that stopped narrowing would still be correct, and would make
+        every port pay minutes per hook for it.
+        """
+        for version, hook_id, _, result in self.cases():
+            with self.subTest(version=version, hook=hook_id):
+                evidence = result.searches[0].evidence
+                self.assertTrue(evidence["prefilter"])
+                self.assertLess(
+                    evidence["classes_prefiltered"], evidence["classes_scanned"] // 50
+                )
 
 
 if __name__ == "__main__":
