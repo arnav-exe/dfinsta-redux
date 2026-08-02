@@ -197,7 +197,18 @@ def build_sandbox(decode: Path, root: Path, extra: Iterable[Path] = ()) -> Path:
         ["cp", "-al", str(decode), str(target)], capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
-        raise SandboxError(f"hardlinking {decode} failed: {result.stderr.strip()[:400]}")
+        detail = result.stderr.strip()
+        # `cp -al` reports this once per file, so the raw stderr is a screenful
+        # of the same fact. Name the cause instead: a hard link cannot cross a
+        # filesystem, and the usual way to hit it is a sandbox root under /tmp
+        # (tmpfs) while the decode is not.
+        if "cross-device" in detail or "Invalid cross-device link" in detail:
+            raise SandboxError(
+                f"{root} is on a different filesystem from {decode}, and a sandbox is "
+                "hardlinked rather than copied — 1.7 GiB per run is what the hardlink "
+                "avoids. Choose a sandbox root on the same device as the decode."
+            )
+        raise SandboxError(f"hardlinking {decode} failed: {detail[:400]}")
     for path in extra:
         path = Path(path)
         destination = root / path.name

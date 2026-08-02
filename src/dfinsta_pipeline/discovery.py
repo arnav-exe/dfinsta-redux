@@ -147,7 +147,9 @@ class Discovery:
     #: agreed. Settable here so a test can state the bar it is testing.
     threshold: float = DEFAULT_THRESHOLD
     #: Where the hardlinked sandbox goes. ``None`` picks a fresh per-run
-    #: directory under the system temporary directory. It must not exist —
+    #: directory **beside the decode**, not under the system temporary directory:
+    #: `build_sandbox` hardlinks, a hard link cannot cross a filesystem, and
+    #: `/tmp` is commonly tmpfs while decodes are not. It must not exist —
     #: `proposer.build_sandbox` refuses to reuse a root, because a stale sandbox
     #: may hold an answer — and it must be outside this repository, which holds
     #: the resolved anchors for every version ported so far.
@@ -553,7 +555,7 @@ def discover_hosts(
 
     by_id = {hook.hook_id: hook for hook in hooks}
     budget = Budget(settings.max_agent_calls)
-    root, remove = _sandbox_root(settings)
+    root, remove = _sandbox_root(settings, decode)
     # Whether the root was already there decides whether this run may delete it.
     # `build_sandbox` refuses to reuse an existing root, and cleaning up after
     # that refusal would remove a directory this run never created — turning a
@@ -667,7 +669,7 @@ def _discover_one(
 _PREFIX = "dfinsta-discovery-"
 
 
-def _sandbox_root(settings: Discovery) -> tuple[Path, Path]:
+def _sandbox_root(settings: Discovery, decode: Path | None = None) -> tuple[Path, Path]:
     """Where the sandbox goes, and what has to be removed afterwards.
 
     A caller-supplied root is used as given and removed as given. One this module
@@ -681,5 +683,30 @@ def _sandbox_root(settings: Discovery) -> tuple[Path, Path]:
     if settings.sandbox_root is not None:
         root = Path(settings.sandbox_root)
         return root, root
-    owned = Path(tempfile.mkdtemp(prefix=_PREFIX))
+    # Beside the decode, NOT in the system temporary directory. `build_sandbox`
+    # hardlinks with `cp -al`, and a hard link cannot cross a filesystem — on
+    # this machine `/tmp` is tmpfs while the decodes live on the root device, so
+    # the obvious default failed with a screenful of `Invalid cross-device link`
+    # on the first real run. Choosing a directory on the decode's own device
+    # makes the common case work; a decode reached across a mount still fails,
+    # and `build_sandbox` now says why rather than relaying `cp`.
+    owned = Path(tempfile.mkdtemp(prefix=_PREFIX, dir=_same_device_as(decode)))
     return owned / "sandbox", owned
+
+
+def _same_device_as(decode: Path | None) -> str | None:
+    """A directory on the same device as *decode*, or None to accept the default.
+
+    Its *parent* rather than the decode itself: the sandbox must not be created
+    inside the tree it is copying. `None` hands the choice back to `mkdtemp`,
+    which is right when there is no decode to be beside — the failure then is a
+    clear cross-device error rather than a wrong guess.
+    """
+
+    if decode is None:
+        return None
+    try:
+        parent = Path(decode).resolve().parent
+        return str(parent) if parent.is_dir() else None
+    except OSError:  # pragma: no cover - a decode that cannot be stat'ed
+        return None
