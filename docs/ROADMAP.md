@@ -5,7 +5,7 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-01 (second pass: Resolve stage, evidence ledger, driver).
+Last updated 2026-08-02 (third pass: stage 4a, the gate contracts, the submission client).
 
 ## End goal
 
@@ -20,7 +20,7 @@ gates rather than doing the mechanical work.
 |---|---|---|
 | **Execute** a port | apply/build/graft/verify/sign/orchestrate | largely complete |
 | **Produce** a port | re-map hook intent onto a new obfuscated decode | 5 of 7 hooks mechanical; the rest proposed, validated and refuted by agents |
-| **Decide** what to port | find new features, judge addictiveness, present evidence at a gate | surface diff done; the addictiveness gate is not |
+| **Decide** what to port | find new features, judge addictiveness, present evidence at a gate | surface diff and assessment done; a gate can be answered but nothing raises this one |
 
 The remaining work is concentrated in two places: judging a new feature and presenting it
 at a durable gate, and closing the loop so the agents that propose hooks run inside the
@@ -136,10 +136,16 @@ enumerating its violations.
       **Overturned an earlier claim**: drawable *ids* are NOT stable — of 11,737 names
       present in both versions only 103 keep their id, 99.1% are renumbered. Anchor on
       the drawable NAME and re-resolve the id per version.
-- [ ] Feed the Index into host search so `by_literal` hooks resolve without a full rescan
-- [ ] Teach a Resolve-stage caller about `Resolution.already_applied` (nothing imports the
-      engine yet; naive `if not resolved: fail` would treat a normal re-run as failure)
-- [ ] Candidate anchors must be *proposals* only — the deterministic spine still applies and verifies
+- [x] Feed the Index into host search so `by_literal` hooks resolve without a full rescan
+      (`hook_index.py` + `resolve.py`): `descriptors_with_all_literals` intersects the
+      per-version index, so a host is found by fingerprint instead of by rescanning a decode.
+- [x] Teach a Resolve-stage caller about `Resolution.already_applied` (`resolve.py`).
+      Outcome precedence is CONFLICT > ALREADY_APPLIED > RESOLVED > AMBIGUOUS > UNRESOLVED
+      > NOT_FOUND > NEEDS_AGENT, so a normal re-run reads as applied rather than as failure.
+- [x] Candidate anchors must be *proposals* only — the deterministic spine still applies and
+      verifies (`proposals.py`). A proposal is compared by what it would DO, not by its text,
+      and is handed to a verifier that sees the claim and never the rationale, defaulting to
+      refuted. That verifier refuted a hook that had already shipped.
 - [x] **Measure coverage on 439: 7/7 hook operations resolved by agents, zero human mapping.**
       Built, structurally verified, signed, installed, and CONFIRMED WORKING on device
       2026-08-01: 23 canonical block exceptions with the stack showing
@@ -147,7 +153,10 @@ enumerating its violations.
       settings dialog opening with all five toggles. Every obfuscated host had moved
       (`LX/077K`->`LX/0DnT`, `LX/06X7`->`LX/0Di2`, `LX/05t2`->`LX/04tC`), and the custom
       code needed `classes21.dex` because 439 already ships `classes20`.
-- [ ] Turn the ad-hoc mapping workflow into a reusable resolver that emits candidates + evidence
+- [ ] Turn the ad-hoc mapping workflow into a reusable resolver that emits candidates +
+      evidence. **Half done**: `proposer.py` holds the sandbox, the prompts and the parsing,
+      and `proposals.py` is a real stage — but the agent call itself is still a seam a human
+      fills by hand, so no run produces its own candidates end to end.
 
 ### What per-hook identity found on its first run
 
