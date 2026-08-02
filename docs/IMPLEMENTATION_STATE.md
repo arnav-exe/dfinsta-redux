@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 1674 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 1777 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -73,8 +73,13 @@ the full build reinstalled straight afterwards.
    resolver reproduces `FeatureGateRequestV1` and whose update carries
    `FeatureGateSubmissionV1` rather than a bare `GateDecision`.
 3. **Differential vs N−1** — the last evidence kind with no producer.
-4. **Close the proposer loop.** `proposer.py` has the sandbox, prompts and parsing, but the
-   agent call is a seam a human currently fills by hand.
+4. **Finish the proposer loop.** The seam is filled — `agent_runner.build_claude_runner`
+   over `sandbox_tools.SandboxReader`, runtime chosen by measurement in
+   [`docs/PROPOSER_RUNTIME.md`](PROPOSER_RUNTIME.md) — and one real run against 439 produced
+   a real candidate. What has NOT run is the rest of the stage: k proposers, agreement by
+   effect, the mechanical validator, the adversarial verifier. Until they do, a single
+   proposal is a candidate and nothing more. The first run also left six tool denials that
+   did not reproduce when replayed; `ToolCall.reason` now records why, so the next run says.
 5. **Settle the three hooks that appear to do nothing** — see below.
 
 ## Answering a gate is no longer hypothetical
