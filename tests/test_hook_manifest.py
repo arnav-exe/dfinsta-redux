@@ -36,6 +36,7 @@ from dfinsta_pipeline.hook_manifest import (
     render,
     resolve_in_source,
     significant,
+    strip_comment,
 )
 from dfinsta_pipeline.runtime_identity import instrument, is_instrumented, probe_call
 
@@ -1000,6 +1001,110 @@ class SignificantTests(unittest.TestCase):
         ]
         self.assertEqual(significant(source), significant_lines(source))
 
+    def test_a_trailing_annotation_stays_in_the_significant_view(self):
+        """`significant` must NOT strip what `strip_comment` strips.
+
+        Three other modules reimplement this view — `apply._significant`,
+        `verifier._significant`, `apply_anchored_patches.significant_lines` — and
+        each finds a concrete anchor by comparing against it literally. Narrowing
+        the view here alone would make an anchor resolve and then match nothing at
+        apply time, which is worse than the bug it would be fixing.
+        """
+        source = ["    const v0, 0x7f134a34    # 1.957818E38f"]
+        self.assertEqual(
+            significant(source), [(0, "const v0, 0x7f134a34    # 1.957818E38f")]
+        )
+
+
+class StripCommentTests(unittest.TestCase):
+    """A baksmali annotation must not decide whether an anchor matches.
+
+    Every sample here is a real line shape counted in the 439 or 430 decode, not
+    an invented one: 66,169 lines of 439 and 62,135 of 430 end in a comment on an
+    otherwise-code line, and 1,152 lines of 439 carry a `#` inside a string.
+    """
+
+    def test_a_float_annotation_on_a_resource_id_is_removed(self):
+        # The exact line that made `install_settings_long_click_actionbar` fail.
+        self.assertEqual(
+            strip_comment("const v0, 0x7f134a34    # 1.957818E38f"),
+            "const v0, 0x7f134a34",
+        )
+
+    def test_every_measured_annotation_shape_is_removed(self):
+        for line, wanted in (
+            ("const/high16 v0, 0x40000000    # 2.0f", "const/high16 v0, 0x40000000"),
+            (
+                "const-wide v4, 0x412e848000000000L    # 1000000.0",
+                "const-wide v4, 0x412e848000000000L",
+            ),
+            (
+                "const-wide/high16 v3, 0x3fe8000000000000L    # 0.75",
+                "const-wide/high16 v3, 0x3fe8000000000000L",
+            ),
+            ("const/16 v1, 0x593    # 2.0E-42f", "const/16 v1, 0x593"),
+            # array-data payload entries carry them too, with no opcode at all
+            ("0x3f800000    # 1.0f", "0x3f800000"),
+            ("-0x40800000    # -1.0f", "-0x40800000"),
+            (".param p5    # Ljava/lang/String;", ".param p5"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(strip_comment(line), wanted)
+
+    def test_a_line_with_no_comment_is_returned_unchanged(self):
+        line = "iput-object v13, v1, LX/07uJ;->A0H:Landroid/view/View$OnLongClickListener;"
+        self.assertIs(strip_comment(line), line)
+
+    def test_a_hash_inside_a_string_literal_is_not_a_comment(self):
+        """Splitting on the first `#` would truncate the literal into a lie.
+
+        These are lines this project's own decodes contain, so it is not a
+        hypothetical: `const-string v0, "#"` would become `const-string v0, "`,
+        which is not smali and would never match anything — but the two with a
+        space before the `#` are worse, because the truncated prefix is still a
+        well-formed token and could match an anchor the real line does not.
+        """
+        for line in (
+            'const-string v0, "#"',
+            'const-string v0, "a#b"',
+            'const-string v0, "#ffffff"',
+            'const-string v0, "Using more than the expected # of framebuffers"',
+            'const-string v0, "More than one \'any-setter\' specified (parameter #%d)"',
+            'const-string v1, "http://www.w3.org/ns/ttml#parameter"',
+        ):
+            with self.subTest(line=line):
+                self.assertIs(strip_comment(line), line)
+
+    def test_a_comment_after_a_string_literal_is_still_a_comment(self):
+        self.assertEqual(
+            strip_comment('const-string v0, "a#b"    # trailing'),
+            'const-string v0, "a#b"',
+        )
+
+    def test_an_escaped_quote_does_not_end_the_string(self):
+        # `"You can\'t ... RequestBuilder#error(...)"` is a real 439 line: the
+        # escape run has to be tracked or the scan leaves the string early and
+        # reads the `#` as a comment.
+        line = 'const-string v0, "he said \\" then # not a comment"'
+        self.assertIs(strip_comment(line), line)
+
+    def test_a_doubled_backslash_does_not_swallow_the_closing_quote(self):
+        self.assertEqual(
+            strip_comment('const-string v0, "ends with a backslash\\\\"  # gone'),
+            'const-string v0, "ends with a backslash\\\\"',
+        )
+
+    def test_a_line_that_is_only_a_comment_becomes_empty(self):
+        # It never reaches `strip_comment` in practice — `significant` drops it
+        # first — but an empty result is the honest answer, not the whole line.
+        self.assertEqual(strip_comment("# dfinsta_settings_long_click_actionbar"), "")
+
+    def test_an_unterminated_quote_strips_nothing(self):
+        # Not valid smali. Refusing to cut is the conservative failure: the line
+        # simply does not match an anchor, rather than matching a truncated one.
+        line = 'const-string v0, "unterminated # still inside'
+        self.assertIs(strip_comment(line), line)
+
 
 CLEAN_APP_SHELL = """.class public Lcom/instagram/app/InstagramAppShell;
 .super Landroid/app/Application;
@@ -1399,6 +1504,210 @@ class ResolveInSourceTests(unittest.TestCase):
         # payload[1] is the register-free probe call; the <app> capture the
         # resolver must not have consumed lives on in payload[3].
         self.assertIn("<app>", hook.payload[3])
+
+
+#: The five lines `install_settings_long_click_actionbar` matches in 439's
+#: `LX/0Di2;`, copied verbatim from `smali_classes6/X/0Di2.smali` including the
+#: annotation baksmali generated on the label id. Reproduced here rather than read
+#: from the decode so the test runs without a multi-gigabyte artifact, but nothing
+#: about the shape is invented.
+ANNOTATED_ACTION_BAR = """.class public final LX/0Di2;
+
+.method public final A02()V
+    .locals 15
+
+    .line 91
+    iput-object v11, v1, LX/07uJ;->A0F:Landroid/graphics/drawable/Drawable;
+
+    const v0, 0x7f134a34    # 1.957818E38f
+
+    iput v0, v1, LX/07uJ;->A06:I
+
+    iput-object v14, v1, LX/07uJ;->A0G:Landroid/view/View$OnClickListener;
+
+    iput-object v13, v1, LX/07uJ;->A0H:Landroid/view/View$OnLongClickListener;
+
+    return-void
+.end method
+"""
+
+
+class AnnotatedLineAnchorTests(unittest.TestCase):
+    """Anchors must survive baksmali's generated comments. A real 439 defect.
+
+    `install_settings_long_click_actionbar` resolved on 430, where the label id
+    was the bare `const v0, 0x7f134a0e`, and reported "anchor pattern did not
+    match" on 439, where the id changed to `0x7f134a34` and baksmali decided that
+    one spelled a float worth annotating. Whether the annotation appears is a
+    property of the number, so this is not specific to the action bar or to 439:
+    any anchor whose last capture lands on a constant can acquire one in the next
+    version and go quiet.
+    """
+
+    def setUp(self):
+        self.hooks = {hook.hook_id: hook for hook in load_manifest(MANIFEST)}
+
+    def test_an_any_capture_matches_across_a_generated_annotation(self):
+        hook = self.hooks["install_settings_long_click_actionbar"]
+        result = resolve_in_source(hook, "LX/0Di2;", ANNOTATED_ACTION_BAR)
+        self.assertTrue(result.resolved, result.reason)
+        self.assertEqual(result.occurrences, 1)
+        self.assertEqual(
+            result.bindings,
+            {
+                "drawable": "v11",
+                "cfg": "v1",
+                "cfgcls": "LX/07uJ;",
+                "df": "A0F",
+                "lbl": "v0",
+                "labelid": "0x7f134a34",
+                "lf": "A06",
+                "click": "v14",
+                "cf": "A0G",
+                "long": "v13",
+                "lcf": "A0H",
+            },
+        )
+
+    def test_the_capture_stops_at_the_constant_and_never_eats_the_comment(self):
+        # Stated separately from the bindings above because this is the value that
+        # renders into the payload: a `labelid` carrying `# 1.957818E38f` would
+        # emit smali that does not assemble.
+        hook = self.hooks["install_settings_long_click_actionbar"]
+        result = resolve_in_source(hook, "LX/0Di2;", ANNOTATED_ACTION_BAR)
+        self.assertEqual(result.bindings["labelid"], "0x7f134a34")
+        self.assertNotIn("#", result.bindings["labelid"])
+        self.assertNotIn("1.957818E38f", result.bindings["labelid"])
+
+    def test_the_emitted_anchor_keeps_the_annotation_so_the_applier_finds_it(self):
+        """The half of the fix that a resolve-only check would miss.
+
+        The applier does not re-run the pattern. It takes the concrete anchor and
+        compares it literally against its own significant view, which keeps the
+        comment. An anchor rendered from the template alone drops it and matches
+        zero lines — measured, not argued: this exact test against the real
+        `LX/0Di2.smali` returned 0 hits before the emitted form changed.
+        """
+        sys.path.insert(0, str(RECONSTRUCTION_TOOLS))
+        try:
+            from apply_anchored_patches import find_anchors
+        except ImportError:  # pragma: no cover - tool tree is present in-repo
+            self.skipTest("reconstruction tools not importable")
+        finally:
+            sys.path.remove(str(RECONSTRUCTION_TOOLS))
+        hook = self.hooks["install_settings_long_click_actionbar"]
+        result = resolve_in_source(hook, "LX/0Di2;", ANNOTATED_ACTION_BAR)
+        self.assertEqual(result.anchor[1], "const v0, 0x7f134a34    # 1.957818E38f")
+        hits = find_anchors(ANNOTATED_ACTION_BAR.splitlines(), result.anchor)
+        self.assertEqual(len(hits), hook.expected_anchor_count)
+
+    def test_the_emitted_anchor_is_the_rendered_template_when_nothing_is_annotated(self):
+        # Emitting matched source rather than the rendered template must be a
+        # no-op everywhere the old behaviour was already right, or this fix would
+        # be a rewrite of what every other hook emits.
+        cases = {
+            "set_app_context": (
+                "Lcom/instagram/app/InstagramAppShell;",
+                CLEAN_APP_SHELL,
+            ),
+            "replace_reels_discover_endpoint": (
+                "LX/04tC;",
+                '.class LX/04tC;\n    const-string v1, "clips/discover/"\n',
+            ),
+            "replace_reels_homecoming_endpoint": (
+                "LX/04tC;",
+                '.class LX/04tC;\n    const-string v6, "clips/homecoming/"\n',
+            ),
+            "replace_reels_stream_endpoint": (
+                "LX/04tC;",
+                '.class LX/04tC;\n    const-string v7, "clips/discover/stream/"\n',
+            ),
+        }
+        for hook_id, (descriptor, source) in cases.items():
+            with self.subTest(hook_id=hook_id):
+                hook = self.hooks[hook_id]
+                result = resolve_in_source(hook, descriptor, source)
+                self.assertTrue(result.resolved, result.reason)
+                self.assertEqual(
+                    result.anchor,
+                    [render(line, result.bindings) for line in hook.anchor],
+                )
+
+    def test_a_marker_comment_is_still_counted_on_a_class_full_of_annotations(self):
+        """The trap. The idempotence marker IS a comment.
+
+        A marker must be a comment and never a label, because baksmali deletes an
+        unreferenced label — so any change that treats comments as noise is one
+        step from making every hook re-apply on top of itself. The marker is
+        counted against the raw text, before the significant view exists at all,
+        and that has to stay true on a class where real annotations are present.
+        """
+        hook = self.hooks["install_settings_long_click_actionbar"]
+        self.assertTrue(hook.marker.startswith("#"))
+        applied = ANNOTATED_ACTION_BAR.replace(
+            "    iput-object v13, v1, LX/07uJ;->A0H:"
+            "Landroid/view/View$OnLongClickListener;",
+            "\n".join(
+                render(
+                    line,
+                    {"long": "v13", "cfg": "v1", "cfgcls": "LX/07uJ;", "lcf": "A0H"},
+                )
+                for line in hook.payload
+            ),
+        )
+        self.assertEqual(applied.count(hook.marker), hook.expected_marker_count)
+        result = resolve_in_source(hook, "LX/0Di2;", applied)
+        self.assertTrue(result.already_applied)
+        self.assertFalse(result.resolved)
+        self.assertIn("already applied", result.reason)
+
+    def test_a_marker_stripped_from_the_matching_view_is_still_a_marker(self):
+        # Positive control for the test above: prove the marker really is invisible
+        # to the significant view, so "already applied" can only have come from the
+        # raw-text count and not from some line that happened to survive.
+        hook = self.hooks["install_settings_long_click_actionbar"]
+        self.assertEqual(significant([f"    {hook.marker}"]), [])
+        self.assertEqual(strip_comment(f"    {hook.marker}").strip(), "")
+
+    def test_a_hash_inside_a_string_literal_does_not_truncate_a_capture(self):
+        """The failure mode of the fix that was not taken.
+
+        Stripping at the first `#` — or letting the regex treat ` #` as a comment
+        opener — binds `s` to `"Using` here and calls it a match. That is worse
+        than the original bug: it does not fail, it patches the wrong line with a
+        payload built from a truncated literal.
+        """
+        hook = make_hook(
+            anchor=("const-string <r:reg>, <s:any>",),
+            payload=("    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V",),
+        )
+        exact = 'const-string v0, "a#b"\n'
+        result = resolve_in_source(hook, "LFoo;", exact)
+        self.assertTrue(result.resolved, result.reason)
+        self.assertEqual(result.bindings, {"r": "v0", "s": '"a#b"'})
+
+        spaced = 'const-string v0, "Using more than the expected # of framebuffers"\n'
+        result = resolve_in_source(hook, "LFoo;", spaced)
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.reason, "anchor pattern did not match")
+
+    def test_an_anchor_line_cannot_be_satisfied_by_a_comment_alone(self):
+        # Negative control. `strip_comment` turns a whole-line comment into "",
+        # so a bug that fed stripped text through without dropping empties could
+        # let a comment stand in for a missing instruction. `significant` removes
+        # it first, and this pins that ordering.
+        hook = make_hook(
+            anchor=("nop", "return-void"),
+            payload=("    invoke-static {}, LH;->f()V",),
+            marker="LH;->f()V",
+        )
+        # Positive control: the same anchor over real instructions does match, so
+        # the failure below is the comment and not a broken fixture.
+        control = resolve_in_source(hook, "LFoo;", "    nop\n    return-void\n")
+        self.assertTrue(control.resolved, control.reason)
+        result = resolve_in_source(hook, "LFoo;", "    nop\n    # return-void\n")
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.reason, "anchor pattern did not match")
 
 
 class AsOperationTests(unittest.TestCase):

@@ -371,13 +371,64 @@ class Resolution:
 
 
 def significant(lines: Iterable[str]) -> list[tuple[int, str]]:
-    """Non-blank, non-.line, non-comment lines, matching the applier's own view."""
+    """Non-blank, non-.line, non-comment lines, matching the applier's own view.
+
+    Deliberately keeps a *trailing* comment on a line that is otherwise code, even
+    though :func:`resolve_in_source` matches without it. This is the view the
+    applier and the verifier each reimplement, and it is what they compare a
+    concrete anchor against; narrowing it here and nowhere else would make an
+    anchor resolve and then match nothing at apply time. :func:`strip_comment`
+    exists to be applied at the point of comparison instead.
+    """
     out = []
     for index, raw in enumerate(lines):
         text = raw.strip()
         if text and not text.startswith(".line") and not text.startswith("#"):
             out.append((index, text))
     return out
+
+
+def strip_comment(line: str) -> str:
+    """One significant line with any comment removed — the instruction alone.
+
+    baksmali annotates a constant with the value it would decode to under another
+    type, so a resource id comes out as ``const v0, 0x7f134a34    # 1.957818E38f``
+    and a wide constant as ``const-wide v4, 0x412e848000000000L    # 1000000.0``.
+    That is not rare: 66,169 lines of the 439 decode and 62,135 of 430 end in one.
+    Any anchor whose last capture sits on such a line could not match, because a
+    compiled pattern ends in ``$`` and ``any`` is ``\\S+`` — which is exactly how
+    the 439 action-bar hook came back "anchor pattern did not match".
+
+    Stripping it here rather than writing the anchor around it is the only option
+    that holds, because whether the annotation appears at all is a property of the
+    *number*: baksmali emits it when the bits happen to spell a float with a short
+    decimal form. Of the resource-id constants in one dex directory, 70 of 8,432
+    carry one on 439 and 168 of 12,397 on 430. So the same field in the same class
+    flips between the two forms when the id changes — the action bar's label was
+    the bare ``0x7f134a0e`` on 430 and the annotated ``0x7f134a34`` on 439 — and an
+    anchor written against either version silently stops matching on the other.
+
+    The scan is quote-aware because splitting on the first ``#`` is actively
+    destructive: 1,152 lines of the same decode carry a ``#`` *inside* a string
+    literal, and cutting there turns ``const-string v0, "a#b"`` into
+    ``const-string v0, "a``. Since a string is the only place smali puts a ``#``
+    that does not start a comment, the first unquoted one always does.
+    """
+    quoted = False
+    escaped = False
+    for index, character in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            # Only a string can contain an escape; outside one a backslash is
+            # part of no token, so treating it as inert keeps the scan honest.
+            escaped = quoted
+        elif character == '"':
+            quoted = not quoted
+        elif character == "#" and not quoted:
+            return line[:index].rstrip()
+    return line
 
 
 def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
@@ -407,6 +458,13 @@ def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
         )
 
     body = significant(smali.splitlines())
+    # Match the instruction, keep the line. An anchor is written to describe code,
+    # so a baksmali annotation hanging off the end of it must not decide whether it
+    # matches — but the annotation is still part of the line the applier will look
+    # for, and the applier finds an anchor by literal string comparison against its
+    # own copy of `significant()`. So the pattern is tried against the stripped
+    # instruction and the emitted anchor is the line as written.
+    code = [strip_comment(text) for _, text in body]
     compiled = compile_anchor(hook.anchor)
     width = len(compiled)
     hits: list[tuple[int, dict[str, str]]] = []
@@ -415,7 +473,7 @@ def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
         bindings: dict[str, str] = {}
         ok = True
         for offset, (pattern, names) in enumerate(compiled):
-            match = pattern.match(body[start + offset][1])
+            match = pattern.match(code[start + offset])
             if not match:
                 ok = False
                 break
@@ -446,8 +504,13 @@ def resolve_in_source(hook: Hook, descriptor: str, smali: str) -> Resolution:
             ),
         )
 
-    _, bindings = hits[0]
-    concrete_anchor = [render(line, bindings) for line in hook.anchor]
+    hit_start, bindings = hits[0]
+    # Emitting the matched lines rather than `render(hook.anchor, bindings)` cannot
+    # widen the match: every line here matched a fully-anchored `^...$` pattern, so
+    # any other line equal to it would have matched too, and this pattern matched
+    # once. The two forms therefore differ only where a trailing comment exists —
+    # and there, only this one is a string the applier can find.
+    concrete_anchor = [text for _, text in body[hit_start : hit_start + width]]
     concrete_payload = [render(line, bindings) for line in hook.payload]
     return Resolution(
         hook.hook_id,
