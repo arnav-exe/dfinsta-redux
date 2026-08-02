@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 2170 tests, one
+Resume point as of 2026-08-02, branch `port-430`. Suite: 2204 tests, one
 expected skip, plus six green tool suites.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
@@ -215,6 +215,32 @@ history, so re-running 439 reported 14 hooks and 4 invocations. The claim is inv
 flatters or damns the project by accident. Fixed by keying a run on `(version, recorded_at)`,
 which needed no schema change because `record_run` already stamps every record of a run
 identically. The ledger keeps the failed attempt; only the reading changed.
+
+## Stage 10's generaliser, and the poison it caught
+
+`generalise.py` turns a proposer's cited evidence into a durable host fingerprint, verified
+before proposing and **proposing rather than committing**.
+
+**It caught a fingerprint that would have poisoned 440 on its first real run.** For
+`install_settings_long_click` the proposers cited the systrace string
+`ProfileActionBarViewBinder.bindUsernameTitle…`. It selects exactly one class on 439 and that
+class is the right one; on 430 it also selects exactly one — and it is the **wrong** host
+(`ProfileActionBar` rather than `LX/077K;`). Committed on 439 evidence alone it would have
+looked immaculate. **One version is a coincidence.**
+
+`install_settings_long_click_actionbar` does have one:
+`notifications_entry_point_impression` ∩ `ig4a-instagram-schema`, exactly 1 class on each
+version, right both times. Neither literal alone is selective (3 and 1466 on 439). But it does
+not resolve today — `by_literal` goes through `HookIndex.descriptors_with_literal`, which holds
+only API-path-shaped strings, so both are `not_indexed`. The module reports
+`BLOCK_NOT_INDEXED` and refuses to call the hook mechanical rather than letting the count fall
+on paper.
+
+**The conclusion that redirected the work**: for these hooks the discriminating structure is
+not a string, it is the **anchor**. Re-measured rather than cited — the five-line anchor selects
+**exactly one class on 439 and 430, for both settings hooks, the right one every time** (the
+three-line form it replaced matched 87 and 110). A `by_anchor` fingerprint is what takes the
+next port's 2 agent invocations to 0.
 
 ## The unattended build is byte-identical to the hand-verified one
 
