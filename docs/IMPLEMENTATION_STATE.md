@@ -110,13 +110,20 @@ is the first test that drives that derivation over a real ledger and content sto
 Found this session, all by machinery built this session. None is settled; each needs a
 different next step.
 
-**`install_settings_long_click_actionbar` on 439 — probably genuinely dead.** An
-adversarial verifier refuted it on reachability: `LX/0Di2;->Ac0(LX/004C;)V` is never
-invoked. Independently re-checked — exactly four `invoke-interface LX/0Pvr;->Ac0` sites and
-none can hold a `0Di2`; no `A1K(LX/0Pvr;)` call site passes one; `UserDetailFragment` uses
-its `A0L` only for `A02` and `LX/0DEm.A00`, which reads the `A01` View that `Ac0` would
-set. The live control appears to be `ProfileActionBar` + `LX/0Dxw` bound by `LX/0DnT` —
-the OTHER settings hook. Decisive test: a build carrying only this hook.
+**`install_settings_long_click_actionbar` on 439 — SETTLED 2026-08-02: inert on 439, and
+KEEP.** The decisive test ran. Two structurally symmetric single-hook builds (differing in
+exactly `classes6.dex`, `classes21.dex` and the signatures): the actionbar build's long-press
+opened Instagram's own Settings screen with no DFInsta dialog and **no identity line at
+all**, while the control — a build carrying only `install_settings_long_click` — opened the
+dialog and logged `DFInstaProbe: install_settings_long_click`. The control is what makes the
+absence a measurement rather than a broken experiment.
+
+So the adversarial verifier was right that `LX/0Di2;->Ac0` is not reached on 439. But the
+verdict is **keep, not retire**: the legacy variant is the live control on **430**, so the
+two hooks are a version/config-selected pair like the Reels homecoming/stream pair, and
+deleting the inert one breaks the older target. Note the names are inverted from what they
+suggest — `install_settings_long_click` is the *ProfileActionBar* variant and
+`install_settings_long_click_actionbar` is the *legacy IgActionBar* one.
 
 **`replace_reels_homecoming_endpoint` — dormant, NOT dead.** `clips/homecoming/` and
 `clips/discover/stream/` sit in the same method `LX/04tC->A0A`, selected by a branch on
