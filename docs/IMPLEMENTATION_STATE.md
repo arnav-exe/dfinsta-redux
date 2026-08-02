@@ -73,13 +73,15 @@ the full build reinstalled straight afterwards.
    resolver reproduces `FeatureGateRequestV1` and whose update carries
    `FeatureGateSubmissionV1` rather than a bare `GateDecision`.
 3. **Differential vs N−1** — the last evidence kind with no producer.
-4. **Finish the proposer loop.** The seam is filled — `agent_runner.build_claude_runner`
-   over `sandbox_tools.SandboxReader`, runtime chosen by measurement in
-   [`docs/PROPOSER_RUNTIME.md`](PROPOSER_RUNTIME.md) — and one real run against 439 produced
-   a real candidate. What has NOT run is the rest of the stage: k proposers, agreement by
-   effect, the mechanical validator, the adversarial verifier. Until they do, a single
-   proposal is a candidate and nothing more. The first run also left six tool denials that
-   did not reproduce when replayed; `ToolCall.reason` now records why, so the next run says.
+4. **The proposer chain has now run end to end, and the gate correctly did not open.**
+   `install_settings_long_click` on 439, k=3 concurrent and blind, sandbox with the answers
+   physically absent: two proposers independently reached `LX/0DnT;` — the known live host —
+   and one was dropped for inventing a schema field. But **agreement by effect was 1 of 3**:
+   the two surviving proposals differ in anchor length and payload, so `Proposal.effect_key`
+   separates them and `assess` refuses. Two adversarial verifiers, shown the claim and never
+   the rationale, each **failed to refute** it. So one required signal passed and the other
+   did not, which is the design working. What is left is to raise k, or to accept that the
+   host is agreed and the *patch* is what needs the manifest's shape to constrain it.
 5. **Settle the three hooks that appear to do nothing** — see below.
 
 ## Answering a gate is no longer hypothetical
