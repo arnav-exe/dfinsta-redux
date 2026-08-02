@@ -108,15 +108,30 @@ exact class and field the shipped 1.4.1 build patched — found mechanically ~90
 at reduced selectivity (3 candidates rather than 1). **Anchors transfer further than
 fingerprints built on resource names.**
 
-## Two things to fix before host discovery is wired through
+## Two things fixed before host discovery could be wired through
 
-- **`evidence.agreement_claim` cannot record a host agreement.** It counts a proposal as an
-  answer only if it names a descriptor **and** a non-empty anchor, so two agreeing host
-  proposers return `not_exercised`. It fails safe — hooks stall rather than ship — which is
-  exactly why nobody would notice. Widen it first.
-- **`collect` picks its verification subject by counting submissions, not proposers**, so one
-  agent answering three times decides what the adversarial verifier examines. `assess`
-  re-decides, so nothing ships wrong, but the verification effort goes to the loudest voice.
+Both are done. Recorded because each was invisible from a green suite.
+
+- **`evidence.agreement_claim` could not record a host agreement.** It counted a proposal as
+  an answer only if it named a descriptor **and** a non-empty anchor, so a clean host
+  agreement returned `not_exercised` and the hook stalled. Now `agreement_claim` takes an
+  `AnswerShape` (`FULL_PROPOSAL` / `HOST_ONLY`) that names the question and does two jobs at
+  once: what an answer must carry, and which fields `identity()` hashes. `EvidenceKind` was
+  deliberately **not** split — `AGENT_REQUIREMENTS = frozenset(EvidenceKind)` makes any new
+  kind automatically required of every agent-resolved hook, so a host-discovered hook would
+  owe a whole-patch agreement it can never have: the same bug rebuilt one layer up.
+- **The adversarial verifier was examining the wrong answer.** `collect` tallied by
+  `fingerprint` while `assess` decides by `effect_key`, so two proposers who found the *same
+  site* with different-length anchors — the exact 439 result — landed in different groups and
+  the verifier got whichever was registered first. Nothing shipped wrong (`assess` re-decides)
+  but the expensive part was aimed at a target that might not win. Both now select through one
+  path, `proposals.plurality()`.
+
+**A structural limit worth knowing**: evidence requirements are keyed on `provenance`, and
+provenance does not record *which question* a proposer was asked. So the ledger cannot enforce
+"this hook needs a whole-patch agreement, not a host one" — the fact lives only in
+`detail["asked"]`, which `readiness()` never reads. If that enforcement is ever wanted it is a
+fourth provenance, not an eighth `EvidenceKind`.
 
 ## A test-isolation bug, pre-existing
 
