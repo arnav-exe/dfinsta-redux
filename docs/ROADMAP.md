@@ -161,13 +161,13 @@ enumerating its violations.
       diagnosis was that the prompt asked for a whole patch when only the host varies; there is
       now a narrowed host-discovery question (`host_prompt` / `HOST_SCHEMA` /
       `proposals.host_agreement`) whose agreement is over a single field.
-- [ ] **6 of 7 hooks resolve mechanically on 439** (was 5). The seventh is
-      `install_settings_long_click`: its anchor is now unique on both 430 and 439, and
-      `capture_supply.py` derives the own-profile guard's two values deterministically on 430+.
-      What remains is a device test proving the guard still excludes *other* users' profiles,
-      before `requires_proposal` may be dropped — flipping it moves the hook from agent
-      provenance (owing agreement and adversarial verification) to mechanical provenance,
-      owing neither.
+- [x] **7 of 7 hooks resolve mechanically on 430 and 439, hosts included.** The guard was
+      device-tested (own profile opens the dialog, another user's does nothing), and
+      `kind: "by_anchor"` then retired the last two `by_agent` fingerprints — the anchor
+      itself selects exactly one class per decode, measured on both versions and cross-checked
+      by a full unprefiltered scan. The manifest now has 3 `by_literal`, 2 `named`,
+      2 `by_anchor` and **no `by_agent`**, so the next port costs 0 agent invocations where
+      439 cost 2. The claim that agent cost *falls* still needs a real second version.
 
 ### What per-hook identity found on its first run
 

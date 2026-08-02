@@ -114,7 +114,7 @@ resolves mechanically, **no agent runs at all**.
 | 3 Surface diff | done — `surface_diff.py` |
 | 4a Assess | done — `assessment.py` |
 | 4b Gate 1 contracts | done — `feature_gate.py`. **Nothing raises it, and nothing can**: no producer joins stage 4a to CAS |
-| 5 Resolve | done — **7 of 7 hooks resolve mechanically on 430 *and* 439**, given their hosts |
+| 5 Resolve | done — **7 of 7 hooks resolve mechanically on 430 *and* 439, hosts included**. `kind: "by_anchor"` retired the last two `by_agent` fingerprints: the anchor itself selects exactly one class per decode, measured on both versions |
 | 5 · capture supply | done — `capture_supply.py`. A payload capture the anchor cannot bind is filled by a supplier chain, deterministic first, agent as fallback. A decline is a returned value; a failure is an exception |
 | 5a/5b Proposer + verifier | done, and the full k-of-n + verifier chain has run for real: 2-of-3 on the host, 1-of-3 by effect, both verifiers failed to refute — one signal passed, one did not, gate correctly shut |
 | 5c Mechanical validator | done, with mutation tests |
@@ -123,7 +123,7 @@ resolves mechanically, **no agent runs at all**.
 | 9 Runtime verify | probes + per-hook identity done, own-profile guard device-verified; **differential vs N−1 still has no producer** |
 | 10 Manifest update | Decision Memory half done (`manifest_update.py`); **agent cost is recorded on every port** (`agent_cost.py`, called by the driver) — 439 cost 2 agent invocations against 5 mechanical hooks, verdict `UNTESTABLE` until a second version is ported; the proposal-to-pattern generaliser is not built |
 | 11 Final report | not started |
-| Host discovery in the driver | **done** (`discovery.py`, `--discover-hosts`). 439 ported unattended: 2-of-2 on one settings host, 3-of-3 on the other, neither refuted, gate passed honestly |
+| Host discovery in the driver | **done** (`discovery.py`, `--discover-hosts`). 439 ported unattended: 2-of-2 on one settings host, 3-of-3 on the other, neither refuted, gate passed honestly. Now the escalation of last resort rather than the normal path — no manifest hook needs it |
 | Answering a gate | done — `submission.py` |
 
 ---
