@@ -223,6 +223,61 @@ across thirteen sites and is idempotent by construction.
 5. Registration tripwires flip deliberately: the five exclusion tests become inclusion tests in
    the same commit that registers, never silently.
 
+## 3b-corrected (2026-08-03)
+
+A measured pass over F1-F4 found several claims in the section below to be wrong. The
+follow-ups are kept verbatim as the record of what was believed; read this first.
+
+**F3 is closed, by construction, for one constant.** A replay stage can act on a cancellation
+only through a heartbeat response or a local `WORKER_SHUTDOWN` after
+`graceful_shutdown_timeout` — and no replay stage heartbeats. So raising that window above the
+longest stage budget (300 -> 10,800 s) means the destructive cancellation cannot arrive
+mid-stage. What remains open is non-destructive cancellation *within* the window, which does
+rewrite a reviewed invariant.
+
+**The operating rule inverts.** A worker *kill* delivers no cancellation, leaves the claim
+`pending`, and is recoverable by `release_pending_operation` with every completed stage
+adopted — the run is **wedged, not burned**. A worker *stop* that exhausts the window is the
+destructive one. Until cancellation is non-destructive, killing is the safe way to stop a
+worker mid-stage — the opposite of the rule this document and `worker.py` carried.
+
+**F4 does not require editing proven Activity bodies.** Every long operation inside a stage
+yields the event loop (`await execute(...)`, and the `asyncio.to_thread` supervisors), and the
+activity context is installed in the enclosing task — so a heartbeater in the *unproven
+wrapper* works, with the five proven bodies byte-identical. §3b's "adding them also edits
+proven Activity bodies" is false.
+
+**F4 must not land before F3's remaining half.** Heartbeating is what opens the channel for
+server-originated cancellation — a workflow cancel, a timeout, or a transient network failure
+while recording a heartbeat. All land in the handler that quarantines. Shipping heartbeats
+first would convert a flaky thirty seconds of network into a burned run.
+
+**`cancellation_type=WAIT_CANCELLATION_COMPLETED` currently buys nothing** for the replay
+stages, since the cancel it waits on is never delivered. It remains the correct default; the
+rationale recorded for it is not the reason it is correct.
+
+**Only 3 of the 5 stages quarantine unconditionally on cancel.** Build and verify already
+release when cancellation lands before a workspace exists. §3b's "all five ... quarantine on
+`CancelledError`" was wrong when written.
+
+**Two ledger properties nothing documented**: `quarantine_operation` silently no-ops for a
+non-owner, and `record_effect` is owner-fenced. So overlapping attempts cannot corrupt the
+ledger — the loser can neither publish nor burn.
+
+**A terminal case outside F1-F4**: once the verification grant is admitted, its five `UNIQUE`
+columns plus the gate validator's timestamp window make that gate unrepeatable, so a crash
+between admission and verify leaves a run that cannot be re-driven. Reached by normal
+progress, not by an accident.
+
+**F1 is understated.** The harness and the Workflow differ by a `-run` segment on the grant
+and gate ids, and by the *entire suffix* on the capability id
+(`-final-apk-decode-java` vs `-run-final-verification-decode`).
+
+**F2 has a cheap half, now done.** Public aliases in `activities.py` remove the private
+coupling with every body and the executed call graph byte-identical. The real extraction —
+deduplicating `resolve_admitted_build` against `_replay_verification_predecessors` — still
+edits proven code and still waits for the real run.
+
 ## 3b. Known follow-ups, deliberately not done in this slice
 
 **F1. The harness and the Workflow derive different verification-gate ids.**
