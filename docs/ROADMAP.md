@@ -322,21 +322,32 @@ stopping at the first stage that cannot produce what the next needs.
 
 ## Immediate next three
 
-1. **Give the feature gate a producer**, per
-   [`docs/STAGE_4_PRODUCER_DESIGN.md`](STAGE_4_PRODUCER_DESIGN.md). The framing this list
-   used to carry was wrong: stage 4a does not compute an assessment "in the driver world"
-   — **nothing** computes one, `driver.py` never imports `assessment`, and the `assess()`
-   in the driver is the proposal one. Nor is authority the obstacle; the driver could write
-   the ledger. What it lacks is a run identity and a state root. Recommendation: a small
-   admission program that admits the API surface into CAS and **recomputes** the assessment
-   rather than adopting it — measured at 0.00 s and byte-identical across 430/439/440, so
-   recomputation costs nothing and is the only thing separating this gate from a rubber
-   stamp. Note the gate is **not answerable by `submission.py` today** whatever else lands:
-   `submit_answer` sends a bare `GateDecision`, and `Answer`/`DerivedSubject` cannot express
-   per-candidate rulings.
-2. **Make the generaliser's proposals reach the manifest.** The agent count fell 2 → 0
-   because a human read what 439's agents cited and wrote `by_anchor`. Stage 10 proposes and a
-   human commits — the right default — but the step between is undocumented and unexercised.
+Reordered 2026-08-03. The two items that stood here are done.
+
+- [x] **The feature gate has a producer, and can be answered.** `assessment_record.py`
+      recomputes a stage 4a assessment from the API surface it admitted and records it as a
+      ledger operation under a run-keyed authority row; `FEATURE_ASSESSMENT_GATE` is the
+      second kind the submission client has ever registered, and it joined only once its
+      subject became reachable from a run id. Both proven against the real Instagram 440
+      assessment. Records: [`docs/STAGE_4_PRODUCER_DESIGN.md`](STAGE_4_PRODUCER_DESIGN.md),
+      [`docs/ANSWERING_THE_FEATURE_GATE.md`](ANSWERING_THE_FEATURE_GATE.md).
+- [x] **The generaliser's proposals reach the manifest** (`manifest_patch.py`). The first
+      version of this write-back could express every fingerprint kind *except* `by_anchor` —
+      the only one that has ever moved the agent count — so it automated only the promotions
+      that had never mattered. `generalise_anchor` now measures a hook's own anchor through
+      the real `resolve.scan_for_anchor`, and the loop was run for real against a manifest
+      copy with both settings hooks wound back to `by_agent`: it rediscovered and committed
+      exactly the two `by_anchor` entries a human wrote, and refused `tigon_url_block`, whose
+      anchor selects 7 classes on 439 and 5 on 430.
+
+1. **Raise the feature gate.** Everything around it exists — the assessment is recorded, the
+   subject re-derives, a human can answer with a ruling per candidate — and **nothing raises
+   it**. That is the gate's own `@workflow.defn`, per
+   `docs/WORKFLOW_REGISTRATION_DESIGN.md`: never new fields on `WorkflowStatus`/`RunResult`,
+   a `status` query shaped exactly as `read_pending_gate` expects, and all three hash fields
+   bound to the request hash.
+2. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
+   (439 → 2, 440 → 0). A third is what tells "falling" from "fell once".
 3. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference — now an escalation path rather than the normal one, since 440 resolved all
    seven hooks with no proposals at all.

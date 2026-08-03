@@ -560,6 +560,37 @@ genuine `by_literal` proposal on disk resolves to **nothing on either version** 
 confirming what `generalise`'s static `BLOCK_NOT_INDEXED` predicted. Committing it would have
 made the hook escalate and moved the agent count not at all.
 
+## The loop is closed: proposed, verified and committed from measurement
+
+`src/dfinsta_pipeline/manifest_patch.py` is the step between a proposal and
+`manifest/hooks.json`. Run for real against a temp copy of the manifest with **both** settings
+hooks wound back to `by_agent`:
+
+    generalise_anchor → plan → verify (real 430 + 439 decodes) → apply --confirm
+
+    install_settings_long_click            439 → LX/0DnT;   430 → LX/077K;   WRITTEN
+    install_settings_long_click_actionbar  439 → LX/0Di2;   430 → LX/06X7;   WRITTEN
+    tigon_url_block                        7 classes / 5    [no_fingerprint] REFUSED
+
+    byte-identical outside the two patched entries: True
+    committed kinds match the shipped manifest's: 3 of 3
+    repo manifest untouched (sha256 1e5f36dd…): True
+
+**The pipeline rediscovered from measurement alone, and committed, exactly the two `by_anchor`
+fingerprints a human hand-wrote** — the ones that took the agent count 2 → 0 — and refused the
+hook whose anchor is not selective.
+
+Two things about `verify` worth keeping. Its baseline is `before or expected`, because a
+`by_agent` hook resolves to **nothing** and "the same as nothing" would pass for a patch that
+also resolves to nothing. And a version with no decode comes back `unchecked`, which is not
+`ok`: `apply` refuses on it, so a missing decode can never read as a verified one.
+
+`by_anchor` also forced a distinction the module now makes explicit: a `by_anchor` fingerprint
+carries **no scrubbable value at all** (it is the hook's own anchor, already in the manifest),
+so `VALUE_FIELDS` is a per-kind table where an empty entry must carry a stated reason, and a
+kind absent from the table is *refused* rather than defaulted to "carries none". "The rules
+found nothing wrong" and "there was nothing to look at" are no longer the same silence.
+
 ## Stage 10's generaliser, and the poison it caught
 
 `generalise.py` turns a proposer's cited evidence into a durable host fingerprint, verified
