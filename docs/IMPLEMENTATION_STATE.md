@@ -493,6 +493,35 @@ NOT_FOUND where every other kind reports ALREADY_APPLIED.
 **What it does not prove**: the claim that agent cost *falls* still needs a real second
 version. The verdict stays `UNTESTABLE` until 440.
 
+## The generaliser can now propose the kind that actually moved the number
+
+2026-08-03. Building the write-back path from a proposal to `manifest/hooks.json` surfaced the
+sharpest finding of the day: **`generalise.Proposal` could express `by_literal` and nothing
+else**, so the automation covered every promotion except the only one that has ever mattered.
+The 2 → 0 agent-count fall came from two **`by_anchor`** entries a human hand-wrote.
+
+Fixed by making `by_anchor` expressible *and* proposable. `generalise_anchor(hook, hosts)`
+calls the real `resolve.scan_for_anchor` — not a reimplementation, since a proposal derived by
+different code than the resolver is a claim about a scan nobody ran — once per version, and
+proposes only when the anchor selects **exactly one class and it is the known host on every
+version**. The two-version corroboration and per-version exactness checks now apply to both
+kinds through one `_require_corroboration`.
+
+**Measured against the real 430 and 439 decodes:**
+
+    install_settings_long_click            by_anchor  430 → LX/077K; (1 of 1), 439 → LX/0DnT; (1 of 1)
+    install_settings_long_click_actionbar  by_anchor  430 → LX/06X7; (1 of 1), 439 → LX/0Di2; (1 of 1)
+    tigon_url_block                        REFUSED    5 classes on 430, 7 on 439
+
+The stage rediscovers from measurement alone exactly what the human wrote. **The third line is
+the negative control** and matters as much as the first two: `tigon_url_block` stays `named`
+because its anchor identifies the *site* without identifying the *class*.
+
+Separately, running `manifest_patch.verify` against the real decodes showed that the one
+genuine `by_literal` proposal on disk resolves to **nothing on either version** — empirically
+confirming what `generalise`'s static `BLOCK_NOT_INDEXED` predicted. Committing it would have
+made the hook escalate and moved the agent count not at all.
+
 ## Stage 10's generaliser, and the poison it caught
 
 `generalise.py` turns a proposer's cited evidence into a durable host fingerprint, verified
