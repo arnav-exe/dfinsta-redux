@@ -100,6 +100,19 @@ class ProbeNotTaken(RuntimeError):
     from those conditions must not enter the ledger at all.
     """
 
+
+class UiUnavailable(ProbeNotTaken):
+    """`uiautomator dump` could not produce a hierarchy.
+
+    Its own failure mode, kept separate from "the control is not on screen",
+    because the two look identical downstream and mean opposite things. UI
+    Automator cannot reach idle while Reels plays or a blocked feed retries, so
+    this happens routinely and says nothing whatever about the app. Reporting it
+    as "the surface's entry control was not found" would be an assertion about
+    the screen made from a capture of nothing.
+    """
+
+
 #: A logcat line is `date time pid tid LEVEL TAG: message`. The message is what
 #: is interesting; the rest identifies which log entry the message belongs to,
 #: because one multi-line payload arrives as many lines sharing all four.
@@ -259,8 +272,15 @@ class AdbDevice:
         # returns stale data. Remove it first and read through stdout rather than
         # pulling, so there is no file to go stale.
         self.shell("rm", "-f", "/sdcard/window_dump.xml")
-        self.shell("uiautomator", "dump", "/sdcard/window_dump.xml")
-        return self.shell("cat", "/sdcard/window_dump.xml")
+        try:
+            self.shell("uiautomator", "dump", "/sdcard/window_dump.xml")
+            return self.shell("cat", "/sdcard/window_dump.xml")
+        except RuntimeError as error:
+            # Routine, not exceptional: UI Automator cannot reach idle while
+            # Reels plays or a blocked feed retries. Because the file was removed
+            # first, the `cat` then fails too — so both failures mean the same
+            # thing and neither is a fact about the app.
+            raise UiUnavailable(f"the UI hierarchy could not be read: {error}") from error
 
     def tap(self, x: int, y: int) -> None:
         self.shell("input", "tap", str(x), str(y))
@@ -277,12 +297,31 @@ class AdbDevice:
 
 @dataclass(frozen=True)
 class Surface:
-    """How to get the app to the place a probe measures."""
+    """How to get the app to the place a probe measures.
+
+    ``resource_id`` and ``content_desc`` are tried **in that order, separately** —
+    not as a conjunction. Instagram 440 renamed the bottom-navigation ids
+    (`…:id/profile_tab` is gone; the profile tab is now inside
+    `profile_tab_layout`), so every resource-id selector below silently stopped
+    matching and a whole walkthrough recorded "app_launch" as the only surface it
+    reached. The content descriptions — "Home", "Reels", "Profile" — survived.
+    Neither is dependable alone: ids are renamed at version bumps and
+    descriptions are localised, which is precisely why the fallback exists.
+    """
 
     name: str
     resource_id: str | None = None
     content_desc: str | None = None
     dwell_seconds: float = 20.0
+
+    def selectors(self) -> tuple[tuple[str | None, str | None], ...]:
+        """Each way of finding this surface's control, most specific first."""
+        out: list[tuple[str | None, str | None]] = []
+        if self.resource_id is not None:
+            out.append((self.resource_id, None))
+        if self.content_desc is not None:
+            out.append((None, self.content_desc))
+        return tuple(out)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -297,11 +336,17 @@ class Surface:
 #: never from pixel coordinates, which are capture-specific.
 SURFACES: Mapping[str, Surface] = {
     "app_launch": Surface("app_launch", dwell_seconds=15.0),
-    "feed_tab": Surface("feed_tab", resource_id=f"{PACKAGE}:id/feed_tab"),
-    "reels_tab": Surface("reels_tab", resource_id=f"{PACKAGE}:id/clips_tab"),
-    "explore_tab": Surface("explore_tab", resource_id=f"{PACKAGE}:id/search_tab"),
+    "feed_tab": Surface("feed_tab", resource_id=f"{PACKAGE}:id/feed_tab", content_desc="Home"),
+    "reels_tab": Surface("reels_tab", resource_id=f"{PACKAGE}:id/clips_tab", content_desc="Reels"),
+    "explore_tab": Surface(
+        "explore_tab",
+        resource_id=f"{PACKAGE}:id/search_tab",
+        content_desc="Search and explore",
+    ),
     "profile_options_long_press": Surface(
-        "profile_options_long_press", resource_id=f"{PACKAGE}:id/profile_tab"
+        "profile_options_long_press",
+        resource_id=f"{PACKAGE}:id/profile_tab",
+        content_desc="Profile",
     ),
 }
 
@@ -404,20 +449,26 @@ class ProbeRunner:
         return match.group(1) if match else ""
 
     def navigate(self, surface: Surface) -> bool:
-        """Tap the surface's entry control. False when it could not be found."""
-        if surface.resource_id is None and surface.content_desc is None:
+        """Tap the surface's entry control. False when it could not be found.
+
+        Each of the surface's selectors is tried on its own. One dump is taken
+        and reused, so the fallback costs nothing on the wire and cannot see two
+        different screens.
+        """
+        selectors = surface.selectors()
+        if not selectors:
             return True  # app_launch: being started IS the surface
         xml = self.device.ui_xml()
-        node = find_node(
-            xml, resource_id=surface.resource_id, content_desc=surface.content_desc
-        )
-        if node is None:
-            return False
-        centre = node_centre(node)
-        if centre is None:
-            return False
-        self.device.tap(*centre)
-        return True
+        for resource_id, content_desc in selectors:
+            node = find_node(xml, resource_id=resource_id, content_desc=content_desc)
+            if node is None:
+                continue
+            centre = node_centre(node)
+            if centre is None:
+                continue
+            self.device.tap(*centre)
+            return True
+        return False
 
     def measure(self, hook: Hook, surface: Surface, toggle_state: str) -> Measurement:
         """One direction: restart clean, drive to the surface, count the signal.
@@ -446,11 +497,20 @@ class ProbeRunner:
         self.launch()
         self.device.sleep(8)
         foreground = self.foreground_package()
-        navigated = self.navigate(surface)
+        unreadable = ""
+        try:
+            navigated = self.navigate(surface)
+        except UiUnavailable as error:
+            # Not "the control is absent" — nothing could be read at all. Kept
+            # apart so the note says which, and so the measurement is unusable
+            # rather than a zero attributed to an empty screen.
+            navigated, unreadable = False, str(error)
         self.device.sleep(surface.dwell_seconds)
         count = count_signal(self.device.logcat_dump(), hook.probe.signal)
 
         notes = []
+        if unreadable:
+            notes.append(unreadable)
         if foreground != self.package:
             # An unreadable foreground is not a passing check. It means nothing
             # could be shown to have been on screen, which is the same fact as
@@ -458,7 +518,8 @@ class ProbeRunner:
             # be measured. Guarding on `foreground and ...` made the empty case
             # a usable zero and left the 'unknown' below unreachable.
             notes.append(f"{self.package} was not foreground ({foreground or 'unknown'} was)")
-        if not navigated:
+        if not navigated and not unreadable:
+            # Only claim the control is absent when the screen could be read.
             notes.append("the surface's entry control was not found on screen")
         return Measurement(
             hook.hook_id,

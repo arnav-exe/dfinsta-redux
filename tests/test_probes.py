@@ -4,8 +4,8 @@ No test here touches a phone, adb, or a network. `ProbeRunner` and its three
 subclasses take a `Device` — a Protocol that exists so a probe can be driven
 without hardware — so every test injects :class:`FakeDevice`, which answers
 `shell` from canned strings, never sleeps, and records what it was asked.
-`AdbDevice` is exercised exactly once, through a subclass that intercepts
-`_run`, because its `ui_xml` carries a freshness guard that no fake could
+`AdbDevice` is exercised only through subclasses that intercept `_run`, because
+its `ui_xml` carries a freshness guard and a failure mode that no fake could
 observe.
 
 The logcat fixtures are verbatim lines from this repo's own captures under
@@ -43,6 +43,8 @@ from dfinsta_pipeline.probes import (
     ProbeRunner,
     SignalCount,
     StartupProbe,
+    Surface,
+    UiUnavailable,
     attribute,
     count_signal,
     shared_signals,
@@ -197,6 +199,11 @@ class FakeDevice:
     Satisfies the `Device` Protocol. `sleep` records the request and returns
     immediately — a real probe dwells 15-25 seconds per direction, so a fake that
     honoured it would make this suite unrunnable.
+
+    An entry of ``screens`` may be an exception rather than a string, in which
+    case that dump raises it. `uiautomator dump` failing is routine — it cannot
+    reach idle while Reels plays — so a walkthrough has to be describable in which
+    one screen out of several could not be read at all.
     """
 
     def __init__(
@@ -205,7 +212,7 @@ class FakeDevice:
         window: str = AWAKE,
         activities: str = RESUMED,
         logcat: str = "",
-        screens: list[str] | None = None,
+        screens: list[str | BaseException] | None = None,
         pid: str = "30503\n",
     ):
         self.window = window
@@ -240,7 +247,10 @@ class FakeDevice:
         self.calls.append(("ui_xml",))
         index = min(self.ui_dumps, len(self.screens) - 1)
         self.ui_dumps += 1
-        return self.screens[index]
+        dump = self.screens[index]
+        if isinstance(dump, BaseException):
+            raise dump
+        return dump
 
     def tap(self, x: int, y: int) -> None:
         self.calls.append(("tap", x, y))
@@ -364,6 +374,104 @@ class CountSignalTests(unittest.TestCase):
         # the entry key changes with the timestamp.
         pair = BLOCK_PAYLOAD + "\n" + BLOCK_PAYLOAD.replace("01:43:51.185", "01:43:54.216")
         self.assertEqual(count_signal(pair, BARE_SIGNAL).canonical, 2)
+
+
+# ----------------------------------------------------------------- navigation
+
+
+class NavigationTests(unittest.TestCase):
+    """Getting to the surface at all. Instagram 440 broke this and said nothing.
+
+    `com.instagram.android:id/profile_tab` no longer exists — the profile tab now
+    lives inside `profile_tab_layout` — so every resource-id selector stopped
+    matching at the version bump and a whole walkthrough recorded `app_launch` as
+    the only surface it reached. The content descriptions survived, which is why
+    each selector has to be tried on its own.
+    """
+
+    def test_a_surface_offers_its_resource_id_first_then_its_content_description(self):
+        """Most specific first, only what is set, and nothing at all for app_launch."""
+        both = Surface("t", resource_id=f"{PACKAGE}:id/profile_tab", content_desc="Profile")
+        self.assertEqual(
+            both.selectors(),
+            ((f"{PACKAGE}:id/profile_tab", None), (None, "Profile")),
+        )
+        # Only the ones that are set: a `None` here would be handed to `find_node`
+        # as a selector to match, and an empty selector matches the first node.
+        self.assertEqual(
+            Surface("t", resource_id=f"{PACKAGE}:id/feed_tab").selectors(),
+            ((f"{PACKAGE}:id/feed_tab", None),),
+        )
+        self.assertEqual(Surface("t", content_desc="Home").selectors(), ((None, "Home"),))
+
+        # `app_launch` has no control to tap: being started IS the surface, and an
+        # empty selector list is what tells `navigate` to say so.
+        self.assertEqual(SURFACES["app_launch"].selectors(), ())
+
+        # Every surface that IS navigated carries both, because either can vanish:
+        # ids are renamed at version bumps and descriptions are localised.
+        for name, surface in SURFACES.items():
+            if name == "app_launch":
+                continue
+            with self.subTest(surface=name):
+                self.assertEqual(len(surface.selectors()), 2)
+
+    def test_navigate_tries_the_selectors_separately_and_not_as_a_conjunction(self):
+        """The 440 regression: the id is gone, the description is there, tap it.
+
+        Requiring both would have found nothing on this screen — which is exactly
+        what happened on the device, silently, and read as "the surface was not
+        reached" rather than "the selector is out of date".
+        """
+        renamed = screen(node(desc="Profile", bounds="[0,2124][216,2264]"))
+        # A second dump would show a different screen. If `navigate` took one, the
+        # fallback would be deciding about a screen the first selector never saw.
+        elsewhere = screen(
+            node(resource_id=f"{PACKAGE}:id/profile_tab", bounds="[600,10][800,110]")
+        )
+        device = FakeDevice(screens=[renamed, elsewhere])
+
+        self.assertIs(
+            ProbeRunner(device).navigate(SURFACES["profile_options_long_press"]), True
+        )
+
+        self.assertIn(("tap", 108, 2194), device.calls)
+        self.assertNotIn(("tap", 700, 60), device.calls)
+        # Exactly one dump per navigate call: the fallback must not be able to see
+        # two different screens.
+        self.assertEqual(device.ui_dumps, 1)
+        self.assertEqual(device.calls.count(("ui_xml",)), 1)
+
+    def test_the_resource_id_is_preferred_when_it_is_still_there(self):
+        """The control on the order, and on the fallback not being the only path.
+
+        Without it, `navigate` could ignore resource ids entirely and every
+        assertion above would still pass — and a description is localised, so the
+        id is the one that survives a phone in another language.
+        """
+        both = screen(
+            node(resource_id=f"{PACKAGE}:id/profile_tab", bounds="[600,10][800,110]"),
+            node(desc="Profile", bounds="[0,2124][216,2264]"),
+        )
+        device = FakeDevice(screens=[both])
+
+        self.assertIs(
+            ProbeRunner(device).navigate(SURFACES["profile_options_long_press"]), True
+        )
+        self.assertIn(("tap", 700, 60), device.calls)
+        self.assertNotIn(("tap", 108, 2194), device.calls)
+
+        # And with neither selector on screen there is no tap and no pretence.
+        blind = FakeDevice(screens=[screen(node(desc="Something else"))])
+        self.assertIs(
+            ProbeRunner(blind).navigate(SURFACES["profile_options_long_press"]), False
+        )
+        self.assertEqual([call for call in blind.calls if call[0] == "tap"], [])
+
+        # `app_launch` needs no dump at all: it is reached by being started.
+        untouched = FakeDevice(screens=[screen()])
+        self.assertIs(ProbeRunner(untouched).navigate(SURFACES["app_launch"]), True)
+        self.assertEqual(untouched.calls, [])
 
 
 # ------------------------------------------------------- the delta, both ways
@@ -545,6 +653,38 @@ class RefusalTests(unittest.TestCase):
         self.assertIn("entry control", result.note)
         self.assertNotIn(("tap", 108, 2194), absent.calls)
 
+    def test_an_unreadable_ui_is_not_also_reported_as_a_control_that_is_absent(self):
+        """"Nothing could be read" and "the control is not there" mean opposites.
+
+        UI Automator routinely cannot reach idle while Reels plays or a blocked
+        feed retries, and that says nothing whatever about the app. Writing the
+        second note as well would be an assertion about the screen made from a
+        capture of nothing — and it is the note a reader would act on.
+        """
+        unreadable = FakeDevice(
+            screens=[UiUnavailable("the UI hierarchy could not be read: adb shell failed")],
+            logcat=STARTED,
+        )
+
+        result = ProbeRunner(unreadable).measure(self.hook, SURFACES["feed_tab"], "enabled")
+
+        self.assertIs(result.usable, False)
+        self.assertIs(result.navigated, False)
+        self.assertIn("could not be read", result.note)
+        self.assertNotIn("entry control", result.note)
+        # The dump was attempted, and the failure did not abort the measurement:
+        # it is recorded as unusable rather than raised past the caller.
+        self.assertEqual(unreadable.ui_dumps, 1)
+
+        # The control on that `assertNotIn`, which an empty note would satisfy:
+        # when the screen COULD be read and the control was genuinely absent, the
+        # note says so and does not claim the hierarchy was unreadable.
+        absent = FakeDevice(screens=[screen()], logcat=STARTED)
+        missing = ProbeRunner(absent).measure(self.hook, SURFACES["feed_tab"], "enabled")
+        self.assertIs(missing.usable, False)
+        self.assertIn("entry control", missing.note)
+        self.assertNotIn("could not be read", missing.note)
+
     def test_a_measurement_whose_foreground_is_unreadable_is_unusable(self):
         """"Nothing could be shown to be on screen" is not a passing check.
 
@@ -703,6 +843,62 @@ class FreshnessTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("pull", [command[0] for command in device.commands])
+
+    def test_a_dump_that_failed_raises_ui_unavailable_rather_than_a_stale_screen(self):
+        """`uiautomator dump` fails routinely, and it is not a fact about the app.
+
+        The freshness guard removes the file first, so a failed dump has nothing
+        to read back — and the `cat` that follows fails for the same reason. Both
+        mean "the hierarchy could not be read", which is a different thing from
+        "the control is not on screen" and must not be reported as one.
+        """
+
+        class FailingAdb(AdbDevice):
+            """`AdbDevice` with the wire cut: nothing here reaches a phone."""
+
+            def __init__(self, fails: str) -> None:
+                super().__init__()
+                self.fails = fails
+                self.commands: list[tuple[str, ...]] = []
+
+            def _run(self, *args: str, timeout: float = 60) -> str:
+                self.commands.append(args)
+                if args[:2] == ("shell", self.fails):
+                    raise RuntimeError(
+                        f"adb shell {self.fails} failed (1): "
+                        "ERROR: could not get idle state."
+                    )
+                if args[:2] == ("shell", "cat"):
+                    return "<hierarchy>whatever the file held</hierarchy>"
+                return ""
+
+        for failing, commands in (
+            ("uiautomator", 2),  # the dump itself
+            ("cat", 3),  # ...or reading back a file the dump never wrote
+        ):
+            with self.subTest(fails=failing):
+                device = FailingAdb(failing)
+                with self.assertRaises(UiUnavailable) as caught:
+                    device.ui_xml()
+
+                self.assertIn("could not be read", str(caught.exception))
+                self.assertIn("could not get idle state", str(caught.exception))
+                # A failed dump stops there. `cat` would have answered — that is
+                # the whole danger — so it must not be reached and its answer must
+                # not be returned as a screen.
+                self.assertEqual(len(device.commands), commands)
+                self.assertEqual(
+                    device.commands[0], ("shell", "rm", "-f", "/sdcard/window_dump.xml")
+                )
+
+        # A failed dump must reach every caller that already refuses a measurement
+        # it could not take, rather than needing each of them taught a new name.
+        self.assertTrue(issubclass(UiUnavailable, ProbeNotTaken))
+
+        # The control: the same class returns the hierarchy when the dump works,
+        # so the refusals above are about the failure and not about the fake.
+        working = FailingAdb("nothing-fails-here")
+        self.assertEqual(working.ui_xml(), "<hierarchy>whatever the file held</hierarchy>")
 
     def test_an_adb_command_that_failed_raises_rather_than_returning_nothing(self):
         """The same rule one layer down: a failed capture is not an empty one.
