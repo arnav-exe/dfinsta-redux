@@ -482,10 +482,35 @@ plus the release path.
    true rather than nearly true. Its identity envelope is already done — `schema_version`,
    `apk_sha256`, `stock_apk_sha256`, `verifier_sha256` — so what remains is the signature half.
 
-2. **Nothing turns device measurements into ledger claims.** `probes.main` writes
-   *measurements*; the ledger wants *claims*, and the bridge was a hand-written script both
-   times (439 and 440). Stage 9 is not finished until that is repo code with tests: a version's
-   runtime evidence should be reproducible by command, not by remembering what was run.
+2. ~~Nothing turns device measurements into ledger claims.~~ **Done**:
+   `src/dfinsta_pipeline/record_runtime.py`, three modes matching the three probe shapes —
+
+       python -m dfinsta_pipeline.record_runtime identity --serial … --out <jsonl> \
+           --visit profile_options_long_press --visit reels_tab --visit explore_tab
+       python -m dfinsta_pipeline.record_runtime startup --serial … --out <jsonl>
+       python -m dfinsta_pipeline.record_runtime delta --hook tigon_url_block \
+           --state enabled --measurements <json> --serial … --out <jsonl>
+
+   The delta store is a file because the two halves of a two-directional probe are separated by
+   a human moving a toggle; a half-finished probe stays visibly half-finished, and an
+   **unusable** half is never stored, so it cannot be paired later as though it were a
+   measurement. Shared-signal attribution is applied here rather than left to the reader.
+
+   Building it found two live defects, both by running it against the phone rather than reading
+   it. **Instagram 440 renamed the bottom-navigation resource ids** — `…:id/profile_tab`,
+   `feed_tab`, `clips_tab`, `search_tab` are all gone — so every surface selector silently
+   stopped matching and a whole walkthrough recorded `surfaces_visited: ["app_launch"]` while
+   filing the settings hook as "its site may not have been reached". True, and completely
+   misleading. The accessibility `content-desc` values survived ("Home", "Reels", "Profile"),
+   so `Surface` now carries both and `navigate` tries them **separately, in order**, from one
+   dump. And `AdbDevice.ui_xml` used to crash the entire recording when `uiautomator dump`
+   could not reach idle — routine while Reels plays; it now raises `UiUnavailable`, which
+   degrades to an unusable measurement or a skipped surface, and the note no longer says "the
+   entry control was not found on screen" when nothing could be read at all.
+
+   Re-run after the fix, on the phone: `["app_launch", "profile_options_long_press",
+   "reels_tab"]` and `install_settings_long_click` **passed** — reproducing by command what had
+   only been done by hand with tap coordinates.
 
 3. **Give the feature gate a producer.** `feature_gate.py` and `assessment.py` are each
    imported by nothing but their own tests. Stage 4a computes an assessment in the **driver**

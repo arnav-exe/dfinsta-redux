@@ -108,6 +108,15 @@ enumerating its violations.
       events at a later cold start. The runner refuses to record a measurement it could not
       take — locked screen, app not foreground, surface control absent — because a zero the
       phone never had a chance to produce is not an observation.
+- [x] **Measurements become claims** (`src/dfinsta_pipeline/record_runtime.py`) — stage 9's
+      other half. `probes.main` writes measurements; the ledger wants claims, and the bridge was
+      a throwaway script both times a version's evidence was recorded. Three modes matching the
+      three probe shapes, with the two toggle states of a delta accumulating in a store because
+      a human moves the toggle between them — and an *unusable* half is never stored, so it
+      cannot be paired later as though it were a measurement. Running it against the phone found
+      that **Instagram 440 renamed every bottom-navigation resource id**, so surface navigation
+      had silently stopped working while still reporting "its site may not have been reached";
+      selectors are now resource-id *then* content-desc, tried separately.
 - [x] **Per-hook runtime identity** (`src/dfinsta_pipeline/runtime_identity.py`) — the
       generalisation, and the one that retires a whole class of bug rather than patching
       an instance of it. Four failures in this project were the same failure: a patch
