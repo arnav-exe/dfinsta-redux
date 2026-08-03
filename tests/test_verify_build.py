@@ -26,18 +26,27 @@ verifier has since fixed: an entry the build invented, a duplicate archive name
 hiding the unpatched original behind the patched one, a miscounted
 `preserved_entry_count`, and the three absent-entry shapes that used to raise a
 bare `KeyError` out of a verifier that had not written its report yet.
+
+`SignedModeTests` and `SignatureContextTests` cover the post-signing half. The
+same verifier runs twice per release — once on the unsigned graft, where a
+surviving signature artifact is a defect, and once after apksigner, where the
+`META-INF/*.SF` and `*.RSA` it wrote are the point — so `expect_signed` flips
+exactly two assertions and nothing else. No test runs apksigner: `subprocess.run`
+is stubbed inside the module with canned `verify --print-certs` output, which is
+the only part of the tool `signature_context` reads.
 """
 
 import hashlib
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 import warnings
 import zipfile
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -120,6 +129,18 @@ BUILT_ENTRIES["classes6.dex"] = dex(
 )
 BUILT_ENTRIES[CUSTOM_DEX] = dex(CUSTOM_BODY)
 
+#: What apksigner writes into an archive it signs. `MANIFEST.MF` is a name stock
+#: also carried, so it is a signature entry but never an *added* one; the other
+#: two are names stock never had, which is what makes them the interesting case.
+SIGNED_ADDITIONS = {
+    "META-INF/MANIFEST.MF": b"Name: classes.dex\r\nSHA-256-Digest: nope\r\n",
+    "META-INF/DFINSTA.SF": b"signature file",
+    "META-INF/DFINSTA.RSA": b"pkcs7 block",
+}
+
+CERTIFICATE = "a" * 64
+OTHER_CERTIFICATE = "b" * 64
+
 _UNSET = object()
 
 #: Every top-level key `verify` reports. Asserted whole wherever a test claims
@@ -127,6 +148,7 @@ _UNSET = object()
 #: and the release gate reads this shape.
 REPORT_KEYS = frozenset(
     {
+        "signature_entries",
         "duplicate_entries",
         "stock_dex_count",
         "built_dex_count",
@@ -165,6 +187,8 @@ class GraftFixture(unittest.TestCase):
         self.replaced = set(REPLACED)
         self.host_hooks = {dex_name: list(pairs) for dex_name, pairs in HOST_HOOKS.items()}
         self.appended: tuple[tuple[str, bytes], ...] = ()
+        self.expect_signed = False
+        self.stderr = ""
 
     @staticmethod
     def write_zip(
@@ -194,9 +218,50 @@ class GraftFixture(unittest.TestCase):
         )
 
     def verify(self, host_hooks=_UNSET) -> dict:
+        """`expect_signed` is passed only when True.
+
+        Unsigned is the documented default and every caller that predates the
+        post-signing half relies on it, so the unsigned tests exercise the
+        default itself rather than restating it as an argument.
+        """
         built, stock = self.apks()
         hooks = self.host_hooks if host_hooks is _UNSET else host_hooks
+        if self.expect_signed:
+            return verify_build.verify(
+                built, stock, self.custom_dex, self.replaced, hooks, expect_signed=True
+            )
         return verify_build.verify(built, stock, self.custom_dex, self.replaced, hooks)
+
+    def run_main(self, *extra: str) -> tuple[int, str, Path, Path]:
+        """Drive `main()` on the fixture. Stderr lands on `self.stderr`.
+
+        argparse writes its refusals there, and under `-W error` an uncaptured
+        one would also be printed straight through the test run.
+        """
+        built, stock = self.apks()
+        hooks_path = self.root / "host-hooks.json"
+        hooks_path.write_text(
+            json.dumps({name: [list(pair) for pair in pairs] for name, pairs in self.host_hooks.items()}),
+            encoding="utf-8",
+        )
+        argv = [
+            str(VERIFIER_PATH),
+            str(built),
+            str(stock),
+            "--custom-dex",
+            self.custom_dex,
+            "--replaced-dex",
+            ",".join(sorted(self.replaced)),
+            "--host-hooks",
+            str(hooks_path),
+            *extra,
+        ]
+        printed, errors = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", argv), redirect_stdout(printed), redirect_stderr(errors):
+            with self.assertRaises(SystemExit) as caught:
+                verify_build.main()
+        self.stderr = errors.getvalue()
+        return caught.exception.code, printed.getvalue(), built, stock
 
     def set_custom_body(self, body: str) -> None:
         self.built_entries[self.custom_dex] = dex(body)
@@ -221,8 +286,15 @@ class GraftFixture(unittest.TestCase):
             "duplicate_entries": not results["duplicate_entries"],
             "expected_entries_absent": not results["expected_entries_absent"],
             "replaced_entries_absent_from_stock": not results["replaced_entries_absent_from_stock"],
-            "signatures_stripped": results["signatures_stripped"],
         }
+        # The last term of the conjunction is the one `expect_signed` swaps: an
+        # unsigned graft must carry no signature artifact, a signed one must
+        # carry at least one. Naming them apart keeps a test from claiming the
+        # wrong half.
+        if self.expect_signed:
+            verdicts["signature_entries_present"] = bool(results["signature_entries"])
+        else:
+            verdicts["signatures_stripped"] = results["signatures_stripped"]
         self.assertEqual(sorted(set(expected) - set(verdicts)), [], "unknown verdict name")
         self.assertEqual(
             sorted(name for name, held in verdicts.items() if not held),
@@ -497,31 +569,6 @@ class PreservationTests(GraftFixture):
 class ReportEnvelopeTests(GraftFixture):
     """`main()`: the identity envelope, the exit code, and the release gate."""
 
-    def run_main(self, *extra: str) -> tuple[int, str, Path, Path]:
-        built, stock = self.apks()
-        hooks_path = self.root / "host-hooks.json"
-        hooks_path.write_text(
-            json.dumps({name: [list(pair) for pair in pairs] for name, pairs in self.host_hooks.items()}),
-            encoding="utf-8",
-        )
-        argv = [
-            str(VERIFIER_PATH),
-            str(built),
-            str(stock),
-            "--custom-dex",
-            self.custom_dex,
-            "--replaced-dex",
-            ",".join(sorted(self.replaced)),
-            "--host-hooks",
-            str(hooks_path),
-            *extra,
-        ]
-        printed = io.StringIO()
-        with mock.patch.object(sys, "argv", argv), redirect_stdout(printed):
-            with self.assertRaises(SystemExit) as caught:
-                verify_build.main()
-        return caught.exception.code, printed.getvalue(), built, stock
-
     def test_the_identity_envelope_is_present_and_the_release_gate_accepts_it(self) -> None:
         """Without these fields a verified build is one the release path refuses.
 
@@ -759,6 +806,301 @@ class ArchiveShapeTests(GraftFixture):
                 "expected_entries_absent",
                 "grafted_dex_changed",
             )
+
+
+class SignedModeTests(GraftFixture):
+    """`expect_signed`: the same archive, judged before and after apksigner.
+
+    Every test here starts from the *same* built entries plus what apksigner
+    writes, so the two modes are compared on one archive rather than on two
+    fixtures that could drift apart.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.built_entries.update(SIGNED_ADDITIONS)
+
+    def test_unsigned_mode_rejects_the_signature_entries_and_counts_them_added(self) -> None:
+        """Before signing, a signature artifact is a defect twice over.
+
+        The graft strips every one of them, so their presence means either the
+        strip failed or something wrote them — and the two names stock never had
+        are also entries the build invented.
+        """
+        results = self.verify()
+
+        self.assertFalse(results["signatures_stripped"])
+        self.assertEqual(
+            results["added_entries"], ["META-INF/DFINSTA.RSA", "META-INF/DFINSTA.SF"]
+        )
+        self.assert_failing_verdicts(results, "added_entries", "signatures_stripped")
+
+    def test_signed_mode_accepts_exactly_the_entries_apksigner_writes(self) -> None:
+        """After signing those same entries are the point, and nothing else changes.
+
+        This is the check that did not exist: `finalize.py` runs the verifier
+        again on the signed APK, and without this it failed on the two files it
+        had just been asked to confirm.
+        """
+        self.expect_signed = True
+        results = self.verify()
+
+        self.assertEqual(results["added_entries"], [])
+        self.assertEqual(
+            results["signature_entries"],
+            ["META-INF/DFINSTA.RSA", "META-INF/DFINSTA.SF", "META-INF/MANIFEST.MF"],
+        )
+        # Still reported, and still false — it is no longer the assertion.
+        self.assertFalse(results["signatures_stripped"])
+        self.assertIs(results["passed"], True)
+
+    def test_signed_mode_still_rejects_entries_apksigner_did_not_write(self) -> None:
+        """The relaxation is scoped to signature artifacts, not to `META-INF/`.
+
+        A smuggled native library and an invented `META-INF/services/` provider
+        are both still additions — the second is the one that separates
+        "is a signature entry" from "lives under META-INF/", which is a
+        directory anyone can write into.
+        """
+        self.expect_signed = True
+        self.built_entries["lib/arm64-v8a/libsmuggled.so"] = b"elf-bytes"
+        self.built_entries["META-INF/services/com.smuggled.Provider"] = b"smuggled"
+        results = self.verify()
+
+        self.assertFalse(verify_build.is_signature_entry("META-INF/services/com.smuggled.Provider"))
+        self.assertEqual(
+            results["added_entries"],
+            ["META-INF/services/com.smuggled.Provider", "lib/arm64-v8a/libsmuggled.so"],
+        )
+        self.assertTrue(results["signature_entries"])
+        self.assert_failing_verdicts(results, "added_entries")
+
+    def test_signed_mode_fails_when_the_archive_carries_no_signature_at_all(self) -> None:
+        """"Signed" must not be an assertion about an archive carrying no signature.
+
+        Relaxing the signature check without requiring one would make the
+        post-signing run pass on the *unsigned* APK — the exact input it exists
+        to distinguish.
+        """
+        self.expect_signed = True
+        for name in SIGNED_ADDITIONS:
+            del self.built_entries[name]
+        results = self.verify()
+
+        self.assertEqual(results["signature_entries"], [])
+        self.assertTrue(results["signatures_stripped"])
+        self.assert_failing_verdicts(results, "signature_entries_present")
+
+    def test_signature_entries_are_reported_in_both_modes(self) -> None:
+        """Informational before signing, load-bearing after — always present."""
+        found = ["META-INF/DFINSTA.RSA", "META-INF/DFINSTA.SF", "META-INF/MANIFEST.MF"]
+
+        self.assertEqual(self.verify()["signature_entries"], found)
+
+        self.expect_signed = True
+        self.assertEqual(self.verify()["signature_entries"], found)
+
+
+class SignatureFlagTests(GraftFixture):
+    """The argparse guards on the post-signing flags."""
+
+    def test_require_signature_without_apksigner_is_refused(self) -> None:
+        """Nothing to check a signature with is not a satisfied requirement."""
+        code, _, _, _ = self.run_main("--require-signature")
+
+        self.assertEqual(code, 2)
+        self.assertIn("--require-signature requires --apksigner", self.stderr)
+
+    def test_an_expected_certificate_that_is_not_64_hex_characters_is_refused(self) -> None:
+        """A malformed pin can never equal a real digest, so it would fail open.
+
+        `approved_signer` compares against whatever it was handed; a truncated
+        or non-hex value would simply never match, and the run would fail for a
+        reason that reads like a wrong key rather than a wrong argument.
+        """
+        apksigner = self.root / "apksigner"
+        apksigner.write_bytes(b"launcher")
+        for value in ("g" * 64, "abc", CERTIFICATE[:63], CERTIFICATE + "a"):
+            with self.subTest(value=value):
+                code, _, _, _ = self.run_main(
+                    "--apksigner", str(apksigner), "--expected-certificate-sha256", value
+                )
+                self.assertEqual(code, 2)
+                self.assertIn("64 hexadecimal characters", self.stderr)
+
+    def test_an_expected_certificate_without_apksigner_is_refused(self) -> None:
+        code, _, _, _ = self.run_main("--expected-certificate-sha256", CERTIFICATE)
+
+        self.assertEqual(code, 2)
+        self.assertIn("--expected-certificate-sha256 requires --apksigner", self.stderr)
+
+
+def apksigner_output(*certificates: str) -> str:
+    return "\n".join(
+        ["Verifies", "Verified using v2 scheme (APK Signature Scheme v2): true"]
+        + [
+            f"Signer #{index} certificate SHA-256 digest: {value}"
+            for index, value in enumerate(certificates, start=1)
+        ]
+    )
+
+
+class SignatureContextTests(GraftFixture):
+    """`signature_context`, against canned apksigner output.
+
+    A second implementation of the check in `tools/port_430/verify_apk.py` on
+    purpose — the two verifiers are invoked as bare scripts and must not share
+    an import — so the *contract* is what these pin, in the same terms that file
+    uses: verified, and signed by the key we expected.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.apksigner = self.root / "apksigner"
+        self.apksigner.write_bytes(b"apksigner-launcher")
+        self.apk = self.root / "signed.apk"
+        self.apk.write_bytes(b"apk-bytes")
+
+    def context(self, returncode: int, output: str, expected: str | None = None) -> dict:
+        completed = subprocess.CompletedProcess([], returncode, output, "")
+        with mock.patch.object(verify_build.subprocess, "run", return_value=completed) as run:
+            result = verify_build.signature_context(self.apk, self.apksigner, expected)
+        self.assertEqual(run.call_count, 1)
+        return result
+
+    def test_a_verified_apk_with_the_expected_certificate_is_approved(self) -> None:
+        result = self.context(0, apksigner_output(CERTIFICATE), CERTIFICATE)
+
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["approved_signer"])
+        self.assertEqual(result["certificate_sha256"], [CERTIFICATE])
+        self.assertEqual(result["tool_sha256"], sha256_bytes_of_file(self.apksigner))
+
+    def test_a_verified_apk_signed_by_a_different_key_is_not_approved(self) -> None:
+        """The dangerous case: correctly signed, by the wrong key.
+
+        `verified` alone says only that the archive and its signature agree,
+        which is true of anyone's signature.
+        """
+        result = self.context(0, apksigner_output(OTHER_CERTIFICATE), CERTIFICATE)
+
+        self.assertTrue(result["verified"])
+        self.assertFalse(result["approved_signer"])
+        self.assertEqual(result["certificate_sha256"], [OTHER_CERTIFICATE])
+
+    def test_a_failed_apksigner_run_is_not_verified(self) -> None:
+        result = self.context(1, "DOES NOT VERIFY", CERTIFICATE)
+
+        self.assertFalse(result["verified"])
+
+    def test_no_expected_certificate_approves_any_signer(self) -> None:
+        """Without a pin there is nothing to disagree with — recorded, not judged."""
+        result = self.context(0, apksigner_output(OTHER_CERTIFICATE))
+
+        self.assertTrue(result["approved_signer"])
+        self.assertIsNone(result["expected_certificate_sha256"])
+        self.assertEqual(result["certificate_sha256"], [OTHER_CERTIFICATE])
+
+    def test_two_signers_one_of_them_expected_is_not_approved(self) -> None:
+        """The whole signer list must equal the pin, not merely contain it.
+
+        An extra signer is an extra key that can update the app.
+        """
+        result = self.context(0, apksigner_output(CERTIFICATE, OTHER_CERTIFICATE), CERTIFICATE)
+
+        self.assertTrue(result["verified"])
+        self.assertFalse(result["approved_signer"])
+        self.assertEqual(result["certificate_sha256"], [CERTIFICATE, OTHER_CERTIFICATE])
+
+
+class SignedReportTests(GraftFixture):
+    """`main()` with `--apksigner`: the signature verdict reaches `passed`."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.built_entries.update(SIGNED_ADDITIONS)
+        self.apksigner = self.root / "apksigner"
+        self.apksigner.write_bytes(b"apksigner-launcher")
+
+    def run_signed(self, returncode: int, output: str, *extra: str):
+        completed = subprocess.CompletedProcess([], returncode, output, "")
+        with mock.patch.object(verify_build.subprocess, "run", return_value=completed):
+            return self.run_main("--apksigner", str(self.apksigner), *extra)
+
+    def test_a_signed_build_passes_and_records_who_signed_it(self) -> None:
+        """Passing `--apksigner` IS the statement that this is the signed run."""
+        code, printed, _, _ = self.run_signed(
+            0,
+            apksigner_output(CERTIFICATE),
+            "--require-signature",
+            "--expected-certificate-sha256",
+            CERTIFICATE,
+        )
+        report = json.loads(printed)
+
+        self.assertEqual(code, 0)
+        self.assertIs(report["passed"], True)
+        self.assertEqual(report["added_entries"], [])
+        self.assertTrue(report["signature"]["verified"])
+        self.assertTrue(report["signature"]["approved_signer"])
+        self.assertEqual(report["signature"]["certificate_sha256"], [CERTIFICATE])
+
+    def test_a_graft_signed_by_the_wrong_key_fails_the_whole_report(self) -> None:
+        """A clean graft plus a valid signature by an unexpected key is a failure.
+
+        Every structural check passes here; only the certificate is wrong. If
+        `approved_signer` did not reach `passed`, the release gate would sign
+        off on an APK anyone could have signed.
+        """
+        code, printed, _, _ = self.run_signed(
+            0,
+            apksigner_output(OTHER_CERTIFICATE),
+            "--require-signature",
+            "--expected-certificate-sha256",
+            CERTIFICATE,
+        )
+        report = json.loads(printed)
+
+        self.assertEqual(code, 1)
+        self.assertIs(report["passed"], False)
+        self.assertTrue(report["signature"]["verified"])
+        self.assertFalse(report["signature"]["approved_signer"])
+        # Nothing structural is at fault, which is the point.
+        self.assertEqual(report["added_entries"], [])
+        self.assertEqual(report["preserved_entries_mismatched"], [])
+
+    def test_an_unverifiable_signature_fails_the_whole_report(self) -> None:
+        code, printed, _, _ = self.run_signed(1, "DOES NOT VERIFY", "--require-signature")
+        report = json.loads(printed)
+
+        self.assertEqual(code, 1)
+        self.assertIs(report["passed"], False)
+        self.assertFalse(report["signature"]["verified"])
+
+    def test_an_unsigned_run_records_no_signature_and_leaves_passed_alone(self) -> None:
+        """Without `--apksigner` the report still carries the key, as None."""
+        del self.built_entries["META-INF/MANIFEST.MF"]
+        del self.built_entries["META-INF/DFINSTA.SF"]
+        del self.built_entries["META-INF/DFINSTA.RSA"]
+        code, printed, _, _ = self.run_main()
+        report = json.loads(printed)
+
+        self.assertEqual(code, 0)
+        self.assertIsNone(report["signature"])
+        self.assertIs(report["passed"], True)
+
+    def test_the_apktool_jar_is_recorded_not_verified(self) -> None:
+        """It names the toolchain in the report; it is not an input to any check."""
+        jar = self.root / "apktool.jar"
+        jar.write_bytes(b"jar-bytes")
+        code, printed, _, _ = self.run_signed(
+            0, apksigner_output(CERTIFICATE), "--apktool-jar", str(jar)
+        )
+        report = json.loads(printed)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(report["apktool_jar"], str(jar))
+        self.assertEqual(report["apktool_jar_sha256"], sha256_bytes_of_file(jar))
 
 
 if __name__ == "__main__":

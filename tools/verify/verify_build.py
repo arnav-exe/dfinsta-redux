@@ -28,6 +28,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -96,7 +98,17 @@ def verify(
     custom_dex: str,
     replaced: set[str],
     host_hooks: dict | None = None,
+    expect_signed: bool = False,
 ) -> dict:
+    """Check a built APK against the stock archive it was grafted from.
+
+    ``expect_signed`` flips two assertions that are only correct before signing.
+    The graft strips every stock signature artifact, so an *unsigned* build must
+    carry none — but the release gate runs this same verifier again **after**
+    apksigner has written `META-INF/*.SF` and `*.RSA`, and there those entries are
+    the point. Without this the post-signing check fails on the two files it was
+    asked to confirm, which is how the release path came to be run by hand.
+    """
     host_hooks = DEFAULT_HOST_HOOKS if host_hooks is None else host_hooks
     if not host_hooks:
         # An empty map would make `all(...)` over it vacuously true, so a build
@@ -192,7 +204,15 @@ def verify(
         # entry present only in the output is examined by nothing at all — and
         # this module's contract is that every archive entry outside the grafted
         # set is byte-identical to stock, which an added file silently breaks.
+        signature_entries = sorted(n for n in out_names if is_signature_entry(n))
+        results["signature_entries"] = signature_entries
         added = sorted(out_names - ref_names - {custom_dex})
+        if expect_signed:
+            # After signing, the signer's own files are the expected addition —
+            # and the ONLY one. Everything else added is still rejected, so this
+            # relaxes exactly the entries apksigner is known to write and nothing
+            # more.
+            added = [name for name in added if not is_signature_entry(name)]
         results["added_entries"] = added
         # Count what was actually compared. `len(ref_names) - len(grafted)` also
         # counts the stock signature entries the loop skips, and subtracts a
@@ -216,10 +236,57 @@ def verify(
         and not duplicates
         and not absent
         and not missing_from_stock
-        and results["signatures_stripped"]
+        # Before signing: no signature artifact may survive the graft. After
+        # signing: at least one must exist, or "signed" is an assertion about an
+        # archive that carries no signature.
+        and (bool(signature_entries) if expect_signed else results["signatures_stripped"])
     )
     results["passed"] = bool(passed)
     return results
+
+
+CERTIFICATE_LINE = re.compile(r"Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})")
+
+
+def signature_context(
+    apk: Path, apksigner: Path, expected_certificate_sha256: str | None = None
+) -> dict:
+    """What apksigner says about this APK, and whether that is who we expected.
+
+    Deliberately a second implementation of the check in
+    `tools/port_430/verify_apk.py` rather than a shared import. The two verifiers
+    are meant to be independent — one is 430-shaped and pins things this one does
+    not — and they are invoked as bare scripts from `finalize.py`, so a shared
+    module would either couple them or depend on PYTHONPATH being set by whoever
+    runs the release. The *contract* is what must not drift, and both files pin it
+    in their own tests: `passed` requires BOTH that apksigner verified the archive
+    and that the certificate is the expected one. Verified-but-unexpected is the
+    dangerous case — a correctly signed APK signed by the wrong key.
+    """
+    result = subprocess.run(
+        [str(apksigner), "verify", "--verbose", "--print-certs", str(apk)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    output = (result.stdout + result.stderr).strip().splitlines()
+    certificates = [
+        match.group(1).lower()
+        for line in output
+        if (match := CERTIFICATE_LINE.fullmatch(line.strip()))
+    ]
+    expected = expected_certificate_sha256.lower() if expected_certificate_sha256 else None
+    return {
+        "tool": str(apksigner),
+        "tool_sha256": sha256_file(apksigner),
+        "verified": result.returncode == 0,
+        "certificate_sha256": certificates,
+        "expected_certificate_sha256": expected,
+        "approved_signer": expected is None or certificates == [expected],
+        "output": output,
+    }
 
 
 def main() -> None:
@@ -236,7 +303,34 @@ def main() -> None:
         "resolution. Defaults to the recorded 439 map.",
     )
     parser.add_argument("--output", type=Path)
+    # The post-signing half. Before these existed this verifier could not be the
+    # release gate's `--final-verifier` at all: `finalize.py` invokes it with
+    # exactly these flags, only the 430-shaped verifier accepted them, and so a
+    # target-neutral build had no target-neutral post-signing check. The 440
+    # release was signed by hand for that reason.
+    parser.add_argument("--apksigner", type=Path)
+    parser.add_argument("--require-signature", action="store_true")
+    parser.add_argument("--expected-certificate-sha256")
+    parser.add_argument(
+        "--apktool-jar",
+        type=Path,
+        help="not used to verify; its hash is recorded so the report names the "
+        "toolchain the build came from",
+    )
     args = parser.parse_args()
+
+    if args.require_signature and args.apksigner is None:
+        parser.error("--require-signature requires --apksigner")
+    # `is not None`, not truthiness: an EMPTY string is a supplied-but-unusable
+    # pin, and a falsy check skips the hex guard, hands `signature_context` an
+    # `expected` of None, and reports `approved_signer: true` for any key at all.
+    # An unset shell variable expanding to "" would silently turn the certificate
+    # pin off while the command line still says it is on.
+    if args.expected_certificate_sha256 is not None:
+        if args.apksigner is None:
+            parser.error("--expected-certificate-sha256 requires --apksigner")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_certificate_sha256):
+            parser.error("--expected-certificate-sha256 must be 64 hexadecimal characters")
 
     host_hooks = None
     if args.host_hooks:
@@ -269,8 +363,36 @@ def main() -> None:
             args.custom_dex,
             {n for n in args.replaced_dex.split(",") if n},
             host_hooks,
+            # Being given an apksigner IS the statement that this is the
+            # post-signing check; there is no other reason to pass one. Inferred
+            # rather than a separate flag so `finalize.py`, which passes
+            # --apksigner and nothing like --expect-signed, gets the right
+            # behaviour without the release gate having to know about this file's
+            # internals.
+            expect_signed=args.apksigner is not None,
         ),
     }
+    if args.apktool_jar is not None:
+        report["apktool_jar"] = str(args.apktool_jar)
+        report["apktool_jar_sha256"] = sha256_file(args.apktool_jar)
+
+    signature = (
+        signature_context(args.built_apk, args.apksigner, args.expected_certificate_sha256)
+        if args.apksigner
+        else None
+    )
+    report["signature"] = signature
+    if signature is not None:
+        report["passed"] = bool(
+            report["passed"] and signature["verified"] and signature["approved_signer"]
+        )
+    elif args.require_signature:
+        # Unreachable through argparse, which refuses --require-signature without
+        # --apksigner first. Kept as a backstop rather than deleted: it is the
+        # invariant itself — an unchecked signature is not a satisfied
+        # requirement — and it survives a refactor that loosens the flag parsing.
+        report["passed"] = False
+
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:
         args.output.write_text(text + "\n", encoding="utf-8")
