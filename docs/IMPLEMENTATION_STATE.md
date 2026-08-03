@@ -216,6 +216,24 @@ than failing at a worker where the human cannot see why.
 `FeatureGateSubmissionV1`, dispositions `cas://sha256/781fa762…` at 674 bytes, validator
 clean, and unknown-candidate / missing-ruling / malformed-detail each refused by name.
 
+**And a defect its tests found, in the documented workflow itself.** `feature_gate`'s
+`ValueError`s escaped the client's refusal channel, so the sequence written above ended in a
+*traceback* — a human who filled in the template's verdicts and left its blank rationales got
+`ValueError: Disposition for … has no rationale`, exit 1, where the contract is `refused: …`,
+exit 2. That is precisely the habit this module's docstring says a gate client must not teach.
+Fixed at both layers: `_feature_rulings` now checks the candidate verdict against
+`feature_gate.VERDICTS` and the rationale requirement **by name**, and the contract calls are
+wrapped so nothing escapes as a bare `ValueError`. Verified — unedited template, blank
+rationale, the *gate's* vocabulary used for a candidate, a bogus verdict and an over-long
+rationale all now produce refusals naming the candidate; `ignore` with no rationale and a
+properly filled file are accepted.
+
+**The template stays invalid as emitted, deliberately.** A skeleton that submitted cleanly
+unedited would let someone approve four rulings they never made. Note the two vocabularies:
+a **candidate** verdict is `block / offer_toggle / ignore / defer` while the **gate's** is
+`approve / reject / defer`, and both appear on the same command line — so reaching for the
+wrong one is the ordinary mistake, and it is refused naming the candidate and both lists.
+
 ## The differential vs N−1 now has a producer
 
 `src/dfinsta_pipeline/differential.py`, and

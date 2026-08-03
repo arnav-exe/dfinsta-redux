@@ -52,6 +52,7 @@ from dfinsta_pipeline.submission import (
     GATE_KINDS,
     IDEMPOTENCY_ID_PREFIX,
     IDENTITY_EXCLUDED_FIELDS,
+    FEATURE_ASSESSMENT_GATE,
     REPLAY_VERIFICATION_GATE,
     VERDICTS,
     Answer,
@@ -889,13 +890,20 @@ class JournalTests(TemporaryRootTestCase):
         path.write_text(body, encoding="utf-8")
         return path
 
-    def read(self, subject_sha256: str | None = None) -> GateDecision | None:
+    def read_record(self, subject_sha256: str | None = None):
         return read_journal(
             self.journal_root,
             WORKFLOW_ID,
             GATE_ID,
             self.decision.subject_sha256 if subject_sha256 is None else subject_sha256,
         )
+
+    def read(self, subject_sha256: str | None = None) -> GateDecision | None:
+        """The recorded decision, or None. `read_journal` returns a record now:
+        a decision alone cannot say what payload was submitted with it, and a
+        resubmission that rebuilt a different payload would go unnoticed."""
+        record = self.read_record(subject_sha256)
+        return None if record is None else record.decision
 
     # -- writing
 
@@ -912,9 +920,22 @@ class JournalTests(TemporaryRootTestCase):
         self.assertEqual(
             path.read_text(encoding="utf-8"),
             canonical_json(
-                JournalEntry(
-                    1, WORKFLOW_ID, GATE_ID, self.decision.subject_sha256, self.decision
-                )
+                {
+                    key: value
+                    for key, value in dataclasses.asdict(
+                        JournalEntry(
+                            1,
+                            WORKFLOW_ID,
+                            GATE_ID,
+                            self.decision.subject_sha256,
+                            self.decision,
+                        )
+                    ).items()
+                    # A gate whose payload is the decision writes no
+                    # `payload_sha256` key at all, so entries stay byte-identical
+                    # to those written before the field existed.
+                    if key != "payload_sha256"
+                }
             ),
         )
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), self.document())
@@ -1121,9 +1142,70 @@ class GateKindTests(unittest.TestCase):
             "not submit a decision whose subject it cannot independently reproduce.",
         )
 
-    def test_only_the_reproducible_gate_is_registered(self) -> None:
-        """Registering a second kind is a decision, not an import side effect."""
-        self.assertEqual(GATE_KINDS, (REPLAY_VERIFICATION_GATE,))
+    def test_the_feature_gate_is_recognised_by_its_run_scoped_id(self) -> None:
+        gate_id = f"{RUN_ID}-feature-assessment-gate"
+        self.assertIs(select_gate_kind(gate_id, RUN_ID), FEATURE_ASSESSMENT_GATE)
+        self.assertEqual(FEATURE_ASSESSMENT_GATE.name, "feature-assessment")
+        self.assertEqual(
+            FEATURE_ASSESSMENT_GATE.update_name, "submit_feature_dispositions"
+        )
+
+    def test_the_feature_gate_does_not_match_another_runs_gate(self) -> None:
+        other_run = "port-441"
+        self.assertNotEqual(other_run, RUN_ID)
+        gate_id = f"{RUN_ID}-feature-assessment-gate"
+        self.assertFalse(FEATURE_ASSESSMENT_GATE.matches(gate_id, other_run))
+        with self.assertRaises(SubmissionRefused):
+            select_gate_kind(gate_id, other_run)
+        # Positive control, so "never matches" cannot pass this.
+        self.assertTrue(
+            FEATURE_ASSESSMENT_GATE.matches(
+                f"{other_run}-feature-assessment-gate", other_run
+            )
+        )
+
+    def test_the_feature_gate_suffix_is_matched_whole(self) -> None:
+        # Spelled out rather than imported from `feature_gate.GATE_ID_SUFFIX`:
+        # a test that derives its expectation from the code under test cannot
+        # catch that code changing.
+        for gate_id in (
+            f"{RUN_ID}-feature-assessment-gate-2",
+            f"x{RUN_ID}-feature-assessment-gate",
+            f"{RUN_ID}-feature-assessment",
+            RUN_ID,
+        ):
+            with self.subTest(gate_id=gate_id):
+                self.assertFalse(FEATURE_ASSESSMENT_GATE.matches(gate_id, RUN_ID))
+
+    def test_exactly_the_two_reproducible_gates_are_registered(self) -> None:
+        """Registering a kind is a decision, not an import side effect.
+
+        The feature gate joined only once its subject became reproducible from a
+        run id — `recorded_assessments_v1` is what made that true. Before that
+        row existed, registering it would have been the `phase-a-approval`
+        mistake wearing a different name.
+        """
+        self.assertEqual(
+            GATE_KINDS, (REPLAY_VERIFICATION_GATE, FEATURE_ASSESSMENT_GATE)
+        )
+
+    def test_a_gate_kind_refuses_a_detail_it_cannot_send(self) -> None:
+        """Dropping a detail would submit a bare verdict a human never gave."""
+        pending = make_pending()
+        decision = assemble_decision(
+            make_derived(), make_principal(), make_answer(), NOW
+        )
+        answer = Answer("approve", "looks right", detail={"anything": True})
+        with self.assertRaises(SubmissionRefused) as raised:
+            REPLAY_VERIFICATION_GATE.payload(pending, decision, answer)
+        self.assertIn("nothing here would send", str(raised.exception))
+        # Positive control: without a detail the same call returns the decision.
+        self.assertIs(
+            REPLAY_VERIFICATION_GATE.payload(
+                pending, decision, Answer("approve", "looks right")
+            ),
+            decision,
+        )
 
 
 # ---------------------------------------------------------------- confirmation

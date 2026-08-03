@@ -114,6 +114,11 @@ JOURNAL_FIELDS = frozenset(
     {"schema_version", "workflow_id", "gate_id", "subject_sha256", "decision"}
 )
 
+#: Entries written since gates gained kind-specific payloads. Read strictly as
+#: either shape: an entry written before this existed is a valid v1 entry with no
+#: payload, and refusing it would strand a human mid-answer on an upgrade.
+JOURNAL_FIELDS_WITH_PAYLOAD = JOURNAL_FIELDS | {"payload_sha256"}
+
 
 def _identifier(value: object, label: str) -> str:
     if type(value) is not str or not ID_PATTERN.fullmatch(value):
@@ -318,10 +323,24 @@ def verify_published_gate(
 
 @dataclass(frozen=True, slots=True)
 class Answer:
-    """The only part of a decision a human supplies."""
+    """The only part of a decision a human supplies.
+
+    ``detail`` carries whatever a *particular* gate needs beyond a verdict and a
+    rationale — the feature gate wants a ruling per candidate, and this is the
+    only place a human's own content belongs. It is deliberately untyped here:
+    the gate kind that understands it validates it, and this dataclass would
+    otherwise have to know about every gate that will ever exist.
+
+    **A kind that does not understand a detail must refuse it, never drop it.**
+    That rule lives in :func:`_decision_payload`, and it is the point of the
+    field rather than a nicety: a human who supplies rulings and gets a bare
+    `approve` submitted is the exact failure this module exists to prevent,
+    arriving through an argument nobody read.
+    """
 
     verdict: Literal["approve", "reject", "defer"]
     rationale: str
+    detail: object | None = None
 
     def __post_init__(self) -> None:
         if self.verdict not in VERDICTS:
@@ -413,6 +432,7 @@ class JournalEntry:
     gate_id: str
     subject_sha256: str
     decision: GateDecision
+    payload_sha256: str | None = None
 
 
 def journal_path(journal_root: Path, workflow_id: str, gate_id: str) -> Path:
@@ -431,9 +451,19 @@ def journal_path(journal_root: Path, workflow_id: str, gate_id: str) -> Path:
     return journal_root / f"{workflow_id}.{gate_id}.json"
 
 
+@dataclass(frozen=True, slots=True)
+class JournalRecord:
+    """What was recorded before submitting: the decision, and what went with it."""
+
+    decision: GateDecision
+    #: `None` for an entry written before gates had kind-specific payloads, and
+    #: for every gate whose payload is the decision itself.
+    payload_sha256: str | None = None
+
+
 def read_journal(
     journal_root: Path, workflow_id: str, gate_id: str, subject_sha256: str
-) -> GateDecision | None:
+) -> JournalRecord | None:
     """Return a previously assembled decision for exactly this subject.
 
     A recorded decision for a *different* subject is ignored rather than
@@ -441,6 +471,12 @@ def read_journal(
     old answer would be a stale approval authorising something the human never
     saw -- the same failure the whole hash chain exists to prevent, arriving
     through the client's own cache.
+
+    The payload digest rides along because a `GateDecision` does not mention it.
+    Without it, a resubmission would pair the recorded decision with a *freshly
+    built* payload, and a gate whose answer is more than a verdict -- the feature
+    gate rules on every candidate -- would submit rulings the human never made,
+    or replace the ones they did, with nothing anywhere saying so.
     """
 
     path = journal_path(journal_root, workflow_id, gate_id)
@@ -450,7 +486,12 @@ def read_journal(
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SubmissionRefused(f"Journal entry is not readable JSON: {path}") from error
-    fields = _strict(data, JOURNAL_FIELDS, "journal entry")
+    allowed = (
+        JOURNAL_FIELDS_WITH_PAYLOAD
+        if isinstance(data, dict) and "payload_sha256" in data
+        else JOURNAL_FIELDS
+    )
+    fields = _strict(data, allowed, "journal entry")
     if fields["schema_version"] != 1:
         raise SubmissionRefused("Unsupported journal entry schema")
     try:
@@ -459,15 +500,22 @@ def read_journal(
         raise SubmissionRefused(f"Journal entry holds an invalid decision: {error}") from error
     if fields["workflow_id"] != workflow_id or fields["gate_id"] != gate_id:
         raise SubmissionRefused(f"Journal entry names a different gate: {path}")
+    payload_sha256 = fields.get("payload_sha256")
+    if payload_sha256 is not None:
+        _sha256(payload_sha256, "journal payload hash")
     if fields["subject_sha256"] != subject_sha256:
         return None
     if decision.subject_sha256 != subject_sha256:
         raise SubmissionRefused(f"Journal entry decision does not bind its subject: {path}")
-    return decision
+    return JournalRecord(decision, payload_sha256)
 
 
 def write_journal(
-    journal_root: Path, workflow_id: str, gate_id: str, decision: GateDecision
+    journal_root: Path,
+    workflow_id: str,
+    gate_id: str,
+    decision: GateDecision,
+    payload_sha256: str | None = None,
 ) -> Path:
     """Record the assembled decision BEFORE submitting it.
 
@@ -498,8 +546,19 @@ def write_journal(
         raise SubmissionRefused(
             f"Journal directory is group- or world-writable ({mode & 0o777:04o}): {journal_root}"
         )
-    entry = JournalEntry(1, workflow_id, gate_id, decision.subject_sha256, decision)
-    body = canonical_json(entry).encode("utf-8")
+    if payload_sha256 is not None:
+        _sha256(payload_sha256, "journal payload hash")
+    entry = JournalEntry(
+        1, workflow_id, gate_id, decision.subject_sha256, decision, payload_sha256
+    )
+    written = dataclasses.asdict(entry)
+    if payload_sha256 is None:
+        # A gate whose payload IS the decision writes no `payload_sha256` key at
+        # all, rather than an explicit null. Entries then stay byte-identical to
+        # the ones written before this field existed, so upgrading the client
+        # mid-answer does not invalidate a journal a human is relying on.
+        written.pop("payload_sha256")
+    body = canonical_json(written).encode("utf-8")
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -514,14 +573,78 @@ def write_journal(
 # ------------------------------------------------------------------- gate kinds
 
 
+def _payload_digest(payload: object, decision: GateDecision) -> str | None:
+    """The digest a journal records and an update id covers, or `None`.
+
+    `None` exactly when the payload *is* the decision, which keeps every existing
+    gate byte-identical: same journal shape, same update id, same deduplication
+    behaviour. A gate that sends more than the decision gets a digest over the
+    whole payload, so two answers that differ only in their attachments are two
+    different updates rather than one update and a silently discarded document.
+    """
+    if payload is decision:
+        return None
+    return canonical_sha256(payload)
+
+
+def _require_recorded_payload_matches(
+    recorded: "JournalRecord", payload: object, pending: "PendingGate", journal_root: Path
+) -> None:
+    """Refuse to resubmit a journalled decision alongside a different payload.
+
+    The gap this closes: a `GateDecision` says nothing about what rode with it,
+    so a resubmission pairs the recorded decision with a *freshly built* payload.
+    For the feature gate that payload carries every per-candidate ruling. If the
+    human edited their rulings between attempts, the first attempt's decision
+    would be resubmitted carrying the second attempt's rulings — or the reverse,
+    depending on which side moved — and nothing would say so.
+    """
+    expected = _payload_digest(payload, recorded.decision)
+    if recorded.payload_sha256 == expected:
+        return
+    path = journal_path(journal_root, pending.workflow_id, pending.derived.gate_id)
+    raise SubmissionRefused(
+        "The recorded answer was submitted with different content than this one "
+        f"({recorded.payload_sha256 or 'none'} vs {expected or 'none'}). Delete "
+        f"{path} only if you are certain the recorded answer never reached the "
+        "workflow; otherwise the two answers must be reconciled by hand."
+    )
+
+
+def _decision_payload(pending: "PendingGate", decision: GateDecision, answer: Answer) -> object:
+    """What a gate's update carries. For most gates, the decision itself.
+
+    Refusing a detail it does not understand is the whole job. Silently dropping
+    it would submit a bare verdict on a human's behalf while they believe they
+    ruled on something specific — and the receipt would say `accepted`.
+    """
+    if answer.detail is not None:
+        raise SubmissionRefused(
+            f"The {pending.kind.name} gate takes a verdict and a rationale and nothing "
+            "else; this answer carries additional detail that nothing here would send."
+        )
+    return decision
+
+
 @dataclass(frozen=True, slots=True)
 class GateKind:
-    """How to recognise a gate and how to reproduce its subject."""
+    """How to recognise a gate and how to reproduce its subject.
+
+    ``resolve`` takes **one** argument, the run id, and must keep taking exactly
+    one. That signature is what makes "a subject unreachable from a run id is
+    unregisterable" a structural property rather than a convention, and it is the
+    entire reason `PortRunWorkflow`'s `phase-a-approval` is refused below.
+    Widening it to accept a path, a published request or a candidate list would
+    re-open that trap for every gate at once.
+    """
 
     name: str
     update_name: str
     matches: Callable[[str, str], bool]
     resolve: Callable[[str], DerivedSubject]
+    #: Builds the object the Workflow update receives. Defaults to the decision
+    #: alone, which is what every gate needed until one needed more.
+    payload: Callable[["PendingGate", GateDecision, Answer], object] = _decision_payload
 
 
 def _resolve_replay_verification(run_id: str) -> DerivedSubject:
@@ -555,6 +678,187 @@ def _resolve_replay_verification(run_id: str) -> DerivedSubject:
     )
 
 
+def _resolve_feature_assessment(run_id: str) -> DerivedSubject:
+    """Reproduce the feature gate's subject from the ledger.
+
+    Same discipline as the replay resolver: not a reimplementation. It calls
+    `assessment_record.resolve_with` against the read-only runtime, which reaches
+    the `ArtifactRef` through `require_completed_operation` and reads the
+    candidate ids out of the recorded bytes with the single decoder in
+    `assessment.py`. A parallel implementation could agree while both were wrong.
+    """
+
+    from . import activities, assessment_record
+    from .feature_gate import derive_feature_gate_request
+
+    configured = activities.runtime()
+    recorded = assessment_record.resolve_with(configured.ledger, configured.store, run_id)
+    request = derive_feature_gate_request(
+        recorded.run_id,
+        recorded.assessment,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.candidate_ids,
+    )
+    # All three hashes are the request hash, as for the replay gate: this gate's
+    # subject is one derived object.
+    return DerivedSubject(
+        run_id=request.run_id,
+        gate_id=request.gate_id,
+        subject_sha256=request.sha256,
+        admission_sha256=request.sha256,
+        prepared_sha256=request.sha256,
+        policy_revision=request.policy_revision,
+        allowed_actor=request.allowed_actor,
+    )
+
+
+def _feature_rulings(detail: object, candidates: tuple[str, ...]) -> dict[str, tuple[str, str]]:
+    """Read the human's rulings, keyed by candidate, refusing anything unexpected.
+
+    **Iterates the derived candidates and looks each one up**, never the other
+    way round. That direction is the whole safety property: a file that renames,
+    drops or invents a candidate is refused *by name* before anything is signed,
+    and the emission order is the request's rather than the file's, so the
+    document's digest cannot depend on how a human happened to order their
+    editor. `feature_gate.validate_submission` never re-reads the assessment
+    blob, so this is where a ruling about a document nobody read gets stopped.
+    """
+    from .feature_gate import VERDICTS as CANDIDATE_VERDICTS
+
+    if not isinstance(detail, dict):
+        raise SubmissionRefused(
+            "This gate needs a ruling for every candidate: pass --rulings with a JSON "
+            "object mapping each candidate id to {\"verdict\": …, \"rationale\": …}"
+        )
+    unknown = sorted(set(detail) - set(candidates))
+    if unknown:
+        raise SubmissionRefused(
+            f"Rulings name a candidate this gate does not cover: {unknown[0]}"
+        )
+    out: dict[str, tuple[str, str]] = {}
+    for candidate in candidates:
+        entry = detail.get(candidate)
+        if entry is None:
+            raise SubmissionRefused(f"No ruling for candidate {candidate}")
+        if not isinstance(entry, dict):
+            raise SubmissionRefused(f"Ruling for {candidate} must be an object")
+        verdict = entry.get("verdict")
+        rationale = entry.get("rationale", "")
+        if type(verdict) is not str or type(rationale) is not str:
+            raise SubmissionRefused(f"Ruling for {candidate} needs a verdict and a rationale")
+        # Checked here, by name, rather than left to the contract. A candidate
+        # verdict is NOT the gate's own vocabulary — `approve/reject/defer` is
+        # what `--verdict` takes and `block/offer_toggle/ignore/defer` is what a
+        # candidate takes — and the two appear on the same command line, so
+        # reaching for the wrong one is the ordinary mistake rather than an
+        # exotic one. `FeatureDispositionV1` would refuse it too, with a message
+        # naming no candidate, through an exception the CLI does not catch.
+        if verdict not in CANDIDATE_VERDICTS:
+            raise SubmissionRefused(
+                f"Ruling for {candidate} has verdict {verdict!r}; a candidate verdict is "
+                f"one of {', '.join(CANDIDATE_VERDICTS)}. Note these are not the gate's own "
+                f"{', '.join(VERDICTS)} — the gate says whether you answered, each candidate "
+                "says what to do about it."
+            )
+        if verdict != "ignore" and not rationale.strip():
+            # The template ships blank rationales on purpose, so this is the
+            # refusal a human meets most often. It has to say what to type.
+            raise SubmissionRefused(
+                f"Ruling for {candidate} has verdict {verdict!r} and no rationale. Only "
+                "'ignore' may be silent; every other verdict changes what the app does and "
+                "has to say why."
+            )
+        out[candidate] = (verdict, rationale)
+    return out
+
+
+def _feature_assessment_payload(
+    pending: "PendingGate", decision: GateDecision, answer: Answer
+) -> object:
+    """Build the dispositions document, publish it, and wrap it with the decision.
+
+    The client writes bytes to CAS here, and that is deliberate rather than
+    incidental: CAS is not authority. `put_blob` touches no ledger table, an
+    `ArtifactRef` acquires provenance only when `record_effect` binds it to an
+    operation key, and every read re-verifies digest, size, mode, owner and
+    inode. So the write grants availability and never meaning — and the client
+    still makes no ledger write at all.
+
+    The last line is the point: the client runs the *admitting side's own*
+    validator over its own submission. If it cannot admit its own answer it
+    refuses here, rather than making a human's decision fail at a worker where
+    they cannot see why.
+    """
+
+    from . import activities, assessment_record
+    from .feature_gate import (
+        DISPOSITIONS_ARTIFACT_KIND,
+        FeatureDispositionsV1,
+        FeatureDispositionV1,
+        FeatureGateSubmissionV1,
+        derive_feature_gate_request,
+        validate_submission,
+    )
+
+    configured = activities.runtime()
+    recorded = assessment_record.resolve_with(
+        configured.ledger, configured.store, pending.derived.run_id
+    )
+    request = derive_feature_gate_request(
+        recorded.run_id,
+        recorded.assessment,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.candidate_ids,
+    )
+    rulings = _feature_rulings(answer.detail, recorded.candidate_ids)
+    try:
+        document = FeatureDispositionsV1(
+            1,
+            recorded.assessment.sha256,
+            recorded.policy_revision,
+            tuple(
+                FeatureDispositionV1(1, candidate, *rulings[candidate])
+                for candidate in recorded.candidate_ids
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        # Every refusal out of this client is a `SubmissionRefused`, because the
+        # CLI turns that into "refused: …" and exit 2 while anything else is a
+        # traceback — and a gate client that teaches whoever is on call to skim
+        # tracebacks has undone the reason it exists. `_feature_rulings` catches
+        # the reachable cases by name; this is the backstop for the rest.
+        raise SubmissionRefused(f"These rulings are not a valid answer: {error}") from error
+    body = canonical_json(document).encode("utf-8")
+    reference = configured.store.put_bytes(
+        kind=DISPOSITIONS_ARTIFACT_KIND,
+        data=body,
+        # Prefixed, so it structurally cannot collide with a real operation key
+        # (which is a bare 64-hex digest), and a pure function of the document,
+        # so a resubmission of the same rulings mints the same ref.
+        producer_operation_id=f"client-{document.sha256}",
+        input_hashes=(recorded.assessment.sha256,),
+    )
+    try:
+        submission = FeatureGateSubmissionV1(1, decision, reference)
+        validate_submission(request, submission, document)
+    except (TypeError, ValueError) as error:
+        raise SubmissionRefused(
+            f"This client cannot admit its own answer, so it will not send it: {error}"
+        ) from error
+    return submission
+
+
+FEATURE_ASSESSMENT_GATE = GateKind(
+    name="feature-assessment",
+    update_name="submit_feature_dispositions",
+    matches=lambda gate_id, run_id: gate_id == f"{run_id}-feature-assessment-gate",
+    resolve=_resolve_feature_assessment,
+    payload=_feature_assessment_payload,
+)
+
+
 REPLAY_VERIFICATION_GATE = GateKind(
     name="replay-final-verification",
     update_name="submit_verification_decision",
@@ -570,7 +874,13 @@ REPLAY_VERIFICATION_GATE = GateKind(
 #: id cannot reach them. Registering it with a weaker check -- or with none --
 #: would mean a human signing hashes nobody reproduced, which is the one thing
 #: this module refuses. It is answerable once its subject is reproducible.
-GATE_KINDS: tuple[GateKind, ...] = (REPLAY_VERIFICATION_GATE,)
+#:
+#: The feature gate joined this tuple only once its subject *became* reproducible:
+#: `recorded_assessments_v1` keys a recorded assessment by run, so a client
+#: holding a run id can reach the operation, load the exact `ArtifactRef` and
+#: read the candidate ids out of the pinned bytes. Registering it before that
+#: existed would have been the `phase-a-approval` mistake with a different name.
+GATE_KINDS: tuple[GateKind, ...] = (REPLAY_VERIFICATION_GATE, FEATURE_ASSESSMENT_GATE)
 
 
 def select_gate_kind(
@@ -707,19 +1017,38 @@ async def submit_answer(
         # is local rather than an argument about which hash happens to cover
         # which field in one gate kind -- an argument that would silently stop
         # holding the first time a second kind is registered.
-        _require_recorded_decision_matches(recorded, pending, principal, answer, journal_root)
-        decision = recorded
+        _require_recorded_decision_matches(
+            recorded.decision, pending, principal, answer, journal_root
+        )
+        decision = recorded.decision
+        payload = pending.kind.payload(pending, decision, answer)
+        _require_recorded_payload_matches(recorded, payload, pending, journal_root)
         journal = journal_path(journal_root, pending.workflow_id, pending.derived.gate_id)
     else:
         decision = assemble_decision(pending.derived, principal, answer, issued_at)
+        payload = pending.kind.payload(pending, decision, answer)
         journal = write_journal(
-            journal_root, pending.workflow_id, pending.derived.gate_id, decision
+            journal_root,
+            pending.workflow_id,
+            pending.derived.gate_id,
+            decision,
+            _payload_digest(payload, decision),
         )
 
     handle = client.get_workflow_handle(pending.workflow_id)
-    receipt = await handle.execute_update(
-        pending.kind.update_name, decision, id=decision.idempotency_id
+    # The update id covers the PAYLOAD, not just the decision. Two different
+    # dispositions documents under one decision would otherwise share an id:
+    # Temporal returns the first receipt, the second document is dropped, and
+    # this client prints `accepted True`. For a gate whose payload is the
+    # decision the digest is the decision's own, so the replay gate's dedupe
+    # property is unchanged.
+    digest = _payload_digest(payload, decision)
+    update_id = (
+        decision.idempotency_id
+        if digest is None
+        else f"{IDEMPOTENCY_ID_PREFIX}{digest}"
     )
+    receipt = await handle.execute_update(pending.kind.update_name, payload, id=update_id)
     # Submitted by name, so the receipt arrives as plain JSON. `bool(receipt)` on
     # an object would be True for any object at all, including a rejection.
     if type(receipt) is dict:
@@ -799,6 +1128,63 @@ def describe(pending: PendingGate) -> str:
     )
 
 
+def _recorded_document(pending: PendingGate) -> str:
+    """The assessment bytes this gate pins, fetched by the ref the client derived.
+
+    Fetched by ref rather than by a path the caller names: a `--assessment-file`
+    flag would let a human read one document and rule on another, and nothing
+    downstream would catch it because `validate_submission` never re-reads the
+    blob.
+    """
+    from . import activities, assessment_record
+
+    configured = activities.runtime()
+    recorded = assessment_record.resolve_with(
+        configured.ledger, configured.store, pending.derived.run_id
+    )
+    return json.dumps(recorded.document, indent=2, sort_keys=True)
+
+
+def _rulings_template(pending: PendingGate) -> str:
+    """A skeleton whose candidate ids are the derived ones.
+
+    So a hand-edited file that renames, drops or invents a candidate is refused
+    by name before anything is signed, rather than quietly ruling on a set the
+    pinned bytes do not contain.
+
+    **Invalid as emitted, deliberately.** Every verdict but `ignore` needs a
+    rationale, so the unedited template is refused and a human cannot answer this
+    gate without typing something for each candidate. A template that submitted
+    cleanly as-is would let someone approve four rulings they never made — which
+    is the same failure as a client copying the Workflow's hashes, one level down.
+    """
+    from . import activities, assessment_record
+
+    configured = activities.runtime()
+    recorded = assessment_record.resolve_with(
+        configured.ledger, configured.store, pending.derived.run_id
+    )
+    return json.dumps(
+        {
+            candidate: {"verdict": "defer", "rationale": ""}
+            for candidate in recorded.candidate_ids
+        },
+        indent=2,
+    )
+
+
+def _read_rulings(path: Path | None) -> object | None:
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SubmissionRefused(f"Rulings file is not readable JSON: {path}") from error
+    if not isinstance(data, dict):
+        raise SubmissionRefused(f"Rulings file must hold a JSON object: {path}")
+    return data
+
+
 async def _run(arguments: argparse.Namespace) -> int:
     from temporalio.client import Client
 
@@ -832,12 +1218,18 @@ async def _run(arguments: argparse.Namespace) -> int:
     pending = await read_pending_gate(client, arguments.workflow_id, now=now)
     print(describe(pending))
     if arguments.command == "show":
+        if getattr(arguments, "assessment", False):
+            print()
+            print(_recorded_document(pending))
+        if getattr(arguments, "rulings_template", False):
+            print()
+            print(_rulings_template(pending))
         return 0
 
     # After `describe`, so a human who typed the wrong confirmation sees the
     # right one in the same output rather than having to run `show` again.
     check_confirmation(pending, arguments.confirm)
-    answer = Answer(arguments.verdict, arguments.rationale)
+    answer = Answer(arguments.verdict, arguments.rationale, _read_rulings(arguments.rulings))
     outcome = await submit_answer(
         client,
         pending,
@@ -872,11 +1264,28 @@ def main(argv: list[str] | None = None) -> int:
 
     show = subparsers.add_parser("show", help="reproduce and display the pending gate")
     show.add_argument("workflow_id")
+    show.add_argument(
+        "--assessment",
+        action="store_true",
+        help="print the recorded assessment document this gate pins. Confirming a "
+        "hash over evidence you have not read is not a decision.",
+    )
+    show.add_argument(
+        "--rulings-template",
+        action="store_true",
+        help="print a rulings skeleton whose candidate ids are the DERIVED ones",
+    )
 
     submit = subparsers.add_parser("submit", help="answer the pending gate")
     submit.add_argument("workflow_id")
     submit.add_argument("--verdict", choices=VERDICTS, required=True)
     submit.add_argument("--rationale", required=True)
+    submit.add_argument(
+        "--rulings",
+        type=Path,
+        help="JSON object mapping each candidate id to {verdict, rationale}. "
+        "Required by gates that rule per candidate; refused by gates that do not.",
+    )
     submit.add_argument(
         "--confirm",
         required=True,

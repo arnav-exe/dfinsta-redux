@@ -88,13 +88,28 @@ no ledger write at all.
 
 ## Using it
 
-    submission show <workflow-id>                     # derived subject + candidates
+    submission show <workflow-id>                     # the derived subject
     submission show <workflow-id> --assessment        # read the evidence itself
     submission show <workflow-id> --rulings-template > rulings.json
     $EDITOR rulings.json                              # 4 verdicts + 4 rationales
-    submission show <workflow-id> --rulings rulings.json      # read back
     submission submit <workflow-id> --verdict approve \
         --rationale "…" --rulings rulings.json --confirm <prefix>
+
+`describe` prints the derived subject and not the candidate list; the candidates
+appear under `--assessment` and `--rulings-template`, both of which come from the
+derived request.
+
+**The template is invalid as emitted, deliberately.** Every candidate verdict but
+`ignore` requires a rationale, so submitting the unedited skeleton is refused and
+a human cannot answer this gate without typing something for each candidate. A
+template that submitted cleanly as-is would let someone approve four rulings they
+never made — the same failure as a client copying the Workflow's hashes, one level
+down.
+
+Note also that a **candidate** verdict is `block / offer_toggle / ignore / defer`
+while the **gate's** verdict is `approve / reject / defer`. Both appear on the same
+command line, so reaching for the wrong one is the ordinary mistake; it is refused
+by name, naming the candidate and both vocabularies.
 
 Yes, that is a hand-edited JSON file, and at 795 bytes and four rows it is a
 smaller edit than the rationale string. Two properties make it safe rather than
