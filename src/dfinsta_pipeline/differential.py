@@ -273,6 +273,33 @@ def compare(
 
     shared = [shape for shape in SHAPE_PREFERENCE if shape in baseline and shape in current]
     if not shared:
+        # Say whether a comparison was even worth wanting. "Probed differently"
+        # on its own reads as "we could have compared these if only the shapes
+        # lined up", which is misleading when nothing on the baseline side passed
+        # — there would have been nothing to regress from either way. The first
+        # real differential taken (439 -> 440) landed five hooks here, and that
+        # distinction is the difference between a gap in the measurement and a
+        # gap in the baseline.
+        had_a_pass = any(
+            item.claim.verdict is Verdict.PASSED for item in baseline.values()
+        )
+        tail = (
+            " Its {} result on {} was a pass, so the comparison is genuinely missing.".format(
+                "/".join(
+                    sorted(
+                        shape.value
+                        for shape, item in baseline.items()
+                        if item.claim.verdict is Verdict.PASSED
+                    )
+                ),
+                baseline_version,
+            )
+            if had_a_pass
+            else (
+                f" No {baseline_version} result for it was a pass either, so there would "
+                "have been nothing to regress from even if the shapes had lined up."
+            )
+        )
         return _claim(
             hook_id,
             Verdict.INCONCLUSIVE,
@@ -280,8 +307,12 @@ def compare(
             f"{hook_id} was probed differently on the two versions "
             f"({', '.join(sorted(s.value for s in baseline))} on {baseline_version} vs "
             f"{', '.join(sorted(s.value for s in current))} on {current_version}), and "
-            "results of different shapes are not comparable.",
-            {**base_detail, "comparison": "shapes_disjoint"},
+            "results of different shapes are not comparable." + tail,
+            {
+                **base_detail,
+                "comparison": "shapes_disjoint",
+                "baseline_had_a_pass": had_a_pass,
+            },
         )
 
     shape = shared[0]
