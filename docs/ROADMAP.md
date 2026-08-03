@@ -127,7 +127,18 @@ enumerating its violations.
       the feature producing any observable effect. A hook that does not report is
       `inconclusive`, never `failed`: its site may simply not have been exercised, and
       that is a different thing from being inert.
-- [ ] Differential vs N−1 (the last evidence kind with no producer)
+- [x] **Differential vs N−1** (`src/dfinsta_pipeline/differential.py`) — the last evidence
+      kind with a producer. Judges a hook's runtime result on version N against version
+      N−1's, and takes apart the case the kind's own description names: a hook that passed
+      before and shows nothing now is a *port regression* only when the current capture can
+      be shown to have been able to see the signal. The three probe shapes are ranked by how
+      well each answers that — identity first, because `DFInstaProbe: <hook_id>` is the one
+      signal DFInsta emits itself and so cannot rot when Instagram renames a log line. A
+      baseline that did not pass yields `inconclusive`, never `passed`: with no baseline pass
+      there is no *where* for this version to fail, and a first port must be waived by a
+      human rather than dissolving into a pass. Comparing a version with itself is refused
+      outright — two builds of one version are byte-identical here, so it would enter the
+      ledger as evidence that a comparison happened.
 - [ ] Re-measure the five previously-inconclusive hooks now that they are individually
       attributable, and settle whether `install_settings_long_click_actionbar` is dead on 439
 - [x] **Per-version Index** (`tools/indexer/build_index.py`): 181,421 classes in 3.4s,
@@ -279,9 +290,17 @@ stopping at the first stage that cannot produce what the next needs.
       loosened — they pin different things and neither is weaker.
 - [x] The run correctly reports that the APK is **not release-ready** because post-build
       evidence is absent. That message is the point of the whole exercise.
-- [ ] Same run with the two settings hooks. `install_settings_long_click_actionbar` now
-      resolves mechanically (the baksmali trailing-comment fix); `install_settings_long_click`
-      needs the guard device test above.
+- [x] Same run with the two settings hooks — both now resolve mechanically and the
+      own-profile guard is device-verified.
+- [x] **Instagram 440, from the stock APK, with no proposals of any kind: 7/7 hooks
+      resolved, `complete: true`, pre-apply gate passed with nothing skipped.** `by_anchor`
+      selected 1 class of 182,479 for each settings hook on a version it had never seen, and
+      an independently derived literal intersection agrees on one of them. See
+      [`docs/IMPLEMENTATION_STATE.md`](IMPLEMENTATION_STATE.md).
+- [x] The first genuine extract-to-build run found two bugs that `--reuse-decode` had been
+      routing around for every previous "unattended" port: build.py refusing the framework
+      cache the driver had just created, and 440's `<queries><provider>` (legal Android, and
+      aapt1 will not compile it). Both fixed, both pinned by tests.
 
 ## Immediate next three
 
@@ -292,9 +311,12 @@ stopping at the first stage that cannot produce what the next needs.
    assessment as a ledger operation — a design question about where the driver and the
    durable pipeline meet, not a wiring task. Until it exists, "the gate's Activities and
    Workflow" has nothing to gate on.
-2. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
-   reference, so `install_settings_long_click` stops being excluded from runs.
-3. **Differential vs N−1** — the last evidence kind with no producer.
+2. **Device-validate the 440 build**, which is what turns the differential from a module
+   into a measurement: 439's runtime evidence exists, 440's does not, and the pair is the
+   first real N−1 comparison this project has ever been able to take.
+3. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
+   reference — now an escalation path rather than the normal one, since 440 resolved all
+   seven hooks with no proposals at all.
 
 A gate can now be answered: [`docs/SUBMISSION_CLIENT.md`](SUBMISSION_CLIENT.md). The rule
 it is built from is that the client re-derives the gate subject from recorded state and

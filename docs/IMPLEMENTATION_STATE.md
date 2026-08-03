@@ -1,11 +1,158 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-02, branch `port-430`. Suite: 2221 tests, one
-expected skip, plus six green tool suites.
+Resume point as of 2026-08-03, branch `port-430`.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
 practical "how to pick this up" record: what exists, what is next, and the
 specific things that will waste a day if rediscovered.
+
+## Instagram 440 resolved 7/7 mechanically, for zero agent invocations
+
+2026-08-03, the first port of a version that arrived *after* the fingerprints were
+written. `python -m dfinsta_pipeline.driver apks/instagram_440-0-0-19-86.apk --out
+work/440-port --version 440 --framework-apk …` with **no `--proposals`, no
+`--full-proposals` and no `--discover-hosts`**:
+
+- **all seven hooks resolved**, `"complete": true`, and the pre-apply evidence gate
+  passed with nothing skipped (14 claims: 7 `anchor_unique`, 7 `registers_safe`);
+- **`by_anchor` selected exactly one class out of 182,479, for both settings hooks**,
+  on a version it had never seen — `LX/DVk;` and `LX/DHo;`. The prefilters narrowed
+  to 981 and 26 candidates respectively before the anchor match;
+- **an independent fingerprint agrees.** `notifications_entry_point_impression`
+  appears in 3 classes on 440; intersected with `ig4a-instagram-schema` it selects
+  exactly one, `LX/DHo;` — the same class the anchor found. Two mechanisms derived
+  from different versions, agreeing on a third;
+- **the deterministic capture supplier resolved the own-profile guard** with no
+  agent fallback: precondition present, `instagram_menu_outline_24` → `0x7f082543`,
+  model register `p4`, and 1 of 10 dispatch subtypes carrying the drawable
+  (`LX/DdJ;`). The rule that `docs` warned rested on "roughly one data point" held
+  on a third version;
+- the rendered payload is correct — probe call outside the guard, `instance-of p4,
+  LX/DdJ;` around the `setOnLongClickListener`, and the replace-mode anchor tail
+  (`setLayoutParams`, `return-object`) preserved.
+
+**And the fingerprint the generaliser refused turns out to be right on 440 and wrong
+on 430.** `ProfileActionBarViewBinder` selects exactly one class on 440 and it *is*
+`LX/DVk;`. On 430 it selected the wrong host. Refusing it was still correct, and the
+lesson sharpens: cross-version verification is not asking "would this have been wrong
+on the next version" but "is it wrong **anywhere** in the supported range".
+
+## What the first genuine end-to-end run found
+
+Two bugs, both invisible until a stock APK went in one end with nothing reused.
+
+**1. The extract-then-build seam had never run.** `driver.extract()` installs the
+API 36 framework into `<out>/framework`, and `build.py` listed `--framework-path`
+among the paths it refuses to overwrite — so the build died on a directory the
+driver had just created. Every previous "unattended port" passed `--reuse-decode`,
+which skips extraction, so the collision never appeared. The framework path is an
+apktool *cache* (installed into with `apktool if`, then read from), not an artifact
+the build produces; the other seven entries in that list are all outputs and are now
+pinned individually by tests, including the four whose names are *derived* from
+other arguments.
+
+**2. Instagram 440's manifest cannot be compiled by aapt1.** 440 added
+
+    <provider android:authorities="com.facebook.pages.app.ig4work.tokenhandoff"/>
+
+inside `<queries>`. That is legal Android — a `<queries><provider>` matches on
+authority and takes no `android:name` — but aapt1 predates `<queries>` and validates
+its children by the `<application>` rules, so the whole build fails with "Tag
+`<provider>` missing required attribute name". 439 has 21 providers and every one is
+named; this is new. `prepare_tree.sanitise_manifest_for_aapt1` removes such elements
+**from inside `<queries>` only**, and prints what it removed.
+
+That edit is safe for one specific reason, which will stop being true if the graft
+ever changes: `graft_apk` copies only DEX entries out of the intermediate APK, and
+`AndroidManifest.xml`, `resources.arsc` and every `res/` entry come byte-for-byte
+from the stock archive. Nothing edited in the work tree can reach the shipped app. A
+name-less `<provider>` *outside* `<queries>` is deliberately left alone, so a
+genuinely malformed manifest still fails loudly.
+
+## 440 on the device: it works, and the guard holds
+
+Signed with the pinned certificate (`ee12866d…` confirmed by `apksigner verify --print-certs`)
+and installed as an in-place upgrade over the 439 build, which preserved the login and left
+all five toggles on. Artifact: `work/440-clean/dfinsta_440_signed.apk`, SHA-256
+`c9e063e5…`; unsigned `work/440-clean/dfinsta.apk`.
+
+- **the app starts and stays foreground**, with a capture demonstrably covering this app
+  starting — `set_app_context` `passed`;
+- **four hooks announced their own execution** across launch → profile → Reels → Explore →
+  profile: `set_app_context`, `tigon_url_block`, `replace_reels_stream_endpoint` and
+  **`install_settings_long_click`**. The three silent ones are the same three that were silent
+  on 439 — the two dormant Reels variants and the legacy action-bar one — so the pattern is
+  reproduced, not merely repeated;
+- **the settings dialog opens** on long-pressing Options on the own profile: "Distraction-free
+  settings - restart required" with all five toggles;
+- **`tigon_url_block` gives a clean two-directional delta: 10 blocks with the toggles on, 0
+  with them off** — the same counts as 439;
+- **the own-profile guard holds.** On another user's profile the Options button is
+  `long-clickable="false"` in the accessibility tree (it is `true` on the own profile), and
+  long-pressing it produces no DFInsta dialog. The guard type `LX/DdJ;` was derived
+  mechanically by the deterministic supplier, so this is the first time that rule has been
+  device-proved on a version no human mapped. Dumps kept under `work/440-runtime/ui/`.
+
+The toggles were restored to on and `svc power stayon` reset afterwards.
+
+## The first differential ever taken: 439 → 440
+
+    python -m dfinsta_pipeline.differential \
+      --baseline work/evidence-439-runtime.jsonl --baseline-version 439 \
+      --current work/440-runtime/evidence-440.jsonl --current-version 440 \
+      --actor device:P3227J000775 --baseline-build 8442b73e… --current-build c9e063e5…
+
+**Two hooks `passed`/`held`** — `set_app_context` (absence vs absence) and `tigon_url_block`
+(delta vs delta). **Five `inconclusive`/`shapes_disjoint`**, and that result is the finding:
+the 439 baseline recorded only feature-shaped claims, while 440's strongest evidence for those
+five is *identity*, and a boolean "did the site run" cannot be compared with a signal count.
+
+**The differential's reach is bounded by what the baseline recorded.** Nothing can be done
+about that retroactively; what fixes it is that 440's ledger now carries identity claims, so
+441 will have identity-vs-identity available — the sharpest comparison there is. The report
+now also says, for each disjoint pair, whether the baseline had *any* passing result, because
+"probed differently" alone implies a comparison was lost when for all five there was nothing
+to regress from either way.
+
+## The differential vs N−1 now has a producer
+
+`src/dfinsta_pipeline/differential.py`, and
+
+    python -m dfinsta_pipeline.differential --baseline <N-1 evidence.jsonl> \
+        --baseline-version 439 --current <N evidence.jsonl> --current-version 440 \
+        --actor device:P3227J000775 [--out …] [--json]
+
+It reads two runs' `runtime_probe` claims and emits one `DIFFERENTIAL` claim per hook. The
+hard half is the one the kind's own description names — *"a port regression, told apart from
+a broken probe"* — because from a single capture, "the patch is inert on N" and "the log line
+this probe counts was renamed in N" look identical.
+
+**What makes a capture capable of seeing the signal** is already recorded, per shape:
+a `delta` probe saw the string at all in either direction; an `absence` probe has
+`control_found`; an `identity` probe has a non-empty `hooks_that_ran`. The shapes are ranked
+identity → delta → absence and the most decisive pair available on both sides decides,
+because `DFInstaProbe: <hook_id>` is the one signal **DFInsta emits itself** and so cannot rot
+when Instagram renames something. A hook that stayed silent in a capture where *other* hooks
+announced themselves is a proven silence.
+
+Three rules worth knowing before reading a report:
+
+- **A baseline that did not pass yields `inconclusive`, never `passed`.** With no baseline
+  pass there is no *where* for this version to fail. The cost is deliberate: the first port of
+  any hook cannot satisfy `DIFFERENTIAL` mechanically and needs a human waiver, which keeps
+  "compared and unchanged" distinct from "never compared".
+- **A current `inconclusive` carrying `attribution: shared` is not a regression.** Attribution
+  was lost, not necessarily the behaviour. Five of the seven 439 claims are in exactly this
+  state.
+- **Comparing a version with itself is refused outright**, as is a differential between two
+  runs of the same build hash. Two builds of one version are byte-identical here, so it would
+  enter the ledger as evidence that a comparison happened.
+
+**3. A failed build used to erase the cost record.** `record_run` ran at the end of
+`run()`, and a `DriverError` from the build stage went straight past it — so two 440
+runs that resolved all seven hooks for zero agent invocations recorded nothing at
+all. What a port *cost* is settled at resolve time. `DriverError` now carries the
+report, and `run()` records the cost before re-raising: a receipt, not a rescue.
 
 ## Where the pipeline stands
 
@@ -191,7 +338,25 @@ the site reports execution even if a later instruction throws. The consequence, 
 for reading the test: `h_install_settings_long_click` fires on *both* profiles, because the
 site executes on both. **The identity line is not the oracle here — the screencap is.**
 
-## Agent invocations per port is now measured, and the first reading was FLAT
+## The cost verdict is no longer UNTESTABLE: it reads FALLING
+
+2026-08-03, after 440. `python -m dfinsta_pipeline.agent_cost report 440`:
+
+    agent invocations: 0   (was 2 on 439, its latest of 2 run(s))
+    ROUTES  agent_proposal 0 (was 2) · deterministic_supplier 1 (was 0) · mechanical 6 (was 5)
+    VERDICT: falling — 2 fewer than 439.
+             Retired: install_settings_long_click, install_settings_long_click_actionbar
+
+The selectivity trend is healthy too: the Reels `by_literal` margin went 5→1 on 439 to 7→1 on
+440, i.e. *widening* — more candidates excluded, not fewer. The supplier margin held at 10→1.
+
+**One honesty caveat that belongs next to the number.** The count fell because the manifest
+gained `by_anchor`, and that change was derived by a human from what 439's agents cited — the
+generaliser *proposes*, it does not commit. So the measured claim is "the learning loop
+closes, with a human in it", not "the pipeline learns unattended". The section below is the
+first reading, kept because it is what the claim's own failure state looked like.
+
+## Agent invocations per port was measured before that, and the first reading was FLAT
 
 `python -m dfinsta_pipeline.agent_cost report <version>`. The flowchart's central claim —
 agent invocations fall with every port, and a flat count means the pipeline is not learning —
@@ -303,36 +468,26 @@ total made the suite look healthier. **Read coverage by module, not the test cou
 
 ## Immediate next steps, in order
 
-Reordered 2026-08-02 after 439 ported itself unattended. The ordering follows one question:
-what makes the *next* port cheaper, not what adds capability.
+Reordered 2026-08-03 after 440 ported itself for zero agent invocations. Steps 1-4 of the
+previous list are done; what is left is the two halves of the pipeline that still do not meet,
+plus the release path.
 
-1. **Test `probes.py`.** 343 statements, zero tests — see the audit above. It produces the
-   evidence standing between a build and a release, and it is the only check that catches a
-   patch which is present and never executes. Needs a fake device runner; the suite must never
-   touch a phone.
+1. **The release gate cannot consume the driver's own output.** `tools/release/finalize.py`
+   invokes its `--final-verifier` with `--apktool-jar --apksigner --require-signature
+   --expected-certificate-sha256`, which only `tools/port_430/verify_apk.py` accepts — and
+   that verifier is 430-shaped. `tools/verify/verify_build.py` is target-neutral but checks no
+   signature at all, so there is **no target-neutral post-signing verification**. The 440 build
+   was therefore aligned, signed and certificate-checked by hand (the same assertions, made
+   explicitly). Closing this is what makes "one command, stock APK in, signed release out"
+   true rather than nearly true. Its identity envelope is already done — `schema_version`,
+   `apk_sha256`, `stock_apk_sha256`, `verifier_sha256` — so what remains is the signature half.
 
-2. **Stage 10's generaliser — turn a discovered host into a fingerprint.** This is the only
-   thing that will make the agent count fall, and the unattended run handed us the route: the
-   proposers cited **durable evidence**, not just a class. `LX/0DnT;` was identified by the
-   source string `'ProfileActionBarViewBinder.bindUsernameTitle…'`, and both settings hosts by
-   drawable `instagram_menu_outline_24`. That is `by_literal` material, and we measured it,
-   printed it and discarded it. Two hard parts: the candidate literal must be **verified to
-   select the same class on a different version** before it may be proposed (one version is a
-   coincidence), and the manifest currently requires a `by_literal` literal to appear in
-   `semantic_deps` *and* in the anchor, which holds for the Reels hooks and not for a systrace
-   string. The generaliser must **propose, never commit** — promoting a host on one run's
-   strength is the confident-and-wrong failure this project keeps paying for.
+2. **Nothing turns device measurements into ledger claims.** `probes.main` writes
+   *measurements*; the ledger wants *claims*, and the bridge was a hand-written script both
+   times (439 and 440). Stage 9 is not finished until that is repo code with tests: a version's
+   runtime evidence should be reproducible by command, not by remembering what was run.
 
-3. **Differential vs N−1** — the last evidence kind with no producer, and now cheap: two
-   probe-instrumented 439 builds exist to compare (`8442b73e…` and the unattended
-   `work/439-autonomous/dfinsta.apk`).
-
-4. **Port 440 when it exists.** The cost verdict is `UNTESTABLE` until a second version, which
-   is correct rather than a placeholder — the claim is about a sequence. **Without step 2, 440
-   will read FLAT**: same two hooks, same two invocations. That prediction is the point of
-   doing step 2 first.
-
-5. **Give the feature gate a producer.** `feature_gate.py` and `assessment.py` are each
+3. **Give the feature gate a producer.** `feature_gate.py` and `assessment.py` are each
    imported by nothing but their own tests. Stage 4a computes an assessment in the **driver**
    world while the gate expects it in CAS as a completed **ledger** operation in the Temporal
    world, and nothing joins them. The missing link is an Activity that records a stage 4a
@@ -342,6 +497,16 @@ what makes the *next* port cheaper, not what adds capability.
    `@workflow.defn` class (never new fields on `WorkflowStatus`/`RunResult`), and an admitting
    Activity that re-derives independently. The submission client already has the seam — a
    `GateKind` whose resolver reproduces `FeatureGateRequestV1`.
+
+4. **Make the generaliser's proposals reach the manifest.** The count fell 2 → 0 because a
+   human read what the 439 agents cited and wrote `by_anchor`. Stage 10 proposes and a human
+   commits, which is the right default — but the step between them is undocumented and
+   unexercised, so the next fingerprint will be derived the same ad-hoc way.
+
+5. **Re-measure the five hooks the differential could not compare.** They are inconclusive
+   because 439's ledger has no identity claims, not because anything is wrong. 440's does, so
+   this resolves itself at 441 — but a deliberate delta measurement for the Reels and settings
+   hooks on 440 would make the next differential four-wide instead of two.
 
 6. **Operational hardening**: an opt-in real run through the registered Workflow, a
    non-destructive cancellation path, heartbeats in the replay Activities.
