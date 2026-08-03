@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-03, branch `port-430`. Suite: **2365 tests**, one expected skip,
+Resume point as of 2026-08-03, branch `port-430`. Suite: **2557 tests**, one expected skip,
 plus six green tool suites (indexer 46, resolver 8, port_430 44, reconstruction 15, release 6,
 device_validation 22).
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
