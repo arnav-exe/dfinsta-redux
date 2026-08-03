@@ -41,8 +41,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .contracts import ID_PATTERN, canonical_json
+from .feature_gate import CANDIDATE_ID_PATTERN, MAX_CANDIDATE_ID
 from .hook_index import HookIndex
 from .hook_manifest import Hook
+
+
+class AssessmentError(ValueError):
+    """Raised when an assessment document cannot be read as one."""
 
 
 class Strength(str, Enum):
@@ -433,3 +439,105 @@ def report(assessments: Sequence[Assessment], groupings: Sequence[Grouping]) -> 
             "judged": sum(1 for a in assessments if a.judgement is not None),
         },
     }
+
+
+# --------------------------------------------------- the bytes the gate pins
+
+
+DOCUMENT_SCHEMA_VERSION = 1
+
+
+def document(index: HookIndex, hooks: Sequence[Hook], min_seeds: int = 2) -> dict[str, Any]:
+    """The whole of stage 4a as one call: index and hooks in, gate document out.
+
+    Exists so that "the assessment" names exactly one thing. `assess` returns two
+    values and `report` combines them, and every caller that wants the document
+    has to remember to do both in the right order — which is the kind of
+    invariant that survives on attention until it does not.
+    """
+    return report(*assess(index, hooks, min_seeds=min_seeds))
+
+
+def canonical_bytes(value: Mapping[str, Any]) -> bytes:
+    """The exact bytes that go to CAS and whose digest the gate pins.
+
+    Measured: 3,696 / 3,844 / 3,831 bytes on Instagram 430 / 439 / 440, identical
+    across `PYTHONHASHSEED` values and repeated calls, containing no absolute
+    paths. That reproducibility is what lets the admitting side **recompute** the
+    assessment rather than adopt a caller's bytes — the difference between "these
+    bytes were handed to me" and "these bytes are what this code computes from
+    this recorded input".
+    """
+    return canonical_json(value).encode("utf-8")
+
+
+def candidate_ids(value: Any) -> tuple[str, ...]:
+    """The candidate ids a gate request must pin, read from the document itself.
+
+    **The one decoder.** Both the side that prepares the gate and the client that
+    re-derives its subject must extract this list the same way; two decoders, or
+    one that takes the list from a caller, and the two derivations diverge for a
+    reason the human never touched. `feature_gate.validate_submission` never
+    re-reads the assessment blob, so nothing downstream would catch it.
+
+    Order is the document's own, because
+    `FeatureGateRequestV1` compares the list positionally. Every rule below is a
+    refusal rather than a filter: a document this cannot read is not one to guess
+    about.
+    """
+    if not isinstance(value, Mapping):
+        raise AssessmentError("assessment document must be a mapping")
+    version = value.get("schema_version")
+    # `1.0 == 1` and `True == 1`, so a value comparison alone accepts a JSON float
+    # and a JSON boolean. `hook_index.load` guards the same way for the same
+    # reason; a document whose schema tag is `true` is not a document to guess at.
+    if not isinstance(version, int) or isinstance(version, bool) or version != DOCUMENT_SCHEMA_VERSION:
+        raise AssessmentError(f"unsupported assessment document schema {version!r}")
+    candidates = value.get("candidates")
+    if not isinstance(candidates, (list, tuple)):
+        raise AssessmentError("assessment document has no candidates array")
+    out: list[str] = []
+    for position, entry in enumerate(candidates):
+        if not isinstance(entry, Mapping):
+            raise AssessmentError(f"candidate {position} is not a mapping")
+        identifier = entry.get("candidate_id")
+        if type(identifier) is not str:
+            raise AssessmentError(f"candidate {position} has no string candidate_id")
+        if len(identifier) > MAX_CANDIDATE_ID or not CANDIDATE_ID_PATTERN.fullmatch(identifier):
+            raise AssessmentError(f"candidate {position}: invalid candidate_id {identifier!r}")
+        out.append(identifier)
+    if not out:
+        # A gate over nothing would present a human with an empty list and record
+        # their approval of it. `FeatureGateRequestV1` refuses it too; refusing
+        # here as well means the failure is named where the document is read.
+        raise AssessmentError(
+            "assessment document has no candidates; there is nothing to gate on"
+        )
+    duplicates = sorted({name for name in out if out.count(name) > 1})
+    if duplicates:
+        raise AssessmentError(f"duplicate candidate_id(s): {', '.join(duplicates)}")
+    return tuple(out)
+
+
+def policy_revision(path: Path | str) -> str:
+    """The manifest's `policy_revision`, which `load_manifest` reads and discards.
+
+    It is one of the four dimensions `decisions.py` makes a decision's
+    reusability hang on, and it is a required field of the gate request — so a
+    value that exists on disk and reaches nothing is a wire that looks connected.
+    A separate reader rather than a changed `load_manifest` signature: every
+    existing caller wants the hooks and nothing else.
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        # One error type out of this module. A caller that catches
+        # `AssessmentError` and still eats a bare `FileNotFoundError` has a
+        # handler that looks complete and is not.
+        raise AssessmentError(f"{path}: cannot read the manifest: {error}") from error
+    revision = data.get("policy_revision")
+    if type(revision) is not str or not ID_PATTERN.fullmatch(revision):
+        raise AssessmentError(
+            f"{path}: policy_revision must be an identifier, got {revision!r}"
+        )
+    return revision

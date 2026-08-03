@@ -40,6 +40,16 @@ descriptors.
 
 `KnownGapTests` pins two behaviours that are reported rather than fixed, so a
 future fix fails loudly instead of quietly changing what the report certifies.
+
+The last four classes cover the layer that turns this stage's output into
+something a gate can pin. `document` names the whole stage in one call;
+`canonical_bytes` is the exact byte string whose digest a human ends up signing;
+`candidate_ids` is the ONE decoder both the preparing side and the re-deriving
+client must read that list through; and `policy_revision` reads the manifest
+field `load_manifest` discards. Their tests are refusal-heavy on purpose: each of
+those is a place where a permissive reading would let two derivations disagree
+about what a human approved, and `feature_gate.validate_submission` never re-reads
+the assessment blob, so nothing downstream would catch it.
 """
 
 import inspect
@@ -47,14 +57,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 from unittest import mock
 
 from dfinsta_pipeline import assessment
 from dfinsta_pipeline.assessment import (
     looks_like_uri_rule,
+    DOCUMENT_SCHEMA_VERSION,
     MIN_COHESION,
     Assessment,
+    AssessmentError,
     Evidence,
     Grouping,
     Judgement,
@@ -63,14 +75,21 @@ from dfinsta_pipeline.assessment import (
     assess,
     assess_gap,
     blocked_endpoints,
+    canonical_bytes,
+    candidate_ids,
     coverage_gaps,
+    document,
     find_groupings,
     is_blocked,
     normalise,
+    policy_revision,
     report,
 )
+from dfinsta_pipeline.contracts import ID_PATTERN, canonical_json
+from dfinsta_pipeline.feature_gate import CANDIDATE_ID_PATTERN, MAX_CANDIDATE_ID
 from dfinsta_pipeline.hook_index import API_SURFACE_FILENAME, HookIndex
 from dfinsta_pipeline.hook_manifest import Hook, HostFingerprint
+from dfinsta_pipeline.runtime_identity import probe_call
 
 from tests.test_hook_index import write_index
 
@@ -78,6 +97,8 @@ from tests.test_hook_index import write_index
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_430 = ROOT / "work" / "index-430"
 INDEX_439 = ROOT / "work" / "index-439"
+#: Tracked, so any test reading it runs everywhere rather than skipping.
+REPO_MANIFEST = ROOT / "manifest" / "hooks.json"
 
 
 # --------------------------------------------------------------------- fixtures
@@ -201,6 +222,54 @@ def blocking_hooks() -> list[Hook]:
         hook_for(dep, hook_id=f"hook.block.{index}")
         for index, dep in enumerate(BLOCK_DEPS)
     ]
+
+
+def manifest_document(
+    *, policy_revision: Any = "2026-08-01", deps: Sequence[str] = BLOCK_DEPS
+) -> dict:
+    """A manifest `load_manifest` accepts, blocking `deps` and nothing else.
+
+    The same block list as `blocking_hooks`, expressed as the file the loader
+    reads, because `policy_revision` and `assessment_record.record` take a *path*
+    rather than a hook list. The payload carries `probe_call` because
+    `assert_instrumented` refuses an active hook that cannot report its own
+    execution, and building that line from the real helper rather than a literal
+    keeps this fixture correct if the probe descriptor ever moves.
+    """
+    hooks = []
+    for index, dep in enumerate(deps):
+        hook_id = f"hook.block.{index}"
+        marker = f"# {hook_id}"
+        hooks.append(
+            {
+                "hook_id": hook_id,
+                "intent": "block a continuous-content surface",
+                "tier": "robust",
+                "strategy": "tigon_url_block",
+                "semantic_deps": [dep],
+                "hosts": [{"kind": "named", "descriptor": "LX/05jj;"}],
+                "anchor": ['const-string v0, "placeholder"'],
+                "payload": [probe_call(hook_id), marker],
+                "marker": marker,
+                "expected_marker_count": 1,
+            }
+        )
+    return {"schema_version": 1, "policy_revision": policy_revision, "hooks": hooks}
+
+
+def write_manifest(path: Path, *, drop: tuple[str, ...] = (), **overrides: Any) -> Path:
+    """Write `manifest_document` to `path`; `drop` removes top-level keys.
+
+    `drop` is how "the manifest has no policy_revision" is expressed, which is a
+    different document from one whose `policy_revision` is null.
+    """
+    data = manifest_document(**overrides)
+    for key in drop:
+        data.pop(key, None)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def surface_for(classes: Mapping[str, Iterable[str]]) -> dict[str, list[str]]:
@@ -934,6 +1003,32 @@ class NoScoreTests(AssessmentTestCase):
             "looks_like_uri_rule",
             "normalise",
             "report",
+            # The bytes the gate pins, and the readers of the two files it needs.
+            # `document` is `report(*assess(...))` under one name; `canonical_bytes`
+            # is the exact byte string whose digest a human signs; `candidate_ids`
+            # is the one decoder both derivations must read that list through;
+            # `policy_revision` reads the manifest field `load_manifest` discards.
+            # None of them may return a number, for the same reason as the rest.
+            "canonical_bytes",
+            "candidate_ids",
+            "document",
+            "policy_revision",
+        }
+    )
+
+    #: Pinned for the same reason as the functions, one layer up: `AssessmentError`
+    #: is what every refusal in the decoder raises, so a caller catches it by name.
+    #: A new public class appearing here without a decision is how a second error
+    #: type, or a second document shape, arrives unnoticed.
+    EXPECTED_PUBLIC_CLASSES = frozenset(
+        {
+            "Assessment",
+            "AssessmentError",
+            "Evidence",
+            "Grouping",
+            "Judgement",
+            "Strength",
+            "Verdict",
         }
     )
 
@@ -944,8 +1039,21 @@ class NoScoreTests(AssessmentTestCase):
             if member.__module__ == assessment.__name__ and not name.startswith("_")
         }
 
+    def public_classes(self) -> dict:
+        return {
+            name: member
+            for name, member in inspect.getmembers(assessment, inspect.isclass)
+            if member.__module__ == assessment.__name__ and not name.startswith("_")
+        }
+
     def test_the_public_surface_is_exactly_what_this_test_checks(self):
         self.assertEqual(frozenset(self.public_functions()), self.EXPECTED_PUBLIC_FUNCTIONS)
+
+    def test_the_public_class_surface_is_exactly_what_this_test_checks(self):
+        self.assertEqual(frozenset(self.public_classes()), self.EXPECTED_PUBLIC_CLASSES)
+        # And the one every reader of a document has to catch is a ValueError, so
+        # an `except ValueError` around a strict decode keeps working.
+        self.assertTrue(issubclass(AssessmentError, ValueError))
 
     def test_no_public_function_declares_a_numeric_return(self):
         for name, function in sorted(self.public_functions().items()):
@@ -967,6 +1075,7 @@ class NoScoreTests(AssessmentTestCase):
         hooks = blocking_hooks()
         blocked = self.blocked()
         grouping = Grouping("LX/05jj;", KNOWN_MEMBERS, NOVEL_MEMBERS)
+        manifest = write_manifest(self.tmp / "hooks.json")
         calls = {
             "normalise": lambda: normalise("/api/v1/clips/homecoming/"),
             "blocked_endpoints": lambda: blocked_endpoints(hooks),
@@ -977,6 +1086,10 @@ class NoScoreTests(AssessmentTestCase):
             "assess": lambda: assess(index, hooks),
             "report": lambda: report(*assess(index, hooks)),
             "looks_like_uri_rule": lambda: looks_like_uri_rule("/feed/timeline/"),
+            "document": lambda: document(index, hooks),
+            "canonical_bytes": lambda: canonical_bytes(document(index, hooks)),
+            "candidate_ids": lambda: candidate_ids(document(index, hooks)),
+            "policy_revision": lambda: policy_revision(manifest),
         }
         self.assertEqual(frozenset(calls), self.EXPECTED_PUBLIC_FUNCTIONS)
         for name, call in sorted(calls.items()):
@@ -1187,6 +1300,298 @@ class ReportTests(AssessmentTestCase):
             with self.subTest(candidate=candidate["candidate_id"]):
                 cited = candidate["measured"][0]["detail"]["descriptor"]
                 self.assertIn(cited, descriptors)
+
+
+# -------------------------------------------------------- the bytes a gate pins
+
+
+class DocumentTests(AssessmentTestCase):
+    """`document` is a wrapper, and must stay one.
+
+    `assess` returns two values and `report` combines them in a particular order.
+    Every caller wanting the document had to remember to do both, which is the
+    kind of invariant that survives on attention until it does not — so the
+    wrapper exists, and these assert it wraps rather than reimplements.
+    """
+
+    def test_document_equals_report_of_assess(self):
+        index = self.curated_index()
+        hooks = blocking_hooks()
+        self.assertEqual(document(index, hooks), report(*assess(index, hooks)))
+        # Byte-level too: this is the object whose digest a human signs, so
+        # "equal dicts" is not a strong enough statement about it.
+        self.assertEqual(
+            canonical_bytes(document(index, hooks)),
+            canonical_bytes(report(*assess(index, hooks))),
+        )
+
+    def test_document_passes_min_seeds_through_rather_than_fixing_it(self):
+        """A wrapper that dropped the argument would silently find fewer groups.
+
+        With `min_seeds=1` a two-literal class becomes a grouping and yields a
+        candidate; with the default it does not. If `document` hardcoded the
+        default, the two sides of this would agree and the parameter would be
+        decoration.
+        """
+        index = self.index_for({"LX/0lone;": ("feed/timeline/", "feed/timeline_stream/")})
+        hooks = blocking_hooks()
+        self.assertEqual(
+            document(index, hooks, min_seeds=1), report(*assess(index, hooks, min_seeds=1))
+        )
+        self.assertEqual(document(index, hooks, min_seeds=1)["counts"]["candidates"], 1)
+        self.assertEqual(document(index, hooks)["counts"]["candidates"], 0)
+
+
+class CanonicalBytesTests(AssessmentTestCase):
+    """The exact byte string that goes to CAS and whose digest the gate pins.
+
+    Two Activities derive this independently and neither may trust the other's
+    copy, so "the same document" is not enough: the bytes have to be the same
+    bytes, every time, from the same input.
+    """
+
+    def test_canonical_bytes_are_identical_across_repeated_calls(self):
+        payload = document(self.curated_index(), blocking_hooks())
+        first = canonical_bytes(payload)
+        self.assertIsInstance(first, bytes)
+        for _ in range(4):
+            self.assertEqual(canonical_bytes(payload), first)
+        # And recomputing the document from the same input gives the same bytes,
+        # which is the property that lets the recording side recompute rather
+        # than adopt a caller's copy.
+        self.assertEqual(
+            canonical_bytes(document(self.curated_index(), blocking_hooks())), first
+        )
+
+    def test_canonical_bytes_are_the_canonical_json_encoding(self):
+        payload = document(self.curated_index(), blocking_hooks())
+        self.assertEqual(canonical_bytes(payload), canonical_json(payload).encode("utf-8"))
+        # Not `json.dumps` in some other shape: the digest is over these bytes and
+        # nothing else, so an indented or key-ordered variant is a different blob.
+        self.assertNotEqual(
+            canonical_bytes(payload), json.dumps(payload, indent=2).encode("utf-8")
+        )
+
+
+class CandidateIdsTests(AssessmentTestCase):
+    """The one decoder, and every way it must refuse rather than guess.
+
+    Both the side preparing the gate and the client re-deriving its subject read
+    the candidate list through this function. A second decoder, or one that took
+    the list from a caller, lets the two derivations diverge for a reason the
+    human never touched — and `feature_gate.validate_submission` never re-reads
+    the assessment blob, so nothing downstream would catch it. Every rule below
+    is therefore a refusal, not a filter.
+    """
+
+    def real_document(self) -> dict:
+        return document(self.curated_index(), blocking_hooks())
+
+    def with_candidates(self, candidates) -> dict:
+        """A real document with its candidates array replaced.
+
+        Real surroundings on purpose: a refusal has to come from the candidate
+        under test rather than from a hand-built document being malformed
+        elsewhere.
+        """
+        payload = self.real_document()
+        payload["candidates"] = candidates
+        return payload
+
+    def test_a_real_document_reads_back_its_four_candidates(self):
+        # The positive control the refusals hang off: this decoder is capable of
+        # succeeding, so a refusal below is about the input and not about the
+        # function rejecting everything.
+        names = candidate_ids(self.real_document())
+        self.assertEqual(names, tuple(f"gap:{literal}" for literal in NOVEL_MEMBERS))
+        for name in names:
+            with self.subTest(candidate=name):
+                self.assertTrue(CANDIDATE_ID_PATTERN.fullmatch(name), name)
+
+    def test_the_documents_own_order_is_preserved_and_never_sorted(self):
+        """`FeatureGateRequestV1` compares the list positionally.
+
+        Both derivations read the same CAS document, so the document's order is
+        the authority. Re-sorting here would make two orders hash alike and
+        quietly discard the order a human was shown.
+        """
+        unsorted = (
+            "gap:feed/timeline_stream/",
+            "gap:clips/discover/",
+            "gap:aaa/",
+            "gap:feed/reels_media/",
+        )
+        self.assertNotEqual(unsorted, tuple(sorted(unsorted)))  # the fixture bites
+        payload = self.with_candidates([{"candidate_id": name} for name in unsorted])
+        self.assertEqual(candidate_ids(payload), unsorted)
+        self.assertNotEqual(candidate_ids(payload), tuple(sorted(unsorted)))
+
+    def test_a_document_that_is_not_a_mapping_is_refused(self):
+        for value in ([], (), "candidates", 1, None, [{"candidate_id": "gap:a/"}]):
+            with self.subTest(value=type(value).__name__):
+                with self.assertRaises(AssessmentError):
+                    candidate_ids(value)
+
+    def test_a_document_of_another_schema_version_is_refused(self):
+        for version in (2, 0, "1", None):
+            with self.subTest(schema_version=version):
+                payload = self.real_document()
+                payload["schema_version"] = version
+                with self.assertRaises(AssessmentError):
+                    candidate_ids(payload)
+        missing = self.real_document()
+        del missing["schema_version"]
+        with self.assertRaises(AssessmentError):
+            candidate_ids(missing)
+        # The version this decoder does read is the one the writer stamps.
+        self.assertEqual(self.real_document()["schema_version"], DOCUMENT_SCHEMA_VERSION)
+
+    def test_a_document_with_no_candidates_array_is_refused(self):
+        missing = self.real_document()
+        del missing["candidates"]
+        with self.assertRaises(AssessmentError):
+            candidate_ids(missing)
+        for value in ({"gap:a/": 1}, "gap:a/", 4, None):
+            with self.subTest(candidates=type(value).__name__):
+                with self.assertRaises(AssessmentError):
+                    candidate_ids(self.with_candidates(value))
+
+    def test_a_candidate_that_is_not_a_mapping_is_refused(self):
+        for entry in ("gap:feed/reels_media/", ["gap:feed/reels_media/"], None, 7):
+            with self.subTest(candidate=type(entry).__name__):
+                with self.assertRaises(AssessmentError):
+                    candidate_ids(self.with_candidates([entry]))
+
+    def test_a_candidate_id_that_is_not_a_string_is_refused(self):
+        for value in (1, None, True, ["gap:a/"], {"id": "gap:a/"}):
+            with self.subTest(candidate_id=type(value).__name__):
+                with self.assertRaises(AssessmentError):
+                    candidate_ids(self.with_candidates([{"candidate_id": value}]))
+        with self.assertRaises(AssessmentError):
+            candidate_ids(self.with_candidates([{"literal": "feed/reels_media/"}]))
+
+    def test_a_candidate_id_the_gate_pattern_rejects_is_refused(self):
+        """Refused here as well as at the gate, so the failure is named where read.
+
+        Each of these is ambiguity no producer emits — a leading slash, a doubled
+        slash, a second `:`, an empty segment — and admitting one would hand
+        `FeatureGateRequestV1` an id it refuses, one layer from where it was made.
+        """
+        for value in ("/leading/slash/", "gap:double//slash/", "two:colons:here", "", " "):
+            with self.subTest(candidate_id=value):
+                self.assertIsNone(CANDIDATE_ID_PATTERN.fullmatch(value))
+                with self.assertRaises(AssessmentError):
+                    candidate_ids(self.with_candidates([{"candidate_id": value}]))
+
+    def test_a_candidate_id_longer_than_the_gate_allows_is_refused(self):
+        """Length is a separate rule from shape, so it needs a separate case.
+
+        This id is perfectly well formed — it fails only for being too long. A
+        version of the decoder that dropped the length check would wave it
+        through while the pattern check kept passing.
+        """
+        long_id = "gap:" + "a" * MAX_CANDIDATE_ID
+        self.assertGreater(len(long_id), MAX_CANDIDATE_ID)
+        self.assertIsNotNone(CANDIDATE_ID_PATTERN.fullmatch(long_id))
+        with self.assertRaises(AssessmentError):
+            candidate_ids(self.with_candidates([{"candidate_id": long_id}]))
+        # And the same id one character inside the bound is accepted, so the
+        # refusal above is about the length rather than about the shape.
+        inside = "gap:" + "a" * (MAX_CANDIDATE_ID - len("gap:"))
+        self.assertEqual(len(inside), MAX_CANDIDATE_ID)
+        self.assertEqual(
+            candidate_ids(self.with_candidates([{"candidate_id": inside}])), (inside,)
+        )
+
+    def test_an_empty_candidates_array_is_refused(self):
+        """A gate over nothing is a human approving nothing.
+
+        Completeness would hold vacuously and the run would proceed on an empty
+        ruling. Stage 4 finding no grouping is a report, not a gate — and
+        `report([], [])` is a perfectly valid document, which is exactly why the
+        refusal has to live in the reader.
+        """
+        with self.assertRaises(AssessmentError):
+            candidate_ids(self.with_candidates([]))
+        with self.assertRaises(AssessmentError):
+            candidate_ids(report([], []))
+
+    def test_duplicate_candidate_ids_are_refused(self):
+        """One candidate ruled on twice is two rulings that may disagree.
+
+        `FeatureGateRequestV1` refuses duplicates too, so admitting them here
+        would only move the failure somewhere it reads as corruption.
+        """
+        names = ["gap:feed/reels_media/", "gap:feed/timeline_stream/", "gap:feed/reels_media/"]
+        with self.assertRaises(AssessmentError) as caught:
+            candidate_ids(self.with_candidates([{"candidate_id": n} for n in names]))
+        self.assertIn("gap:feed/reels_media/", str(caught.exception))
+        # The same list without the repeat is accepted, so the refusal is about
+        # the duplication and nothing else.
+        self.assertEqual(
+            candidate_ids(self.with_candidates([{"candidate_id": n} for n in names[:2]])),
+            tuple(names[:2]),
+        )
+
+
+class PolicyRevisionTests(AssessmentTestCase):
+    """The manifest field `load_manifest` reads and throws away.
+
+    It is a required field of the gate request and one of the four dimensions
+    `decisions.py` makes a decision's reusability hang on, so a value that exists
+    on disk and reaches nothing is a wire that looks connected.
+    """
+
+    def test_the_revision_is_read_from_the_manifest(self):
+        path = write_manifest(self.tmp / "hooks.json", policy_revision="2026-08-01")
+        self.assertEqual(policy_revision(path), "2026-08-01")
+        # Read from the file rather than defaulted: a different file says
+        # something different.
+        other = write_manifest(self.tmp / "other.json", policy_revision="2025-12-31")
+        self.assertEqual(policy_revision(other), "2025-12-31")
+        self.assertEqual(policy_revision(str(other)), "2025-12-31")
+
+    def test_a_manifest_with_no_policy_revision_is_refused(self):
+        path = write_manifest(self.tmp / "hooks.json", drop=("policy_revision",))
+        self.assertNotIn("policy_revision", json.loads(path.read_text(encoding="utf-8")))
+        with self.assertRaises(AssessmentError):
+            policy_revision(path)
+
+    def test_a_non_string_policy_revision_is_refused(self):
+        for value in (None, 20260801, 2026.08, True, ["2026-08-01"], {"v": "2026-08-01"}):
+            with self.subTest(policy_revision=type(value).__name__):
+                path = write_manifest(self.tmp / "hooks.json", policy_revision=value)
+                with self.assertRaises(AssessmentError):
+                    policy_revision(path)
+
+    def test_a_policy_revision_that_is_not_an_identifier_is_refused(self):
+        """`FeatureAssessmentGateV1` validates it with `ID_PATTERN`.
+
+        A value that fails there fails after the document has been built and
+        recorded, which is the wrong place to find out.
+        """
+        for value in ("", "2026 08 01", "-2026-08-01", "2026/08/01", "a" * 129):
+            with self.subTest(policy_revision=value):
+                self.assertIsNone(ID_PATTERN.fullmatch(value))
+                path = write_manifest(self.tmp / "hooks.json", policy_revision=value)
+                with self.assertRaises(AssessmentError):
+                    policy_revision(path)
+
+    def test_the_repo_manifest_carries_a_revision_this_reader_accepts(self):
+        """The one test here that reads `manifest/hooks.json` itself.
+
+        Tracked, so it cannot skip. Every other fixture in this file is synthetic
+        precisely so a manifest edit cannot change what a test claims — but that
+        also means nothing would notice the real manifest and this reader drifting
+        apart until a gate refused a run. This notices.
+        """
+        self.assertTrue(REPO_MANIFEST.is_file(), REPO_MANIFEST)
+        revision = policy_revision(REPO_MANIFEST)
+        self.assertIsInstance(revision, str)
+        self.assertIsNotNone(ID_PATTERN.fullmatch(revision), revision)
+        self.assertEqual(
+            revision, json.loads(REPO_MANIFEST.read_text(encoding="utf-8"))["policy_revision"]
+        )
 
 
 # ------------------------------------------------------------------- mutations

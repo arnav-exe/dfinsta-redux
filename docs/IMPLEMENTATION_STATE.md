@@ -150,11 +150,31 @@ operation that would give you the spec. The row carries *coordinates only*: the 
 reaches the `ArtifactRef` through `require_completed_operation`, so nothing is bypassed.
 
 **Proven on real 440 data.** `record` then `show` return the same operation key
-`04d2931c…` and the same ref `cas://sha256/c422949d…` (3,831 bytes), and feeding both through
+`b38ecdbb…` and the same ref `cas://sha256/c422949d…` (3,831 bytes), and feeding both through
 `derive_feature_gate_request` gives the byte-identical request hash
 `fc575a36…` for gate `port-440-feature-assessment-gate`. That round trip — **a run id in,
 read-only, and the same subject out** — is the property the whole gate rests on, and it is the
 first time `feature_gate.py` has been reachable from anything but its own tests.
+
+**Five defects its first tests found, all fixed and re-verified on real data:**
+
+- **A re-index of the same decode was not idempotent** — the exact property the module claims.
+  The operation key was correctly keyed on the decode's `content_hash`, and then the authority
+  row compared *every* column including `api_surface_sha256`, undoing it one layer up. The row
+  is now **stored whole and compared by identity** (`ASSESSMENT_IDENTITY_FIELDS`): a reader
+  gets everything recorded, while sameness ignores fields that move when nothing meaningful
+  has. Verified: a header with a different `generated_at` re-records idempotently.
+- **A refused `record` left the ledger half-written** — two CAS blobs and a completed operation
+  before the authority row refused. The conflict is fully decidable from values already
+  computed, so it is now checked *before* anything is written. Verified: ops 1→1, rows 1→1,
+  blobs 2→2 across a refusal.
+- **The schema check was a value comparison**, so `1.0` and `true` passed (`1.0 == 1`,
+  `True == 1`). Now guarded the way `hook_index.load` guards the same case.
+- **`manifest_sha256` hashed the JSON-quoted text**, not the file, so it was a number stored
+  under a name no human could reproduce with `sha256sum`. Now the file's own digest — which is
+  why the operation key above reads `b38ecdbb…` rather than the `04d2931c…` first measured.
+- **`policy_revision` on a missing file raised `FileNotFoundError`**, so a caller catching
+  `AssessmentError` had a handler that looked complete and was not.
 
 ## …and it can now be answered
 

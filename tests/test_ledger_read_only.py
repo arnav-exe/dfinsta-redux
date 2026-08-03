@@ -28,6 +28,7 @@ WRITE_METHOD_NAMES = (
     "record_decision",
     "record_admitted_replay_v3",
     "record_admitted_replay_verification_grant_v1",
+    "record_assessment_authority",
 )
 
 # `__init__` runs the schema statements and is the one method allowed to write
@@ -275,6 +276,24 @@ class ReadOnlyLedgerWriteGuardTests(ReadOnlyLedgerFixture):
             "record_decision": ((self.admitted.decision,), {}),
             "record_admitted_replay_v3": ((self.admitted,), {}),
             "record_admitted_replay_verification_grant_v1": ((grant,), {}),
+            # Deliberately a complete record: the guard must fire before the
+            # field validation, so a read-only refusal cannot be mistaken for a
+            # malformed argument.
+            "record_assessment_authority": (
+                (
+                    {
+                        "run_id": "run-1",
+                        "operation_key": "a" * 64,
+                        "input_sha256": "b" * 64,
+                        "document_sha256": "c" * 64,
+                        "api_surface_sha256": "d" * 64,
+                        "manifest_sha256": "e" * 64,
+                        "policy_revision": "2026-08-01",
+                        "allowed_actor": "someone",
+                    },
+                ),
+                {},
+            ),
         }
 
     def test_require_writable_raises_only_when_read_only(self) -> None:
@@ -659,6 +678,103 @@ class AdmittedReplayHandleForRunTests(ReadOnlyLedgerFixture):
                     self.ledger.admitted_replay_handle_for_run(candidate)  # type: ignore[arg-type]
                 self.assertEqual(
                     str(caught.exception), "Admitted replay run id must be a string"
+                )
+
+
+class RecordedAssessmentForRunTests(ReadOnlyLedgerFixture):
+    """The run-keyed bridge to a recorded stage 4a assessment.
+
+    `operation_claims` has no `run_id` column, and a published `GateRequest`
+    gives the trusted submission client a run id and nothing else. Without this
+    row the feature gate would be unanswerable in exactly the way
+    `PortRunWorkflow`'s `phase-a-approval` is — so the reader has to work on the
+    read-only ledger the client runs, and the writer has to refuse a record it
+    cannot fully vouch for.
+    """
+
+    RUN_ID = "run-assessed-1"
+
+    def authority(self, **overrides: object) -> dict:
+        record = {
+            "run_id": self.RUN_ID,
+            "operation_key": "f" * 64,
+            "input_sha256": "1" * 64,
+            "document_sha256": "2" * 64,
+            "api_surface_sha256": "3" * 64,
+            "manifest_sha256": "4" * 64,
+            "policy_revision": "2026-08-01",
+            "allowed_actor": "sam.operator",
+        }
+        record.update(overrides)
+        return record
+
+    def test_the_reader_answers_from_a_read_only_ledger(self) -> None:
+        record = self.authority()
+        self.writable.record_assessment_authority(record)
+
+        self.assertIs(self.ledger.read_only, True)
+        self.assertEqual(self.ledger.recorded_assessment_for_run(self.RUN_ID), record)
+        self.assertEqual(
+            self.ledger.recorded_assessment_for_run(self.RUN_ID),
+            self.writable.recorded_assessment_for_run(self.RUN_ID),
+        )
+        # Exactly the recorded fields and nothing else: `assessment_record.resolve`
+        # indexes this dict by name, so a silently absent key would surface as a
+        # KeyError inside a derivation rather than as a refusal here.
+        self.assertEqual(
+            sorted(self.ledger.recorded_assessment_for_run(self.RUN_ID)), sorted(record)
+        )
+
+    def test_a_run_the_ledger_has_not_seen_is_refused(self) -> None:
+        for ledger in (self.ledger, self.writable):
+            with self.subTest(read_only=ledger.read_only):
+                with self.assertRaises(ValueError) as caught:
+                    ledger.recorded_assessment_for_run("run-never-assessed")
+                self.assertEqual(
+                    str(caught.exception), "Assessment authority is not recorded"
+                )
+
+    def test_the_reader_refuses_a_run_id_that_is_not_a_string(self) -> None:
+        for candidate in (None, 1, b"run-1", ["run-1"]):
+            with self.subTest(type=type(candidate).__name__):
+                with self.assertRaises(TypeError) as caught:
+                    self.ledger.recorded_assessment_for_run(candidate)  # type: ignore[arg-type]
+                self.assertEqual(str(caught.exception), "Assessment run id must be a string")
+
+    def test_a_record_missing_any_required_field_is_refused(self) -> None:
+        """Every field, one at a time, rather than a sample.
+
+        A record missing one of these is either unreachable (no operation key, no
+        input hash) or unverifiable (no document digest, no actor), and filing it
+        would leave a run holding a promise with nothing behind it.
+        """
+        for name in sorted(self.authority()):
+            with self.subTest(missing=name):
+                record = self.authority()
+                del record[name]
+                with self.assertRaises(ValueError) as caught:
+                    self.writable.record_assessment_authority(record)
+                self.assertEqual(
+                    str(caught.exception), f"Assessment authority is missing {name}"
+                )
+                with self.assertRaises(ValueError):
+                    self.writable.recorded_assessment_for_run(self.RUN_ID)
+        # Positive control: the complete record files, so each refusal above is
+        # about the field it removed.
+        self.writable.record_assessment_authority(self.authority())
+        self.assertEqual(
+            self.writable.recorded_assessment_for_run(self.RUN_ID), self.authority()
+        )
+
+    def test_an_empty_required_field_is_refused_like_a_missing_one(self) -> None:
+        # A present-but-empty value is the same unreachable record with a key in
+        # front of it, so it is refused by the same rule and names the same field.
+        for name in sorted(self.authority()):
+            with self.subTest(empty=name):
+                with self.assertRaises(ValueError) as caught:
+                    self.writable.record_assessment_authority(self.authority(**{name: ""}))
+                self.assertEqual(
+                    str(caught.exception), f"Assessment authority is missing {name}"
                 )
 
 

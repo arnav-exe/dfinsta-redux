@@ -5,7 +5,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING, Any, Iterator, Mapping
 
 from .contracts import ArtifactRef, GateDecision, canonical_json, canonical_sha256
 
@@ -16,6 +16,28 @@ if TYPE_CHECKING:
         AdmittedReplayVerificationGrantV1,
         ReplayVerificationGrantHandleV1,
     )
+
+
+#: What makes two recorded assessments *the same* assessment. Deliberately not
+#: every column. `api_surface_sha256` is the digest of a file that embeds
+#: `generated_at` and an absolute `decode_path`, so re-indexing the same decode
+#: changes it while changing nothing that matters — comparing on it would make a
+#: re-index conflict with itself, undoing one layer up the exact property the
+#: operation key was keyed on `content_hash` to get. `manifest_sha256` is already
+#: inside `input_sha256`; both are stored for a reader, neither is compared.
+ASSESSMENT_IDENTITY_FIELDS = (
+    "run_id",
+    "operation_key",
+    "input_sha256",
+    "document_sha256",
+    "policy_revision",
+    "allowed_actor",
+)
+
+
+def assessment_identity(record: Mapping[str, Any]) -> dict[str, str]:
+    """The subset of an assessment authority row that decides sameness."""
+    return {name: str(record[name]) for name in ASSESSMENT_IDENTITY_FIELDS}
 
 
 class Ledger:
@@ -118,6 +140,25 @@ class Ledger:
                     FOREIGN KEY (admitted_replay_sha256)
                         REFERENCES admitted_replays_v3(admitted_replay_sha256)
                 )""",
+                # Stage 4a's authority, keyed by run. `operation_claims` has no
+                # `run_id` column and is indexed by content hash, so a client
+                # holding only a run id — which is all a published `GateRequest`
+                # gives it — cannot reach the recorded assessment operation. That
+                # is exactly why `PortRunWorkflow`'s `phase-a-approval` gate is
+                # unanswerable and deliberately unregistered. This row is the
+                # bridge, modelled on `admitted_replays_v3` for the same reason.
+                """CREATE TABLE IF NOT EXISTS recorded_assessments_v1 (
+                    run_id TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                    operation_key TEXT NOT NULL UNIQUE,
+                    input_sha256 TEXT NOT NULL,
+                    document_sha256 TEXT NOT NULL,
+                    api_surface_sha256 TEXT NOT NULL,
+                    manifest_sha256 TEXT NOT NULL,
+                    policy_revision TEXT NOT NULL,
+                    allowed_actor TEXT NOT NULL,
+                    recorded_json TEXT NOT NULL
+                )""",
                 """CREATE TRIGGER IF NOT EXISTS operation_events_no_update
                     BEFORE UPDATE ON operation_events BEGIN
                     SELECT RAISE(ABORT, 'operation events are append-only'); END""",
@@ -136,6 +177,12 @@ class Ledger:
                 """CREATE TRIGGER IF NOT EXISTS admitted_replays_v3_no_delete
                     BEFORE DELETE ON admitted_replays_v3 BEGIN
                     SELECT RAISE(ABORT, 'admitted replays v3 are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS recorded_assessments_v1_no_update
+                    BEFORE UPDATE ON recorded_assessments_v1 BEGIN
+                    SELECT RAISE(ABORT, 'recorded assessments v1 are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS recorded_assessments_v1_no_delete
+                    BEFORE DELETE ON recorded_assessments_v1 BEGIN
+                    SELECT RAISE(ABORT, 'recorded assessments v1 are append-only'); END""",
                 """CREATE TRIGGER IF NOT EXISTS admitted_replay_verification_grants_v1_no_update
                     BEFORE UPDATE ON admitted_replay_verification_grants_v1 BEGIN
                     SELECT RAISE(ABORT, 'admitted replay verification grants v1 are append-only'); END""",
@@ -570,6 +617,90 @@ class Ledger:
                 raise ValueError("Admitted replay authority does not match candidate")
             self._require_decision_row(connection, reconstructed.decision)
         return reconstructed
+
+    def record_assessment_authority(self, record: Mapping[str, Any]) -> None:
+        """File the run-keyed row that makes a recorded assessment reachable.
+
+        The operation itself is recorded through the ordinary
+        `begin_operation`/`record_effect`/`complete_operation` path; this only
+        writes down which operation belongs to which run. Two separate facts, and
+        keeping them separate matters: the operation is the derivation, this is
+        the index into it, and a caller that had one without the other would be
+        holding either bytes nobody vouched for or a promise with nothing behind
+        it.
+
+        Append-only by trigger, and `run_id` is the primary key, so a second
+        assessment for the same run is refused rather than silently replacing the
+        one a human may already have been shown.
+        """
+        self._require_writable()
+        required = (
+            "run_id",
+            "operation_key",
+            "input_sha256",
+            "document_sha256",
+            "api_surface_sha256",
+            "manifest_sha256",
+            "policy_revision",
+            "allowed_actor",
+        )
+        missing = [name for name in required if not record.get(name)]
+        if missing:
+            raise ValueError(f"Assessment authority is missing {', '.join(missing)}")
+        values = tuple(str(record[name]) for name in required)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT recorded_json FROM recorded_assessments_v1 WHERE run_id = ?",
+                (values[0],),
+            ).fetchone()
+            # Stored whole, compared by identity. Two different jobs: a reader
+            # wants everything that was recorded, while *sameness* must ignore
+            # the fields that move when nothing meaningful has. Storing only the
+            # identity subset would make the reader silently return less than the
+            # columns beside it.
+            payload = canonical_json({name: record[name] for name in required})
+            if existing is not None:
+                # Idempotent for the same assessment — a retried Activity must
+                # not fail — and a hard error for a different one, because two
+                # different assessments for one run is the state where nobody can
+                # say which the human saw.
+                if assessment_identity(json.loads(existing[0])) != assessment_identity(record):
+                    raise ValueError("A different assessment is already recorded for this run")
+                connection.execute("COMMIT")
+                return
+            connection.execute(
+                "INSERT INTO recorded_assessments_v1 (run_id, schema_version, operation_key, "
+                "input_sha256, document_sha256, api_surface_sha256, manifest_sha256, "
+                "policy_revision, allowed_actor, recorded_json) VALUES (?,1,?,?,?,?,?,?,?,?)",
+                (*values, payload),
+            )
+            connection.execute("COMMIT")
+
+    def recorded_assessment_for_run(self, run_id: str) -> dict[str, Any]:
+        """The recorded assessment row for a run, for a caller with no prior view.
+
+        Same role and same warning as :meth:`admitted_replay_handle_for_run`: the
+        trusted submission client is handed a run id and nothing else, and the
+        operation tables are keyed by content hash, so without this row the gate
+        would be unanswerable in exactly the way `phase-a-approval` is. It returns
+        the *coordinates* — the operation key and the input hash — so the caller
+        still reaches the `ArtifactRef` through `require_completed_operation` and
+        the checks there are not bypassed for anybody.
+
+        Not for stages. A stage that reached for this would be trusting a run id
+        instead of the handle its caller gave it.
+        """
+        if type(run_id) is not str:
+            raise TypeError("Assessment run id must be a string")
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT recorded_json FROM recorded_assessments_v1 WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Assessment authority is not recorded")
+        return json.loads(row[0])
 
     def admitted_replay_handle_for_run(self, run_id: str) -> AdmittedReplayHandleV1:
         """Return the recorded handle for a run, for a caller with no prior view.
