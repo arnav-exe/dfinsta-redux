@@ -156,8 +156,18 @@ def main() -> None:
     intermediate_apk = args.output_apk.with_name(f"{args.output_apk.stem}-intermediate.apk")
     verification_report = args.output_apk.with_suffix(".verification.json")
     build_report = args.output_apk.with_suffix(".build.json")
+    # Every entry here is something this build PRODUCES, so finding one already
+    # there means a previous run's artifact would be silently replaced.
+    #
+    # `--framework-path` is deliberately NOT on the list. It is an apktool
+    # framework cache: this build installs into it with `apktool if` (idempotent
+    # for the same framework) and then reads from it. Refusing a framework path
+    # that already exists broke the one path the driver most needs to work —
+    # a run that extracts and then builds, because extraction installs the
+    # framework into exactly this directory first. Every unattended port to date
+    # had passed --reuse-decode, so extraction never ran and the collision never
+    # appeared; the first full stock-APK-to-build run hit it immediately.
     refused_paths = [
-        args.framework_path,
         args.stock_decode,
         args.work_tree,
         args.output_apk,

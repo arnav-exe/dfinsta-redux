@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 import sys
@@ -15,8 +16,8 @@ REPOSITORY = TOOLS.parents[1]
 SOURCE = REPOSITORY / "dfinsta_source_430"
 sys.path.insert(0, str(TOOLS))
 
-from build import GRAFT_NAMES, graft_apk, sha256_tree
-from prepare_tree import prepare
+from build import GRAFT_NAMES, graft_apk, main, sha256_tree
+from prepare_tree import prepare, sanitise_manifest_for_aapt1
 from verify_apk import (
     FORBIDDEN_CUSTOM_SYMBOLS,
     REQUIRED_CUSTOM_SYMBOLS,
@@ -236,6 +237,326 @@ class PrepareAndPatchTests(unittest.TestCase):
             )
 
 
+class ManifestSanitiserTests(unittest.TestCase):
+    """Only the `<queries>` children aapt1 cannot compile are dropped.
+
+    Instagram 440 added `<provider android:authorities="..."/>` inside `<queries>`,
+    where matching is by authority so `android:name` is absent and must be. aapt1
+    predates `<queries>` and validates its children by the rules for `<application>`,
+    where the name is required, so the whole apktool build died on it. 439's manifest
+    had 21 providers and every one carried a name, so 440 is the first time it bit.
+
+    Editing this manifest is safe only because of the graft: the work tree is
+    compiled to produce the *intermediate* APK and `build.graft_apk` takes nothing
+    but DEX entries from it — `AndroidManifest.xml`, `resources.arsc` and `res/`
+    are copied byte-for-byte out of the stock archive.
+    """
+
+    TOKEN_HANDOFF = '<provider android:authorities="com.facebook.pages.app.ig4work.tokenhandoff"/>'
+    NAMED_PROVIDER = (
+        '<provider android:name="com.instagram.contentprovider.Shared" '
+        'android:authorities="com.instagram.android.shared"/>'
+    )
+
+    @staticmethod
+    def manifest(queries: str = "", application: str = "") -> str:
+        """A manifest shaped like apktool's output, with the two blocks filled in."""
+        return (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<manifest xmlns:android="http://schemas.android.com/apk/res/android" '
+            'package="com.instagram.android">\n'
+            "    <queries>\n"
+            f"{queries}"
+            "    </queries>\n"
+            '    <application android:label="Instagram">\n'
+            f"{application}"
+            "    </application>\n"
+            "</manifest>\n"
+        )
+
+    def test_removes_a_nameless_queries_provider_and_names_it_with_a_reason(self) -> None:
+        text = self.manifest(queries=f"        {self.TOKEN_HANDOFF}\n")
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertNotIn("<provider", cleaned)
+        self.assertEqual([item["element"] for item in removed], [self.TOKEN_HANDOFF])
+        self.assertIn("aapt1", removed[0]["reason"])
+        self.assertIn("android:name", removed[0]["reason"])
+
+    def test_keeps_a_queries_provider_that_already_has_a_name(self) -> None:
+        text = self.manifest(queries=f"        {self.NAMED_PROVIDER}\n")
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual(cleaned, text)
+        self.assertEqual(removed, [])
+
+    def test_leaves_a_nameless_provider_outside_queries_for_aapt1_to_reject(self) -> None:
+        """Under `<application>` a nameless provider is genuinely malformed.
+
+        Dropping it would hide a broken manifest behind a fix for a tooling
+        limitation, so the build must still fail loudly on it.
+        """
+        malformed = '<provider android:authorities="com.instagram.android.broken"/>'
+        text = self.manifest(
+            queries=f"        {self.TOKEN_HANDOFF}\n",
+            application=f"        {malformed}\n",
+        )
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        # Positive control: the same shape inside <queries> is removed by this very
+        # call, so the survival below is the confinement to <queries> doing its job
+        # and not a pattern that has stopped matching anything at all.
+        self.assertEqual([item["element"] for item in removed], [self.TOKEN_HANDOFF])
+        self.assertIn(malformed, cleaned)
+
+    def test_a_manifest_with_nothing_to_remove_comes_back_byte_identical(self) -> None:
+        text = self.manifest(
+            queries='        <package android:name="com.facebook.katana"/>\n',
+            application=f"        {self.NAMED_PROVIDER}\n",
+        )
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual(cleaned, text)
+        self.assertEqual(removed, [])
+
+    def test_every_queries_block_is_scrubbed(self) -> None:
+        first = '<provider android:authorities="com.facebook.first.tokenhandoff"/>'
+        second = '<provider android:authorities="com.facebook.second.tokenhandoff"/>'
+        text = (
+            "<manifest>\n"
+            "    <queries>\n"
+            '        <package android:name="com.facebook.katana"/>\n'
+            f"        {first}\n"
+            "    </queries>\n"
+            "    <queries>\n"
+            f"        {second}\n"
+            '        <package android:name="com.google.ar.core"/>\n'
+            "    </queries>\n"
+            "</manifest>\n"
+        )
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual([item["element"] for item in removed], [first, second])
+        self.assertNotIn("<provider", cleaned)
+        self.assertEqual(cleaned.count("<package"), 2)
+
+    def test_every_other_queries_child_survives(self) -> None:
+        text = self.manifest(
+            queries=(
+                "        <intent>\n"
+                '            <action android:name="android.intent.action.VIEW"/>\n'
+                '            <data android:scheme="*"/>\n'
+                "        </intent>\n"
+                "        <intent>\n"
+                '            <action android:name="android.intent.action.SENDTO"/>\n'
+                '            <data android:scheme="mailto"/>\n'
+                "        </intent>\n"
+                "        <intent>\n"
+                '            <action android:name="android.intent.action.MAIN"/>\n'
+                "        </intent>\n"
+                '        <package android:name="com.facebook.katana"/>\n'
+                '        <package android:name="com.google.ar.core"/>\n'
+                f"        {self.TOKEN_HANDOFF}\n"
+            )
+        )
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual(len(removed), 1)
+        for element, expected in (("<intent>", 3), ("<action", 3), ("<data", 2), ("<package", 2)):
+            with self.subTest(element=element):
+                self.assertEqual(text.count(element), expected)
+                self.assertEqual(cleaned.count(element), expected)
+
+    def test_attribute_order_does_not_decide_whether_a_provider_is_removed(self) -> None:
+        trailing_attribute = (
+            '<provider android:authorities="com.facebook.pages.app.ig4work.tokenhandoff" '
+            'android:exported="false"/>'
+        )
+        name_last = (
+            '<provider android:exported="false" '
+            'android:name="com.instagram.contentprovider.Shared"/>'
+        )
+        text = self.manifest(queries=f"        {trailing_attribute}\n        {name_last}\n")
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual([item["element"] for item in removed], [trailing_attribute])
+        self.assertIn(name_last, cleaned)
+
+    def test_removes_an_open_close_provider_whole_leaving_no_dangling_closer(self) -> None:
+        """Matching the opening tag alone would leave a bare `</provider>` behind.
+
+        apktool self-closes empty elements, so this is not the form 440 ships, but
+        a dangling closer turns a tooling limitation into malformed XML and a
+        different, more confusing build failure.
+        """
+        open_close = (
+            '<provider android:authorities="com.facebook.pages.app.ig4work.tokenhandoff">'
+            "</provider>"
+        )
+        text = self.manifest(
+            queries=(
+                '        <package android:name="com.facebook.katana"/>\n'
+                f"        {open_close}\n"
+                '        <package android:name="com.google.ar.core"/>\n'
+            )
+        )
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual([item["element"] for item in removed], [open_close])
+        self.assertNotIn("provider", cleaned)
+        self.assertEqual(cleaned.count("<package"), 2)
+
+    def test_removes_an_open_close_provider_together_with_its_body(self) -> None:
+        with_body = (
+            '<provider android:authorities="com.facebook.pages.app.ig4work.tokenhandoff">'
+            '<meta-data android:name="q"/>'
+            "</provider>"
+        )
+        text = self.manifest(
+            queries=(
+                f"        {with_body}\n"
+                '        <package android:name="com.facebook.katana"/>\n'
+            )
+        )
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual([item["element"] for item in removed], [with_body])
+        self.assertNotIn("provider", cleaned)
+        # The body leaves with the element that owned it, and a child's
+        # android:name does not make the parent look named.
+        self.assertNotIn("<meta-data", cleaned)
+        self.assertEqual(cleaned.count("<package"), 1)
+
+    def test_two_adjacent_nameless_providers_are_two_separate_removals(self) -> None:
+        """A lazy body runs from the first `<provider` to the second's closer.
+
+        That reports one removal and deletes both, so the count is what bites: a
+        body forbidden from containing another provider tag cannot reach across.
+        """
+        first = '<provider android:authorities="com.facebook.first.tokenhandoff"/>'
+        second = '<provider android:authorities="com.facebook.second.tokenhandoff"></provider>'
+        text = self.manifest(queries=f"        {first}{second}\n")
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual(len(removed), 2)
+        self.assertEqual([item["element"] for item in removed], [first, second])
+        self.assertNotIn("provider", cleaned)
+
+    def test_a_named_open_close_provider_after_a_nameless_one_is_not_swallowed(self) -> None:
+        """The over-deletion that matters: a lazy body eats a declaration that was fine."""
+        nameless = '<provider android:authorities="com.facebook.pages.app.ig4work.tokenhandoff"/>'
+        named = '<provider android:name="com.instagram.contentprovider.Shared"></provider>'
+        text = self.manifest(queries=f"        {nameless}{named}\n")
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual([item["element"] for item in removed], [nameless])
+        self.assertIn(named, cleaned)
+
+    def test_a_named_open_close_provider_before_a_nameless_one_survives(self) -> None:
+        named = '<provider android:name="com.instagram.contentprovider.Shared"></provider>'
+        nameless = '<provider android:authorities="com.facebook.pages.app.ig4work.tokenhandoff"/>'
+        text = self.manifest(queries=f"        {named}{nameless}\n")
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual([item["element"] for item in removed], [nameless])
+        self.assertIn(named, cleaned)
+
+    def test_leaves_an_open_close_nameless_provider_outside_queries_alone(self) -> None:
+        malformed = '<provider android:authorities="com.instagram.android.broken"></provider>'
+        in_queries = (
+            '<provider android:authorities="com.facebook.pages.app.ig4work.tokenhandoff">'
+            "</provider>"
+        )
+        text = self.manifest(
+            queries=f"        {in_queries}\n",
+            application=f"        {malformed}\n",
+        )
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        # Positive control, as for the self-closing form: the same shape inside
+        # <queries> is removed by this very call.
+        self.assertEqual([item["element"] for item in removed], [in_queries])
+        self.assertIn(malformed, cleaned)
+
+    def test_prepare_removes_the_element_from_the_work_tree_and_reports_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stock = root / "stock"
+            source = root / "source"
+            output = root / "output"
+            (stock / "smali/com/instagram").mkdir(parents=True)
+            (stock / "smali/com/instagram/App.smali").write_text("stock", encoding="utf-8")
+            (stock / "AndroidManifest.xml").write_text(
+                self.manifest(queries=f"        {self.TOKEN_HANDOFF}\n"), encoding="utf-8"
+            )
+            (source / "newCode/com/dfinstagram").mkdir(parents=True)
+            (source / "newCode/com/dfinstagram/hooks.smali").write_text("custom", encoding="utf-8")
+
+            removed = prepare(stock, source, output)
+
+            self.assertEqual([item["element"] for item in removed], [self.TOKEN_HANDOFF])
+            self.assertNotIn("<provider", (output / "AndroidManifest.xml").read_text(encoding="utf-8"))
+            # The decode is an input and is read, never edited: only the copy moves.
+            self.assertIn(
+                self.TOKEN_HANDOFF, (stock / "AndroidManifest.xml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                (output / "smali_classes20/com/dfinstagram/hooks.smali").read_bytes(), b"custom"
+            )
+
+    def test_prepare_never_writes_a_manifest_it_had_nothing_to_remove_from(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stock = root / "stock"
+            source = root / "source"
+            output = root / "output"
+            (stock / "smali").mkdir(parents=True)
+            clean = self.manifest(queries='        <package android:name="com.facebook.katana"/>\n')
+            stock_manifest = stock / "AndroidManifest.xml"
+            stock_manifest.write_text(clean, encoding="utf-8")
+            os.utime(stock_manifest, (1_000_000_000, 1_000_000_000))
+            (source / "newCode").mkdir(parents=True)
+            (source / "newCode/Only.smali").write_text("class", encoding="utf-8")
+
+            removed = prepare(stock, source, output)
+
+            work_manifest = output / "AndroidManifest.xml"
+            self.assertEqual(removed, [])
+            self.assertEqual(work_manifest.read_bytes(), clean.encode("utf-8"))
+            # copytree preserves mtime, so the copy still carrying the decode's
+            # timestamp is the only evidence that nothing rewrote it — identical
+            # bytes cannot tell a no-op rewrite apart from no write at all.
+            self.assertEqual(
+                work_manifest.stat().st_mtime_ns, stock_manifest.stat().st_mtime_ns
+            )
+
+    def test_the_real_440_work_tree_manifest_loses_exactly_the_tokenhandoff_provider(self) -> None:
+        """The format contract, taken from the manifest that actually broke the build."""
+        manifest = REPOSITORY / "work" / "440-port" / "work-tree" / "AndroidManifest.xml"
+        if not manifest.is_file():
+            raise unittest.SkipTest(f"No 440 work tree manifest at {manifest}")
+        text = manifest.read_text(encoding="utf-8")
+
+        cleaned, removed = sanitise_manifest_for_aapt1(text)
+
+        self.assertEqual([item["element"] for item in removed], [self.TOKEN_HANDOFF])
+        self.assertEqual(text.count("<provider"), 22)
+        self.assertEqual(cleaned.count("<provider"), 21)
+
+
 class GraftTests(unittest.TestCase):
     @staticmethod
     def write_zip(path: Path, entries: dict[str, bytes]) -> None:
@@ -311,6 +632,108 @@ class GraftTests(unittest.TestCase):
             self.assertNotEqual(first, sha256_tree(root))
             (root / "a/file").rename(root / "renamed")
             self.assertNotEqual(first, sha256_tree(root))
+
+
+class FirstCommand(Exception):
+    """Stands in for the first subprocess `main` would spawn, so only the guard runs."""
+
+
+class BuildGuardTests(unittest.TestCase):
+    """`main`'s overwrite guard must refuse what the build produces, and only that."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.stock_apk = root / "stock.apk"
+        self.patch_source = root / "source"
+        self.apktool_jar = root / "apktool.jar"
+        self.framework_apk = root / "framework.apk"
+        self.framework_path = root / "framework-cache"
+        self.stock_decode = root / "decode"
+        self.work_tree = root / "work"
+        self.output_apk = root / "out" / "dfinsta.apk"
+        self.stock_apk.write_bytes(b"stock")
+        self.apktool_jar.write_bytes(b"jar")
+        self.framework_apk.write_bytes(b"framework")
+        self.patch_source.mkdir()
+        (self.patch_source / "payload").write_bytes(b"payload")
+        self.output_apk.parent.mkdir()
+        # Spelled out rather than imported from build, so that changing how a name
+        # is derived from the arguments is a test failure and not a silent rename.
+        self.intermediate_apk = self.output_apk.parent / "dfinsta-intermediate.apk"
+        self.anchored_report = root / "work-anchored-report.json"
+        self.verification_report = self.output_apk.parent / "dfinsta.verification.json"
+        self.build_report = self.output_apk.parent / "dfinsta.build.json"
+
+    def build(self) -> None:
+        """Run `main` far enough to clear the guard; the first command raises instead."""
+        argv = [
+            "build.py",
+            str(self.stock_decode),
+            str(self.stock_apk),
+            str(self.patch_source),
+            str(self.apktool_jar),
+            str(self.framework_apk),
+            "--framework-path",
+            str(self.framework_path),
+            "--work-tree",
+            str(self.work_tree),
+            "--output-apk",
+            str(self.output_apk),
+        ]
+        with patch("build.subprocess.run", side_effect=FirstCommand), patch.object(sys, "argv", argv):
+            main()
+
+    def assert_refuses(self, path: Path) -> None:
+        with self.assertRaises(FileExistsError) as caught:
+            self.build()
+        self.assertIn(str(path), str(caught.exception))
+
+    def test_reaches_the_first_command_when_no_produced_path_exists(self) -> None:
+        with self.assertRaises(FirstCommand):
+            self.build()
+
+    def test_existing_framework_cache_is_an_input_and_is_not_refused(self) -> None:
+        self.framework_path.mkdir()
+        (self.framework_path / "1.apk").write_bytes(b"installed by an earlier extract")
+
+        with self.assertRaises(FirstCommand):
+            self.build()
+
+        # Control: the same run refuses a produced artifact, so reaching the first
+        # command above is the guard passing the framework cache, not the guard
+        # being skipped or every path being misspelled.
+        self.output_apk.write_bytes(b"previous build")
+        self.assert_refuses(self.output_apk)
+
+    def test_refuses_an_existing_stock_decode_tree(self) -> None:
+        self.stock_decode.mkdir()
+        self.assert_refuses(self.stock_decode)
+
+    def test_refuses_an_existing_work_tree(self) -> None:
+        self.work_tree.mkdir()
+        self.assert_refuses(self.work_tree)
+
+    def test_refuses_an_existing_output_apk(self) -> None:
+        self.output_apk.write_bytes(b"previous build")
+        self.assert_refuses(self.output_apk)
+
+    def test_refuses_an_existing_intermediate_apk_derived_from_the_output(self) -> None:
+        self.intermediate_apk.write_bytes(b"previous build")
+        self.assert_refuses(self.intermediate_apk)
+
+    def test_refuses_an_existing_anchored_report_derived_from_the_work_tree(self) -> None:
+        self.anchored_report.write_text("{}", encoding="utf-8")
+        self.assert_refuses(self.anchored_report)
+
+    def test_refuses_an_existing_verification_report_derived_from_the_output(self) -> None:
+        self.verification_report.write_text("{}", encoding="utf-8")
+        self.assert_refuses(self.verification_report)
+
+    def test_refuses_an_existing_build_report_derived_from_the_output(self) -> None:
+        self.build_report.write_text("{}", encoding="utf-8")
+        self.assert_refuses(self.build_report)
 
 
 class VerifierTests(unittest.TestCase):
