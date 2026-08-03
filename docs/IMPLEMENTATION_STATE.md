@@ -116,6 +116,51 @@ now also says, for each disjoint pair, whether the baseline had *any* passing re
 "probed differently" alone implies a comparison was lost when for all five there was nothing
 to regress from either way.
 
+## The feature gate has a producer, and the subject re-derives from a run id
+
+2026-08-03. `src/dfinsta_pipeline/assessment_record.py`, following option C5 of
+[`docs/STAGE_4_PRODUCER_DESIGN.md`](STAGE_4_PRODUCER_DESIGN.md).
+
+    python -m dfinsta_pipeline.assessment_record record --state-root <dir> \
+        --run-id port-440 --index work/440-clean/index --actor <who> --owner-token <tok>
+    python -m dfinsta_pipeline.assessment_record show --state-root <dir> --run-id port-440
+
+**It recomputes rather than adopts.** The admitting side reads the API surface it
+admitted and computes the assessment itself; a caller may pass `--expect <digest>` and have
+its own copy *checked*, and a disagreement is an error rather than a warning. This is
+affordable because stage 4a is a pure sub-millisecond function — **measured** at 3,696 /
+3,844 / 3,831 canonical bytes on 430 / 439 / 440, four candidates each, byte-identical across
+`PYTHONHASHSEED` values. Where recomputation is genuinely expensive this project does the
+other thing and says so (`replay_gate.resolve_admitted_build` fetches a receipt).
+
+**What is admitted and what is derived, kept apart.** `api_surface.json` is *admitted* —
+nothing in the ledger can attest it came from a real APK, and `tools/indexer/build_index.py`
+must not become an admitted capability. The assessment document is *derived* from those bytes
+and recorded as a ledger operation whose output ref pins it.
+
+**The operation key is keyed on the decode's `content_hash`, not the surface file's own
+digest**, because that file embeds `generated_at` and an absolute `decode_path` — so
+re-indexing the same decode would otherwise mint a second, conflicting operation for an
+identical result.
+
+**`recorded_assessments_v1`** is the run-keyed row that makes the gate answerable at all.
+`operation_claims` has no `run_id` column and is indexed by content hash, which is exactly why
+`PortRunWorkflow`'s `phase-a-approval` cannot be answered — you need the spec to find the
+operation that would give you the spec. The row carries *coordinates only*: the caller still
+reaches the `ArtifactRef` through `require_completed_operation`, so nothing is bypassed.
+
+**Proven on real 440 data.** `record` then `show` return the same operation key
+`04d2931c…` and the same ref `cas://sha256/c422949d…` (3,831 bytes), and feeding both through
+`derive_feature_gate_request` gives the byte-identical request hash
+`fc575a36…` for gate `port-440-feature-assessment-gate`. That round trip — **a run id in,
+read-only, and the same subject out** — is the property the whole gate rests on, and it is the
+first time `feature_gate.py` has been reachable from anything but its own tests.
+
+**Still open, and it is not small**: `submission.py` cannot yet *answer* this gate.
+`submit_answer` sends a bare `GateDecision` while the payload carries a dispositions
+`ArtifactRef`, and `Answer`/`DerivedSubject` have nowhere to put per-candidate rulings. A gate
+that derives but cannot be answered is the `phase-a-approval` trap wearing a different hat.
+
 ## The differential vs N−1 now has a producer
 
 `src/dfinsta_pipeline/differential.py`, and
