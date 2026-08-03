@@ -35,11 +35,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from dfinsta_pipeline.generalise import (
     BLOCK_ANCHOR_TEXT,
     BLOCK_NOT_INDEXED,
     BLOCK_SEMANTIC_DEP,
+    KINDS,
     VERDICT_AMBIGUOUS,
     VERDICT_WRONG,
     GeneraliseError,
@@ -47,13 +49,15 @@ from dfinsta_pipeline.generalise import (
     Proposal,
     Selection,
     forbidden_reason,
+    generalise_anchor,
     generalise_host,
     read_discovery,
     with_blocks,
     write_proposals,
 )
 from dfinsta_pipeline.hook_index import HookIndex
-from dfinsta_pipeline.hook_manifest import load_manifest
+from dfinsta_pipeline.hook_manifest import Hook, HostFingerprint, load_manifest
+from dfinsta_pipeline.resolve import AnchorScan
 
 REPO = Path(__file__).resolve().parents[1]
 MANIFEST = REPO / "manifest" / "hooks.json"
@@ -311,6 +315,352 @@ class FixtureTests(unittest.TestCase):
         document = json.loads(written.read_text(encoding="utf-8"))
         self.assertFalse(document["committed"])
         self.assertEqual(document["proposals"][0]["host_entry"]["literal"], proposal.literal)
+
+
+# ------------------------------------------------------------------- by_anchor
+
+#: A hook whose anchor and payload are the smallest thing `Hook` will accept.
+#: Built here rather than loaded from the manifest, so these tests pin the
+#: producer's behaviour rather than today's manifest content.
+FIXTURE_HOOK = Hook(
+    hook_id="fixture_hook",
+    intent="hand the Application instance to the mod at startup",
+    tier="robust",
+    strategy="insert after the super call in onCreate",
+    semantic_deps=(),
+    hosts=(HostFingerprint("by_agent", note="nothing mechanical points here"),),
+    anchor=("invoke-super {<app:reg>}, Landroid/app/Application;->onCreate()V",),
+    payload=(
+        "    invoke-static {<app>}, Lcom/dfinstagram/startapp;->setContext"
+        "(Landroid/app/Application;)V",
+    ),
+    marker="Lcom/dfinstagram/startapp;->setContext(Landroid/app/Application;)V",
+    expected_marker_count=1,
+)
+
+HOST_439 = "LX/0Di2;"
+HOST_430 = "LX/06X7;"
+
+
+def anchor_selection(version: str, selected, expected: str) -> Selection:
+    """One `Selection` shaped the way `generalise_anchor` builds them: no literals."""
+    return Selection.measure(version, (), list(selected), expected)
+
+
+def anchor_hosts(root: Path) -> list[KnownHost]:
+    return [
+        KnownHost("439", root / "decode-439", HOST_439, "smali_classes6/X/0Di2.smali"),
+        KnownHost("430", root / "decode-430", HOST_430, "smali_classes6/X/06X7.smali"),
+    ]
+
+
+def scan_result(matched) -> AnchorScan:
+    """The real `resolve.AnchorScan`, so a fake scan cannot drift from the real one's shape."""
+    return AnchorScan(
+        matched=tuple(matched),
+        carrying_marker=(),
+        scanned=181421,
+        survivors=26,
+        prefilter=":Landroid/view/View$OnLongClickListener;",
+    )
+
+
+class ByAnchorProposalTests(unittest.TestCase):
+    """What a `by_anchor` proposal refuses, and what it emits.
+
+    `by_anchor` is the only fingerprint kind that has actually moved the
+    agent-invocation count — the 2 -> 0 fall between Instagram 439 and 440 came
+    from two hand-written `by_anchor` entries — so its guards are the ones worth
+    attacking. The corroboration rule is shared with `by_literal` on purpose, and
+    "shared" is exactly the thing a refactor silently drops, so it is re-asserted
+    here for this kind rather than assumed from the other one's tests.
+    """
+
+    def propose(self, **fields) -> Proposal:
+        base = dict(
+            hook_id="fixture_hook",
+            kind="by_anchor",
+            selections=(
+                anchor_selection("439", [HOST_439], HOST_439),
+                anchor_selection("430", [HOST_430], HOST_430),
+            ),
+            reason="the anchor selects exactly one class on each version",
+            note="the anchor is the fingerprint: 439 -> LX/0Di2;, 430 -> LX/06X7;",
+        )
+        base.update(fields)
+        return Proposal(**base)
+
+    def test_by_anchor_is_a_kind_this_stage_may_propose(self):
+        self.assertIn("by_anchor", KINDS)
+        self.assertTrue(self.propose().found)
+
+    def test_a_literal_alongside_the_anchor_is_refused(self):
+        with self.assertRaises(GeneraliseError) as caught:
+            self.propose(literal="notifications_entry_point_impression")
+        self.assertIn("second, unchecked claim", str(caught.exception))
+
+    def test_a_co_literal_alongside_the_anchor_is_refused(self):
+        with self.assertRaises(GeneraliseError) as caught:
+            self.propose(co_literals=("ig4a-instagram-schema",))
+        self.assertIn("second, unchecked claim", str(caught.exception))
+
+    def test_a_by_anchor_fingerprint_measured_on_one_version_is_refused(self):
+        with self.assertRaises(GeneraliseError) as caught:
+            self.propose(selections=(anchor_selection("439", [HOST_439], HOST_439),))
+        self.assertIn("not corroborated", str(caught.exception))
+
+    def test_a_by_anchor_fingerprint_measured_on_nothing_is_refused(self):
+        with self.assertRaises(GeneraliseError):
+            self.propose(selections=())
+
+    def test_an_inexact_selection_on_any_version_is_refused(self):
+        # The 430 half is the one that bites: one class, and the wrong one. Every
+        # single-version check passes that.
+        for label, selections in (
+            (
+                "wrong class on 430",
+                (
+                    anchor_selection("439", [HOST_439], HOST_439),
+                    anchor_selection("430", ["Lcom/instagram/profile/actionbar/ProfileActionBar;"], HOST_430),
+                ),
+            ),
+            (
+                "several classes on 439",
+                (
+                    anchor_selection("439", [HOST_439, "LX/02us;"], HOST_439),
+                    anchor_selection("430", [HOST_430], HOST_430),
+                ),
+            ),
+            (
+                "nothing at all on 430",
+                (
+                    anchor_selection("439", [HOST_439], HOST_439),
+                    anchor_selection("430", [], HOST_430),
+                ),
+            ),
+        ):
+            with self.subTest(label), self.assertRaises(GeneraliseError) as caught:
+                self.propose(selections=selections)
+            self.assertIn("proposed despite", str(caught.exception))
+
+    def test_the_host_entry_carries_exactly_a_kind_and_a_note(self):
+        entry = self.propose().host_entry()
+        self.assertEqual(set(entry), {"kind", "note"})
+        self.assertEqual(entry["kind"], "by_anchor")
+        self.assertTrue(entry["note"].strip())
+
+    def test_a_by_anchor_proposal_reports_no_literals(self):
+        # `literals` feeds `manifest_blocks`, which asks whether each literal is a
+        # semantic dep and whether it is indexed. A by_anchor proposal has none, so
+        # none of those blocks can fire — which is why this kind is committable
+        # where the by_literal one is not.
+        proposal = self.propose()
+        self.assertEqual(proposal.literals, ())
+        self.assertEqual(with_blocks(proposal).blocks, ())
+        self.assertTrue(proposal.mechanical)
+
+    def test_no_fingerprint_is_still_not_found(self):
+        empty = Proposal("fixture_hook", "", reason="the anchor is not selective here")
+        self.assertFalse(empty.found)
+        with self.assertRaises(GeneraliseError):
+            empty.host_entry()
+
+
+class GeneraliseAnchorTests(unittest.TestCase):
+    """The producer, driven by a fake scan so its wiring can be attacked cheaply."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="anchor-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+        self.hosts = anchor_hosts(self.root)
+        self.calls: list[tuple[str, str]] = []
+
+    def scanner(self, results):
+        """A scan that answers per decode and records every call it received."""
+
+        def run(hook, decode):
+            self.calls.append((hook.hook_id, Path(decode).name))
+            return scan_result(results[Path(decode).name])
+
+        return run
+
+    def test_the_scan_runs_exactly_once_per_version(self):
+        # A producer that asked twice would double a cost measured at 4-10 seconds
+        # per decode, and one that asked once for two versions would be measuring
+        # one version and reporting two.
+        proposal = generalise_anchor(
+            FIXTURE_HOOK,
+            self.hosts,
+            scan=self.scanner({"decode-439": [HOST_439], "decode-430": [HOST_430]}),
+        )
+        self.assertEqual(
+            self.calls, [("fixture_hook", "decode-439"), ("fixture_hook", "decode-430")]
+        )
+        self.assertEqual(proposal.kind, "by_anchor")
+
+    def test_the_default_scan_is_the_resolvers_own(self):
+        # Pinned because every other test here injects a fake, and a test that
+        # always injects never checks the real wiring. A proposal derived by
+        # different code than the resolver would be a claim about a scan nobody
+        # ran — the resolver's scan IS the measurement being proposed.
+        with mock.patch(
+            "dfinsta_pipeline.resolve.scan_for_anchor",
+            side_effect=lambda hook, decode: scan_result(
+                [HOST_439 if Path(decode).name.endswith("439") else HOST_430]
+            ),
+        ) as scan:
+            proposal = generalise_anchor(FIXTURE_HOOK, self.hosts)
+        self.assertEqual(scan.call_count, 2)
+        self.assertEqual(proposal.kind, "by_anchor")
+
+    def test_an_anchor_that_selects_the_host_everywhere_is_proposed_and_the_note_names_both(self):
+        proposal = generalise_anchor(
+            FIXTURE_HOOK,
+            self.hosts,
+            scan=self.scanner({"decode-439": [HOST_439], "decode-430": [HOST_430]}),
+        )
+        self.assertEqual(proposal.host_entry()["kind"], "by_anchor")
+        for version, host in (("439", HOST_439), ("430", HOST_430)):
+            with self.subTest(version=version):
+                self.assertIn(version, proposal.note)
+                self.assertIn(host, proposal.note)
+
+    def test_an_anchor_matching_several_classes_is_refused_naming_the_count_and_the_host(self):
+        # "One class, and it was the wrong one" and "one class, and it was the
+        # right one" are the same NUMBER, so a refusal that reported only a count
+        # would be unreadable. It has to name both.
+        proposal = generalise_anchor(
+            FIXTURE_HOOK,
+            self.hosts,
+            scan=self.scanner(
+                {"decode-439": [HOST_439, "LX/02us;", "LX/02wt;"], "decode-430": [HOST_430]}
+            ),
+        )
+        self.assertEqual(proposal.kind, "")
+        self.assertFalse(proposal.found)
+        self.assertIn("selects 3 classes", proposal.reason)
+        self.assertIn(HOST_439, proposal.reason)
+        self.assertIn("still identifies the site", proposal.reason)
+        # The measurements survive on the refusal, so a human can see which
+        # version refused it and what it picked there.
+        self.assertEqual({item.version for item in proposal.selections}, {"439", "430"})
+
+    def test_an_anchor_matching_one_wrong_class_is_refused_naming_both_classes(self):
+        other = "Lcom/instagram/profile/actionbar/ProfileActionBar;"
+        proposal = generalise_anchor(
+            FIXTURE_HOOK,
+            self.hosts,
+            scan=self.scanner({"decode-439": [HOST_439], "decode-430": [other]}),
+        )
+        self.assertEqual(proposal.kind, "")
+        self.assertIn("430", proposal.reason)
+        self.assertIn(other, proposal.reason)
+        self.assertIn(HOST_430, proposal.reason)
+
+    def test_an_anchor_matching_nothing_is_refused(self):
+        proposal = generalise_anchor(
+            FIXTURE_HOOK,
+            self.hosts,
+            scan=self.scanner({"decode-439": [HOST_439], "decode-430": []}),
+        )
+        self.assertEqual(proposal.kind, "")
+        self.assertIn("no class at all", proposal.reason)
+
+    def test_one_version_yields_no_by_anchor_fingerprint(self):
+        proposal = generalise_anchor(
+            FIXTURE_HOOK,
+            self.hosts[:1],
+            scan=self.scanner({"decode-439": [HOST_439]}),
+        )
+        self.assertEqual(proposal.kind, "")
+        self.assertIn("one version cannot tell a fingerprint from a coincidence", proposal.reason)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_no_version_at_all_yields_no_fingerprint_rather_than_an_empty_pass(self):
+        proposal = generalise_anchor(FIXTURE_HOOK, [], scan=self.scanner({}))
+        self.assertEqual(proposal.kind, "")
+        self.assertIn("nothing", proposal.reason)
+        self.assertEqual(self.calls, [])
+
+
+#: The hosts each real decode is known to use, per hook. Version-stamped
+#: expectations established by the hand-done ports, used only as an answer key.
+ANCHOR_HOSTS = {
+    "install_settings_long_click": {
+        "439": ("LX/0DnT;", "smali_classes6/X/0DnT.smali"),
+        "430": ("LX/077K;", "smali_classes6/X/077K.smali"),
+    },
+    "install_settings_long_click_actionbar": {
+        "439": ("LX/0Di2;", "smali_classes6/X/0Di2.smali"),
+        "430": ("LX/06X7;", "smali_classes6/X/06X7.smali"),
+    },
+    # The negative control. Without it, "the producer proposes by_anchor" would be
+    # satisfied by a producer that proposes it for everything.
+    "tigon_url_block": {
+        "439": (
+            "Lcom/instagram/api/tigon/TigonServiceLayer;",
+            "smali/com/instagram/api/tigon/TigonServiceLayer.smali",
+        ),
+        "430": (
+            "Lcom/instagram/api/tigon/TigonServiceLayer;",
+            "smali/com/instagram/api/tigon/TigonServiceLayer.smali",
+        ),
+    },
+}
+
+
+@unittest.skipUnless(HAVE_DECODES, "needs the real 439 and 430 decodes")
+class RealDecodeAnchorTests(unittest.TestCase):
+    """The measurement the whole write-back path rests on.
+
+    Two hooks whose anchors select exactly one class per decode — the two the
+    agent count fell to zero on — and one whose anchor selects five and seven. A
+    fixture cannot stand in for this: a synthetic tree would agree with whatever
+    the implementation happened to do, and the thing being claimed is a fact about
+    Instagram's own bytecode.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        decodes = {"439": DECODE_439, "430": DECODE_430}
+        hooks = {hook.hook_id: hook for hook in load_manifest(MANIFEST)}
+        cls.proposals = {
+            hook_id: generalise_anchor(
+                hooks[hook_id],
+                [
+                    KnownHost(version, decodes[version], descriptor, path)
+                    for version, (descriptor, path) in hosts.items()
+                ],
+            )
+            for hook_id, hosts in ANCHOR_HOSTS.items()
+        }
+
+    def test_both_settings_hooks_propose_by_anchor_selecting_exactly_the_known_host(self):
+        for hook_id, hosts in list(ANCHOR_HOSTS.items())[:2]:
+            with self.subTest(hook_id=hook_id):
+                proposal = self.proposals[hook_id]
+                self.assertEqual(proposal.kind, "by_anchor", proposal.reason)
+                measured = {item.version: item for item in proposal.selections}
+                self.assertEqual(set(measured), {"439", "430"})
+                for version, (descriptor, _) in hosts.items():
+                    self.assertEqual(measured[version].count, 1)
+                    self.assertEqual(measured[version].sample, (descriptor,))
+                    self.assertTrue(measured[version].exact)
+                self.assertEqual(set(proposal.host_entry()), {"kind", "note"})
+
+    def test_a_hook_whose_anchor_is_not_selective_is_refused_and_the_reason_says_how_many(self):
+        proposal = self.proposals["tigon_url_block"]
+        self.assertFalse(proposal.found)
+        counts = {item.version: item.count for item in proposal.selections}
+        # Measured: 5 classes on 430 and 7 on 439. Asserted as "more than one"
+        # rather than as the exact numbers, which are a property of Instagram's
+        # build and would make this a test of the decode rather than the rule.
+        for version, count in counts.items():
+            with self.subTest(version=version):
+                self.assertGreater(count, 1)
+        self.assertIn(f"selects {counts['439']} classes", proposal.reason)
+        self.assertIn("Lcom/instagram/api/tigon/TigonServiceLayer;", proposal.reason)
+        self.assertIn("does not identify the class on its own", proposal.reason)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -78,6 +78,15 @@ from .manifest_update import RESOURCE_ID
 SCHEMA_VERSION = 1
 
 
+#: What this stage may propose. `by_anchor` is here because it is the only kind
+#: that has ever moved the agent-invocation count: the 2 -> 0 fall between
+#: Instagram 439 and 440 came from two `by_anchor` entries a human hand-wrote
+#: after measuring that each anchor selects exactly one class per decode. A
+#: write-back path that could express every kind except that one could automate
+#: only the promotions that have never mattered.
+KINDS = frozenset({"", "by_literal", "by_anchor"})
+
+
 class GeneraliseError(ValueError):
     """Raised when a caller hands this module something it must not act on."""
 
@@ -408,7 +417,11 @@ class Selection:
 
     @property
     def reason(self) -> str:
-        listed = ", ".join(repr(literal) for literal in self.literals)
+        # A `by_anchor` selection has no literals — the fingerprint is the hook's
+        # own anchor — so naming what did the selecting has to fall back to
+        # something rather than rendering an empty string into the middle of a
+        # sentence a human reads when a promotion is refused.
+        listed = ", ".join(repr(literal) for literal in self.literals) or "the anchor"
         if self.verdict == VERDICT_EXACT:
             return (
                 f"{self.version}: {listed} selects exactly {self.expected} — the host this "
@@ -494,14 +507,26 @@ class Proposal:
     note: str = ""
 
     def __post_init__(self) -> None:
-        if self.kind not in {"", "by_literal"}:
+        if self.kind not in KINDS:
             raise GeneraliseError(
-                f"{self.hook_id}: this stage proposes a by_literal fingerprint or none; "
-                f"{self.kind!r} is neither"
+                f"{self.hook_id}: this stage proposes one of {', '.join(sorted(k for k in KINDS if k))} "
+                f"or none; {self.kind!r} is neither"
             )
         if not self.reason.strip():
             raise GeneraliseError(f"{self.hook_id}: a proposal must say why, either way")
-        if self.kind != "by_literal":
+        if not self.kind:
+            return
+        if self.kind == "by_anchor":
+            # There is nothing to scrub: the fingerprint IS the hook's own anchor,
+            # which is already in the manifest and is the very text the patch is
+            # spliced into. Nothing is carried between versions, which is also why
+            # this kind cannot go stale the way a cited literal can.
+            if self.literal or self.co_literals:
+                raise GeneraliseError(
+                    f"{self.hook_id}: a by_anchor fingerprint is the anchor; a literal "
+                    "alongside it would be a second, unchecked claim"
+                )
+            self._require_corroboration()
             return
         for value in (self.literal, *self.co_literals):
             refusal = forbidden_reason(value)
@@ -509,6 +534,16 @@ class Proposal:
                 raise GeneraliseError(f"{self.hook_id}: {refusal}")
         if len(set(self.literals)) != len(self.literals):
             raise GeneraliseError(f"{self.hook_id}: a co_literal repeats the primary literal")
+        self._require_corroboration()
+
+    def _require_corroboration(self) -> None:
+        """Two versions, and exact on every one of them.
+
+        The same rule for every kind, because the failure it stops is the same:
+        a fingerprint that is perfect on one version and wrong on another. The
+        439 systrace literal selected exactly one class there and a *different*
+        one on 430, and would have been committed on the first result alone.
+        """
         measured = {item.version for item in self.selections}
         if len(measured) < 2:
             raise GeneraliseError(
@@ -525,7 +560,7 @@ class Proposal:
 
     @property
     def found(self) -> bool:
-        return self.kind == "by_literal"
+        return bool(self.kind)
 
     @property
     def literals(self) -> tuple[str, ...]:
@@ -548,6 +583,8 @@ class Proposal:
                 f"{self.hook_id}: no durable fingerprint was found, so there is no host "
                 f"entry to emit — the hook stays by_agent. {self.reason}"
             )
+        if self.kind == "by_anchor":
+            return {"kind": "by_anchor", "note": self.note}
         return {
             "kind": "by_literal",
             "literal": self.literal,
@@ -1089,6 +1126,85 @@ def render(proposals: Sequence[Proposal]) -> list[str]:
 
 
 # ------------------------------------------------------------------------- the cli
+
+
+def generalise_anchor(
+    hook: Hook,
+    hosts: Sequence[KnownHost],
+    *,
+    scan: Callable[[Hook, Path], Any] | None = None,
+) -> Proposal:
+    """Propose `by_anchor` for a hook whose own anchor selects exactly its host.
+
+    **This is the kind that has actually moved the number.** The agent count fell
+    from 2 on Instagram 439 to 0 on 440 because two `by_anchor` entries were
+    hand-written after someone measured that each anchor selects exactly one class
+    per decode. Until now this stage could propose `by_literal` and nothing else,
+    so the write-back path could automate every promotion except the only one that
+    has ever mattered.
+
+    The measurement is the same one `resolve.scan_for_anchor` performs during a
+    port, called here rather than reimplemented: a proposal derived by different
+    code than the resolver would be a claim about a scan nobody ran.
+
+    Two things make this kind unusually safe, and they are the reason it is worth
+    proposing at all. **Nothing is carried between versions** — the pattern is
+    re-matched against the target decode on every port, and it is the same text
+    the patch is spliced into, so a version where it stops identifying the host is
+    a version where it stops identifying the *site*, and the hook escalates rather
+    than resolving somewhere wrong. And the anchor is already in the manifest, so
+    there is no new value to scrub.
+
+    ``hosts`` must name at least two versions, for the reason every other
+    proposal here needs two: one version cannot tell a fingerprint from a
+    coincidence.
+    """
+    from .resolve import scan_for_anchor  # noqa: PLC0415
+
+    run = scan_for_anchor if scan is None else scan
+    selections: list[Selection] = []
+    for host in hosts:
+        result = run(hook, Path(host.decode))
+        selections.append(
+            Selection.measure(host.version, (), result.matched, host.descriptor)
+        )
+
+    ordered = tuple(selections)
+    versions = sorted({item.version for item in ordered})
+    if len(versions) < 2:
+        return Proposal(
+            hook_id=hook.hook_id,
+            kind="",
+            selections=ordered,
+            reason=(
+                f"the anchor was measured on {', '.join(versions) or 'nothing'}; one "
+                "version cannot tell a fingerprint from a coincidence"
+            ),
+        )
+    wrong = [item for item in ordered if not item.exact]
+    if wrong:
+        return Proposal(
+            hook_id=hook.hook_id,
+            kind="",
+            selections=ordered,
+            reason=(
+                f"the anchor is not a host fingerprint here: {wrong[0].reason}. It still "
+                "identifies the site; it does not identify the class on its own."
+            ),
+        )
+    counts = ", ".join(
+        f"{item.version} -> {item.expected} (1 of {item.count} matched)" for item in ordered
+    )
+    return Proposal(
+        hook_id=hook.hook_id,
+        kind="by_anchor",
+        selections=ordered,
+        reason=(
+            f"the anchor selects exactly one class on each of {', '.join(versions)}, and it "
+            "is the known host every time"
+        ),
+        note=f"the anchor is the fingerprint: {counts}",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
