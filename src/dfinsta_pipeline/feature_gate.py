@@ -622,3 +622,132 @@ def validate_submission(
     for item in dispositions.dispositions:
         if item.verdict != SILENT_VERDICT and not item.rationale.strip():
             raise ValueError(f"Disposition for {item.candidate_id} has no rationale")
+
+
+# ------------------------------------------------- the orchestration contracts
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureRunRequestV1:
+    """What starts a feature-assessment run: a run id and how long to wait.
+
+    The assessment is *not* here. It was recorded before this Workflow starts and
+    the preparing Activity reaches it by run id, so the only thing History
+    carries is a name — which is also why the gate is answerable at all: a client
+    holding the same run id can reach the same recorded state.
+    """
+
+    schema_version: int
+    run_id: str
+    gate_timeout_seconds: int
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported feature run request schema")
+        _identifier(self.run_id, "feature run request run id")
+        if type(self.gate_timeout_seconds) is not int or self.gate_timeout_seconds <= 0:
+            raise ValueError("Feature gate timeout must be a positive number of seconds")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "run_id": self.run_id,
+            "gate_timeout_seconds": self.gate_timeout_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FeatureRunRequestV1:
+        _strict_keys(data, _expected_fields(cls), "feature run request")
+        return cls(data["schema_version"], data["run_id"], data["gate_timeout_seconds"])
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureRunResultV1:
+    """How a feature-assessment run ended.
+
+    A new result type rather than fields on `RunResult`: `PortRunWorkflow`'s
+    Histories already record that shape, and adding to it would change what every
+    completed history replays into. The project's rule is that a contract which no
+    longer fits gets a new schema beside it.
+    """
+
+    schema_version: int
+    run_id: str
+    state: str
+    decision_id: str | None
+    dispositions: ArtifactRef | None
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported feature run result schema")
+        _identifier(self.run_id, "feature run result run id")
+        if type(self.state) is not str or not self.state:
+            raise ValueError("Feature run result needs a state")
+        if self.decision_id is not None:
+            _identifier(self.decision_id, "feature run result decision id")
+        if self.dispositions is not None:
+            _artifact(self.dispositions, DISPOSITIONS_ARTIFACT_KIND, "feature run dispositions")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "run_id": self.run_id,
+            "state": self.state,
+            "decision_id": self.decision_id,
+            "dispositions": (
+                dataclasses.asdict(self.dispositions) if self.dispositions else None
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FeatureRunResultV1:
+        _strict_keys(data, _expected_fields(cls), "feature run result")
+        reference = data["dispositions"]
+        return cls(
+            data["schema_version"],
+            data["run_id"],
+            data["state"],
+            data["decision_id"],
+            ArtifactRef.from_dict(reference) if reference is not None else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureDispositionsAdmissionV1:
+    """Workflow-to-Activity input that admits a human's rulings.
+
+    Carries the *submission*, not the document: the dispositions body is in CAS
+    and the Activity fetches it by the reference the human signed. Passing the
+    body through History would put free-text human rationales into a replayable
+    log forever, and would let the Workflow — which cannot read CAS — become the
+    place that decides what the human said.
+    """
+
+    schema_version: int
+    run_id: str
+    submission: FeatureGateSubmissionV1
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported feature dispositions admission schema")
+        _identifier(self.run_id, "feature dispositions admission run id")
+        if type(self.submission) is not FeatureGateSubmissionV1:
+            raise TypeError("Admission submission must be an exact FeatureGateSubmissionV1")
+        if self.submission.decision.run_id != self.run_id:
+            raise ValueError("Admission submission does not bind the run")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "run_id": self.run_id,
+            "submission": self.submission.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FeatureDispositionsAdmissionV1:
+        _strict_keys(data, _expected_fields(cls), "feature dispositions admission")
+        return cls(
+            data["schema_version"],
+            data["run_id"],
+            FeatureGateSubmissionV1.from_dict(data["submission"]),
+        )

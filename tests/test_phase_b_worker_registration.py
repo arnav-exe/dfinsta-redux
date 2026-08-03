@@ -33,6 +33,10 @@ STAGE_WRAPPERS = (
     "replay_verify_final_apk_stage_activity",
 )
 
+# Registering an Activity is a decision, not an import side effect: this set is
+# the record of which decisions were made. The two feature-gate Activities joined
+# when `FeatureAssessmentRunWorkflow` did — the gate had been complete and
+# unraisable until something could raise it.
 EXPECTED_REGISTERED = {
     "admit_activity",
     "prepare_activity",
@@ -41,6 +45,8 @@ EXPECTED_REGISTERED = {
     "prepare_replay_plan_activity",
     "prepare_replay_verification_gate_activity",
     "admit_replay_verification_grant_activity",
+    "prepare_feature_gate_activity",
+    "admit_feature_dispositions_activity",
     *STAGE_WRAPPERS,
 }
 
@@ -68,7 +74,10 @@ class WorkerRegistrationTests(unittest.TestCase):
 
     def test_registered_workflows_are_exact_and_pinned(self) -> None:
         names = {WorkflowDefinition.from_class(cls).name for cls in worker.REGISTERED_WORKFLOWS}
-        self.assertEqual(names, {"PortRunWorkflow", "ReplayRunWorkflow"})
+        self.assertEqual(
+            names,
+            {"PortRunWorkflow", "ReplayRunWorkflow", "FeatureAssessmentRunWorkflow"},
+        )
         for cls in worker.REGISTERED_WORKFLOWS:
             definition = WorkflowDefinition.from_class(cls)
             self.assertIsNotNone(

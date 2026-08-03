@@ -11,10 +11,12 @@ from temporalio.worker import Worker, WorkerDeploymentConfig
 
 from .activities import (
     admit_activity,
+    admit_feature_dispositions_activity,
     admit_replay_verification_grant_activity,
     apply_activity,
     configure_runtime,
     prepare_activity,
+    prepare_feature_gate_activity,
     prepare_replay_plan_activity,
     prepare_replay_verification_gate_activity,
     record_decision_activity,
@@ -24,6 +26,7 @@ from .activities import (
     replay_install_frameworks_stage_activity,
     replay_verify_final_apk_stage_activity,
 )
+from .feature_workflow import FeatureAssessmentRunWorkflow
 from .replay_workflow import ReplayRunWorkflow
 from .workflow import PortRunWorkflow
 
@@ -46,9 +49,11 @@ REGISTERED_ACTIVITIES = (
     prepare_replay_verification_gate_activity,
     admit_replay_verification_grant_activity,
     replay_verify_final_apk_stage_activity,
+    prepare_feature_gate_activity,
+    admit_feature_dispositions_activity,
 )
 
-REGISTERED_WORKFLOWS = (PortRunWorkflow, ReplayRunWorkflow)
+REGISTERED_WORKFLOWS = (PortRunWorkflow, ReplayRunWorkflow, FeatureAssessmentRunWorkflow)
 
 # Worker shutdown cancels running Activities, and every replay stage quarantines
 # its operation on cancellation. Quarantine is terminal: the key is refused

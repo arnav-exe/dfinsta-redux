@@ -24,7 +24,15 @@ from .decoded_artifact import (
     verify_materialized_decoded_tree,
 )
 from .executor import ExecutionMetadata, ExecutionRequest, Launcher, execute
-from . import replay_gate
+from . import assessment_record, replay_gate
+from .feature_gate import (
+    FeatureAssessmentGateV1,
+    FeatureDispositionsAdmissionV1,
+    FeatureDispositionsV1,
+    derive_assessment_gate,
+    derive_feature_gate_request,
+    validate_submission,
+)
 from .ledger import Ledger
 from .replay_contracts import (
     REPLAY_STAGES_WITHOUT_FRAMEWORK,
@@ -3403,3 +3411,95 @@ async def admit_replay_verification_grant_activity(
     Ledger.record_admitted_replay_verification_grant_v1(configured.ledger, grant)
     recorded = Ledger.require_admitted_replay_verification_grant_v1(configured.ledger, grant)
     return ReplayVerificationGrantHandleV1(1, recorded.request.grant_id, recorded.sha256)
+
+
+@activity.defn
+async def prepare_feature_gate_activity(run_id: str) -> FeatureAssessmentGateV1:
+    """Publish only the hash of the feature-assessment gate subject.
+
+    Same shape as the replay verification gate and for the same reason: the
+    Workflow binds a human decision to a hash it cannot itself compute, and the
+    admitting Activity re-derives the request independently. Carrying the request
+    body through History would make the Workflow the place that decides what was
+    approved.
+
+    Everything here comes from the recorded assessment, reached by run id through
+    `recorded_assessments_v1`. That row is why this gate is answerable at all: a
+    client holding the same run id reaches the same recorded state and derives the
+    same hash, which is precisely what `PortRunWorkflow`'s `phase-a-approval`
+    cannot do.
+    """
+    configured = runtime()
+    recorded = assessment_record.resolve_with(configured.ledger, configured.store, run_id)
+    request = derive_feature_gate_request(
+        recorded.run_id,
+        recorded.assessment,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.candidate_ids,
+    )
+    return derive_assessment_gate(request)
+
+
+@activity.defn
+async def admit_feature_dispositions_activity(
+    admission: FeatureDispositionsAdmissionV1,
+) -> ArtifactRef:
+    """Re-derive the gate subject, fetch the rulings, and admit them or refuse.
+
+    **This is where the answer is actually checked.** The Workflow's validator
+    runs in a sandbox with no I/O, so it can only check what the payload carries —
+    the decision's fields and the shape of the dispositions reference. It cannot
+    read the document those rulings live in. So the validator is a filter and this
+    is the authority.
+
+    Three things happen here that cannot happen anywhere else:
+
+    * the request is derived **again**, from the ledger, rather than taken from
+      the Workflow. A subject carried through History is a subject the Workflow
+      could have got wrong.
+    * the dispositions document is fetched **by the reference the human signed**,
+      and `ContentStore.read_blob` re-verifies its digest and size — so the bytes
+      admitted are the bytes whose hash the human confirmed.
+    * `feature_gate.validate_submission` binds them together: same assessment,
+      same policy, every candidate ruled on exactly once, no unknown candidate,
+      and a rationale wherever a verdict is not `ignore`.
+
+    Returns the dispositions reference on success. It is the same value that went
+    in, and returning it is deliberate: the Workflow's result then names the
+    artifact this run admitted, rather than one it merely passed along.
+    """
+    configured = runtime()
+    recorded = assessment_record.resolve_with(
+        configured.ledger, configured.store, admission.run_id
+    )
+    request = derive_feature_gate_request(
+        recorded.run_id,
+        recorded.assessment,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.candidate_ids,
+    )
+    reference = admission.submission.dispositions
+    body = configured.store.read_blob(reference.sha256, reference.size)
+    try:
+        document = FeatureDispositionsV1.from_dict(json.loads(body.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise ApplicationError(
+            f"Admitted dispositions are not a readable document: {error}",
+            type="FeatureDispositionsUnreadable",
+            non_retryable=True,
+        ) from error
+    try:
+        validate_submission(request, admission.submission, document)
+    except (TypeError, ValueError) as error:
+        # Non-retryable on purpose. A submission that does not bind its gate will
+        # not start binding it on a second attempt, and retrying would turn a
+        # clear refusal into a timeout nobody can read.
+        raise ApplicationError(
+            f"Feature dispositions do not authorise this gate: {error}",
+            type="FeatureDispositionsRefused",
+            non_retryable=True,
+        ) from error
+    configured.ledger.record_decision(admission.submission.decision)
+    return reference
