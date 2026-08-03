@@ -1,6 +1,8 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-03, branch `port-430`.
+Resume point as of 2026-08-03, branch `port-430`. Suite: **2365 tests**, one expected skip,
+plus six green tool suites (indexer 46, resolver 8, port_430 44, reconstruction 15, release 6,
+device_validation 22).
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
 practical "how to pick this up" record: what exists, what is next, and the
@@ -493,6 +495,12 @@ plus the release path.
    `finalize.py` on the real 440 build now produces `work/440-clean/dfinsta_440_release.apk`,
    SHA-256 `c9e063e5…` — **byte-identical to the APK signed by hand earlier**, which is the
    cross-check that the gate does what the manual sequence did.
+
+   One defect in the new code, found by its own tests and fixed: the certificate pin was
+   guarded by `if args.expected_certificate_sha256:`, so an **empty** value skipped the hex
+   check, reached `signature_context` as "no expectation", and reported `approved_signer: true`
+   for any key at all. An unset shell variable expanding to `""` would have turned the pin off
+   while the command line still said it was on. `is not None` closes it.
 
 2. ~~Nothing turns device measurements into ledger claims.~~ **Done**:
    `src/dfinsta_pipeline/record_runtime.py`, three modes matching the three probe shapes —
