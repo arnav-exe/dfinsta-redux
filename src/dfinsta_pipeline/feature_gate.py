@@ -561,8 +561,8 @@ def validate_submission(
     between things that were recorded separately:
 
     1. the submitted dispositions artifact holds exactly this document;
-    2. the decision's subject is the *derived* request hash;
-    3. the decision's run, gate and policy are the request's;
+    2. **all three** of the decision's hash fields are the *derived* request hash;
+    3. the decision's run, gate, policy and **actor** are the request's;
     4. the document rules on the assessment the request pins;
     5. the document's policy revision is the request's;
     6. no candidate is ruled on twice;
@@ -594,12 +594,29 @@ def validate_submission(
         raise ValueError("Submitted dispositions artifact size does not match this document")
 
     decision = submission.decision
+    # ALL THREE hash fields, not just the subject. The Workflow binds all three
+    # to the request hash and its validator checks all three -- but that
+    # validator runs in a sandbox and is a filter, not the authority. Checking
+    # only the subject here meant a wrongly-bound decision that reached this
+    # function by any other route was admitted, and the replay gate's admitting
+    # side has always required all three.
     if decision.subject_sha256 != request.sha256:
         raise ValueError("Decision subject does not bind the derived gate request")
+    if decision.admission_sha256 != request.sha256:
+        raise ValueError("Decision admission hash does not bind the derived gate request")
+    if decision.prepared_sha256 != request.sha256:
+        raise ValueError("Decision prepared hash does not bind the derived gate request")
     if decision.run_id != request.run_id:
         raise ValueError("Decision run does not bind the gate request")
     if decision.gate_id != request.gate_id:
         raise ValueError("Decision gate does not bind the gate request")
+    # `allowed_actor` is inside the derived bytes precisely so that the admitting
+    # side can verify it independently -- and nothing here was doing so, which
+    # left the sandbox validator as the *only* enforcement of who may answer.
+    # `_validate_decision` and the verification grant both compare it; this gate
+    # was the exception, against its own request's docstring.
+    if decision.actor != request.allowed_actor:
+        raise ValueError("Decision actor is not the gate's allowed actor")
     if decision.policy_revision != request.policy_revision:
         raise ValueError("Decision policy does not bind the gate request")
 
