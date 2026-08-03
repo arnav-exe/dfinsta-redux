@@ -311,18 +311,18 @@ class ResolveAdmittedBuildTests(unittest.TestCase):
         from dfinsta_pipeline import activities
 
         self.assertEqual(
-            tuple(inspect.signature(activities._replay_build_predecessors).parameters),
+            tuple(inspect.signature(activities.replay_build_predecessors).parameters),
             ("admitted",),
         )
         self.assertEqual(
             len(
                 inspect.signature(
-                    activities._replay_build_operation_identity
+                    activities.replay_build_operation_identity
                 ).parameters
             ),
             6,
         )
-        validate = inspect.signature(activities._validate_replay_patched_apk_receipt)
+        validate = inspect.signature(activities.validate_replay_patched_apk_receipt)
         self.assertEqual(
             {
                 name
@@ -370,12 +370,18 @@ class ResolveAdmittedBuildTests(unittest.TestCase):
             return self.case.receipt
 
         runtime_double = mock.Mock(ledger="ledger-double")
+        # Patched by the PUBLIC names, because those are the names
+        # `resolve_admitted_build` reaches for. An alias is the same object but
+        # not the same binding: patching `_replay_build_predecessors` rebinds one
+        # module attribute and leaves `replay_build_predecessors` pointing at the
+        # original, so the double would never be called and the test would pass
+        # for the wrong reason — or, as it did here, fail loudly.
         with mock.patch.object(
-            activities, "_replay_build_predecessors", predecessor_helper
+            activities, "replay_build_predecessors", predecessor_helper
         ), mock.patch.object(
-            activities, "_replay_build_operation_identity", identity_helper
+            activities, "replay_build_operation_identity", identity_helper
         ), mock.patch.object(
-            activities, "_validate_replay_patched_apk_receipt", validate
+            activities, "validate_replay_patched_apk_receipt", validate
         ), mock.patch.object(
             activities, "runtime", lambda: runtime_double
         ), mock.patch.object(

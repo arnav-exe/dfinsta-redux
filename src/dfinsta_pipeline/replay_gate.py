@@ -196,8 +196,8 @@ def resolve_admitted_build(
         completed_apply,
         patched_tree_receipt,
         compiled,
-    ) = activities._replay_build_predecessors(admitted)
-    build_key, build_input, build_request = activities._replay_build_operation_identity(
+    ) = activities.replay_build_predecessors(admitted)
+    build_key, build_input, build_request = activities.replay_build_operation_identity(
         admitted,
         completed_apply,
         patched_tree_receipt,
@@ -211,7 +211,7 @@ def resolve_admitted_build(
         BUILD_OPERATION_KIND,
         build_input,
     )
-    build_receipt = activities._validate_replay_patched_apk_receipt(
+    build_receipt = activities.validate_replay_patched_apk_receipt(
         completed_build,
         build_key,
         admitted=admitted,

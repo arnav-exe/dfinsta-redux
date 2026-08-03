@@ -3294,6 +3294,23 @@ def _replay_stage_budget(admitted: AdmittedReplayV3, stage: str) -> int:
     return plan.timeout_seconds * _STAGE_BUDGET_MULTIPLIER[stage]
 
 
+
+# ---------------------------------------------------------------- public seams
+#
+# `replay_gate.resolve_admitted_build` needs these three, and reaching for the
+# private names made a module-boundary coupling that only a signature-drift test
+# was holding together. These aliases remove the *private* half of that coupling
+# at zero risk: every function body and the executed call graph are byte-identical,
+# because an alias is the same object under a second name.
+#
+# What they do NOT do is deduplicate `replay_gate.resolve_admitted_build` against
+# `_replay_verification_predecessors`, which is the real extraction. That one edits
+# a body inside the verify Activity's proven execution path, so it belongs in the
+# slice that re-establishes that evidence with a real run.
+replay_build_predecessors = _replay_build_predecessors
+replay_build_operation_identity = _replay_build_operation_identity
+validate_replay_patched_apk_receipt = _validate_replay_patched_apk_receipt
+
 @activity.defn
 async def prepare_replay_plan_activity(handle: AdmittedReplayHandleV1) -> ReplayExecutionPlanV1:
     """Derive the stage sequence from recorded authority.
