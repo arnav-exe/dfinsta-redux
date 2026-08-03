@@ -260,6 +260,20 @@ re-verifies digest and size on read), and runs `validate_submission` over the th
 A submission can pass the validator and still be refused there, non-retryably — that is the
 design, not a gap.
 
+**And the first tests for it found that the authority checked *less* than the filter.**
+`validate_submission` never compared `decision.actor` to `request.allowed_actor`, and bound
+`subject_sha256` alone — so "who may answer" and two of the three published hashes rested
+entirely on a sandbox validator that is explicitly not the authority. Both against this
+project's own precedent: `_validate_decision` and `AdmittedReplayVerificationGrantV1` compare
+the actor, and the replay gate requires all three hashes. `FeatureGateRequestV1`'s own
+docstring says `allowed_actor` sits in the derived bytes *precisely* so the admitting side can
+verify it independently — it was in the bytes and nothing verified it. Both closed, with a
+positive control on each so a refusal cannot pass for the wrong reason.
+
+The rule worth carrying: **when a design splits a check into a cheap filter and a real
+authority, the authority must check everything the filter checks.** For each clause, ask what
+still holds if that layer were bypassed entirely.
+
 ## Operational hardening: what closed without a live Temporal run
 
 A measured pass over the four deferred follow-ups reversed the plan. See
