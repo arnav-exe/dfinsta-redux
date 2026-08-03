@@ -5,7 +5,9 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-02 (third pass: stage 4a, the gate contracts, the submission client).
+Last updated 2026-08-03 (fourth pass: Instagram 440 ported for zero agent invocations, the
+differential producer, the stage-9 recorder, and the release gate closing on the driver's
+own output).
 
 ## End goal
 
@@ -19,12 +21,12 @@ gates rather than doing the mechanical work.
 | | What it does | State |
 |---|---|---|
 | **Execute** a port | apply/build/graft/verify/sign/orchestrate | largely complete |
-| **Produce** a port | re-map hook intent onto a new obfuscated decode | 5 of 7 hooks mechanical; the rest proposed, validated and refuted by agents |
-| **Decide** what to port | find new features, judge addictiveness, present evidence at a gate | surface diff and assessment done; a gate can be answered but nothing raises this one |
+| **Produce** a port | re-map hook intent onto a new obfuscated decode | **7 of 7 hooks mechanical on 430, 439 and 440** — no `by_agent` fingerprint remains, and 440 arrived after they were written |
+| **Decide** what to port | find new features, judge addictiveness, present evidence at a gate | surface diff and assessment written; a gate can be answered but **nothing computes an assessment and nothing raises this gate** — see `docs/STAGE_4_PRODUCER_DESIGN.md` |
 
-The remaining work is concentrated in two places: judging a new feature and presenting it
-at a durable gate, and closing the loop so the agents that propose hooks run inside the
-pipeline rather than being invoked by hand.
+The remaining work is concentrated in one place: judging a new feature and presenting it at a
+durable gate. The second half of that sentence used to be "closing the loop so the agents that
+propose hooks run inside the pipeline" — 440 closed it by needing no agent at all.
 
 **The lesson that reshaped all three machines.** Four separate failures — the 340
 `minshop` substitution, the 430 settings hook, the 439 action-bar hook, and a verifier
