@@ -32,6 +32,14 @@ import sys
 import zipfile
 from pathlib import Path
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 REQUIRED_CUSTOM_SYMBOLS = (
     "Lcom/dfinstagram/startapp;",
     "Lcom/dfinstagram/dfinstagram;",
@@ -105,8 +113,19 @@ def verify(
         )
     results: dict[str, object] = {}
     with zipfile.ZipFile(built) as out, zipfile.ZipFile(stock) as ref:
-        out_names = {i.filename for i in out.infolist()}
+        out_infos = out.infolist()
+        out_names = {i.filename for i in out_infos}
         ref_names = {i.filename for i in ref.infolist()}
+
+        # A ZIP may carry the same name twice, and `ZipFile.read` returns the
+        # LAST one. An archive still carrying the unpatched original alongside
+        # the patched entry would verify clean on every check below, because
+        # every check reads through that name. `tools/port_430/build.py` refuses
+        # duplicates when it grafts; a verifier that does not is weaker than the
+        # builder whose output it is supposed to check.
+        seen: set[str] = set()
+        duplicates = sorted({i.filename for i in out_infos if i.filename in seen or seen.add(i.filename)})
+        results["duplicate_entries"] = duplicates
 
         stock_dex = sorted(n for n in ref_names if n.startswith("classes") and n.endswith(".dex"))
         built_dex = sorted(n for n in out_names if n.startswith("classes") and n.endswith(".dex"))
@@ -115,7 +134,21 @@ def verify(
         results["custom_dex_is_new"] = custom_dex in out_names and custom_dex not in ref_names
         results["dex_topology_exact"] = set(built_dex) == set(stock_dex) | {custom_dex}
 
-        custom = out.read(custom_dex)
+        # Every read below is against a name the build was supposed to produce,
+        # and the likeliest real failure — the custom tree never compiled into
+        # its own DEX — makes that name absent. Reading it anyway raises a bare
+        # KeyError out of a verifier that has not written its report yet, so the
+        # run fails with no JSON and no stated cause. Report it instead.
+        absent = sorted(
+            name
+            for name in {custom_dex} | set(replaced) | set(host_hooks)
+            if name not in out_names
+        )
+        results["expected_entries_absent"] = absent
+        missing_from_stock = sorted(name for name in replaced if name not in ref_names)
+        results["replaced_entries_absent_from_stock"] = missing_from_stock
+
+        custom = out.read(custom_dex) if custom_dex in out_names else b""
         results["custom_required_symbols"] = {
             s: (s.encode() in custom) for s in REQUIRED_CUSTOM_SYMBOLS
         }
@@ -125,7 +158,7 @@ def verify(
 
         hooks: dict[str, dict[str, bool]] = {}
         for dex, pairs in host_hooks.items():
-            blob = out.read(dex)
+            blob = out.read(dex) if dex in out_names else b""
             hooks[dex] = {
                 f"{descriptor} {name}": (descriptor.encode() in blob and name.encode() in blob)
                 for descriptor, name in pairs
@@ -135,22 +168,37 @@ def verify(
         # A grafted host DEX must actually differ from stock, otherwise the
         # graft silently shipped the unpatched original.
         results["grafted_dex_changed"] = {
-            name: hashlib.sha256(out.read(name)).digest()
-            != hashlib.sha256(ref.read(name)).digest()
+            name: (
+                name in out_names
+                and name in ref_names
+                and hashlib.sha256(out.read(name)).digest()
+                != hashlib.sha256(ref.read(name)).digest()
+            )
             for name in sorted(replaced)
         }
 
         grafted = replaced | {custom_dex}
-        mismatched, missing = [], []
+        mismatched, missing, compared = [], [], 0
         for name in sorted(ref_names):
             if is_signature_entry(name) or name in grafted:
                 continue
             if name not in out_names:
                 missing.append(name)
                 continue
+            compared += 1
             if hashlib.sha256(ref.read(name)).digest() != hashlib.sha256(out.read(name)).digest():
                 mismatched.append(name)
-        results["preserved_entry_count"] = len(ref_names) - len(grafted)
+        # Entries the BUILD INVENTED. The loop above walks stock's names, so an
+        # entry present only in the output is examined by nothing at all — and
+        # this module's contract is that every archive entry outside the grafted
+        # set is byte-identical to stock, which an added file silently breaks.
+        added = sorted(out_names - ref_names - {custom_dex})
+        results["added_entries"] = added
+        # Count what was actually compared. `len(ref_names) - len(grafted)` also
+        # counts the stock signature entries the loop skips, and subtracts a
+        # custom DEX that was never a stock entry, so it over-reported by
+        # (signature entries - 1) on every real APK.
+        results["preserved_entry_count"] = compared
         results["preserved_entries_missing"] = missing
         results["preserved_entries_mismatched"] = mismatched
         results["signatures_stripped"] = not any(is_signature_entry(n) for n in out_names)
@@ -164,6 +212,10 @@ def verify(
         and all(results["grafted_dex_changed"].values())
         and not missing
         and not mismatched
+        and not added
+        and not duplicates
+        and not absent
+        and not missing_from_stock
         and results["signatures_stripped"]
     )
     results["passed"] = bool(passed)
@@ -195,13 +247,30 @@ def main() -> None:
             ).items()
         }
 
-    report = verify(
-        args.built_apk,
-        args.stock_apk,
-        args.custom_dex,
-        {n for n in args.replaced_dex.split(",") if n},
-        host_hooks,
-    )
+    # The identity envelope is what lets the release gate consume this report:
+    # `tools/release/finalize.py` refuses a report whose `schema_version` is not 1
+    # and cross-checks `apk_sha256`/`stock_apk_sha256` against the files it was
+    # handed, so that signing cannot be pointed at a different APK than the one
+    # that was verified. Without these three fields the driver could produce a
+    # verified build that the release path would not accept — which is exactly
+    # what happened the first time anyone tried it. Same names and same meanings
+    # as `tools/port_430/verify_apk.py`, deliberately: two verifiers that pin
+    # different things must still be interchangeable to the gate.
+    report = {
+        "schema_version": 1,
+        "apk": str(args.built_apk),
+        "apk_sha256": sha256_file(args.built_apk),
+        "stock_apk": str(args.stock_apk),
+        "stock_apk_sha256": sha256_file(args.stock_apk),
+        "verifier_sha256": sha256_file(Path(__file__).resolve()),
+        **verify(
+            args.built_apk,
+            args.stock_apk,
+            args.custom_dex,
+            {n for n in args.replaced_dex.split(",") if n},
+            host_hooks,
+        ),
+    }
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:
         args.output.write_text(text + "\n", encoding="utf-8")
