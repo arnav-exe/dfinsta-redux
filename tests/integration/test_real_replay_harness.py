@@ -24,7 +24,7 @@ for _module_alias in (
 ):
     sys.modules.setdefault(_module_alias, sys.modules[__name__])
 
-from dfinsta_pipeline import activities
+from dfinsta_pipeline import activities, replay_gate
 from dfinsta_pipeline.activities import (
     configure_runtime,
     replay_apply_tree_checkpoint_activity,
@@ -264,29 +264,14 @@ def _capability(
     raise ValueError(f"Unsupported role: {role}")
 
 
-def final_decode_capability(java_sha256: str, target: int) -> ExecutorCapability:
-    return ExecutorCapability(
-        1,
-        f"real-replay-{target}-final-apk-decode-java",
-        java_sha256,
-        (
-            "-jar",
-            "{tool}",
-            "d",
-            "-f",
-            "{input_apk}",
-            "-o",
-            "{decoded_tree}",
-            "-p",
-            "{framework_dir}",
-        ),
-        ("decoded_tree", "framework_dir", "input_apk", "tool"),
-        ("final-apk",),
-        "decoded-tree",
-        (),
-        (),
-        ("framework", "output"),
-    )
+def authority_run_id(target: int) -> str:
+    """The one run-scoped name this harness invents.
+
+    Every verification-gate identifier is derived from it by `replay_gate`, so
+    it is named once here rather than restated where the run spec is built.
+    """
+
+    return f"real-replay-{target}-run"
 
 
 def stage_order(config: TargetConfig) -> tuple[str, ...]:
@@ -665,20 +650,19 @@ def _verification_request_and_decision(
     completed_build: ArtifactRef,
     build_receipt: ReplayPatchedApkReceiptV1,
 ) -> tuple[ReplayVerificationGrantRequestV1, GateDecision]:
-    request = ReplayVerificationGrantRequestV1(
-        1,
-        f"real-replay-{config.target}-final-verification-grant",
-        admitted.run_spec.run_id,
-        f"real-replay-{config.target}-final-verification-gate",
-        admitted.run_spec.allowed_actor,
-        admitted.run_spec.policy_revision,
-        admitted.sha256,
-        completed_build,
-        build_receipt.patched_apk,
-        admitted.profile.profile_id,
-        admitted.profile.tool_for_role("decode").artifact_sha256,
-        admitted.plan("decode").timeout_seconds,
-        final_decode_capability(JAVA_SHA256, config.target),
+    """Derive the gate subject exactly as the Workflow's Activities do.
+
+    The subject is *not* restated here.  `replay_gate.derive_verification_request`
+    is the same pure function `prepare_replay_verification_gate_activity` and
+    `admit_replay_verification_grant_activity` call, so the harness and the
+    Workflow bind byte-identical `request.sha256` values for the same run.  A
+    second implementation could agree with the first and both still be wrong;
+    only the decision below -- self-issued test-only approval authority, which
+    the Workflow gets from a human instead -- is the harness's own.
+    """
+
+    request = replay_gate.derive_verification_request(
+        admitted, completed_build, build_receipt
     )
     decision = GateDecision(
         1,
@@ -898,7 +882,7 @@ def _create_authority(config: TargetConfig, inputs: dict[str, Any]) -> tuple[Adm
     )
     run_spec = ReplayRunSpecV2(
         2,
-        f"real-replay-{target}-run",
+        authority_run_id(target),
         stock_ref.sha256,
         inputs["intent"].sha256,
         inputs["resolution"].sha256,

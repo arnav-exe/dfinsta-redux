@@ -273,6 +273,20 @@ progress, not by an accident.
 and gate ids, and by the *entire suffix* on the capability id
 (`-final-apk-decode-java` vs `-run-final-verification-decode`).
 
+**F1a is closed, and its stated blocker was wrong.** `_verification_request_and_decision` now
+calls `replay_gate.derive_verification_request`, so harness and Workflow compute one subject
+through one function; the local `final_decode_capability` builder is deleted, and the run id is
+named once by `authority_run_id(target)`. The reason F1 gave for deferring — that re-pinning
+`capability_id` "without a real run would be asserting values nobody has observed" — does not
+hold: all three ids are pure functions of `run_id` (`replay_gate.derived_identifier`, no ledger,
+no store, no clock), so they are computable and checkable at rest. The new pins are
+`real-replay-{340,430}-run-final-verification-{grant,gate,decode}`, and
+`RealReplayHarnessFastTests.test_verification_gate_ids_are_derived_from_the_harness_run_id`
+asserts both that the harness derives rather than restates and that the derivation still yields
+those strings. What *does* still need the real run is F1b: the resulting `request.sha256`,
+`grant_sha256` and evidence JSON, which no derivation can settle — but those change on any
+re-run anyway.
+
 **F2 has a cheap half, now done.** Public aliases in `activities.py` remove the private
 coupling with every body and the executed call graph byte-identical. The real extraction —
 deduplicating `resolve_admitted_build` against `_replay_verification_predecessors` — still

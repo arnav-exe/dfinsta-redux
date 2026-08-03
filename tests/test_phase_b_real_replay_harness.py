@@ -1,14 +1,24 @@
+import inspect
 import os
 import sys
 import tempfile
 import unittest
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
-from dfinsta_pipeline.contracts import canonical_sha256
+from dfinsta_pipeline.contracts import ArtifactRef, canonical_json, canonical_sha256
 from dfinsta_pipeline.replay_contracts import (
+    AdmittedReplayV3,
+    ReplayPatchedApkReceiptV1,
     ToolchainProfileV3,
     admit_replay_verification_grant_v1,
+)
+from dfinsta_pipeline.replay_gate import (
+    CAPABILITY_ID_SUFFIX,
+    GATE_ID_SUFFIX,
+    GRANT_ID_SUFFIX,
+    derive_verification_request,
+    derived_identifier,
 )
 from tests.integration import test_real_replay_harness as harness
 from tests.integration.test_real_replay_harness import (
@@ -21,16 +31,55 @@ from tests.integration.test_real_replay_harness import (
     _put,
     _verification_request_and_decision,
     admit_and_record,
+    authority_run_id,
     build_profile,
-    final_decode_capability,
     process_stage_order,
     select_targets,
     stage_launch_expectations,
     stage_order,
     validate_run_root,
 )
-from tests.test_phase_b_replay_contracts import fixture_v3
-from tests.test_phase_b_verification_grant import VerificationFixture
+from tests.test_phase_b_replay_contracts import admit_v3, fixture_v3
+from tests.test_phase_b_verification_grant import (
+    VerificationFixture,
+    ref,
+    synthetic_build_receipt,
+)
+
+
+def harness_run_authority(
+    target: int,
+) -> tuple[AdmittedReplayV3, ArtifactRef, ReplayPatchedApkReceiptV1]:
+    """An admitted authority carrying the harness's own `run_id`.
+
+    The real harness reaches this state only after decoding, patching and
+    rebuilding a stock APK, which needs apktool and about an hour.  The gate
+    identifiers do not depend on any of that: they are a pure function of
+    `run_id`, so a contract fixture re-specced onto the harness's run id
+    produces exactly the ids the real run will produce.
+    """
+
+    case = fixture_v3()
+    run_spec = replace(case.run_spec, run_id=authority_run_id(target))
+    request = replace(case.request, run_spec_sha256=run_spec.sha256)
+    decision = replace(
+        case.decision, run_id=run_spec.run_id, subject_sha256=run_spec.sha256
+    )
+    admitted = admit_v3(
+        case,
+        run_spec=run_spec,
+        request=request,
+        decision=decision,
+        decision_is_recorded=lambda candidate: candidate == decision,
+    )
+    receipt = synthetic_build_receipt(admitted, b"synthetic verified final APK")
+    completed_build = ref(
+        "replay-patched-apk-receipt-v1",
+        canonical_json(receipt).encode("utf-8"),
+        receipt.operation_key,
+        receipt.receipt_input_hashes,
+    )
+    return admitted, completed_build, receipt
 
 
 class RealReplayHarnessFastTests(unittest.TestCase):
@@ -86,15 +135,101 @@ class RealReplayHarnessFastTests(unittest.TestCase):
                 else:
                     self.assertEqual(profile.frameworks, ())
 
+    def test_verification_gate_ids_are_derived_from_the_harness_run_id(self) -> None:
+        """The harness must *derive* its gate ids, not restate them.
+
+        Both halves matter.  Comparing the harness's request against
+        `derive_verification_request` catches a harness that goes back to
+        writing its own ids; pinning the concrete strings catches a change to
+        the derivation itself or to the run id it is derived from.  Neither
+        half alone would.
+        """
+
+        for target in (340, 430):
+            with self.subTest(target=target):
+                admitted, completed_build, receipt = harness_run_authority(target)
+                run_id = admitted.run_spec.run_id
+                self.assertEqual(run_id, authority_run_id(target))
+                request, decision = _verification_request_and_decision(
+                    TARGETS[target], admitted, completed_build, receipt
+                )
+                derived = derive_verification_request(
+                    admitted, completed_build, receipt
+                )
+                self.assertEqual(request, derived)
+                self.assertEqual(request.sha256, derived.sha256)
+                self.assertEqual(
+                    (
+                        request.grant_id,
+                        request.gate_id,
+                        request.executor_capability.capability_id,
+                    ),
+                    (
+                        derived_identifier(run_id, GRANT_ID_SUFFIX, "grant id"),
+                        derived_identifier(run_id, GATE_ID_SUFFIX, "gate id"),
+                        derived_identifier(run_id, CAPABILITY_ID_SUFFIX, "capability id"),
+                    ),
+                )
+                self.assertEqual(
+                    (
+                        request.grant_id,
+                        request.gate_id,
+                        request.executor_capability.capability_id,
+                    ),
+                    (
+                        f"real-replay-{target}-run-final-verification-grant",
+                        f"real-replay-{target}-run-final-verification-gate",
+                        f"real-replay-{target}-run-final-verification-decode",
+                    ),
+                )
+                self.assertEqual(decision.run_id, run_id)
+                self.assertEqual(decision.gate_id, request.gate_id)
+                self.assertEqual(
+                    (
+                        decision.subject_sha256,
+                        decision.admission_sha256,
+                        decision.prepared_sha256,
+                    ),
+                    (request.sha256, request.sha256, request.sha256),
+                )
+
+    def test_run_spec_takes_its_run_id_from_the_derivation_seed(self) -> None:
+        """`authority_run_id` is the only place the harness names the run.
+
+        The pins above are only meaningful if the run spec the real harness
+        builds uses this same function; `_create_authority` cannot be called
+        here without apktool and the stock APKs, so its source is read instead.
+        """
+
+        source = inspect.getsource(harness._create_authority)
+        self.assertIn("authority_run_id(target)", source)
+        self.assertNotIn('-run"', source)
+
     def test_final_decode_capability_is_exact_for_both_targets(self) -> None:
         for target in (340, 430):
             with self.subTest(target=target):
-                capability = final_decode_capability(JAVA_SHA256, target)
+                admitted, completed_build, receipt = harness_run_authority(target)
+                request, _ = _verification_request_and_decision(
+                    TARGETS[target], admitted, completed_build, receipt
+                )
+                capability = request.executor_capability
                 self.assertEqual(
                     capability.capability_id,
-                    f"real-replay-{target}-final-apk-decode-java",
+                    f"real-replay-{target}-run-final-verification-decode",
                 )
-                self.assertEqual(capability.executable_sha256, JAVA_SHA256)
+                self.assertEqual(
+                    capability.executable_sha256,
+                    admitted.capability("decode").executable_sha256,
+                )
+                _, capabilities = build_profile(TARGETS[target])
+                decode = {
+                    candidate.capability_id: candidate for candidate in capabilities
+                }[f"real-replay-{target}-apktool-decode-java"]
+                # The verification capability inherits the admitted decode
+                # executable, and the real run configures exactly one executor
+                # path, keyed by JAVA_SHA256.  If that link broke the run could
+                # not launch its own verification decode.
+                self.assertEqual(decode.executable_sha256, JAVA_SHA256)
                 self.assertEqual(
                     capability.argv_template,
                     (
