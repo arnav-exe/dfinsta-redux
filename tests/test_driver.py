@@ -2588,7 +2588,22 @@ class DiscoveryBudgetTests(DiscoveryCase):
 
 
 class CostRecordingTests(DiscoveryCase):
-    """Stage 10: what was spent is spent whether or not the port resolved."""
+    """Stage 10: what was spent is spent whether or not the port resolved.
+
+    Including when the run *raised*. What a port cost is settled at resolve time
+    and does not depend on anything downstream succeeding: two real Instagram 440
+    runs resolved all seven hooks mechanically for zero agent invocations and
+    recorded nothing at all, because the build failed afterwards on an
+    apktool/aapt1 manifest incompatibility that has nothing to do with cost. A
+    metric that only records successful ports cannot show a port getting cheaper
+    while it is still getting harder to build.
+
+    The receipt is deliberately narrow, and each half is pinned separately below:
+    the error still leaves `port` (it is a receipt, not a rescue), a run with no
+    version label still records nothing, and a failure that happened before a
+    resolution report existed records nothing either — there is no cost to file
+    when nothing was resolved.
+    """
 
     def recorder(self) -> list[tuple]:
         calls: list[tuple] = []
@@ -2596,6 +2611,22 @@ class CostRecordingTests(DiscoveryCase):
         self.addCleanup(setattr, driver, "record_run", original)
         driver.record_run = lambda *args, **kwargs: calls.append((args, kwargs))
         return calls
+
+    def fail_the_build(self, code: int = 1) -> None:
+        """Make the builder subprocess fail, at the seam `setUp` already stubs.
+
+        The 440 failure was apktool exiting non-zero, so this raises exactly what
+        the real `run_command` raises for that — a `DriverError` carrying no
+        report, because `run_command` has never seen one. Attaching the report is
+        the build stage's job, which is the thing under test.
+        """
+
+        def failing(command: Sequence[Any], label: str) -> None:
+            self._record_command(command, label)
+            if label == "build":
+                raise DriverError(f"{label} failed with exit code {code}")
+
+        driver.run_command = failing
 
     def test_record_run_is_called_once_with_the_callers_timestamp(self):
         """Nothing in that layer reads a clock, so a replay rewrites the same line."""
@@ -2695,6 +2726,169 @@ class CostRecordingTests(DiscoveryCase):
         self.assertEqual(
             paths.decision_memory, driver.REPOSITORY / "manifest" / "decisions.jsonl"
         )
+
+    # ------------------------------------------------- the failed-run receipt
+
+    def test_a_driver_error_carries_no_report_unless_one_is_given(self):
+        """The attribute is always there and is `None` until a stage attaches one.
+
+        Every `raise DriverError(...)` in the module predates the report and none
+        of them were touched, so `error.report` has to be safe to read on all of
+        them — `port` reads it on the way out of any failure at all.
+        """
+        plain = DriverError("x")
+        self.assertIsNone(plain.report)
+        self.assertEqual(plain.args, ("x",))
+
+        report = {"resolutions": []}
+        carried = DriverError("x", report=report)
+        self.assertIs(carried.report, report)
+        # The message is untouched: the build stage re-raises as
+        # `DriverError(*error.args, report=report)`, and a report that landed in
+        # `args` would rewrite what the CLI prints as the reason the run failed.
+        self.assertEqual(carried.args, ("x",))
+        self.assertEqual(str(carried), "x")
+        # Keyword-only, so a second positional argument is a second message and
+        # never a silently accepted report.
+        self.assertIsNone(DriverError("x", report).report)
+
+    def test_a_failing_build_carries_the_resolution_report_out_of_the_stages(self):
+        """The build stage attaches what resolve produced; `run_command` cannot.
+
+        This is the whole mechanism: the cost is known at stage 3 and the failure
+        happens at stage 6, so unless the report rides out on the exception there
+        is nothing left to record by the time anyone can catch it.
+        """
+        self.fail_the_build()
+        fixture = self.three_dex_fixture()
+        with self.assertRaises(DriverError) as caught:
+            # No version, so `port` cannot have touched this error on its way
+            # out: it is the object `_run_stages` raised.
+            self.run_port(fixture, [CONTEXT_HOOK, ACTION_BAR_HOOK])
+        self.assertIn("build failed with exit code 1", str(caught.exception))
+        self.assertIn("build", [label for label, _ in self.commands])
+
+        report = caught.exception.report
+        self.assertIsNotNone(report, "the resolution report did not survive the failure")
+        self.assertEqual(
+            [item.hook_id for item in report.resolutions],
+            [CONTEXT_HOOK.hook_id, ACTION_BAR_HOOK.hook_id],
+        )
+
+    def test_a_failed_build_records_what_the_port_cost_and_still_raises(self):
+        """Both halves, in one test, because either alone is the wrong behaviour.
+
+        Recorded and swallowed is a pipeline that reports a broken build as a
+        finished port. Raised and unrecorded is the 440 state this exists to end.
+        It is a receipt, not a rescue.
+        """
+        self.fail_the_build()
+        fixture = self.three_dex_fixture()
+        ledger = self.base / "agent_cost.jsonl"
+
+        with self.assertRaises(DriverError) as caught:
+            self.run_port(
+                fixture,
+                [CONTEXT_HOOK, ACTION_BAR_HOOK],
+                version="440",
+                recorded_at=STAMP,
+            )
+        self.assertIn("build failed with exit code 1", str(caught.exception))
+
+        self.assertTrue(ledger.exists(), "the run cost what it cost and filed nothing")
+        records = [
+            json.loads(line)["record"] for line in ledger.read_text().splitlines() if line
+        ]
+        self.assertEqual({record["version"] for record in records}, {"440"})
+        self.assertEqual(
+            {record["hook_id"] for record in records},
+            {CONTEXT_HOOK.hook_id, ACTION_BAR_HOOK.hook_id},
+        )
+        for record in records:
+            self.assertEqual(record["recorded_at"], STAMP)
+            self.assertIs(record["needed_agent"], False)
+        self.assertTrue((self.base / "decisions.jsonl").exists())
+        self.assertIn("recorded what this failed run cost", self.printed)
+
+    def test_a_failed_build_with_no_version_records_nothing_and_still_raises(self):
+        """Half a key files a record nothing can retrieve, failed run or not.
+
+        Both stage-10 stores are keyed by (hook, version), so an unlabelled run
+        is the one case where recording is worse than not recording — and the
+        failure is still reported either way.
+        """
+        self.fail_the_build()
+        fixture = self.three_dex_fixture()
+        with self.assertRaises(DriverError) as caught:
+            self.run_port(fixture, [CONTEXT_HOOK, ACTION_BAR_HOOK])
+        self.assertIn("build failed with exit code 1", str(caught.exception))
+        self.assertFalse((self.base / "agent_cost.jsonl").exists())
+        self.assertFalse((self.base / "decisions.jsonl").exists())
+        self.assertNotIn("[cost]", self.printed)
+
+    def test_a_completed_run_and_a_failed_one_each_record_exactly_once(self):
+        """The receipt is an extra call site, so the success path must not change.
+
+        A second write per port would double every count the ledger reports, and
+        the trend it exists to show — agent invocations per port — is a count.
+        """
+        calls = self.recorder()
+        fixture = self.three_dex_fixture()
+        hooks = [CONTEXT_HOOK, ACTION_BAR_HOOK]
+
+        result = self.run_port(
+            fixture, hooks, version="440", recorded_at=STAMP, out="built"
+        )
+        self.assertIs(result.ok, True, result.stopped_because)
+        self.assertEqual(result.stage_reached, "build")
+        self.assertEqual(len(calls), 1, "the completed run recorded more than once")
+
+        self.fail_the_build()
+        with self.assertRaises(DriverError):
+            self.run_port(
+                fixture, hooks, version="440", recorded_at=STAMP, out="failed"
+            )
+        self.assertEqual(
+            len(calls), 2, "the failed run recorded twice, or did not record at all"
+        )
+
+    def test_a_failure_before_the_report_exists_records_nothing(self):
+        """The receipt covers only stages that got as far as resolving.
+
+        A run that stopped at extract resolved nothing, so there is no cost to
+        file — and `record_run` would be handed a report that does not exist.
+        Recording here would file a port that never happened under a version
+        label, which is the trend reading its own noise.
+        """
+        paths = RunPaths(
+            self.base / "early",
+            memory_path=self.base / "decisions.jsonl",
+            ledger_path=self.base / "agent_cost.jsonl",
+        )
+        # Nothing is reused, so stage 1 extracts — into a directory that is
+        # already there, which it refuses rather than overwrite.
+        paths.analysis_decode.mkdir(parents=True)
+
+        stream = io.StringIO()
+        with self.assertRaises(DriverError) as caught:
+            with contextlib.redirect_stdout(stream):
+                port(
+                    apk=self.base / "stock.apk",
+                    paths=paths,
+                    hooks=[CONTEXT_HOOK],
+                    apktool=self.base / "apktool_2.9.3.jar",
+                    framework_apk=self.base / "framework-res.apk",
+                    custom_code=self.custom_code,
+                    version="440",
+                    recorded_at=STAMP,
+                )
+        self.assertIn("refusing to overwrite", str(caught.exception))
+        self.assertIsNone(caught.exception.report)
+        self.assertFalse((self.base / "agent_cost.jsonl").exists())
+        self.assertFalse((self.base / "decisions.jsonl").exists())
+        self.assertNotIn("[cost]", stream.getvalue())
+        # And it refused before shelling out to anything.
+        self.assertEqual(self.commands, [])
 
 
 class DiscoveryCliTests(DiscoveryCase):

@@ -105,7 +105,20 @@ NEEDS_VERSION = (
 
 
 class DriverError(RuntimeError):
-    """Raised when a stage cannot produce what the next one needs."""
+    """Raised when a stage cannot produce what the next one needs.
+
+    ``report`` carries the resolution report when one had already been produced
+    before the failure. What a port COST is settled at resolve time and does not
+    depend on anything downstream succeeding: two Instagram 440 runs resolved all
+    seven hooks mechanically, spent zero agent invocations, and recorded nothing
+    at all, because the build failed afterwards for reasons that had nothing to
+    do with cost. A metric that only records successful ports cannot show a port
+    getting cheaper while it is still getting harder to build.
+    """
+
+    def __init__(self, *args: object, report: Mapping[str, Any] | None = None):
+        super().__init__(*args)
+        self.report = report
 
 
 # --------------------------------------------------------------- dex topology
@@ -526,20 +539,46 @@ def port(
             "--version needs --recorded-at. A cost record stamped with nothing is one "
             "no trend can order, and this layer must never read the clock for itself."
         )
-    result = _run_stages(
-        apk=apk,
-        paths=paths,
-        hooks=hooks,
-        apktool=apktool,
-        framework_apk=framework_apk,
-        custom_code=custom_code,
-        proposals=proposals,
-        full_proposals=full_proposals,
-        refutations=refutations,
-        stop_after=stop_after,
-        require_evidence=require_evidence,
-        discovery=discovery,
-    )
+    try:
+        result = _run_stages(
+            apk=apk,
+            paths=paths,
+            hooks=hooks,
+            apktool=apktool,
+            framework_apk=framework_apk,
+            custom_code=custom_code,
+            proposals=proposals,
+            full_proposals=full_proposals,
+            refutations=refutations,
+            stop_after=stop_after,
+            require_evidence=require_evidence,
+            discovery=discovery,
+        )
+    except DriverError as error:
+        # A stage that threw still spent whatever it spent. Recording happens
+        # before the error goes on its way, and the error still goes on its way:
+        # this is not a rescue, it is a receipt.
+        if error.report is not None and version.strip():
+            try:
+                record_run(
+                    error.report,
+                    version,
+                    recorded_at,
+                    memory_path=paths.decision_memory,
+                    ledger_path=paths.cost_ledger,
+                )
+            except Exception as cost_error:  # noqa: BLE001 - the original must win
+                # The receipt must never replace the reason. If writing the cost
+                # record throws, its traceback would surface instead of "build
+                # failed with exit code 1" and the run would report the wrong
+                # problem — a bookkeeping failure masquerading as a port failure.
+                print(f"[cost] could not record what this run cost: {cost_error}", flush=True)
+            else:
+                print(
+                    f"[cost] recorded what this failed run cost to {paths.cost_ledger}",
+                    flush=True,
+                )
+        raise
     # Stage 10, once per run and at the end of it, whatever the run concluded.
     # What a port *learned* is only written when something resolved; what it
     # *spent* is spent either way, and a blocked port that recorded nothing is
@@ -797,33 +836,39 @@ def _run_stages(
     artifacts["host_hooks"] = str(paths.host_hooks)
     print(f"[build] custom tree {custom_tree}, grafting {', '.join(replace_dex)}", flush=True)
     if framework_apk is None:
-        raise DriverError("--framework-apk is required to build")
-    run_command(
-        [
-            sys.executable,
-            BUILDER,
-            paths.build_decode,
-            apk,
-            paths.patch_source,
-            apktool,
-            framework_apk,
-            "--framework-path",
-            paths.framework_path,
-            "--work-tree",
-            paths.work_tree,
-            "--output-apk",
-            paths.output_apk,
-            "--custom-tree",
-            custom_tree,
-            "--replace-dex",
-            ",".join(replace_dex),
-            "--verifier",
-            "generic",
-            "--host-hooks",
-            paths.host_hooks,
-        ],
-        "build",
-    )
+        raise DriverError("--framework-apk is required to build", report=report)
+    # `report` rides along on any failure from here down, so a port that resolved
+    # cheaply and then failed to assemble still records what it cost. See
+    # `DriverError`.
+    try:
+        run_command(
+            [
+                sys.executable,
+                BUILDER,
+                paths.build_decode,
+                apk,
+                paths.patch_source,
+                apktool,
+                framework_apk,
+                "--framework-path",
+                paths.framework_path,
+                "--work-tree",
+                paths.work_tree,
+                "--output-apk",
+                paths.output_apk,
+                "--custom-tree",
+                custom_tree,
+                "--replace-dex",
+                ",".join(replace_dex),
+                "--verifier",
+                "generic",
+                "--host-hooks",
+                paths.host_hooks,
+            ],
+            "build",
+        )
+    except DriverError as error:
+        raise DriverError(*error.args, report=report) from error
     artifacts["apk"] = str(paths.output_apk)
     outstanding = ledger.report("post_build")["escalations"]
     if outstanding:
