@@ -156,10 +156,45 @@ reaches the `ArtifactRef` through `require_completed_operation`, so nothing is b
 read-only, and the same subject out** — is the property the whole gate rests on, and it is the
 first time `feature_gate.py` has been reachable from anything but its own tests.
 
-**Still open, and it is not small**: `submission.py` cannot yet *answer* this gate.
-`submit_answer` sends a bare `GateDecision` while the payload carries a dispositions
-`ArtifactRef`, and `Answer`/`DerivedSubject` have nowhere to put per-candidate rulings. A gate
-that derives but cannot be answered is the `phase-a-approval` trap wearing a different hat.
+## …and it can now be answered
+
+[`docs/ANSWERING_THE_FEATURE_GATE.md`](ANSWERING_THE_FEATURE_GATE.md) is the design note;
+`FEATURE_ASSESSMENT_GATE` is registered, the second kind this client has ever carried. It
+joined **only once its subject became reachable from a run id** — registering it before
+`recorded_assessments_v1` existed would have been the `phase-a-approval` mistake with a new
+name.
+
+The human supplies ten values for a 4-candidate gate: a verdict, a rationale, and four
+`(verdict, rationale)` pairs in a `--rulings` file. The candidate ids, **their order**, the
+assessment digest, the policy revision and every hash are derived and not typeable.
+
+`DerivedSubject` did **not** change — the earlier note overstated that. What changed:
+
+- **`Answer.detail`**, with the rule that a kind which does not understand a detail must
+  *refuse* it. Dropping it would submit a bare verdict while the human believes they ruled on
+  something specific, and the receipt would say `accepted`.
+- **`GateKind.payload`**, defaulting to the decision itself, so the replay gate is untouched.
+- **The journal now records `payload_sha256`** — the gap the earlier note missed entirely, and
+  the only one that can *silently substitute a human's rulings*: a `GateDecision` says nothing
+  about what rode with it, so a resubmission would pair the recorded decision with a freshly
+  built payload. An entry with no payload writes **no key at all**, so pre-change journals stay
+  byte-identical and an upgrade cannot strand someone mid-answer.
+- **The Temporal update id now covers the payload.** It was a digest of the decision alone, so
+  two different dispositions documents under one decision shared an id: Temporal returns the
+  first receipt, the second document is dropped, and the client prints `accepted True`.
+
+**The safety property, stated once**: `_feature_rulings` iterates the **derived candidates and
+looks each one up in the human's file**, never the reverse. A file that renames, drops or
+invents a candidate is refused *by name* before anything is signed, and the emission order is
+the request's, so the digest cannot depend on how someone ordered their editor. This matters
+because `validate_submission` never re-reads the assessment blob — the derivation is
+load-bearing precisely because the validator is not. The client also runs that validator over
+its own submission before sending: if it cannot admit its own answer it refuses here, rather
+than failing at a worker where the human cannot see why.
+
+**Proven against the real 440 gate**, no Temporal server: subject `fc575a36…`, payload
+`FeatureGateSubmissionV1`, dispositions `cas://sha256/781fa762…` at 674 bytes, validator
+clean, and unknown-candidate / missing-ruling / malformed-detail each refused by name.
 
 ## The differential vs N−1 now has a producer
 
