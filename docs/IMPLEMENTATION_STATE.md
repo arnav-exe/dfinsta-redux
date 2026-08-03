@@ -532,16 +532,31 @@ plus the release path.
    "reels_tab"]` and `install_settings_long_click` **passed** — reproducing by command what had
    only been done by hand with tap coordinates.
 
-3. **Give the feature gate a producer.** `feature_gate.py` and `assessment.py` are each
-   imported by nothing but their own tests. Stage 4a computes an assessment in the **driver**
-   world while the gate expects it in CAS as a completed **ledger** operation in the Temporal
-   world, and nothing joins them. The missing link is an Activity that records a stage 4a
-   assessment as a ledger operation — a design question about where the standalone driver and
-   the durable pipeline meet, not a wiring task. Then the gate's Activities and Workflow, per
-   `docs/STAGE_4_DESIGN.md`: a preparation Activity returning only the request hash, a new
-   `@workflow.defn` class (never new fields on `WorkflowStatus`/`RunResult`), and an admitting
-   Activity that re-derives independently. The submission client already has the seam — a
-   `GateKind` whose resolver reproduces `FeatureGateRequestV1`.
+3. **Give the feature gate a producer.** Design note:
+   [`docs/STAGE_4_PRODUCER_DESIGN.md`](STAGE_4_PRODUCER_DESIGN.md), written 2026-08-03 against
+   the real tree with every claim measured. **It corrects the framing this file used to
+   carry.** "Stage 4a computes an assessment in the driver world" was generous: *nothing*
+   computes one. `driver.py` never imports `assessment` — the only importer in the tree is
+   `tests/test_assessment.py` — and the `assessments`, `assess()` and `Assessment` that do
+   appear in the driver are the **proposal** ones from `.proposals`, so grepping the driver for
+   stage 4a finds four hits and none of them is stage 4a.
+
+   Nor is the obstacle authority: the driver *could* write the ledger, and nothing checks for a
+   Temporal context. The real obstacles are that the driver has no run identity and no state
+   root, and that a second unsupervised writer gets the `owner_token` ceremony without the
+   attempt-adoption property it exists for.
+
+   The recommendation is a small admission program that admits the API surface into CAS,
+   **recomputes** the assessment from it, and records it as a ledger operation — because
+   recomputation here is free and deterministic (**measured**: 0.00 s, byte-identical across
+   hash seeds and across 430/439/440), and adopting bytes when recomputation is free spends the
+   one thing that separates this gate from a rubber stamp.
+
+   Two traps the note pins down. **The gate is not answerable by `submission.py` today even if
+   everything else lands**: `submit_answer` sends a bare `GateDecision` while this gate's payload
+   carries a dispositions `ArtifactRef`, and `Answer`/`DerivedSubject` have nowhere to put
+   per-candidate rulings. And **`validate_submission` never reads the assessment blob**, so the
+   derivation is load-bearing precisely because the validator is not.
 
 4. **Make the generaliser's proposals reach the manifest.** The count fell 2 → 0 because a
    human read what the 439 agents cited and wrote `by_anchor`. Stage 10 proposes and a human

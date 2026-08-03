@@ -320,16 +320,21 @@ stopping at the first stage that cannot produce what the next needs.
 
 ## Immediate next three
 
-1. **Give the feature gate a producer.** `feature_gate.py` and `assessment.py` are each
-   imported by nothing but their own tests. Stage 4a computes an assessment in the *driver*
-   world; the gate expects it in CAS as a completed ledger operation in the *Temporal*
-   world, and nothing joins the two. The missing link is an Activity that records a stage 4a
-   assessment as a ledger operation — a design question about where the driver and the
-   durable pipeline meet, not a wiring task. Until it exists, "the gate's Activities and
-   Workflow" has nothing to gate on.
-2. **Device-validate the 440 build**, which is what turns the differential from a module
-   into a measurement: 439's runtime evidence exists, 440's does not, and the pair is the
-   first real N−1 comparison this project has ever been able to take.
+1. **Give the feature gate a producer**, per
+   [`docs/STAGE_4_PRODUCER_DESIGN.md`](STAGE_4_PRODUCER_DESIGN.md). The framing this list
+   used to carry was wrong: stage 4a does not compute an assessment "in the driver world"
+   — **nothing** computes one, `driver.py` never imports `assessment`, and the `assess()`
+   in the driver is the proposal one. Nor is authority the obstacle; the driver could write
+   the ledger. What it lacks is a run identity and a state root. Recommendation: a small
+   admission program that admits the API surface into CAS and **recomputes** the assessment
+   rather than adopting it — measured at 0.00 s and byte-identical across 430/439/440, so
+   recomputation costs nothing and is the only thing separating this gate from a rubber
+   stamp. Note the gate is **not answerable by `submission.py` today** whatever else lands:
+   `submit_answer` sends a bare `GateDecision`, and `Answer`/`DerivedSubject` cannot express
+   per-candidate rulings.
+2. **Make the generaliser's proposals reach the manifest.** The agent count fell 2 → 0
+   because a human read what 439's agents cited and wrote `by_anchor`. Stage 10 proposes and a
+   human commits — the right default — but the step between is undocumented and unexercised.
 3. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference — now an escalation path rather than the normal one, since 440 resolved all
    seven hooks with no proposals at all.
