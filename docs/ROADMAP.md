@@ -297,6 +297,13 @@ stopping at the first stage that cannot produce what the next needs.
 - [x] Target-neutral static verifier (`tools/verify/verify_build.py`); `build.py` selects it
       with `--verifier generic --host-hooks`. The 430-specific verifier is retained, not
       loosened — they pin different things and neither is weaker.
+- [x] **The release gate accepts the driver's own output.** It could not before: `finalize.py`
+      passes signature flags only the 430-shaped verifier took, so there was no target-neutral
+      post-signing check and 440 was signed by hand. The generic verifier now carries the
+      identity envelope, the signature check (`passed` requires verified **and** the expected
+      certificate), and an `expect_signed` mode — because the graft strips signatures and the
+      post-signing run must instead *require* them. On the real 440 build the gate produces an
+      APK byte-identical to the hand-signed one.
 - [x] The run correctly reports that the APK is **not release-ready** because post-build
       evidence is absent. That message is the point of the whole exercise.
 - [x] Same run with the two settings hooks — both now resolve mechanically and the

@@ -472,15 +472,27 @@ Reordered 2026-08-03 after 440 ported itself for zero agent invocations. Steps 1
 previous list are done; what is left is the two halves of the pipeline that still do not meet,
 plus the release path.
 
-1. **The release gate cannot consume the driver's own output.** `tools/release/finalize.py`
-   invokes its `--final-verifier` with `--apktool-jar --apksigner --require-signature
-   --expected-certificate-sha256`, which only `tools/port_430/verify_apk.py` accepts — and
-   that verifier is 430-shaped. `tools/verify/verify_build.py` is target-neutral but checks no
-   signature at all, so there is **no target-neutral post-signing verification**. The 440 build
-   was therefore aligned, signed and certificate-checked by hand (the same assertions, made
-   explicitly). Closing this is what makes "one command, stock APK in, signed release out"
-   true rather than nearly true. Its identity envelope is already done — `schema_version`,
-   `apk_sha256`, `stock_apk_sha256`, `verifier_sha256` — so what remains is the signature half.
+1. ~~The release gate cannot consume the driver's own output.~~ **Done, and it runs end to
+   end.** `finalize.py` invokes its `--final-verifier` with `--apktool-jar --apksigner
+   --require-signature --expected-certificate-sha256`; only the 430-shaped `verify_apk.py`
+   accepted those, so there was **no target-neutral post-signing verification** and the 440
+   build was aligned, signed and certificate-checked by hand. `verify_build.py` now takes all
+   four, carries its own `signature_context` (a deliberate second implementation — the two
+   verifiers are meant to be independent and are invoked as bare scripts), and ANDs `passed`
+   with `verified and approved_signer`. *Verified but unexpected* is the dangerous case: a
+   correctly signed APK signed by the wrong key.
+
+   The catch that made it fail twice before it worked: the graft strips every signature
+   artifact, so an **unsigned** build must carry none — but the release gate runs the same
+   verifier **after** apksigner has written `META-INF/*.SF` and `*.RSA`, where those entries
+   are the point. `verify(..., expect_signed=...)`, inferred from `--apksigner` being present,
+   flips exactly two assertions: signature entries stop counting as `added_entries`, and
+   `passed` requires at least one instead of requiring none. Everything else added is still
+   rejected, so the relaxation is scoped to the files apksigner is known to write.
+
+   `finalize.py` on the real 440 build now produces `work/440-clean/dfinsta_440_release.apk`,
+   SHA-256 `c9e063e5…` — **byte-identical to the APK signed by hand earlier**, which is the
+   cross-check that the gate does what the manual sequence did.
 
 2. ~~Nothing turns device measurements into ledger claims.~~ **Done**:
    `src/dfinsta_pipeline/record_runtime.py`, three modes matching the three probe shapes —
