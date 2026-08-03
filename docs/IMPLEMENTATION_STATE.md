@@ -234,6 +234,76 @@ a **candidate** verdict is `block / offer_toggle / ignore / defer` while the **g
 `approve / reject / defer`, and both appear on the same command line — so reaching for the
 wrong one is the ordinary mistake, and it is refused naming the candidate and both lists.
 
+## Something raises the gate now, and stage 4 runs end to end
+
+`src/dfinsta_pipeline/feature_workflow.py`. Driven against the real recorded 440 assessment
+through a time-skipping Temporal environment, no hand-holding:
+
+    gate raised          port-440-feature-assessment-gate
+    published subject    9f9dc0eb0076acae087f8b1b95a9e197098736b54ca604622b719b536d24560a
+    client re-derived    9f9dc0eb…   MATCH
+    dispositions         cas://sha256/a4d3c6f2…  (691 bytes)
+    workflow state       completed
+    admitted == signed   True
+
+A separate `@workflow.defn` rather than a branch of `PortRunWorkflow`, because extending an
+existing definition inserts commands into a stream saved Histories already recorded.
+
+**The design point that shaped it: the validator is a filter, the Activity is the authority.**
+An update validator runs in the sandbox — no ledger, no content store — so it can check that
+the decision binds this gate, the actor is allowed, the timestamps sit in the window, nothing
+was submitted twice, and the reference is a *dispositions* reference rather than the
+assessment's own. It **cannot** read the document the rulings live in.
+`admit_feature_dispositions_activity` therefore re-derives the request from the ledger rather
+than taking the Workflow's copy, fetches the document by the reference the human signed (which
+re-verifies digest and size on read), and runs `validate_submission` over the three together.
+A submission can pass the validator and still be refused there, non-retryably — that is the
+design, not a gap.
+
+## Operational hardening: what closed without a live Temporal run
+
+A measured pass over the four deferred follow-ups reversed the plan. See
+`docs/WORKFLOW_REGISTRATION_DESIGN.md` §3b-corrected for the full list.
+
+**The roadmap had the road backwards.** A worker *kill* delivers no cancellation, leaves the
+claim `pending`, and is recoverable — the run is **wedged, not burned**. A worker *stop* that
+exhausts `graceful_shutdown_timeout` is the destructive one. Until cancellation is
+non-destructive, **killing is the safe way to stop a worker mid-stage**, the inverse of the
+rule `worker.py` carried. No incident sits behind the old wording; it traces to prospective
+reasoning, and the plan doc still says hard worker loss "remains unproven".
+
+**The destructive path is closed for one constant.** A replay stage can act on a cancellation
+only through a heartbeat response or a local `WORKER_SHUTDOWN` — and none of them heartbeat —
+so the window now sits above the longest stage budget (300 → 10,800 s). Pinned by a test that
+*derives* that budget: the old `> 0` assertion passed happily at 300 seconds against a
+10,800-second stage.
+
+**Nothing could release a wedged claim** until `src/dfinsta_pipeline/claims.py`. Recovery
+meant hand-written SQL against an append-only ledger under pressure. It reads through a
+`mode=ro` ledger, prints the owner token, requires it typed back exactly, and refuses a
+quarantined row.
+
+**F2's cheap half**: public seams in `activities.py` replace the private coupling, with one
+additive hunk and every proven body byte-identical. It surfaced a subtlety worth keeping — an
+alias is the same object but **not the same binding**, so a test monkeypatching the private
+name silently stopped patching anything and failed loudly.
+
+**F1a**: the real-replay harness now *derives* its verification-gate ids through `replay_gate`
+instead of restating them, so harness and Workflow cannot drift. The grant and gate ids had
+been restated inline and pinned by nothing at all.
+
+**Still open, and genuinely needing the real 340/430 run**: non-destructive cancellation
+*within* the window (it rewrites a reviewed invariant), heartbeats, and the F2 extraction. One
+ordering constraint is now load-bearing: **heartbeats must come last**, because heartbeating is
+what opens the channel for server-originated cancellation — a workflow cancel, a timeout, or a
+transient network failure while recording one — and every one lands in the handler that
+quarantines.
+
+**A terminal case outside all four**: once the verification grant is admitted, its five
+`UNIQUE` columns plus the gate validator's timestamp window make that gate unrepeatable, so a
+crash between admission and verify leaves a run that cannot be re-driven at all. Reached by
+normal progress rather than by an accident.
+
 ## The differential vs N−1 now has a producer
 
 `src/dfinsta_pipeline/differential.py`, and

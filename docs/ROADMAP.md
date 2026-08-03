@@ -358,12 +358,15 @@ Reordered 2026-08-03. The two items that stood here are done.
       exactly the two `by_anchor` entries a human wrote, and refused `tigon_url_block`, whose
       anchor selects 7 classes on 439 and 5 on 430.
 
-1. **Raise the feature gate.** Everything around it exists — the assessment is recorded, the
-   subject re-derives, a human can answer with a ruling per candidate — and **nothing raises
-   it**. That is the gate's own `@workflow.defn`, per
-   `docs/WORKFLOW_REGISTRATION_DESIGN.md`: never new fields on `WorkflowStatus`/`RunResult`,
-   a `status` query shaped exactly as `read_pending_gate` expects, and all three hash fields
-   bound to the request hash.
+- [x] **The feature gate is raised** (`src/dfinsta_pipeline/feature_workflow.py`), and stage 4
+      runs end to end: driven against the real recorded 440 assessment, the workflow's
+      published subject matched what the client independently re-derived, and the artifact it
+      admitted was byte-identical to the one signed.
+
+1. **The real 340/430 run through the registered Workflow.** It is now the gate on three
+   separate items — non-destructive cancellation within the graceful window, heartbeats, and
+   the F2 extraction all need the evidence it re-establishes. Everything that could be closed
+   without it has been.
 2. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
    (439 → 2, 440 → 0). A third is what tells "falling" from "fell once".
 3. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
