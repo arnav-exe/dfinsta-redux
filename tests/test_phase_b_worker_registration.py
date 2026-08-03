@@ -85,13 +85,33 @@ class WorkerRegistrationTests(unittest.TestCase):
                 "a worker with use_worker_versioning refuses an unpinned workflow",
             )
 
-    def test_worker_sets_a_non_zero_graceful_shutdown_timeout(self) -> None:
-        """Temporal defaults this to zero, which cancels Activities immediately.
+    def test_the_graceful_shutdown_window_outlasts_every_stage_budget(self) -> None:
+        """Greater than zero is not the property that matters; longer than the
+        longest stage is.
 
-        Cancellation quarantines a replay operation and quarantine is terminal,
-        so a zero default turns an ordinary worker stop into a destroyed run.
+        Cancellation quarantines a replay operation and quarantine is terminal.
+        A replay stage can only act on a cancellation delivered through a
+        heartbeat response or a local `WORKER_SHUTDOWN` after this window — and
+        no replay stage heartbeats — so a window longer than any stage means the
+        destructive cancellation cannot arrive mid-stage at all.
+
+        Derived from the budgets rather than restated, so lengthening a stage
+        cannot silently leave the window short. Deriving it is the whole test: a
+        `> 0` assertion passed happily at 300 seconds against a 10,800-second
+        stage.
         """
-        self.assertGreater(worker.DEFAULT_GRACEFUL_SHUTDOWN_SECONDS, 0)
+        from dfinsta_pipeline import activities
+
+        # The plan timeouts the real harness pins: decode 600, build 600,
+        # install_framework 300. Spelled out rather than imported, so a change
+        # to either side has to be noticed here.
+        plan_timeouts = {"install_framework": 300, "decode": 600, "build": 600}
+        longest = max(
+            plan_timeouts[activities._STAGE_BUDGET_ROLE[stage]] * multiplier
+            for stage, multiplier in activities._STAGE_BUDGET_MULTIPLIER.items()
+        )
+        self.assertEqual(longest, 10_800)
+        self.assertGreaterEqual(worker.DEFAULT_GRACEFUL_SHUTDOWN_SECONDS, longest)
         signature = inspect.signature(worker.run_worker)
         self.assertEqual(
             signature.parameters["graceful_shutdown_seconds"].default,

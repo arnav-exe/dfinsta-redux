@@ -55,17 +55,37 @@ REGISTERED_ACTIVITIES = (
 
 REGISTERED_WORKFLOWS = (PortRunWorkflow, ReplayRunWorkflow, FeatureAssessmentRunWorkflow)
 
-# Worker shutdown cancels running Activities, and every replay stage quarantines
-# its operation on cancellation. Quarantine is terminal: the key is refused
-# forever, and because operation keys derive from admitted content, recovery
+# Worker shutdown cancels running Activities, and a replay stage quarantines its
+# operation on cancellation. Quarantine is terminal: the key is refused forever,
+# and because operation keys derive from admitted content, recovery from THAT
 # needs a new run id, a new run spec and a new human gate decision.
 #
-# Temporal's default is zero, which cancels immediately. This default is not a
-# fix -- a stage can run for 40 minutes, so no shutdown timeout makes stopping
-# the worker mid-stage safe. It only prevents the most common accident, an
-# operator stopping a worker during the short ledger-only stages. The real rule
-# is operational: do not stop a worker while a replay stage is running.
-DEFAULT_GRACEFUL_SHUTDOWN_SECONDS = 300
+# Set above the longest stage budget on purpose, and this is the whole mitigation
+# rather than a partial one. A replay stage can only receive a cancellation it
+# can act on through two channels: a heartbeat response, and a local
+# `WORKER_SHUTDOWN` after this timeout. **No replay stage heartbeats**, so today
+# `WORKER_SHUTDOWN` is the only cancellation that reaches one — and a timeout
+# longer than any stage means it cannot arrive mid-stage at all. The destructive
+# path closes by construction.
+#
+# 10,800 is the verify budget: `_STAGE_BUDGET_MULTIPLIER["verify"] == 18` against
+# a 600-second decode plan. Every other stage is shorter (build 5,400; decode and
+# apply 3,600; install_framework 1,800).
+#
+# **This must be raised again before heartbeats are added.** Heartbeating is what
+# opens the channel for server-originated cancellation — a workflow cancel, a
+# timeout, or a transient network failure while recording a heartbeat — and every
+# one of those lands in the same `except asyncio.CancelledError` that
+# quarantines. Adding heartbeats before cancellation is non-destructive would
+# convert a flaky thirty seconds of network into a burned admitted run.
+#
+# THE OPERATING RULE INVERTS what this comment used to say. A worker *kill*
+# (SIGKILL) delivers no cancellation at all: it leaves the claim `pending`, which
+# `release_pending_operation` can hand to a later attempt, so the run is wedged
+# for one `start_to_close` rather than burned. A worker *stop* that reaches the
+# end of this window is the destructive one. Until cancellation is genuinely
+# non-destructive, killing is the safe way to stop a worker mid-stage.
+DEFAULT_GRACEFUL_SHUTDOWN_SECONDS = 10_800
 
 
 async def run_worker(

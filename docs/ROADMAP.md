@@ -53,8 +53,26 @@ enumerating its violations.
       Verify rebuilds semantically, never by hash equality against a stored value.
 - [ ] **Opt-in real 340/430 run through the registered Workflow** — registration is proven by unit and time-skipping tests only
 - [ ] Fold in follow-ups F1/F2 from `docs/WORKFLOW_REGISTRATION_DESIGN.md` during that run
-- [ ] Non-destructive cancellation path (today a mistimed worker stop burns an admitted run)
-- [ ] Heartbeats in the replay Activities (worker loss undetected until `start_to_close`)
+- [x] **The destructive cancellation path is closed by construction** —
+      `DEFAULT_GRACEFUL_SHUTDOWN_SECONDS` is now 10,800, above the longest stage budget, and
+      derived-and-pinned by a test rather than asserted `> 0`. A replay stage can act on a
+      cancellation only through a heartbeat response or a local `WORKER_SHUTDOWN` after that
+      window, and **no replay stage heartbeats** — so with the window longer than any stage,
+      the cancellation that quarantines cannot arrive mid-stage.
+- [x] **A wedged run can be recovered** (`src/dfinsta_pipeline/claims.py`). Nothing in the repo
+      could release a stale claim; recovery meant hand-written SQL against an append-only
+      ledger. `python -m dfinsta_pipeline.claims --state-root <dir> [<key>] [--release <owner>]`
+      reads through a `mode=ro` ledger, requires the owner token to be stated exactly, and
+      refuses a quarantined row.
+- [ ] Non-destructive cancellation *within* the window — the real fix, and it rewrites a
+      reviewed invariant (release rather than quarantine after a workspace exists). Needs the
+      real run to re-establish the five stages' evidence.
+- [ ] Heartbeats in the replay Activities (worker loss undetected until `start_to_close`).
+      **Must not land before the item above**: heartbeating is what opens the channel for
+      server-originated cancellation, so shipping it first would turn a flaky thirty seconds
+      of network into a burned run. Measured correction to the earlier design note — this does
+      **not** require editing proven Activity bodies; a heartbeater in the unproven wrapper
+      works, because every long operation inside a stage yields the event loop.
 
 ## 2. Produce — the gap
 
