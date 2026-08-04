@@ -750,7 +750,7 @@ class VerifierTests(unittest.TestCase):
         }
         self.final_entries = dict(self.stock_entries)
 
-    def verify(self) -> dict:
+    def verify(self, **kwargs) -> dict:
         return verify(
             self.dex_names,
             self.dex_content,
@@ -758,6 +758,7 @@ class VerifierTests(unittest.TestCase):
             self.stock_entries,
             self.structural_hooks,
             *payload_comparison(self.final_entries, self.stock_entries),
+            **kwargs,
         )
 
     def test_accepts_exact_dex_symbols_hooks_and_resources(self) -> None:
@@ -769,6 +770,36 @@ class VerifierTests(unittest.TestCase):
         self.dex_names = expected_dex_names()
         self.dex_content["classes20.dex"] += b" Lcom/dfinstagram/Extra;"
         self.assertFalse(self.verify()["passed"])
+
+    def test_an_extra_custom_class_fails_unless_the_caller_allows_it(self) -> None:
+        """The probe class made the old equality check unpassable.
+
+        `exact_custom_symbols` was `custom_symbols == set(REQUIRED_CUSTOM_SYMBOLS)`,
+        and a probe-instrumented build's custom DEX also carries
+        `Lcom/dfinstagram/probe;` — so the one kind of build that can attribute
+        hook execution could never pass. `verify_build.py` used a superset check
+        all along and passed, which is why nothing noticed.
+
+        The allowance is the caller's, not a second module-level list, so an
+        unexpected class still fails by default.
+        """
+        probe = "Lcom/dfinstagram/probe;"
+        self.dex_content["classes20.dex"] += f" {probe}".encode("utf-8")
+        result = self.verify()
+        self.assertEqual(result["unexpected_custom_symbols"], [probe])
+        self.assertFalse(result["passed"])
+
+        allowed = self.verify(allowed_custom_symbols=[probe])
+        self.assertEqual(allowed["unexpected_custom_symbols"], [])
+        self.assertEqual(allowed["allowed_custom_symbols"], [probe])
+        self.assertTrue(allowed["passed"])
+
+        # And the allowance is exactly what it names: a different extra class
+        # still fails while the probe is permitted.
+        self.dex_content["classes20.dex"] += b" Lcom/dfinstagram/Extra;"
+        still = self.verify(allowed_custom_symbols=[probe])
+        self.assertEqual(still["unexpected_custom_symbols"], ["Lcom/dfinstagram/Extra;"])
+        self.assertFalse(still["passed"])
 
     def test_rejects_missing_hook_activity_or_resource_change(self) -> None:
         self.structural_hooks["hook"] = False

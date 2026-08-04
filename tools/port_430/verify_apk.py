@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 
 REQUIRED_CUSTOM_SYMBOLS = [
@@ -220,6 +220,7 @@ def verify(
     structural_hooks: dict[str, bool],
     payload_names_equal: bool,
     payload_bytes_equal: bool,
+    allowed_custom_symbols: Sequence[str] = (),
 ) -> dict:
     custom_dex = dex_content.get("classes20.dex", b"")
     custom_symbols = {
@@ -247,12 +248,26 @@ def verify(
         and "resources.arsc" in stock_entries
         and final_entries["resources.arsc"] == stock_entries["resources.arsc"]
     )
-    exact_custom_symbols = custom_symbols == set(REQUIRED_CUSTOM_SYMBOLS)
+    # An unexpected `com/dfinstagram/*` class must still fail. But plain equality
+    # against `REQUIRED_CUSTOM_SYMBOLS` could not pass on a probe-instrumented
+    # build, whose custom DEX also carries `Lcom/dfinstagram/probe;` -- and
+    # instrumented builds are how hook execution is attributed, so the check was
+    # unpassable exactly when it mattered most. `verify_build.py` uses a superset
+    # check and passes, which is why nothing noticed.
+    #
+    # The allowance is a caller argument rather than a second module-level list,
+    # for `verify_build.py`'s own rule: every build-specific fact is supplied by
+    # whoever knows it. A default of `()` keeps the strict behaviour, so a caller
+    # who says nothing gets the old answer.
+    unexpected_custom_symbols = sorted(
+        custom_symbols - set(REQUIRED_CUSTOM_SYMBOLS) - set(allowed_custom_symbols)
+    )
     return {
         "dex_files": sorted(dex_names),
         "dex_count": len(dex_names),
         "exact_dex_set": exact_dex_set,
-        "exact_custom_symbols": exact_custom_symbols,
+        "allowed_custom_symbols": sorted(allowed_custom_symbols),
+        "unexpected_custom_symbols": unexpected_custom_symbols,
         "required_custom_symbols": required,
         "structural_host_hooks": structural_hooks,
         "forbidden_custom_symbols_present": forbidden,
@@ -265,7 +280,7 @@ def verify(
         "passed": all(
             [
                 exact_dex_set,
-                exact_custom_symbols,
+                not unexpected_custom_symbols,
                 all(required.values()),
                 all(structural_hooks.values()),
                 not any(forbidden.values()),
@@ -298,6 +313,15 @@ def main() -> None:
     parser.add_argument("--apktool-jar", required=True, type=Path)
     parser.add_argument("--apksigner", type=Path)
     parser.add_argument("--require-signature", action="store_true")
+    parser.add_argument(
+        "--allow-custom-symbol",
+        action="append",
+        default=[],
+        metavar="Lcom/dfinstagram/X;",
+        help="an extra com/dfinstagram class this build is expected to carry, "
+        "such as Lcom/dfinstagram/probe; on a probe-instrumented build. "
+        "Repeatable. Without it any extra custom class fails the verdict.",
+    )
     parser.add_argument("--expected-certificate-sha256")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -349,6 +373,7 @@ def main() -> None:
                 structural_hooks,
                 payload_names_equal,
                 payload_bytes_equal,
+                args.allow_custom_symbol,
             ),
         }
         signature = (
