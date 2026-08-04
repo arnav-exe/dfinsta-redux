@@ -29,6 +29,7 @@ WRITE_METHOD_NAMES = (
     "record_admitted_replay_v3",
     "record_admitted_replay_verification_grant_v1",
     "record_assessment_authority",
+    "record_admitted_dispositions",
 )
 
 # `__init__` runs the schema statements and is the one method allowed to write
@@ -279,6 +280,21 @@ class ReadOnlyLedgerWriteGuardTests(ReadOnlyLedgerFixture):
             # Deliberately a complete record: the guard must fire before the
             # field validation, so a read-only refusal cannot be mistaken for a
             # malformed argument.
+            # Complete records for both, so the read-only guard has to be what
+            # refuses rather than a missing field.
+            "record_admitted_dispositions": (
+                (
+                    {
+                        "run_id": "run-1",
+                        "decision_id": "decision-1",
+                        "dispositions_sha256": "f" * 64,
+                        "dispositions_size": 42,
+                        "assessment_sha256": "e" * 64,
+                        "policy_revision": "2026-08-01",
+                    },
+                ),
+                {},
+            ),
             "record_assessment_authority": (
                 (
                     {

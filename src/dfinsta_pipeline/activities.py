@@ -3519,4 +3519,18 @@ async def admit_feature_dispositions_activity(
             non_retryable=True,
         ) from error
     configured.ledger.record_decision(admission.submission.decision)
+    # And a run-keyed row, so the rulings can be FOUND. The Workflow returns this
+    # reference in its result, and a result is not somewhere a later caller can
+    # look it up — without this row a human's admitted rulings are authorised and
+    # then unreachable, which is the same disconnection this gate itself had.
+    configured.ledger.record_admitted_dispositions(
+        {
+            "run_id": admission.run_id,
+            "decision_id": admission.submission.decision.decision_id,
+            "dispositions_sha256": reference.sha256,
+            "dispositions_size": reference.size,
+            "assessment_sha256": document.assessment_sha256,
+            "policy_revision": document.policy_revision,
+        }
+    )
     return reference

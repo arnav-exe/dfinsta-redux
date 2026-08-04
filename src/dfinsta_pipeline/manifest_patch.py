@@ -1001,8 +1001,15 @@ class ApplyResult:
         }
 
 
-def _write_atomically(path: Path, document: str) -> None:
+def write_manifest_atomically(path: Path, document: str) -> None:
     """Temp file in the same directory, validated, then renamed over the target.
+
+    Public because it is the *only* sanctioned way to change `manifest/hooks.json`
+    and there is now more than one caller. A sibling reaching for a private name
+    is the coupling this project just spent a slice removing between
+    `replay_gate` and `activities`; a second copy of the write would be worse
+    still, because "validated before it becomes the result" would then be two
+    behaviours that have to agree.
 
     Same directory so the rename is within one filesystem and therefore atomic;
     ``fsync`` before the rename so a crash cannot leave a renamed-but-empty file;
@@ -1145,7 +1152,7 @@ def apply(
         )
 
     try:
-        _write_atomically(manifest_path, patch.document_after)
+        write_manifest_atomically(manifest_path, patch.document_after)
     except ManifestError as error:
         # The temp file is already gone and the manifest was never touched.
         return ApplyResult(
@@ -1169,7 +1176,7 @@ def apply(
         # Belt and braces. The file that landed is byte-identical to one that
         # loaded moments ago, so reaching here means something outside this
         # process moved; put the original back rather than leave a broken manifest.
-        _write_atomically(manifest_path, patch.document_before)
+        write_manifest_atomically(manifest_path, patch.document_before)
         raise PatchError(
             f"{manifest_path} did not load after the patch was written and the original "
             f"has been restored: {error}"

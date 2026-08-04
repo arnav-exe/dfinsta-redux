@@ -159,6 +159,28 @@ class Ledger:
                     allowed_actor TEXT NOT NULL,
                     recorded_json TEXT NOT NULL
                 )""",
+                # The gate's OUTPUT, keyed by run, for the same reason
+                # `recorded_assessments_v1` keys its input: the Workflow returns
+                # the admitted reference in its result, and a result is not a
+                # place a later caller can look it up. Without this row the
+                # rulings a human made are admitted and then unreachable — the
+                # same disconnection the gate itself had, one link along.
+                """CREATE TABLE IF NOT EXISTS admitted_dispositions_v1 (
+                    run_id TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                    decision_id TEXT NOT NULL UNIQUE,
+                    dispositions_sha256 TEXT NOT NULL,
+                    dispositions_size INTEGER NOT NULL,
+                    assessment_sha256 TEXT NOT NULL,
+                    policy_revision TEXT NOT NULL,
+                    admitted_json TEXT NOT NULL
+                )""",
+                """CREATE TRIGGER IF NOT EXISTS admitted_dispositions_v1_no_update
+                    BEFORE UPDATE ON admitted_dispositions_v1 BEGIN
+                    SELECT RAISE(ABORT, 'admitted dispositions v1 are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS admitted_dispositions_v1_no_delete
+                    BEFORE DELETE ON admitted_dispositions_v1 BEGIN
+                    SELECT RAISE(ABORT, 'admitted dispositions v1 are append-only'); END""",
                 """CREATE TRIGGER IF NOT EXISTS operation_events_no_update
                     BEFORE UPDATE ON operation_events BEGIN
                     SELECT RAISE(ABORT, 'operation events are append-only'); END""",
@@ -676,6 +698,72 @@ class Ledger:
                 (*values, payload),
             )
             connection.execute("COMMIT")
+
+    def record_admitted_dispositions(self, record: Mapping[str, Any]) -> None:
+        """File the run-keyed row that makes admitted rulings reachable.
+
+        Written by the admitting Activity once `validate_submission` has passed,
+        so the row exists only for rulings that were actually authorised. Keyed
+        by run and append-only, so a run cannot silently gain a second set of
+        rulings — the state in which nobody could say which the human made.
+        """
+        self._require_writable()
+        required = (
+            "run_id",
+            "decision_id",
+            "dispositions_sha256",
+            "dispositions_size",
+            "assessment_sha256",
+            "policy_revision",
+        )
+        missing = [name for name in required if record.get(name) in (None, "")]
+        if missing:
+            raise ValueError(f"Admitted dispositions are missing {', '.join(missing)}")
+        payload = canonical_json({name: record[name] for name in required})
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT admitted_json FROM admitted_dispositions_v1 WHERE run_id = ?",
+                (str(record["run_id"]),),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != payload:
+                    raise ValueError("Different dispositions are already admitted for this run")
+                connection.execute("COMMIT")
+                return
+            connection.execute(
+                "INSERT INTO admitted_dispositions_v1 (run_id, schema_version, decision_id, "
+                "dispositions_sha256, dispositions_size, assessment_sha256, policy_revision, "
+                "admitted_json) VALUES (?,1,?,?,?,?,?,?)",
+                (
+                    str(record["run_id"]),
+                    str(record["decision_id"]),
+                    str(record["dispositions_sha256"]),
+                    int(record["dispositions_size"]),
+                    str(record["assessment_sha256"]),
+                    str(record["policy_revision"]),
+                    payload,
+                ),
+            )
+            connection.execute("COMMIT")
+
+    def admitted_dispositions_for_run(self, run_id: str) -> dict[str, Any]:
+        """The admitted rulings for a run, for a caller holding only a run id.
+
+        Same role and same warning as the other two `..._for_run` accessors: it
+        returns coordinates, so the caller still fetches the document from CAS by
+        digest and size and the store's own verification is not bypassed.
+        """
+        if type(run_id) is not str:
+            raise TypeError("Dispositions run id must be a string")
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT admitted_json FROM admitted_dispositions_v1 WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("No dispositions are admitted for this run")
+        return json.loads(row[0])
 
     def recorded_assessment_for_run(self, run_id: str) -> dict[str, Any]:
         """The recorded assessment row for a run, for a caller with no prior view.
