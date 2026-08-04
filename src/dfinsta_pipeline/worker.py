@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Mapping
 from datetime import timedelta
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from .activities import (
     replay_decode_stage_activity,
     replay_install_frameworks_stage_activity,
     replay_verify_final_apk_stage_activity,
+    resolve_replay_verification_grant_activity,
 )
 from .feature_workflow import FeatureAssessmentRunWorkflow
 from .replay_workflow import ReplayRunWorkflow
@@ -46,6 +48,7 @@ REGISTERED_ACTIVITIES = (
     replay_decode_stage_activity,
     replay_apply_tree_stage_activity,
     replay_build_patched_apk_stage_activity,
+    resolve_replay_verification_grant_activity,
     prepare_replay_verification_gate_activity,
     admit_replay_verification_grant_activity,
     replay_verify_final_apk_stage_activity,
@@ -88,6 +91,30 @@ REGISTERED_WORKFLOWS = (PortRunWorkflow, ReplayRunWorkflow, FeatureAssessmentRun
 DEFAULT_GRACEFUL_SHUTDOWN_SECONDS = 10_800
 
 
+def parse_executor_path(value: str) -> tuple[str, Path]:
+    """Read one `--executor-path SHA256=PATH` argument.
+
+    The digest is the key an admitted capability names, so the mapping cannot be
+    derived: a capability pins `executable_sha256`, and only whoever deploys the
+    worker knows where a binary with that digest lives on this host. Splitting on
+    the FIRST `=` is deliberate -- a path may contain one, a SHA-256 may not.
+    """
+
+    if type(value) is not str:
+        raise argparse.ArgumentTypeError("Executor path must be a string")
+    digest, separator, path = value.partition("=")
+    if not separator or not path:
+        raise argparse.ArgumentTypeError(
+            f"Executor path must be SHA256=PATH, got {value!r}"
+        )
+    digest = digest.strip().lower()
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise argparse.ArgumentTypeError(
+            f"Executor path key must be a SHA-256, got {digest!r}"
+        )
+    return digest, Path(path)
+
+
 async def run_worker(
     endpoint: str,
     task_queue: str,
@@ -95,8 +122,24 @@ async def run_worker(
     deployment_name: str,
     build_id: str,
     graceful_shutdown_seconds: int = DEFAULT_GRACEFUL_SHUTDOWN_SECONDS,
+    source_root: Path | None = None,
+    executor_paths: Mapping[str, Path] | None = None,
+    attempts_root: Path | None = None,
 ) -> None:
-    configure_runtime(state_root)
+    # A state root alone is not enough to run a replay. `replay_apply_tree` and
+    # `replay_verify_final_apk` both refuse without a source root, and every stage
+    # that launches a subprocess resolves its executable through `executor_paths`
+    # by the digest the admitted capability pins. Neither is derivable from the
+    # state root, and neither can live in the CAS -- one is the checked-out source
+    # tree, the other must be executable at a real path. So they are deployment
+    # arguments, and a worker started without them hosts the registered Workflow
+    # and cannot run a single real stage of it.
+    configure_runtime(
+        state_root,
+        attempts_root=attempts_root,
+        source_root=source_root,
+        executor_paths=executor_paths,
+    )
     client = await Client.connect(endpoint)
     worker = Worker(
         client,
@@ -125,7 +168,34 @@ def main() -> None:
         type=int,
         default=DEFAULT_GRACEFUL_SHUTDOWN_SECONDS,
     )
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        default=None,
+        help="checked-out source tree the apply and verify stages read; without it "
+        "both stages refuse",
+    )
+    parser.add_argument(
+        "--executor-path",
+        type=parse_executor_path,
+        action="append",
+        default=[],
+        dest="executor_paths",
+        metavar="SHA256=PATH",
+        help="where a binary with this digest lives on this host; repeatable. An "
+        "admitted capability names its executable by digest and nothing else "
+        "resolves it to a path",
+    )
+    parser.add_argument("--attempts-root", type=Path, default=None)
     args = parser.parse_args()
+    # Last-one-wins on a repeated digest would silently run a different binary
+    # from the one the operator meant, and the capability check would still pass
+    # because both paths hash the same only if they are the same file.
+    seen: dict[str, Path] = {}
+    for digest, path in args.executor_paths:
+        if digest in seen and seen[digest] != path:
+            parser.error(f"--executor-path names {digest} twice with different paths")
+        seen[digest] = path
     asyncio.run(
         run_worker(
             args.endpoint,
@@ -134,6 +204,9 @@ def main() -> None:
             args.deployment_name,
             args.build_id,
             args.graceful_shutdown_seconds,
+            source_root=args.source_root,
+            executor_paths=seen,
+            attempts_root=args.attempts_root,
         )
     )
 
