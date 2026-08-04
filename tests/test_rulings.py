@@ -90,6 +90,9 @@ from dfinsta_pipeline.rulings import (
     guarded_endpoints,
     read_store,
     suppressed_candidates,
+    audit,
+    describe_audit,
+    undeclared_endpoints,
     unenforced_endpoints,
 )
 from dfinsta_pipeline.store import ContentStore
@@ -1131,6 +1134,46 @@ class EnforcementTests(RulingTestCase):
             ]
         )
         self.assertEqual(unenforced_endpoints(declared, REAL_SOURCE), (UNGUARDED_GAP,))
+
+    def test_undeclared_endpoints_reports_a_block_no_hook_records(self):
+        """The other direction, which nothing checked and which found a real defect.
+
+        `unenforced_endpoints` asks whether the code does what the manifest says.
+        This asks whether the manifest says what the code does — and until
+        `/clips/discover` was added to `tigon_url_block`, it did not. The nearest
+        declaration was `replace_reels_discover_endpoint`'s `clips/discover/`, and
+        containment fails both ways over the leading and trailing slashes, so
+        `assessment.blocked_endpoints` could not see it and stage 4a would propose
+        blocking what the app already blocks.
+
+        Both halves again: the shipped pair now agrees, and removing the entry
+        brings the report back. A clean result from a search that cannot succeed
+        is not a clean result.
+        """
+        self.require_real_source()
+        if not REAL_MANIFEST.is_file():
+            self.skipTest(f"manifest not present: {REAL_MANIFEST}")
+        self.assertEqual(undeclared_endpoints(REAL_MANIFEST, REAL_SOURCE), ())
+
+        document = json.loads(REAL_MANIFEST.read_text(encoding="utf-8"))
+        for hook in document["hooks"]:
+            if hook.get("hook_id") == "tigon_url_block":
+                hook["semantic_deps"] = [
+                    dep for dep in hook["semantic_deps"] if dep != "/clips/discover"
+                ]
+        without = self.tmp / "without-clips-discover.json"
+        without.write_text(json.dumps(document), encoding="utf-8")
+        self.assertEqual(undeclared_endpoints(without, REAL_SOURCE), ("/clips/discover",))
+
+        # And the pair, which is what an operator actually runs. Either direction
+        # alone reads as clean while the other is not.
+        self.assertEqual(audit(REAL_MANIFEST, REAL_SOURCE), ((), ()))
+        self.assertEqual(audit(without, REAL_SOURCE), ((), ("/clips/discover",)))
+        agreed = describe_audit(*audit(REAL_MANIFEST, REAL_SOURCE))
+        self.assertIn("agree in both directions", agreed)
+        reported = describe_audit(*audit(without, REAL_SOURCE))
+        self.assertIn("/clips/discover", reported)
+        self.assertIn("NOT declared in any hook", reported)
 
     def test_unenforced_endpoints_refuses_an_ambiguous_manifest_rather_than_reading_clean(self):
         """An unanswerable question must not be answered with the clean answer.

@@ -380,6 +380,53 @@ def unenforced_endpoints(
     )
 
 
+def undeclared_endpoints(
+    manifest_path: Path | str = DEFAULT_MANIFEST_PATH,
+    source_path: Path | str = DEFAULT_SOURCE_PATH,
+) -> tuple[str, ...]:
+    """Endpoints the app blocks that no hook in the manifest declares.
+
+    The other direction, and the one that was missing. :func:`unenforced_endpoints`
+    asks "does the code do what the manifest says?"; this asks "does the manifest
+    say what the code does?". A block the manifest omits is invisible to
+    `assessment.blocked_endpoints`, so stage 4a proposes a candidate the app
+    already blocks and a human is asked to rule on a decision that was taken long
+    ago.
+
+    Checked against **every** hook's deps, not just the url-block hook's, because
+    a declaration filed under a rewriting hook is still a declaration and
+    reporting it would be a false positive.
+
+    Run over the shipped tree today this returns `('/clips/discover',)`, which is
+    a real defect and not a rounding error. `throwIfBlocked` tests six endpoints;
+    `tigon_url_block.semantic_deps` lists five. The nearest thing anywhere in the
+    manifest is `replace_reels_discover_endpoint`'s `clips/discover/`, and
+    containment fails in both directions — `/clips/discover` is not inside
+    `clips/discover/` because of the trailing slash, and `clips/discover/` is not
+    inside `/clips/discover` because of the leading one. `assessment.is_blocked`
+    uses the same containment, so the endpoint is covered by neither hook and
+    stage 4a would happily propose blocking something the app already blocks.
+
+    Containment in both directions, for the same reason as above. `disable_`
+    literals are already filtered by :func:`guarded_endpoints`; they are
+    preference keys, not endpoints.
+    """
+    data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    declared = tuple(
+        dep
+        for hook in data.get("hooks", ())
+        for dep in hook.get("semantic_deps") or ()
+        if isinstance(dep, str)
+    )
+    return tuple(
+        sorted(
+            literal
+            for literal in guarded_endpoints(source_path)
+            if not any(literal in dep or dep in literal for dep in declared)
+        )
+    )
+
+
 # ------------------------------------------------------------------- the plan
 
 
@@ -724,19 +771,93 @@ def apply(
     return True, ()
 
 
+def audit(
+    manifest_path: Path | str = DEFAULT_MANIFEST_PATH,
+    source_path: Path | str = DEFAULT_SOURCE_PATH,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Both directions of manifest-versus-app agreement, in one call.
+
+    Kept together because either one alone reads as clean while the other is not.
+    Returns `(unenforced, undeclared)`: what the manifest claims and the app does
+    not do, and what the app does and the manifest does not record.
+    """
+    return (
+        unenforced_endpoints(manifest_path, source_path),
+        undeclared_endpoints(manifest_path, source_path),
+    )
+
+
+def describe_audit(unenforced: Sequence[str], undeclared: Sequence[str]) -> str:
+    lines = ["manifest and app agreement", ""]
+    if not unenforced and not undeclared:
+        lines.append("  the manifest's blocks and the app's guards agree in both directions")
+        return "\n".join(lines)
+    if unenforced:
+        lines.append("  declared blocked, NOT tested by throwIfBlocked:")
+        lines.extend(f"    {endpoint}" for endpoint in unenforced)
+        lines.append("    -> the manifest records a decision the app does not implement")
+    if undeclared:
+        if unenforced:
+            lines.append("")
+        lines.append("  tested by throwIfBlocked, NOT declared in any hook:")
+        lines.extend(f"    {endpoint}" for endpoint in undeclared)
+        lines.append(
+            "    -> assessment.blocked_endpoints cannot see these, so stage 4a will"
+        )
+        lines.append("       propose blocking what the app already blocks")
+    return "\n".join(lines)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--state-root", type=Path, required=True)
-    parser.add_argument("--run-id", required=True)
+    # Not `required=True`: `--audit` needs none of them, and argparse cannot say
+    # "required unless". Checked below so a missing argument is a refusal rather
+    # than a usage error about flags the chosen mode does not use.
+    parser.add_argument("--state-root", type=Path)
+    parser.add_argument("--run-id")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
+    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE_PATH)
     parser.add_argument("--store", type=Path, default=DEFAULT_STORE_PATH)
-    parser.add_argument("--recorded-at", required=True, help="this layer never reads a clock")
+    parser.add_argument("--recorded-at", help="this layer never reads a clock")
     parser.add_argument(
         "--apply",
         action="store_true",
         help="record the rulings and write the manifest. Without it this is a dry run.",
     )
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="check the manifest against the app in BOTH directions and exit. "
+        "Needs no ledger, no run and no clock. Exit 1 if either direction "
+        "disagrees.",
+    )
     args = parser.parse_args(argv)
+
+    if args.audit:
+        try:
+            unenforced, undeclared = audit(args.manifest, args.source)
+        except (RulingError, OSError, ValueError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        print(describe_audit(unenforced, undeclared))
+        return 1 if (unenforced or undeclared) else 0
+
+    missing = [
+        name
+        for name, value in (
+            ("--state-root", args.state_root),
+            ("--run-id", args.run_id),
+            ("--recorded-at", args.recorded_at),
+        )
+        if value is None
+    ]
+    if missing:
+        print(
+            f"error: applying rulings needs {', '.join(missing)}. To check the "
+            "manifest against the app without a run, pass --audit.",
+            file=sys.stderr,
+        )
+        return 1
 
     from . import activities  # noqa: PLC0415
 
@@ -808,3 +929,10 @@ def admitted_dispositions(ledger: Any, store: Any, run_id: str) -> tuple[Feature
             "the admitted dispositions name a different assessment than the row records"
         )
     return document, str(row["decision_id"])
+
+
+# `main` had no caller: no `__main__` guard here and no console script in
+# `pyproject.toml`, so `python -m dfinsta_pipeline.rulings` imported the module,
+# ran nothing and exited 0. Every other CLI in this package ends this way.
+if __name__ == "__main__":
+    raise SystemExit(main())

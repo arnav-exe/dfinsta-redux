@@ -54,6 +54,7 @@
         "/feed/timeline/",
         "/discover/topical_explore",
         "/api/v1/clips/homecoming/",
+        "/clips/discover",
         "/feed/reels_tray/",
         "/profile_ads/get_profile_ads/"
       ],
