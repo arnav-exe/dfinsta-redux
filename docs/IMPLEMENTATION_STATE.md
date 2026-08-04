@@ -1017,7 +1017,41 @@ any probe instrumentation.
 
 Recorded 2026-08-04. Ordered by what would be forgotten first, not by size.
 
-**1. THE GATE'S RULINGS HAVE NO CONSUMER.** `grep -rn "offer_toggle" src/ tools/` outside
+**1. ~~THE GATE'S RULINGS HAVE NO CONSUMER.~~ Closed 2026-08-04**
+(`src/dfinsta_pipeline/rulings.py`, `manifest/rulings.jsonl`,
+`admitted_dispositions_v1`). The chain runs: gate raised → human rules → workflow admits →
+**recorded by run id** → consumer reads it back → `block`/`offer_toggle` land in
+`semantic_deps` → stage 4a stops proposing them. Verified by re-running the assessment after
+the edit, which is the check that matters: the ruling changes something real rather than
+recording a decision that changes nothing. `ignore` suppresses through the ruling store,
+scoped to the policy revision; `defer` correctly returns; a suppressed candidate is *reported*
+in a `settled` array rather than silently vanishing.
+
+Three things the build surfaced, all fixed:
+
+- **The module's own docstring claimed a check nobody had written** — "refuses to call a ruling
+  applied until the built APK can be shown to carry it", with nothing inspecting a DEX or the
+  source. `unenforced_endpoints` now reads the app's `throwIfBlocked` and reports every
+  declared block the code does not test. It returns nothing today and catches a planted one.
+- **`suppressed_candidates` had zero callers** — the same disconnection, inside the module
+  written to fix it. Wiring it required the ruling store's digest to join
+  `assessment_record.operation_input`, or a store that grew since the last record would compute
+  the same operation key with a different document and refuse by naming the wrong cause.
+- **`_hook_for` keyed on file order**, taking the first hook with any URI-path dep — which is
+  `tigon_url_block` today and would silently become an endpoint-*rewriting* hook if the
+  manifest were reordered. Now keys on the manifest's own `"strategy": "url_block"`.
+
+**What is still a human's job, and why.** The guard block is ten instructions and looks
+generable. It is emitted for review because the match method is not derivable (every literal
+ending `/` uses `endsWith` — 13 of 13 — but that records a judgement about whether the live
+path carries a suffix, and guessing wrong means the rule never fires while everything still
+passes), because no preference key is derivable from its endpoint (`/feed/reels_tray/` is
+`disable_stories`), and because a *new* toggle is five coordinated edits of which the
+index-to-key dispatch fails silently — a row that renders, animates and writes nothing. For the
+four candidates actually on the table a new key is probably wrong anyway: they belong under the
+existing `disable_feed` and `disable_reels`.
+
+**Superseded, kept for the reasoning:** `grep -rn "offer_toggle" src/ tools/` outside
 `feature_gate.py`, `assessment.py` and `submission.py` returns **nothing**. A human can now
 rule "block `feed/timeline_stream/`", the Workflow admits it, the ledger records the decision —
 and nothing reads the verdict. This is the same shape as the bug that consumed most of
