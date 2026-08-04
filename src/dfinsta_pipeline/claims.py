@@ -43,7 +43,16 @@ from pathlib import Path
 
 from .ledger import Ledger
 
-__all__ = ["ClaimError", "Claim", "read_claim", "release_claim", "main"]
+__all__ = [
+    "ClaimError",
+    "Claim",
+    "read_claim",
+    "release_claim",
+    # The function the no-argument invocation runs. Omitting it meant a star
+    # import got everything except the default path.
+    "pending_claims",
+    "main",
+]
 
 
 class ClaimError(RuntimeError):
@@ -184,6 +193,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--release",
         metavar="OWNER_TOKEN",
+        # `default=None` and `is not None` below, never truthiness. `--release ""`
+        # is a wrong owner token, and the one wrong token that used to produce
+        # neither a release nor a refusal: the branch was skipped, the claim was
+        # printed, and the exit code was 0 -- exactly what a successful read looks
+        # like. Reachable by `--release "$OWNER"` with OWNER unset.
+        default=None,
         help="release this claim. The owner token must match what `show` printed.",
     )
     args = parser.parse_args(argv)
@@ -191,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.operation_key is None:
-            if args.release:
+            if args.release is not None:
                 parser.error("--release needs an operation key")
             claims = pending_claims(ledger_path)
             if not claims:
@@ -200,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
             for claim in claims:
                 print(f"{claim.operation_key}  {claim.kind}  owner={claim.owner_token}")
             return 0
-        if args.release:
+        if args.release is not None:
             claim = release_claim(ledger_path, args.operation_key, args.release)
             print("released.\n")
             print(claim.describe())
