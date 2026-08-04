@@ -3291,6 +3291,50 @@ class ReplayVerificationGrantHandleV1:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayVerificationResumptionV1:
+    """A final-verification gate that was already answered, on an earlier attempt.
+
+    Returned when a run is re-driven after its grant was admitted but before the
+    verify stage recorded a receipt. The gate is single-shot by construction --
+    the grant table's UNIQUE columns refuse a *different* decision for the run,
+    and the Workflow validator refuses a decision issued before the gate it
+    answers, so a re-drive can neither reuse the journalled decision nor mint a
+    new one. Rather than weaken either check, the Workflow reads the recorded
+    answer and does not ask again.
+
+    Carries `decision_id` so a resumed run's result still names the human whose
+    decision authorised the verification, instead of reporting a completed run
+    nobody appears to have approved.
+    """
+
+    schema_version: int
+    grant: ReplayVerificationGrantHandleV1
+    decision_id: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise ValueError("Unsupported replay verification resumption schema")
+        if type(self.grant) is not ReplayVerificationGrantHandleV1:
+            raise TypeError(
+                "Resumption grant must be an exact ReplayVerificationGrantHandleV1"
+            )
+        _identifier(self.decision_id, "replay verification resumption decision id")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplayVerificationResumptionV1:
+        data = _keys(data, cls, "replay verification resumption")
+        return cls(
+            data["schema_version"],
+            ReplayVerificationGrantHandleV1.from_dict(data["grant"]),
+            data["decision_id"],
+        )
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayExecutionPlanV1:
     """The stage sequence a Workflow must run, derived from admitted authority.
 

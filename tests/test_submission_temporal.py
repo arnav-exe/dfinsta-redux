@@ -43,6 +43,7 @@ from dfinsta_pipeline.replay_contracts import (
     ReplayVerificationAdmissionV1,
     ReplayVerificationGateV1,
     ReplayVerificationGrantHandleV1,
+    ReplayVerificationResumptionV1,
 )
 from dfinsta_pipeline.replay_workflow import ReplayRunWorkflow
 
@@ -115,6 +116,15 @@ class Stubs:
                 tuple(STAGE_BUDGET_SECONDS for _ in REPLAY_STAGES_WITHOUT_FRAMEWORK),
             )
 
+        @activity.defn(name="resolve_replay_verification_grant_activity")
+        async def resume_stub(
+            handle: AdmittedReplayHandleV1,
+        ) -> ReplayVerificationResumptionV1 | None:
+            # None: these tests are about answering a gate, so the gate must be
+            # raised. A recorded grant would skip it, which is the point of the
+            # Activity and not the subject here.
+            return None
+
         @activity.defn(name="prepare_replay_verification_gate_activity")
         async def gate_stub(handle: AdmittedReplayHandleV1) -> ReplayVerificationGateV1:
             return ReplayVerificationGateV1(
@@ -147,6 +157,7 @@ class Stubs:
 
         self.activities = [
             plan_stub,
+            resume_stub,
             gate_stub,
             grant_stub,
             verify_stub,

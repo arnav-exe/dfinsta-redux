@@ -13,6 +13,7 @@ with workflow.unsafe.imports_passed_through():
         admit_replay_verification_grant_activity,
         prepare_replay_plan_activity,
         prepare_replay_verification_gate_activity,
+        resolve_replay_verification_grant_activity,
         replay_apply_tree_stage_activity,
         replay_build_patched_apk_stage_activity,
         replay_decode_stage_activity,
@@ -22,10 +23,12 @@ with workflow.unsafe.imports_passed_through():
     from .contracts import ArtifactRef, GateDecision, GateReceipt, GateRequest, WorkflowStatus
     from .replay_contracts import (
         AdmittedReplayHandleV1,
+        ReplayExecutionPlanV1,
         ReplayRunRequestV1,
         ReplayRunResultV1,
         ReplayVerificationAdmissionV1,
         ReplayVerificationGateV1,
+        ReplayVerificationGrantHandleV1,
     )
 
 
@@ -93,6 +96,11 @@ class ReplayRunWorkflow:
         self._idempotency_ids: set[str] = set()
         self._stages_completed: list[str] = []
         self._state = "created"
+        # Set from the human's decision on the ordinary path and from the recorded
+        # grant on a resumed one, so a resumed run's result still names the
+        # decision that authorised it rather than reporting an unapproved success.
+        self._decision_id: str | None = None
+        self._resumed = False
 
     @workflow.run
     async def run(self, request: ReplayRunRequestV1) -> ReplayRunResultV1:
@@ -120,6 +128,24 @@ class ReplayRunWorkflow:
                 cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
             )
             self._stages_completed.append(stage)
+
+        # A gate already answered is not asked again. The grant is single-shot by
+        # construction -- a different decision for the same run collides in the
+        # ledger, and a decision issued before this gate is refused by the
+        # validator -- so a run re-driven after admission could satisfy neither
+        # door. Reading the recorded answer is the only exit that weakens no check.
+        self._state = "resolving-verification-grant"
+        resumption = await workflow.execute_activity(
+            resolve_replay_verification_grant_activity,
+            request.handle,
+            start_to_close_timeout=_LEDGER_TIMEOUT,
+            retry_policy=_LEDGER_RETRY,
+            cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+        )
+        if resumption is not None:
+            self._resumed = True
+            self._decision_id = resumption.decision_id
+            return await self._verify(run_id, plan, resumption.grant)
 
         self._state = "preparing-verification-gate"
         self._gate = await workflow.execute_activity(
@@ -181,6 +207,16 @@ class ReplayRunWorkflow:
             cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
         )
 
+        return await self._verify(run_id, plan, grant_handle)
+
+    async def _verify(
+        self,
+        run_id: str,
+        plan: ReplayExecutionPlanV1,
+        grant_handle: ReplayVerificationGrantHandleV1,
+    ) -> ReplayRunResultV1:
+        """The last stage, reached either through the gate or past an answered one."""
+
         self._state = "running-verify"
         verify_budget = plan.stage_budget_seconds[plan.stages.index("verify")]
         verification = await workflow.execute_activity(
@@ -192,7 +228,7 @@ class ReplayRunWorkflow:
         )
         self._stages_completed.append("verify")
         self._state = "completed"
-        return self._result(run_id, "completed", verification, self._decision.decision_id)
+        return self._result(run_id, "completed", verification, self._decision_id)
 
     def _result(
         self,
@@ -208,6 +244,11 @@ class ReplayRunWorkflow:
     @workflow.update
     def submit_verification_decision(self, decision: GateDecision) -> GateReceipt:
         self._decision = decision
+        # Published by `status` the moment the decision is accepted, exactly as
+        # before this handler existed alongside a resumed path: the submission
+        # client reads it to refuse answering a gate that already has an answer,
+        # so it must not become visible one workflow task later than the decision.
+        self._decision_id = decision.decision_id
         self._decision_ids.add(decision.decision_id)
         self._idempotency_ids.add(decision.idempotency_id)
         return GateReceipt(decision.decision_id, True)
@@ -267,5 +308,5 @@ class ReplayRunWorkflow:
         return WorkflowStatus(
             state=self._state,
             gate=self._gate_request,
-            decision_id=self._decision.decision_id if self._decision else None,
+            decision_id=self._decision_id,
         )

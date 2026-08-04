@@ -45,6 +45,7 @@ from .replay_contracts import (
     ReplayVerificationAdmissionV1,
     ReplayVerificationGateV1,
     ReplayVerificationGrantHandleV1,
+    ReplayVerificationResumptionV1,
     admit_replay_verification_grant_v1,
     ReplayBackendCompositionV1,
     ReplayDecodedTreeReceiptV2,
@@ -3367,6 +3368,36 @@ async def replay_verify_final_apk_stage_activity(
     configured = runtime()
     grant = Ledger.load_admitted_replay_verification_grant_v1(configured.ledger, handle)
     return await replay_verify_final_apk_checkpoint_activity(grant)
+
+
+@activity.defn
+async def resolve_replay_verification_grant_activity(
+    handle: AdmittedReplayHandleV1,
+) -> ReplayVerificationResumptionV1 | None:
+    """Has this run's verification gate already been answered?
+
+    Asked before the gate is raised, because raising it a second time cannot
+    succeed. Once a grant is recorded, a *different* decision for the same run is
+    refused by the grant table's UNIQUE columns, and the Workflow validator
+    refuses a decision issued before the gate it is answering -- so on a re-drive
+    the journalled decision is too old and a fresh one collides. Neither check is
+    wrong; asking again is.
+
+    The grant id is derived here rather than passed in, by the same
+    `replay_gate.derived_identifier` the gate and the admitting Activity use, so
+    the run whose answer is found is the run whose gate would have been raised.
+
+    Returns None on the ordinary path, where no grant exists yet.
+    """
+
+    configured = runtime()
+    admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
+    grant_id = replay_gate.derived_identifier(
+        admitted.run_spec.run_id,
+        replay_gate.GRANT_ID_SUFFIX,
+        "verification grant id",
+    )
+    return Ledger.admitted_replay_verification_resumption(configured.ledger, grant_id)
 
 
 @activity.defn

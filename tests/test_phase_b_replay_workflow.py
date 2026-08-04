@@ -39,6 +39,7 @@ from dfinsta_pipeline.replay_contracts import (
     ReplayVerificationAdmissionV1,
     ReplayVerificationGateV1,
     ReplayVerificationGrantHandleV1,
+    ReplayVerificationResumptionV1,
 )
 from dfinsta_pipeline.replay_workflow import ReplayRunWorkflow
 
@@ -65,6 +66,7 @@ INSTALL_ACTIVITY = "replay_install_frameworks_stage_activity"
 DECODE_ACTIVITY = "replay_decode_stage_activity"
 APPLY_ACTIVITY = "replay_apply_tree_stage_activity"
 BUILD_ACTIVITY = "replay_build_patched_apk_stage_activity"
+RESUME_ACTIVITY = "resolve_replay_verification_grant_activity"
 GATE_ACTIVITY = "prepare_replay_verification_gate_activity"
 GRANT_ACTIVITY = "admit_replay_verification_grant_activity"
 VERIFY_ACTIVITY = "replay_verify_final_apk_stage_activity"
@@ -98,8 +100,15 @@ class ReplayStubs:
     `execute_activity`, the Worker resolves them by name, and these run instead.
     """
 
-    def __init__(self, stages: tuple[str, ...] = REPLAY_STAGES_WITHOUT_FRAMEWORK) -> None:
+    def __init__(
+        self,
+        stages: tuple[str, ...] = REPLAY_STAGES_WITHOUT_FRAMEWORK,
+        *,
+        resumption: ReplayVerificationResumptionV1 | None = None,
+    ) -> None:
         self.stages = stages
+        # None is the ordinary path: no grant recorded yet, so the gate is raised.
+        self.resumption = resumption
         self.calls: list[str] = []
         self.admissions: list[ReplayVerificationAdmissionV1] = []
         # Set by default: only the duplicate-decision test needs the Workflow to
@@ -118,6 +127,13 @@ class ReplayStubs:
                 recorder.stages,
                 tuple(STAGE_BUDGET_SECONDS for _ in recorder.stages),
             )
+
+        @activity.defn(name=RESUME_ACTIVITY)
+        async def resume_stub(
+            handle: AdmittedReplayHandleV1,
+        ) -> ReplayVerificationResumptionV1 | None:
+            recorder.calls.append(RESUME_ACTIVITY)
+            return recorder.resumption
 
         @activity.defn(name=GATE_ACTIVITY)
         async def gate_stub(handle: AdmittedReplayHandleV1) -> ReplayVerificationGateV1:
@@ -144,6 +160,7 @@ class ReplayStubs:
 
         self.activities = [
             plan_stub,
+            resume_stub,
             gate_stub,
             grant_stub,
             verify_stub,
@@ -293,6 +310,7 @@ class ReplayRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 DECODE_ACTIVITY,
                 APPLY_ACTIVITY,
                 BUILD_ACTIVITY,
+                RESUME_ACTIVITY,
                 GATE_ACTIVITY,
                 GRANT_ACTIVITY,
                 VERIFY_ACTIVITY,
@@ -309,6 +327,88 @@ class ReplayRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
         assert result.final_verification is not None
         self.assertEqual(result.final_verification.sha256, VERIFICATION_SHA256)
 
+    async def test_a_run_re_driven_after_admission_does_not_re_raise_the_gate(self) -> None:
+        """The exit from the single-shot verification grant.
+
+        A grant is admitted once and only once. If a run is re-driven after
+        admission but before the verify receipt exists -- reachable by ordinary
+        progress, not by an accident -- then re-raising the gate leads nowhere:
+        see `test_a_decision_from_a_superseded_gate_is_refused` for the door the
+        Workflow shuts, and `test_phase_b_verification_grant`'s identity-collision
+        test for the one the ledger shuts. So the Workflow asks whether the gate
+        was already answered, and on a hit runs verify against the recorded grant.
+        """
+        recorded = ReplayVerificationResumptionV1(
+            1,
+            ReplayVerificationGrantHandleV1(1, "grant-1", GRANT_SHA256),
+            "verify-approval-1",
+        )
+        stubs = ReplayStubs(resumption=recorded)
+        async with self.worker(stubs):
+            handle = await self.start(replay_request("replay-resumed"))
+            result = await handle.result()
+
+        self.assertEqual(
+            stubs.calls,
+            [
+                PLAN_ACTIVITY,
+                DECODE_ACTIVITY,
+                APPLY_ACTIVITY,
+                BUILD_ACTIVITY,
+                RESUME_ACTIVITY,
+                VERIFY_ACTIVITY,
+            ],
+        )
+        # Both stubs are registered, so their absence is the Workflow's decision.
+        self.assertIn(GATE_ACTIVITY, stubs.registered_names)
+        self.assertIn(GRANT_ACTIVITY, stubs.registered_names)
+        self.assertEqual(result.state, "completed")
+        self.assertEqual(result.stages_completed, REPLAY_STAGES_WITHOUT_FRAMEWORK)
+        # The run still names the human whose decision authorised verification,
+        # rather than reporting a completed run nobody appears to have approved.
+        self.assertEqual(result.verification_decision_id, "verify-approval-1")
+        assert result.final_verification is not None
+        self.assertEqual(result.final_verification.sha256, VERIFICATION_SHA256)
+
+    async def test_a_decision_from_a_superseded_gate_is_refused(self) -> None:
+        """Half of why the gate must not be raised twice.
+
+        `submission.py` journals the exact decision bytes and resubmits them
+        verbatim, because re-assembling would re-timestamp and a decision whose
+        `issued_at` moved is a different decision. That is correct, and it is
+        exactly what makes a re-drive unanswerable: the journalled decision
+        predates the new gate, so the validator's `decision_time < gate_time`
+        clause refuses it. Minting a fresh one instead hits the ledger's identity
+        collision. Neither door opens; this test pins the first.
+        """
+        stubs = ReplayStubs()
+        async with self.worker(stubs):
+            handle = await self.start(replay_request("replay-superseded-gate"))
+            gate = await self.wait_for_gate(handle)
+            journalled = verification_decision(
+                gate,
+                issued_at=(
+                    datetime.fromisoformat(gate.issued_at) - timedelta(minutes=5)
+                ).isoformat(),
+            )
+            with self.assertRaises(WorkflowUpdateFailedError) as raised:
+                await handle.execute_update(
+                    ReplayRunWorkflow.submit_verification_decision, journalled
+                )
+            self.assertIn(
+                "Decision timestamp is outside the gate validity period",
+                str(raised.exception.cause),
+            )
+            # And the gate is still open, so this is a refusal rather than a
+            # failure: nothing was consumed by the attempt.
+            status = await handle.query(ReplayRunWorkflow.status)
+            self.assertEqual(status.state, "awaiting-verification-approval")
+            self.assertIsNone(status.decision_id)
+            await handle.execute_update(
+                ReplayRunWorkflow.submit_verification_decision, verification_decision(gate)
+            )
+            await handle.result()
+
     async def test_stage_sequence_with_frameworks(self) -> None:
         stubs = ReplayStubs(REPLAY_STAGE_ORDER)
         result, _, _ = await self.run_to_completion(stubs, "replay-with-frameworks")
@@ -321,6 +421,7 @@ class ReplayRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 DECODE_ACTIVITY,
                 APPLY_ACTIVITY,
                 BUILD_ACTIVITY,
+                RESUME_ACTIVITY,
                 GATE_ACTIVITY,
                 GRANT_ACTIVITY,
                 VERIFY_ACTIVITY,
@@ -485,7 +586,14 @@ class ReplayRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.stages_completed, ("decode", "apply", "build"))
         self.assertEqual(
             stubs.calls,
-            [PLAN_ACTIVITY, DECODE_ACTIVITY, APPLY_ACTIVITY, BUILD_ACTIVITY, GATE_ACTIVITY],
+            [
+                PLAN_ACTIVITY,
+                DECODE_ACTIVITY,
+                APPLY_ACTIVITY,
+                BUILD_ACTIVITY,
+                RESUME_ACTIVITY,
+                GATE_ACTIVITY,
+            ],
         )
         self.assertNotIn(GRANT_ACTIVITY, stubs.calls)
         self.assertNotIn(VERIFY_ACTIVITY, stubs.calls)

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         AdmittedReplayV3,
         AdmittedReplayVerificationGrantV1,
         ReplayVerificationGrantHandleV1,
+        ReplayVerificationResumptionV1,
     )
 
 
@@ -1054,6 +1055,50 @@ class Ledger:
             ):
                 raise ValueError("Replay verification grant authority does not match candidate")
         return reconstructed
+
+    def admitted_replay_verification_resumption(
+        self, grant_id: str
+    ) -> ReplayVerificationResumptionV1 | None:
+        """The recorded answer to a run's verification gate, or None if unanswered.
+
+        Returning None rather than raising is the point: "no grant yet" is the
+        ordinary state of every run before its gate closes, and a caller that had
+        to catch an exception to learn it would be using a refusal as control
+        flow. A missing row is not a refusal here.
+
+        Takes the derived `grant_id` rather than a run id because the derivation
+        lives in `replay_gate` and the ledger does not import it. Every caller
+        gets the id from `replay_gate.derived_identifier`, so the ledger stays a
+        store and the naming rule stays in one place.
+
+        This exists because the grant is single-shot in a way that has no other
+        exit. Once a grant is recorded, `record_admitted_replay_verification_grant_v1`
+        refuses any *different* decision for the same run with an identity
+        collision, and the Workflow validator refuses any decision issued before
+        the gate it is answering -- so after a re-drive the journalled decision is
+        too old and a fresh one collides. Both doors are shut. The way out is not
+        to widen either check but to stop asking a question the ledger already
+        records the answer to.
+        """
+
+        from .replay_contracts import (
+            ReplayVerificationGrantHandleV1,
+            ReplayVerificationResumptionV1,
+        )
+
+        if type(grant_id) is not str:
+            raise TypeError("Verification grant id must be a string")
+        with Ledger._connection(self) as connection:
+            row = connection.execute(
+                "SELECT grant_id, grant_sha256, decision_id FROM "
+                "admitted_replay_verification_grants_v1 WHERE grant_id = ?",
+                (grant_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ReplayVerificationResumptionV1(
+            1, ReplayVerificationGrantHandleV1(1, row[0], row[1]), row[2]
+        )
 
     def load_admitted_replay_verification_grant_v1(
         self, handle: ReplayVerificationGrantHandleV1

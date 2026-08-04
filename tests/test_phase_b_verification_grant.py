@@ -646,6 +646,46 @@ class ReplayVerificationGrantLedgerTests(unittest.TestCase):
         self.record_build()
         self.ledger.record_decision(self.case.decision)
 
+    def test_the_recorded_answer_is_findable_before_the_gate_is_raised(self) -> None:
+        """The exit from the single-shot grant, and the reason it is needed.
+
+        The two halves of the trap, in one place: a *different* decision for the
+        same run collides in this table forever, and `ReplayRunWorkflow`'s
+        validator refuses a decision issued before the gate it answers (see
+        `test_phase_b_replay_workflow.test_a_decision_from_a_superseded_gate_is_refused`).
+        So a re-driven run can neither reuse its journalled decision nor mint a
+        new one, and the only exit is to find the answer already recorded.
+
+        None before, the grant and its decision after. Returning None rather than
+        raising matters: "not answered yet" is the ordinary state of every run
+        before its gate closes, not a refusal.
+        """
+        grant_id = self.case.request.grant_id
+        self.assertIsNone(
+            self.ledger.admitted_replay_verification_resumption(grant_id)
+        )
+        self.record_all_dependencies()
+        self.ledger.record_admitted_replay_verification_grant_v1(self.grant)
+
+        resumption = self.ledger.admitted_replay_verification_resumption(grant_id)
+        self.assertIsNotNone(resumption)
+        assert resumption is not None
+        self.assertEqual(resumption.grant.grant_id, grant_id)
+        self.assertEqual(resumption.grant.grant_sha256, self.grant.sha256)
+        self.assertEqual(resumption.decision_id, self.case.decision.decision_id)
+        # The handle it carries loads the exact recorded grant through the one
+        # existing path, so the resumption grants no new way in.
+        self.assertEqual(
+            self.ledger.load_admitted_replay_verification_grant_v1(resumption.grant),
+            self.grant,
+        )
+        # A run that never had a gate is not accidentally resumed by another's.
+        self.assertIsNone(
+            self.ledger.admitted_replay_verification_resumption("some-other-run-grant")
+        )
+        with self.assertRaises(TypeError):
+            self.ledger.admitted_replay_verification_resumption(None)
+
     def test_unrecorded_decision_replay_and_incomplete_build_fail(self) -> None:
         with self.assertRaisesRegex(ValueError, "decision"):
             self.ledger.record_admitted_replay_verification_grant_v1(self.grant)
