@@ -64,6 +64,14 @@ enumerating its violations.
       ledger. `python -m dfinsta_pipeline.claims --state-root <dir> [<key>] [--release <owner>]`
       reads through a `mode=ro` ledger, requires the owner token to be stated exactly, and
       refuses a quarantined row.
+      **Tested 2026-08-04, and it had never been.** It was marked done here with zero
+      importers *and* zero tests — a recovery path nobody had exercised. 38 tests now, 17 of
+      18 mutations caught (the eighteenth provably equivalent), pinning refusals by exact
+      message because four separate rules raise the same type and one of them contains the
+      other's keyword. One real defect found and fixed: `--release ""` was falsy, so the whole
+      branch was skipped and the tool printed the claim and exited 0 — the one wrong owner
+      token that produced neither a release nor a refusal, and what
+      `--release "$OWNER"` expands to when `OWNER` is unset.
 - [ ] Non-destructive cancellation *within* the window — the real fix, and it rewrites a
       reviewed invariant (release rather than quarantine after a workspace exists). Needs the
       real run to re-establish the five stages' evidence.
@@ -275,6 +283,22 @@ Design and the experiment: [`docs/STAGE_4_DESIGN.md`](STAGE_4_DESIGN.md).
       `delivery/background_prefetch` path co-located with exactly the Reels endpoints we
       block, and `clips/discover/interest/stream/` spreading from 2 classes to 5 — the same
       shape as the Shopping dissolution.
+      **It is invoked by nothing** (measured 2026-08-04): not the driver, not a script, not a
+      documented command line; its only mention outside its own 95 tests is prose in two
+      docstrings, and one artefact from one hand-run survives in `work/`. It is also **not**
+      on the stage 4 path — `assessment.document()` takes a `HookIndex` and the manifest and
+      nothing else, and `surface_diff.Candidate.to_dict()` emits no `candidate_id`, which
+      `assessment.candidate_ids` requires. Stage 3 and stage 4 are siblings on the same
+      `api_surface.json`. Wiring it in needs a `--baseline-index`; giving its output a
+      consumer is the separate and larger question.
+- [x] **Stage 4a's producer is scheduled** (`driver.STAGES` gained `assess`, between `index`
+      and `resolve`). `assessment_record.record` had zero callers outside its own `main`, so
+      the real 440 assessment exists only because a human typed the command after the driver
+      finished — and every future port would have shipped with none while the whole chain
+      downstream stayed green. Takes all four of `--state-root`, `--assessment-run-id`,
+      `--actor`, `--owner-token` or none; skips loudly otherwise, because an offline port is
+      a real mode. Proven against the real 440 index: one command records an assessment whose
+      gate subject the submission client re-derives from the run id alone.
 - [x] Assess whether a new feature is addictive, from evidence rather than assertion
       (`src/dfinsta_pipeline/assessment.py`). No composite score: a calibration experiment
       run first ruled that out, six of seven signals being noise with the random control
