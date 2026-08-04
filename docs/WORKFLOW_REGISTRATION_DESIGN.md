@@ -292,6 +292,53 @@ coupling with every body and the executed call graph byte-identical. The real ex
 deduplicating `resolve_admitted_build` against `_replay_verification_predecessors` — still
 edits proven code and still waits for the real run.
 
+## 3c-measured (2026-08-04) — the first run through the registered Workflow
+
+`tests/integration/test_registered_replay_harness.py` drives a real 340/430 replay
+through `ReplayRunWorkflow` on a live Temporal server: this harness builds the authority and
+starts the run, `python -m dfinsta_pipeline.worker` hosts it, and
+`python -m dfinsta_pipeline.submission` answers the gate. Three processes, because that is how
+it is operated. Two things were established in the first minute and one overturns §3b-corrected.
+
+**The worker could not run a single real stage.** `run_worker` called `configure_runtime(state_root)`
+and nothing else, so `source_root` was unset and `executor_paths` empty. `replay_apply_tree` and
+`replay_verify_final_apk` refuse without the first; every subprocess-launching stage resolves its
+executable through the second. Fourteen Activities registered, none of them runnable. Every
+registration test passed, because a registration test proves a name is present, not that the
+process hosting it can do the work. Fixed with `--source-root`, a repeatable
+`--executor-path SHA256=PATH` and `--attempts-root`.
+
+**A running stage blocks the worker's event loop, so F4 is not a small change.** §3b-corrected
+argued heartbeats were cheap because "every long operation inside a stage yields the event loop
+(`await execute(...)`, and the `asyncio.to_thread` supervisors)". That is **false for the decode
+stage**, which contains no `asyncio.to_thread` at all: it reads the stock APK out of the CAS
+(79 MB for 340, 133 MB for 430), writes it into the workspace, and afterwards runs
+`capture_decoded_tree_fd` over tens of thousands of files — all synchronous. Measured, not
+argued: the first version of this harness polled `query("status")` and died with
+`RPCError: Timeout expired`, and `temporal workflow query`, an unrelated client, reports
+`query timed out before a worker could process it` against the same running stage.
+
+A heartbeater task in the wrapper would therefore be starved for the whole capture — exactly
+when a heartbeat matters — and a `heartbeat_timeout` sized to a working heartbeater would then
+expire and deliver the cancellation that quarantines. **F4 now has a prerequisite nobody had
+written down**: move the synchronous capture off the loop, or accept and measure heartbeat gaps
+the size of a full tree capture. The harness records a `worker_query_responsiveness` timeline so
+the gap is a number rather than an impression.
+
+Progress is consequently read from History, which the server serves with no worker involvement.
+Queries are used only where the Workflow is parked in `wait_condition`, which is also why the
+documented submission client works: at that moment nothing holds the loop.
+
+**The verification grant is no longer single-shot in the only way that mattered.** The trap in
+3b-corrected's last paragraph is real and both doors are now pinned by tests: a *different*
+decision for the same run collides in `admitted_replay_verification_grants_v1`
+(`test_phase_b_verification_grant`), and the journalled decision `submission.py` resubmits
+verbatim is refused by the validator's `decision_time < gate_time` clause
+(`test_phase_b_replay_workflow.test_a_decision_from_a_superseded_gate_is_refused`). Neither check
+is wrong; asking twice is. `resolve_replay_verification_grant_activity` now runs before the gate
+and, on a hit, the Workflow verifies against the recorded grant and never raises it. The result
+still names the decision id, so a resumed run does not report a success nobody approved.
+
 ## 3b. Known follow-ups, deliberately not done in this slice
 
 **F1. The harness and the Workflow derive different verification-gate ids.**

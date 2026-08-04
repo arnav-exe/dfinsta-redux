@@ -373,15 +373,25 @@ Reordered 2026-08-03. The two items that stood here are done.
       published subject matched what the client independently re-derived, and the artifact it
       admitted was byte-identical to the one signed.
 
-1. **The real 340/430 run through the registered Workflow.** It is now the gate on three
-   separate items — non-destructive cancellation within the graceful window, heartbeats, and
-   the F2 extraction all need the evidence it re-establishes. Everything that could be closed
-   without it has been.
-2. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
+- [x] **The verification grant is no longer a dead end.** It was a closed loop between two
+      correct checks: the grant table refuses a *different* decision for the run, and the
+      Workflow validator refuses a decision issued before the gate it answers — which is
+      exactly the journalled decision `submission.py` resubmits verbatim. So a re-driven run
+      could answer neither way. `resolve_replay_verification_grant_activity` reads the recorded
+      answer before the gate is raised and, on a hit, verifies against it without asking again.
+      Both doors are pinned by tests.
+
+1. **The real 340/430 run through the registered Workflow.** Underway (2026-08-04) and already
+   productive: it found that the worker CLI could not supply `source_root` or `executor_paths`,
+   so fourteen registered Activities hosted a Workflow that could not run a single real stage;
+   and that a running stage blocks the worker's event loop, which **overturns the argument that
+   heartbeats are a small change**. See `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3c-measured.
+2. **Heartbeats (F4) now have a prerequisite.** A heartbeater in the wrapper would be starved
+   for the whole `capture_decoded_tree_fd`, and a `heartbeat_timeout` sized to a working one
+   would expire and deliver the cancellation that quarantines. Move the synchronous capture off
+   the loop first, or accept and measure the gap.
+3. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
    (439 → 2, 440 → 0). A third is what tells "falling" from "fell once".
-3. **The verification grant is single-shot** — once admitted, a crash before verify leaves a
-   run that cannot be re-driven through the Workflow at all. Reached by *normal progress*, not
-   by an accident, and outside every follow-up F1-F4. Fold into the cancellation slice.
 4. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference — now an escalation path rather than the normal one, since 440 resolved all
    seven hooks with no proposals at all.

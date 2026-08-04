@@ -1068,12 +1068,33 @@ settings dialog, and it is the *default* shape for anything judged addictive per
 feature policy, so a `block` that is not toggleable is a policy violation rather than a
 shortcut. `manifest_patch.py` is the closest precedent for the manifest half.
 
-**2. The verification grant is single-shot.** Once `admit_replay_verification_grant_activity`
-succeeds, the five `UNIQUE` columns on `admitted_replay_verification_grants_v1` plus the gate
-validator's `decision_time >= gate_time` window make that gate unrepeatable — so a crash
-between admission and verify leaves a run that cannot be re-driven through the Workflow at all.
-**Reached by normal progress, not by an accident**, and outside every follow-up F1-F4. Fold
-into the same reviewer conversation as non-destructive cancellation.
+**2. ~~The verification grant is single-shot.~~ Closed 2026-08-04**
+(`resolve_replay_verification_grant_activity`, `Ledger.admitted_replay_verification_resumption`,
+`ReplayVerificationResumptionV1`). The trap was a closed loop between two individually correct
+checks: the five `UNIQUE` columns on `admitted_replay_verification_grants_v1` refuse a
+*different* decision for the run, and the Workflow validator's `decision_time >= gate_time`
+window refuses the journalled decision `submission.py` resubmits verbatim — which it resubmits
+verbatim for a good reason, since re-assembling would re-timestamp and a decision whose
+`issued_at` moved is a different decision. So after a re-drive neither door opened.
+
+Fixed by not asking twice rather than by weakening either check. The Workflow resolves the
+recorded answer before raising the gate and, on a hit, verifies against the recorded grant. The
+resumption carries `decision_id` as well as the grant handle, so a resumed run's result still
+names the human who authorised it instead of reporting a success nobody approved. Both doors are
+now pinned: `test_phase_b_verification_grant`'s identity collision and
+`test_phase_b_replay_workflow.test_a_decision_from_a_superseded_gate_is_refused`.
+
+**2b. Two findings from the first run through the registered Workflow** (2026-08-04, and see
+`docs/WORKFLOW_REGISTRATION_DESIGN.md` §3c-measured):
+
+- **The worker CLI could not run a real stage.** `run_worker` called `configure_runtime(state_root)`
+  with no `source_root` and no `executor_paths`, both of which three stages require. Fourteen
+  Activities registered, none runnable, and every registration test green. Fixed with
+  `--source-root`, `--executor-path SHA256=PATH` and `--attempts-root`.
+- **A running stage blocks the worker's event loop**, so a query — and therefore a heartbeat —
+  cannot be served while a stage runs. This contradicts §3b-corrected's argument that F4 is
+  cheap. **Still open**: F4 now needs the synchronous tree capture moved off the loop first, or
+  measured heartbeat gaps the size of a full capture.
 
 **3. Stage 3 has the same disconnection stage 4a had.** `surface_diff.py` is a standalone CLI
 the driver never invokes. Nothing schedules the thing that decides *what to assess*.
@@ -1084,25 +1105,37 @@ The three that stay inconclusive are the two dormant Reels variants and the lega
 hook, which are known not to execute on this device and configuration — inconclusive by nature,
 and correct. There is nothing to gain from re-measuring 440 on the phone.
 
-**Three defects in shipped source, found while mapping what a ruling must change.** None is
-caused by this work; all three are real and none is scheduled.
+**Three defects in shipped source, found while mapping what a ruling must change.** None was
+caused by that work. Two are closed; the third is scoped and deliberately left.
 
-- **`dfinsta_source_1.3` ships a half-declared toggle.** `disable_suggested_posts` has a
-  public id, an istring, an `isCachedFeature` entry and a guard — and **no row in
-  `instander_settings.xml` and no listener registration**. Because `getBoolTrueEz` defaults
-  *true*, suggested-post filtering is permanently on and un-toggleable, and nothing reports it.
-  `dfinsta_source_1.3/CLAUDE.md` lists it as one of six toggles. This is the exact failure mode
-  a new toggle must avoid, already in the tree.
-- **`manifest/hooks.json` under-declares `throwIfBlocked` by one literal.** The method tests
-  six endpoints; `tigon_url_block.semantic_deps` lists five. `/clips/discover` is declared on
-  `replace_reels_discover_endpoint` as `clips/discover/`, and `assessment.is_blocked`'s
-  containment gives `"clips/discover/" in "clips/discover"` = False, so it is covered by
-  neither. `rulings.unenforced_endpoints` checks the manifest→source direction only; the
-  reverse would report this.
-- **`tools/port_430/verify_apk.py`'s exact-symbol check cannot pass on a probe-instrumented
-  build.** `exact_custom_symbols = custom_symbols == set(REQUIRED_CUSTOM_SYMBOLS)` and the
-  built `classes21.dex` also contains `Lcom/dfinstagram/probe;`. `verify_build.py` uses a
-  superset check and passes, which is why nothing has noticed.
+- **Still open, and confined to 1.3.** `dfinsta_source_1.3` ships a half-declared toggle:
+  `disable_suggested_posts` has a public id, an istring, an `isCachedFeature` entry and a guard
+  — and **no row in `instander_settings.xml` and no listener registration**. Because
+  `getBoolTrueEz` defaults *true*, suggested-post filtering is permanently on and
+  un-toggleable, and nothing reports it. `dfinsta_source_1.3/CLAUDE.md` lists it as one of six
+  toggles. **Scoped 2026-08-04**: the string appears in no other source tree —
+  `dfinsta_source_430`, `dfinsta_source_439` and `dfinsta_source_1.4.1` do not contain it — so
+  the pipeline never reaches it. Fixing it means editing the CRLF-dirty 1.3 tree, which is
+  never staged, so it stays as a documented inaccuracy in a legacy tree rather than a pipeline
+  defect. It remains the exact failure mode a *new* toggle must avoid.
+- **~~`manifest/hooks.json` under-declares `throwIfBlocked` by one literal.~~ Closed 2026-08-04.**
+  `throwIfBlocked` tests six endpoints and `tigon_url_block.semantic_deps` listed five.
+  `/clips/discover` was declared on `replace_reels_discover_endpoint` as `clips/discover/`, and
+  containment fails both ways over the leading and trailing slashes, so `assessment.is_blocked`
+  saw it under neither hook and stage 4a would have proposed blocking what the app already
+  blocks. `rulings.undeclared_endpoints` is the missing direction, `rulings.audit` runs both,
+  and `python -m dfinsta_pipeline.rulings --audit` is the operator entry point. The manifest now
+  declares it and the audit is clean in both directions.
+  Two things surfaced with it: `unenforced_endpoints` had **no production caller** (only tests),
+  and `rulings.py` had a `main()` with **no `__main__` guard and no console script**, so
+  `python -m dfinsta_pipeline.rulings` imported the module, ran nothing and exited 0.
+- **~~`tools/port_430/verify_apk.py`'s exact-symbol check cannot pass on a probe-instrumented
+  build.~~ Closed 2026-08-04.** `custom_symbols == set(REQUIRED_CUSTOM_SYMBOLS)` could not hold
+  on a build that also carries `Lcom/dfinstagram/probe;` — the one kind of build that can
+  attribute hook execution. Now reports `unexpected_custom_symbols` against a caller-supplied
+  `--allow-custom-symbol`, defaulting to empty so an unexpected class still fails. The allowance
+  is the caller's, per `verify_build.py`'s rule that every build-specific fact is supplied by
+  whoever knows it.
 
 **A design note for when a ruling's guard is written**: `REQUIRED_CUSTOM_SYMBOLS` is a
 module-level global pinned by three tests, so hardcoding an endpoint there would contradict
