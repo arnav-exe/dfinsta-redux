@@ -1,8 +1,15 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-03, branch `port-430`. Suite: **2557 tests**, one expected skip,
-plus six green tool suites (indexer 46, resolver 8, port_430 44, reconstruction 15, release 6,
+Resume point as of 2026-08-04, branch `port-430`. Suite: **2654 tests**, one expected skip,
+plus six green tool suites (indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
 device_validation 22).
+
+**The registered `ReplayRunWorkflow` has run a real port.** Both 340 and 430 completed on a
+live Temporal server on 2026-08-04, driven by
+`tests/integration/test_registered_replay_harness.py` — evidence at
+`/home/arnav/dfinsta-runs/registered-{340,430}/success.json`. That closes the item three
+follow-ups were waiting on; see `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3c-measured for what it
+settled and the two defects it found in its first minutes.
 Read with [`docs/ROADMAP.md`](ROADMAP.md) (authoritative progress) and
 [`pipeline_flowchart.md`](../pipeline_flowchart.md) (design). This file is the
 practical "how to pick this up" record: what exists, what is next, and the
@@ -995,8 +1002,20 @@ now takes `--custom-tree` and `--replace-dex`; defaults preserve 430.
 ```
 python        .venv/bin/python   (3.13; system python3 is 3.14 and unsupported)
 tests         PYTHONPATH=src .venv/bin/python -W error -m unittest discover -s tests
-              665 tests, 1 expected skip
-tool suites   tools/{indexer,resolver,port_430,reconstruction,release,device_validation}/tests
+              2654 tests, 1 expected skip
+tool suites   cd tools/<name>/tests && PYTHONPATH=<repo>/src:<repo> python -m unittest discover -s . -t .
+              indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
+              device_validation 22. Discovery from the repository root does NOT work:
+              those directories are not importable packages.
+registered    temporal server start-dev            (localhost:7233, UI on :8233)
+replay run    .venv/bin/python -m tests.integration.test_registered_replay_harness \
+                  --targets 340 --run-root /abs/path/outside/the/repo
+              About 55 min for 340 and 75 for 430, and roughly 10 GB of workspace each.
+              Refuses a run root that exists, and refuses to start over a workflow id
+              that is still open, naming the terminate command.
+assess a run  add --state-root/--assessment-run-id/--actor/--owner-token to the driver
+manifest vs   .venv/bin/python -m dfinsta_pipeline.rulings --audit
+the app       exit 1 if either direction disagrees
 adb           $HOME/Android/Sdk/platform-tools/adb   device serial P3227J000775
 build-tools   $HOME/Android/Sdk/build-tools/36.0.0
 keystore      ~/.android/dfinsta-signing/dfinsta-release.keystore  alias dfinsta
