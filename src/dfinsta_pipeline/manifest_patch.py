@@ -529,6 +529,14 @@ def plan(proposal: Proposal, manifest_path: Path | str = DEFAULT_MANIFEST_PATH) 
         raise PatchError(
             f"{manifest_path} does not look like a hook manifest (no 'hooks' key)"
         )
+    # NOT validated through `load_manifest`, and that is deliberate — examined
+    # 2026-08-04 because a loose-end note called it a gap. Loading would turn an
+    # unrankable fingerprint kind into a `PatchError` where it is currently a
+    # `Refusal` inside the returned `Patch`: the operator would get an exception
+    # instead of a rendered reason, `writable` would never be consulted, and
+    # `test_a_host_kind_this_stage_cannot_rank_is_refused_rather_than_guessed`
+    # would be asserting a shape the module no longer produces. The kind IS
+    # refused either way; refusing it as data is the better of the two.
 
     refusals: list[Refusal] = []
     checked: list[str] = []

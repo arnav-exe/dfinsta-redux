@@ -1175,8 +1175,14 @@ method references, which is why the existing list holds type descriptors only.
 - `generalise.forbidden_reason` does not refuse a path-shaped literal;
   `manifest_patch.forbidden_in_value` catches it downstream, so the gap is upstream of its own
   guard.
-- `manifest_patch.plan` reads the manifest as raw JSON rather than through `load_manifest`, so
-  an unvalidated `kind` reaches the strength comparison. Refused, but only at plan time.
+- ~~`manifest_patch.plan` reads the manifest as raw JSON rather than through `load_manifest`, so
+  an unvalidated `kind` reaches the strength comparison.~~ **Examined 2026-08-04; not a defect,
+  and the change was tried and reverted.** Validating through `load_manifest` turns an
+  unrankable kind into a `PatchError` where it is now a `Refusal` inside the returned `Patch` —
+  the operator gets an exception instead of a rendered reason, `writable` is never consulted,
+  and `test_a_host_kind_this_stage_cannot_rank_is_refused_rather_than_guessed` asserts a shape
+  the module would no longer produce. The kind is refused either way; as data is better. The
+  reasoning is now a comment at the read site so it is not re-tried.
 - `Selection` is literal-shaped (`literals`, and a `reason` that reads "the anchor" as a
   fallback) now that `by_anchor` selections carry none.
 
