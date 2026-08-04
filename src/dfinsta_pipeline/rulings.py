@@ -218,24 +218,36 @@ class Ruling:
             "recorded_at": self.recorded_at,
         }
 
+    FIELDS = (
+        "candidate_id",
+        "verdict",
+        "rationale",
+        "run_id",
+        "decision_id",
+        "assessment_sha256",
+        "policy_revision",
+        "recorded_at",
+    )
+
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Ruling:
-        missing = sorted(
-            {
-                "candidate_id",
-                "verdict",
-                "rationale",
-                "run_id",
-                "decision_id",
-                "assessment_sha256",
-                "policy_revision",
-                "recorded_at",
-            }
-            - set(data)
-        )
+        """Strict both ways. A missing field and an extra one are both refusals.
+
+        The first version checked only for missing keys and then splatted the
+        whole record, so a hand-added `"note"` escaped as a bare `TypeError` —
+        past `main`'s handler, and past every caller of `suppressed_candidates`,
+        which catch `RulingError` and name none of this. Everything that can
+        refuse has to go through the refusal channel or the channel is decorative.
+        """
+        if not isinstance(data, Mapping):
+            raise RulingError("a ruling record must be an object")
+        missing = sorted(set(cls.FIELDS) - set(data))
+        unknown = sorted(set(data) - set(cls.FIELDS))
         if missing:
             raise RulingError(f"ruling record is missing {', '.join(missing)}")
-        return cls(**{key: data[key] for key in data})
+        if unknown:
+            raise RulingError(f"ruling record has unknown field(s): {', '.join(unknown)}")
+        return cls(**{key: data[key] for key in cls.FIELDS})
 
 
 def read_store(path: Path | str = DEFAULT_STORE_PATH) -> list[Ruling]:
@@ -252,11 +264,18 @@ def read_store(path: Path | str = DEFAULT_STORE_PATH) -> list[Ruling]:
                 entry = json.loads(line)
             except json.JSONDecodeError as error:
                 raise RulingError(f"{path}:{number}: unreadable ruling: {error}") from error
+            if not isinstance(entry, Mapping):
+                raise RulingError(f"{path}:{number}: a ruling line must be an object")
             if entry.get("schema_version") != SCHEMA_VERSION:
                 raise RulingError(
                     f"{path}:{number}: unsupported ruling schema {entry.get('schema_version')!r}"
                 )
-            out.append(Ruling.from_dict(entry["record"]))
+            if "record" not in entry:
+                raise RulingError(f"{path}:{number}: a ruling line carries no record")
+            try:
+                out.append(Ruling.from_dict(entry["record"]))
+            except RulingError as error:
+                raise RulingError(f"{path}:{number}: {error}") from error
     return out
 
 
@@ -327,7 +346,23 @@ def unenforced_endpoints(
     data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     hook_id = _hook_for(data, "")
     if hook_id is None:
-        return ()
+        # NOT `return ()`. This function's entire job is to notice that the
+        # manifest claims a block the app does not implement, and an empty tuple
+        # is the same answer it gives when everything agrees — so a manifest with
+        # no url-block hook, or two, would read as clean. That is absence
+        # reported as a pass, which is the one failure this project refuses
+        # everywhere else.
+        blockers = [
+            entry.get("hook_id")
+            for entry in data.get("hooks", ())
+            if entry.get("strategy") == URL_BLOCK_STRATEGY
+        ]
+        raise RulingError(
+            f"{manifest_path} declares {len(blockers)} hooks with strategy "
+            f"{URL_BLOCK_STRATEGY!r} ({', '.join(blockers) or 'none'}), so there is no one "
+            "hook whose declared blocks can be checked against the app. This is not the "
+            "same as nothing being unenforced."
+        )
     entry = next(h for h in data["hooks"] if h.get("hook_id") == hook_id)
     guarded = guarded_endpoints(source_path)
     return tuple(
@@ -419,6 +454,14 @@ class RulingPlan:
         return "\n".join(lines)
 
 
+def _throw_if_blocked(source: Path | str) -> str:
+    """The body of `throwIfBlocked`, and nothing else in the file."""
+    text = Path(source).read_text(encoding="utf-8", errors="replace")
+    if "throwIfBlocked" not in text:
+        raise RulingError(f"{source} declares no throwIfBlocked to read")
+    return text.split("throwIfBlocked", 1)[-1].split(".end method", 1)[0]
+
+
 PREFERENCE_KEY = re.compile(r'const-string v\d+, "(disable_[a-z_]+)"')
 GUARD_LITERAL = re.compile(r'const-string v\d+, "(/?[a-z0-9][a-z0-9/_.-]*)"')
 
@@ -435,9 +478,12 @@ def existing_preference_keys(source: Path | str) -> tuple[str, ...]:
     endpoint is not possible anyway: `/feed/reels_tray/` is `disable_stories` and
     `/profile_ads/get_profile_ads/` is `disable_adds`.
     """
-    text = Path(source).read_text(encoding="utf-8", errors="replace")
+    # Scoped to the method, because that is what the docstring claims. Scanning
+    # the whole file offered `disable_reels` first, from `replaceReelsEndpoint`
+    # above it — harmless today because the guard reads it too, and wrong the day
+    # some other method reads a key this one never does.
     seen: list[str] = []
-    for match in PREFERENCE_KEY.finditer(text):
+    for match in PREFERENCE_KEY.finditer(_throw_if_blocked(source)):
         if match.group(1) not in seen:
             seen.append(match.group(1))
     return tuple(seen)
@@ -450,11 +496,9 @@ def guarded_endpoints(source: Path | str) -> frozenset[str]:
     *decided*; this records what the code *does*, and the two disagreeing is the
     shape of every inert patch this project has shipped.
     """
-    text = Path(source).read_text(encoding="utf-8", errors="replace")
-    body = text.split("throwIfBlocked", 1)[-1].split(".end method", 1)[0]
     return frozenset(
         match.group(1)
-        for match in GUARD_LITERAL.finditer(body)
+        for match in GUARD_LITERAL.finditer(_throw_if_blocked(source))
         if not match.group(1).startswith("disable_")
     )
 
@@ -570,10 +614,20 @@ def plan(
                 )
                 continue
             entry = next(h for h in data["hooks"] if h.get("hook_id") == hook_id)
-            if endpoint in (entry.get("semantic_deps") or ()):
+            covered = [
+                dep
+                for dep in entry.get("semantic_deps") or ()
+                # Containment, not equality — the same comparison
+                # `assessment.is_blocked` uses to decide coverage. With equality,
+                # a `block` on `feed/timeline/` appended a second rule beside the
+                # `/feed/timeline/` that already covers it, and the note that
+                # exists to say "nothing to change" never fired.
+                if dep in endpoint or endpoint in dep
+            ]
+            if covered:
                 notes.append(
-                    f"{endpoint} is already in {hook_id}'s semantic_deps; the ruling is "
-                    "recorded and the manifest is unchanged"
+                    f"{endpoint} is already covered by {hook_id}'s {covered[0]!r}; the "
+                    "ruling is recorded and the manifest is unchanged"
                 )
                 continue
             additions.append((endpoint, hook_id))
@@ -725,7 +779,15 @@ def admitted_dispositions(ledger: Any, store: Any, run_id: str) -> tuple[Feature
     a second connection opened here.
     """
     row = ledger.admitted_dispositions_for_run(run_id)
-    body = store.read_blob(row["dispositions_sha256"], int(row["dispositions_size"]))
+    try:
+        body = store.read_blob(row["dispositions_sha256"], int(row["dispositions_size"]))
+    except OSError as error:
+        # The ledger row and the blob can be restored apart. A raw errno naming a
+        # two-character shard directory is a correct refusal nobody can read.
+        raise RulingError(
+            f"the rulings admitted for {run_id} name {row['dispositions_sha256']}, which is "
+            f"not in this content store: {error}"
+        ) from error
     try:
         document = FeatureDispositionsV1.from_dict(json.loads(body.decode("utf-8")))
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
