@@ -5,9 +5,9 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-03 (fourth pass: Instagram 440 ported for zero agent invocations, the
-differential producer, the stage-9 recorder, and the release gate closing on the driver's
-own output).
+Last updated 2026-08-04 (fifth pass: the feature gate raised, answered and *consumed* end to
+end — a human's ruling now reaches the manifest and stops stage 4a re-proposing the
+candidate).
 
 ## End goal
 
@@ -22,7 +22,7 @@ gates rather than doing the mechanical work.
 |---|---|---|
 | **Execute** a port | apply/build/graft/verify/sign/orchestrate | largely complete |
 | **Produce** a port | re-map hook intent onto a new obfuscated decode | **7 of 7 hooks mechanical on 430, 439 and 440** — no `by_agent` fingerprint remains, and 440 arrived after they were written |
-| **Decide** what to port | find new features, judge addictiveness, present evidence at a gate | surface diff and assessment written; a gate can be answered but **nothing computes an assessment and nothing raises this gate** — see `docs/STAGE_4_PRODUCER_DESIGN.md` |
+| **Decide** what to port | find new features, judge addictiveness, present evidence at a gate | **complete end to end**: assessment recorded, gate raised, answered per candidate, and the ruling consumed into the manifest. What a `block` needs in the app's own smali is emitted for review, deliberately not generated |
 
 The remaining work is concentrated in one place: judging a new feature and presenting it at a
 durable gate. The second half of that sentence used to be "closing the loop so the agents that
@@ -280,7 +280,17 @@ Design and the experiment: [`docs/STAGE_4_DESIGN.md`](STAGE_4_DESIGN.md).
       run first ruled that out, six of seven signals being noise with the random control
       landing *between* the labelled groups. What works is Instagram's own curated endpoint
       arrays, found by content and never by class name.
-- [ ] Present conclusion **plus grounding evidence** at a durable human gate (gates last hours to days).
+- [x] **Present conclusion plus grounding evidence at a durable human gate.**
+      `FeatureAssessmentRunWorkflow` raises it, `submission.py` answers it with a ruling per
+      candidate, and `rulings.py` consumes the answer. Proven end to end against the real 440
+      assessment with no Temporal server: published subject matched the client's independent
+      re-derivation, and the admitted artifact was byte-identical to the signed one.
+- [x] **A ruling changes something.** `block`/`offer_toggle` reach `semantic_deps`, verified by
+      re-running the assessment and watching the candidate disappear; `ignore` suppresses
+      through `manifest/rulings.jsonl`, scoped to the policy revision; `defer` correctly
+      returns. What the app's own smali must gain is emitted for review — the match method and
+      the preference key are not derivable, and a new toggle is five coordinated edits of which
+      one fails silently.
       The contracts exist and a human can now answer a gate
       ([`docs/SUBMISSION_CLIENT.md`](SUBMISSION_CLIENT.md)) — but nothing *raises* this one,
       because the assessment has no path into CAS as a recorded operation. See "Immediate
@@ -369,7 +379,10 @@ Reordered 2026-08-03. The two items that stood here are done.
    without it has been.
 2. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
    (439 → 2, 440 → 0). A third is what tells "falling" from "fell once".
-3. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
+3. **The verification grant is single-shot** — once admitted, a crash before verify leaves a
+   run that cannot be re-driven through the Workflow at all. Reached by *normal progress*, not
+   by an accident, and outside every follow-up F1-F4. Fold into the cancellation slice.
+4. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference — now an escalation path rather than the normal one, since 440 resolved all
    seven hooks with no proposals at all.
 
