@@ -1172,9 +1172,19 @@ method references, which is why the existing list holds type descriptors only.
 - `work/by-anchor-proposal.json` is in a bespoke schema `read_proposals` refuses. The producer
   regenerates the same content from measurement in ~14 s, so this is a one-off data migration
   nobody needs.
-- `generalise.forbidden_reason` does not refuse a path-shaped literal;
-  `manifest_patch.forbidden_in_value` catches it downstream, so the gap is upstream of its own
-  guard.
+- `generalise.forbidden_reason` does not refuse a path-shaped literal.
+  **Measured 2026-08-04, and the note had it backwards.** `generalise` is right to allow one:
+  `clips/discover/` is a path-shaped literal and is the fingerprint three shipped hooks use.
+  What is actually wrong is the downstream guard being *over*-broad —
+  `manifest_patch.forbidden_in_value('/feed/timeline/')` refuses it as
+  `contains an absolute path. It names one machine's workspace`, which is false, and so would
+  `/data/user/0/com.instagram.android/`. No live break: every fingerprint literal in the
+  shipped manifest is relative (`clips/...`), `semantic_deps` is not scrubbed by that rule, and
+  provenance already requires a literal to have been observed inside the host class, so a
+  build-machine path cannot reach it anyway. But the first leading-slash fingerprint the
+  generaliser proposes will be refused with a reason that is not true. Tightening a refusal
+  rule is a safety change and was deliberately not made under time pressure; the fix is to
+  require a recognisable filesystem root rather than a leading slash.
 - ~~`manifest_patch.plan` reads the manifest as raw JSON rather than through `load_manifest`, so
   an unvalidated `kind` reaches the strength comparison.~~ **Examined 2026-08-04; not a defect,
   and the change was tried and reverted.** Validating through `load_manifest` turns an
