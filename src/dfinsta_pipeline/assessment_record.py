@@ -63,7 +63,7 @@ from .assessment import (
 )
 from .contracts import ID_PATTERN, ArtifactRef, canonical_json, canonical_sha256
 from .hook_index import API_SURFACE_FILENAME, HEADER_FILENAME, HookIndex
-from .hook_manifest import load_manifest
+from .hook_manifest import ManifestError, load_manifest
 from .ledger import Ledger, assessment_identity
 from .store import ContentStore
 
@@ -178,6 +178,45 @@ def record(
     rulings_path: Path | str | None = None,
 ) -> RecordedAssessment:
     """Admit the API surface, recompute the assessment, record the operation.
+
+    **Refuses only with `RecordError`.** This wrapper exists because it did not:
+    `candidate_ids` raises `AssessmentError`, `load_manifest` raises `ManifestError`,
+    and a missing file raises `FileNotFoundError`, so the first library caller —
+    the driver's `assess` stage — caught the module's declared refusal type and
+    still got an `AssessmentError` traceback from a module it never imported. A
+    module that declares a refusal type owns every call out of itself, not just
+    the checks inside it.
+    """
+
+    try:
+        return _record(
+            state_root,
+            run_id=run_id,
+            index_dir=index_dir,
+            manifest_path=manifest_path,
+            allowed_actor=allowed_actor,
+            owner_token=owner_token,
+            expect_document_sha256=expect_document_sha256,
+            rulings_path=rulings_path,
+        )
+    except RecordError:
+        raise
+    except (AssessmentError, ManifestError, OSError, TypeError, ValueError) as error:
+        raise RecordError(f"{type(error).__name__}: {error}") from error
+
+
+def _record(
+    state_root: Path | str,
+    *,
+    run_id: str,
+    index_dir: Path | str,
+    manifest_path: Path | str,
+    allowed_actor: str,
+    owner_token: str,
+    expect_document_sha256: str | None = None,
+    rulings_path: Path | str | None = None,
+) -> RecordedAssessment:
+    """The body. Everything it raises is translated by `record` above.
 
     `expect_document_sha256` is how a caller that computed its own copy — the
     driver, say — has it *checked* rather than trusted. A disagreement is an

@@ -72,8 +72,11 @@ from typing import Any, Mapping, Sequence
 from dfinsta_pipeline import driver
 from dfinsta_pipeline.discovery import Discovery
 from dfinsta_pipeline.driver import (
+    ASSESS_ARGUMENTS,
+    REPOSITORY,
     FIELD_TARGET,
     STAGES,
+    AssessmentRequest,
     DriverError,
     RunPaths,
     RunResult,
@@ -85,6 +88,7 @@ from dfinsta_pipeline.driver import (
     load_host_proposals,
     main,
     port,
+    record_assessment,
     record_resolution_evidence,
     smali_trees,
     tree_order,
@@ -800,6 +804,10 @@ class StageStoppingTests(DriverCase):
         expected_artifacts = {
             "extract": {"analysis_decode"},
             "index": {"analysis_decode", "index"},
+            # No state root here, so `assess` skips and adds nothing. That the
+            # stage is *reachable* and reports itself is what this pins; what it
+            # produces when given somewhere to record is `AssessStageTests`.
+            "assess": {"analysis_decode", "index"},
             "resolve": {"analysis_decode", "index", "resolution"},
             "gate": {"analysis_decode", "index", "resolution", "readiness", "evidence"},
             "compose": {
@@ -826,6 +834,27 @@ class StageStoppingTests(DriverCase):
                 # Nothing after the named stage ran: the builder is a subprocess
                 # and the decode/index are reused, so no command at all is right.
                 self.assertEqual(self.commands, [])
+
+    def test_every_stage_has_a_stop_expectation(self):
+        """Derived from STAGES, so a new stage cannot be added untested.
+
+        The dict above is hand-written. `assess` was added to `STAGES` and this
+        test is what makes forgetting to list the next one a failure rather than
+        a silently narrower loop.
+        """
+        from dfinsta_pipeline.driver import STAGES
+
+        listed = {
+            "extract",
+            "index",
+            "assess",
+            "resolve",
+            "gate",
+            "compose",
+        }
+        # `build` shells out to the builder, so it is covered by the build tests
+        # rather than here; everything before it must be listed.
+        self.assertEqual(listed, set(STAGES) - {"build"})
 
     def test_stopping_before_the_gate_writes_no_evidence(self):
         """`--stop-after resolve` must not record claims it has not made.
@@ -3087,6 +3116,161 @@ class DiscoveryMutationTests(DiscoveryCase):
         for claim in self.evidence_claims():
             if claim["hook_id"] == AGENT_HOOK.hook_id:
                 self.assertNotIn(claim["actor"], {"proposer-1", "proposer-2", "proposer-3"})
+
+
+class AssessStageTests(DriverCase):
+    """Stage 4a's producer, which nothing scheduled until now.
+
+    The whole downstream chain — record, raise the gate, answer it through the
+    submission client, consume the rulings into the manifest — was complete and
+    green while its first link was a human remembering to run
+    `assessment_record record` after the driver finished. `record` had zero
+    callers outside its own `main`, so a port that produced no assessment looked
+    exactly like a port that produced one.
+    """
+
+    def assess_arguments(self, **overrides) -> dict[str, str]:
+        arguments = {
+            "--state-root": str(self.base / "state"),
+            "--assessment-run-id": "driver-assess-test",
+            "--actor": "tester",
+            "--owner-token": "token-1",
+        }
+        arguments.update(overrides)
+        return arguments
+
+    def test_the_stage_records_an_assessment_a_gate_client_can_find(self):
+        """The check that matters is reachability from the run id, not that a
+        file appeared: the feature gate client takes a run id and nothing else.
+        """
+        from dfinsta_pipeline import activities, assessment_record
+        from dfinsta_pipeline.feature_gate import derive_feature_gate_request
+
+        fixture = self.three_dex_fixture()
+        # A real index and the repository manifest, both read-only: a synthetic
+        # fixture produces no coverage gaps at all, so `record` correctly refuses
+        # and the happy path would never be exercised. Recording goes to a scratch
+        # state root and the ruling store is redirected, so nothing in the
+        # repository is written.
+        real_index = REPOSITORY / "work" / "440-clean" / "index"
+        if not (real_index / "api_surface.json").is_file():
+            self.skipTest(f"no real index at {real_index}")
+        state_root = self.base / "state"
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            result = port(
+                apk=self.base / "stock.apk",
+                paths=RunPaths(
+                    self.base / "run-assess",
+                    fixture.decode,
+                    real_index,
+                    memory_path=self.base / "decisions.jsonl",
+                    ledger_path=self.base / "agent_cost.jsonl",
+                ),
+                hooks=[CONTEXT_HOOK],
+                apktool=self.base / "apktool_2.9.3.jar",
+                framework_apk=self.base / "framework-res.apk",
+                custom_code=fixture.custom_code,
+                stop_after="assess",
+                assessment=AssessmentRequest(
+                    state_root=state_root,
+                    run_id="driver-assess-test",
+                    allowed_actor="tester",
+                    owner_token="token-1",
+                    rulings_path=self.base / "rulings.jsonl",
+                ),
+            )
+        self.printed = stream.getvalue()
+        self.assertEqual(result.stage_reached, "assess")
+        self.assertIn("assessment", result.artifacts)
+        self.assertTrue(result.artifacts["assessment"].startswith("cas://sha256/"))
+        self.assertEqual(result.artifacts["assessment_run_id"], "driver-assess-test")
+
+        activities.configure_runtime(state_root, read_only=True)
+        try:
+            configured = activities.runtime()
+            recorded = assessment_record.resolve_with(
+                configured.ledger, configured.store, "driver-assess-test"
+            )
+            self.assertEqual(recorded.allowed_actor, "tester")
+            request = derive_feature_gate_request(
+                recorded.run_id,
+                recorded.assessment,
+                recorded.policy_revision,
+                recorded.allowed_actor,
+                recorded.candidate_ids,
+            )
+            self.assertEqual(request.gate_id, "driver-assess-test-feature-assessment-gate")
+        finally:
+            activities._runtime = None
+
+    def test_a_run_without_a_state_root_skips_the_stage_loudly(self):
+        """An offline port is a real mode and must not start needing a ledger.
+
+        But a stage that skipped in silence would be indistinguishable from one
+        that ran, which is the failure this whole stage exists to end.
+        """
+        fixture = self.three_dex_fixture()
+        result = self.run_port(fixture, [CONTEXT_HOOK], stop_after="assess", out="run-skip")
+        self.assertEqual(result.stage_reached, "assess")
+        self.assertNotIn("assessment", result.artifacts)
+        self.assertIn("[assess] skipped", self.printed)
+        for flag in ASSESS_ARGUMENTS:
+            self.assertIn(flag, self.printed)
+
+    def test_three_of_the_four_arguments_is_refused_by_name(self):
+        """Not a partial success: a run that looks like it recorded and did not."""
+        for omitted in ASSESS_ARGUMENTS:
+            with self.subTest(omitted=omitted):
+                arguments = self.assess_arguments()
+                arguments.pop(omitted)
+                argv = ["x.apk", "--out", str(self.base / "unused")]
+                for name, value in arguments.items():
+                    argv += [name, value]
+                stream = io.StringIO()
+                with contextlib.redirect_stderr(stream):
+                    code = main(argv)
+                self.assertEqual(code, 2)
+                self.assertIn(omitted, stream.getvalue())
+                self.assertIn("Pass none of them to skip", stream.getvalue())
+
+    def test_a_recording_refusal_arrives_as_a_driver_error(self):
+        """`RecordError` reaching the operator would be a traceback from a module
+        they did not invoke, which this project treats as a defect in itself.
+        """
+        request = AssessmentRequest(
+            state_root=self.base / "state",
+            run_id="driver-assess-test",
+            allowed_actor="tester",
+            owner_token="token-1",
+            manifest_path=self.base / "missing-manifest.json",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(DriverError) as raised:
+                record_assessment(request, self.base / "no-such-index")
+        self.assertIn("could not record the assessment", str(raised.exception))
+
+    def test_the_request_defaults_to_the_repository_manifest(self):
+        """The same default `assessment_record.main` uses, so the driver and the
+        hand-run command assess the same thing.
+        """
+        request = AssessmentRequest(
+            state_root=Path("/srv/state"),
+            run_id="r",
+            allowed_actor="a",
+            owner_token="t",
+        )
+        self.assertEqual(request.manifest.name, "hooks.json")
+        self.assertEqual(request.manifest.parent.name, "manifest")
+        override = Path("/srv/other.json")
+        self.assertEqual(
+            AssessmentRequest(Path("/srv/state"), "r", "a", "t", override).manifest, override
+        )
+
+    def test_the_stage_runs_between_index_and_resolve(self):
+        """It reads the index stage 2 wrote and must not wait for a resolution."""
+        self.assertEqual(STAGES.index("assess"), STAGES.index("index") + 1)
+        self.assertEqual(STAGES.index("resolve"), STAGES.index("assess") + 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

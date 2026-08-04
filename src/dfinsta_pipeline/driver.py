@@ -91,7 +91,21 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 INDEXER = REPOSITORY / "tools" / "indexer" / "build_index.py"
 BUILDER = REPOSITORY / "tools" / "port_430" / "build.py"
 
-STAGES = ("extract", "index", "resolve", "gate", "compose", "build")
+STAGES = ("extract", "index", "assess", "resolve", "gate", "compose", "build")
+
+#: What the `assess` stage needs beyond the index the driver already holds.
+#:
+#: Stage 4a's whole chain -- record, raise the gate, answer it through the
+#: submission client, consume the rulings into the manifest -- was complete and
+#: green while its FIRST link was a human remembering to type
+#: `python -m dfinsta_pipeline.assessment_record record ...` after the driver
+#: finished. `assessment_record.record` had zero callers outside its own `main`.
+#: So every port would silently ship with no assessment, and the disconnection
+#: would look exactly like a finished pipeline.
+#:
+#: Named as a group because the stage is all-or-nothing: a state root without an
+#: actor cannot record, and an actor without a run id cannot be found again.
+ASSESS_ARGUMENTS = ("--state-root", "--assessment-run-id", "--actor", "--owner-token")
 
 #: Why discovery cannot run unlabelled. Stated once because both the CLI and
 #: `port` refuse for it, and a second wording would let one of them drift into
@@ -242,6 +256,57 @@ def host_dex_entries(report: ResolveReport, index: HookIndex) -> list[str]:
 
 
 # ------------------------------------------------------------------- stages
+
+
+@dataclass(frozen=True)
+class AssessmentRequest:
+    """Where to record the stage 4a assessment, and who may answer its gate.
+
+    A value rather than four loose parameters, because the four are meaningless
+    apart: the run id is how the gate is found, the actor is who may answer it,
+    and the owner token is what lets a later re-index reclaim a wedged operation.
+    Passing three of the four is not a partial success.
+
+    `manifest_path` defaults to the repository manifest, the same default
+    `assessment_record.main` uses, and is overridable so a test never records an
+    assessment of the shipped manifest by accident.
+    """
+
+    state_root: Path
+    run_id: str
+    allowed_actor: str
+    owner_token: str
+    manifest_path: Path | None = None
+    rulings_path: Path | None = None
+
+    @property
+    def manifest(self) -> Path:
+        return self.manifest_path or (REPOSITORY / "manifest" / "hooks.json")
+
+
+def record_assessment(request: AssessmentRequest, index_dir: Path):
+    """Record the assessment, translating its refusal into the driver's.
+
+    `assessment_record` raises `RecordError`, which no driver caller catches, so
+    without this a perfectly ordinary refusal -- a stale owner token, an index
+    with no content hash -- would reach the operator as a traceback from a module
+    they did not invoke.
+    """
+    from .assessment_record import RecordError, record  # noqa: PLC0415
+
+    print(f"[assess] recording {request.run_id} from {index_dir}", flush=True)
+    try:
+        return record(
+            request.state_root,
+            run_id=request.run_id,
+            index_dir=index_dir,
+            manifest_path=request.manifest,
+            allowed_actor=request.allowed_actor,
+            owner_token=request.owner_token,
+            rulings_path=request.rulings_path,
+        )
+    except RecordError as error:
+        raise DriverError(f"could not record the assessment: {error}") from error
 
 
 @dataclass
@@ -519,6 +584,7 @@ def port(
     version: str = "",
     recorded_at: str = "",
     discovery: Discovery | None = None,
+    assessment: AssessmentRequest | None = None,
 ) -> RunResult:
     """Run the pipeline as far as the evidence allows, then record what it cost.
 
@@ -553,6 +619,7 @@ def port(
             stop_after=stop_after,
             require_evidence=require_evidence,
             discovery=discovery,
+            assessment=assessment,
         )
     except DriverError as error:
         # A stage that threw still spent whatever it spent. Recording happens
@@ -617,8 +684,9 @@ def _run_stages(
     stop_after: str = "build",
     require_evidence: bool = True,
     discovery: Discovery | None = None,
+    assessment: AssessmentRequest | None = None,
 ) -> RunResult:
-    """The six stages themselves. Split out so stage 10 has exactly one call site."""
+    """The stages themselves. Split out so stage 10 has exactly one call site."""
     if stop_after not in STAGES:
         raise DriverError(f"unknown stage {stop_after!r}; expected one of {', '.join(STAGES)}")
     proposals = dict(proposals or {})
@@ -642,6 +710,24 @@ def _run_stages(
     artifacts["index"] = str(paths.index_dir)
     if stop_after == "index":
         return RunResult("index", artifacts=artifacts)
+
+    # 2a. Assess. Reads the same index stage 2 just wrote and records the stage 4a
+    #     assessment under a run-keyed authority row, which is what makes the
+    #     feature gate answerable from a run id alone. Skipped, loudly, when the
+    #     run was not given somewhere to record it -- an offline port is a real
+    #     mode and must not start requiring a ledger.
+    if assessment is None:
+        print(
+            f"[assess] skipped: no state root. Pass {', '.join(ASSESS_ARGUMENTS)} to "
+            "record an assessment this run's feature gate can be answered from.",
+            flush=True,
+        )
+    else:
+        recorded = record_assessment(assessment, paths.index_dir)
+        artifacts["assessment"] = recorded.assessment.uri
+        artifacts["assessment_run_id"] = recorded.run_id
+    if stop_after == "assess":
+        return RunResult("assess", artifacts=artifacts)
 
     # 3. Resolve. Agent proposals are assessed first, because an accepted one
     #    contributes both a host for the mechanical path and, for a hook whose
@@ -1002,6 +1088,30 @@ def main(argv: list[str] | None = None) -> int:
         "--reuse-index", type=Path, help="use this existing index instead of building one"
     )
     parser.add_argument("--stop-after", choices=STAGES, default="build")
+    assess_group = parser.add_argument_group(
+        "assess",
+        "Record the stage 4a assessment so this run's feature gate can be answered "
+        "from its run id. All four are needed together; supplying none skips the "
+        "stage and leaves the run entirely offline.",
+    )
+    assess_group.add_argument(
+        "--state-root", type=Path, default=None, help="ledger and content store"
+    )
+    assess_group.add_argument(
+        "--assessment-run-id",
+        default=None,
+        help="how the recorded assessment is found again; the gate client takes "
+        "nothing but this",
+    )
+    assess_group.add_argument("--actor", default=None, help="who may answer the gate")
+    assess_group.add_argument(
+        "--owner-token",
+        default=None,
+        help="what lets a later re-index reclaim this operation if it wedges",
+    )
+    assess_group.add_argument(
+        "--rulings", type=Path, default=None, help="ruling store; default manifest/rulings.jsonl"
+    )
     parser.add_argument(
         "--skip-evidence-gate",
         action="store_true",
@@ -1077,7 +1187,32 @@ def main(argv: list[str] | None = None) -> int:
 
     hooks = load_manifest(args.manifest)
     discovery: Discovery | None = None
+    assessment: AssessmentRequest | None = None
     try:
+        supplied = {
+            "--state-root": args.state_root,
+            "--assessment-run-id": args.assessment_run_id,
+            "--actor": args.actor,
+            "--owner-token": args.owner_token,
+        }
+        given = {name for name, value in supplied.items() if value is not None}
+        # All four or none. Three of the four is not a partial success: it is a run
+        # that looks like it recorded an assessment and did not.
+        if given and given != set(ASSESS_ARGUMENTS):
+            missing = ", ".join(sorted(set(ASSESS_ARGUMENTS) - given))
+            raise DriverError(
+                f"recording an assessment needs all of {', '.join(ASSESS_ARGUMENTS)}; "
+                f"missing {missing}. Pass none of them to skip the stage."
+            )
+        if given:
+            assessment = AssessmentRequest(
+                state_root=args.state_root,
+                run_id=args.assessment_run_id,
+                allowed_actor=args.actor,
+                owner_token=args.owner_token,
+                manifest_path=args.manifest,
+                rulings_path=args.rulings,
+            )
         if args.discover_hosts:
             if not args.version.strip():
                 # Refused here rather than by `Discovery`, so the message names
@@ -1118,6 +1253,7 @@ def main(argv: list[str] | None = None) -> int:
             version=args.version,
             recorded_at=args.recorded_at,
             discovery=discovery,
+            assessment=assessment,
         )
     except (DriverError, ManifestError) as error:
         print(f"error: {error}", file=sys.stderr)
