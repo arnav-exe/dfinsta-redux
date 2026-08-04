@@ -201,7 +201,11 @@ def record(
         )
     except RecordError:
         raise
-    except (AssessmentError, ManifestError, OSError, TypeError, ValueError) as error:
+    # `OSError` is deliberately absent. Reading the inputs already translates its
+    # own OSError into a RecordError naming the file; what is left is a failure
+    # mid-write -- a full disk, a power cut -- and that is a crash, not a refusal.
+    # Wrapping it would tell a caller "your input was unacceptable" about a disk.
+    except (AssessmentError, ManifestError, TypeError, ValueError) as error:
         raise RecordError(f"{type(error).__name__}: {error}") from error
 
 
