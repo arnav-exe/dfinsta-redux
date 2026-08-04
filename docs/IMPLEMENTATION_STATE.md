@@ -1013,6 +1013,56 @@ installed and confirmed working on the phone 2026-08-02 — seven hooks, per-hoo
 a device-verified own-profile guard. It replaces `d3d5ebcf…`, which had neither the guard nor
 any probe instrumentation.
 
+## Loose ends, written down so they are not rediscovered
+
+Recorded 2026-08-04. Ordered by what would be forgotten first, not by size.
+
+**1. THE GATE'S RULINGS HAVE NO CONSUMER.** `grep -rn "offer_toggle" src/ tools/` outside
+`feature_gate.py`, `assessment.py` and `submission.py` returns **nothing**. A human can now
+rule "block `feed/timeline_stream/`", the Workflow admits it, the ledger records the decision —
+and nothing reads the verdict. This is the same shape as the bug that consumed most of
+2026-08-03 (`feature_gate.py` "imported by nothing but its own tests"), one link further along
+the chain, and it is the loose end most likely to be missed **because everything looks
+finished**: the workflow completes, the suite is green, the roadmap says done.
+
+What a consumer has to do, from the tree: a blocked endpoint is a literal in the DFInsta custom
+code (`dfinsta_source_1.3/newCode/com/dfinstagram/hooks.smali`, gated by a preference key) *and*
+an entry in a hook's `semantic_deps` in `manifest/hooks.json` — the latter is what
+`assessment.blocked_endpoints` reads, so without it stage 4a keeps proposing a candidate the
+human already ruled on. `offer_toggle` additionally needs a preference and a row in the
+settings dialog, and it is the *default* shape for anything judged addictive per the project's
+feature policy, so a `block` that is not toggleable is a policy violation rather than a
+shortcut. `manifest_patch.py` is the closest precedent for the manifest half.
+
+**2. The verification grant is single-shot.** Once `admit_replay_verification_grant_activity`
+succeeds, the five `UNIQUE` columns on `admitted_replay_verification_grants_v1` plus the gate
+validator's `decision_time >= gate_time` window make that gate unrepeatable — so a crash
+between admission and verify leaves a run that cannot be re-driven through the Workflow at all.
+**Reached by normal progress, not by an accident**, and outside every follow-up F1-F4. Fold
+into the same reviewer conversation as non-destructive cancellation.
+
+**3. Stage 3 has the same disconnection stage 4a had.** `surface_diff.py` is a standalone CLI
+the driver never invokes. Nothing schedules the thing that decides *what to assess*.
+
+**Already banked — do not redo it.** 440's ledger carries identity claims for all seven hooks,
+four of them passing, so the 441 differential will be four comparisons wide against 439's two.
+The three that stay inconclusive are the two dormant Reels variants and the legacy action-bar
+hook, which are known not to execute on this device and configuration — inconclusive by nature,
+and correct. There is nothing to gain from re-measuring 440 on the phone.
+
+**Small, batchable:**
+
+- `work/by-anchor-proposal.json` is in a bespoke schema `read_proposals` refuses. The producer
+  regenerates the same content from measurement in ~14 s, so this is a one-off data migration
+  nobody needs.
+- `generalise.forbidden_reason` does not refuse a path-shaped literal;
+  `manifest_patch.forbidden_in_value` catches it downstream, so the gap is upstream of its own
+  guard.
+- `manifest_patch.plan` reads the manifest as raw JSON rather than through `load_manifest`, so
+  an unvalidated `kind` reaches the strength comparison. Refused, but only at plan time.
+- `Selection` is literal-shaped (`literals`, and a `reason` that reads "the anchor" as a
+  fallback) now that `by_anchor` selections carry none.
+
 ## Known open items
 
 - `expected_anchor_count` is fixed at 1 and now vestigial in the schema; multi-site hooks
