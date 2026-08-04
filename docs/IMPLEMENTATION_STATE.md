@@ -1096,8 +1096,29 @@ now pinned: `test_phase_b_verification_grant`'s identity collision and
   cheap. **Still open**: F4 now needs the synchronous tree capture moved off the loop first, or
   measured heartbeat gaps the size of a full capture.
 
-**3. Stage 3 has the same disconnection stage 4a had.** `surface_diff.py` is a standalone CLI
-the driver never invokes. Nothing schedules the thing that decides *what to assess*.
+**3. ~~Stage 3 has the same disconnection stage 4a had.~~ Re-derived and split, 2026-08-04.**
+Both halves of the original sentence were true and they were about **different modules**. It
+read: "`surface_diff.py` is a standalone CLI the driver never invokes. Nothing schedules the
+thing that decides *what to assess*." The second sentence names the wrong module, and fixing
+what it named would have left the real gap open while the list said it was closed.
+
+- **The live gap, now closed.** What decides what to assess is `assessment.find_groupings`,
+  reached through `assessment_record.record` — which had **zero callers** outside its own
+  `main`. Every production reference to that module is `resolve_with`, the read side. The real
+  440 assessment exists because a human typed the record command after the driver finished. The
+  driver now has an `assess` stage between `index` and `resolve`, taking all four of
+  `--state-root`, `--assessment-run-id`, `--actor`, `--owner-token` or none, and skipping
+  loudly otherwise. Proven against the real 440 index: one command records an assessment whose
+  gate subject the submission client re-derives from the run id alone.
+- **Still open, and separate.** `surface_diff.py` is invoked by nothing at all — not the driver,
+  not a script, not a documented command line; its only mention outside its own tests is prose
+  in two docstrings. It is **not** on the stage 4 path: `assessment.document()` takes a
+  `HookIndex` and the manifest and nothing else, and `surface_diff.Candidate.to_dict()` emits no
+  `candidate_id`, which `assessment.candidate_ids` requires. The two stages are siblings on the
+  same `api_surface.json`. Wiring it into the driver is optional and would need a
+  `--baseline-index`; giving its output a consumer is a separate design question.
+- **`claims.py` has zero importers and zero tests.** The recovery path for a wedged claim,
+  marked done in the roadmap, has never been exercised.
 
 **Already banked — do not redo it.** 440's ledger carries identity claims for all seven hooks,
 four of them passing, so the 441 differential will be four comparisons wide against 439's two.
