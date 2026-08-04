@@ -1084,6 +1084,35 @@ The three that stay inconclusive are the two dormant Reels variants and the lega
 hook, which are known not to execute on this device and configuration — inconclusive by nature,
 and correct. There is nothing to gain from re-measuring 440 on the phone.
 
+**Three defects in shipped source, found while mapping what a ruling must change.** None is
+caused by this work; all three are real and none is scheduled.
+
+- **`dfinsta_source_1.3` ships a half-declared toggle.** `disable_suggested_posts` has a
+  public id, an istring, an `isCachedFeature` entry and a guard — and **no row in
+  `instander_settings.xml` and no listener registration**. Because `getBoolTrueEz` defaults
+  *true*, suggested-post filtering is permanently on and un-toggleable, and nothing reports it.
+  `dfinsta_source_1.3/CLAUDE.md` lists it as one of six toggles. This is the exact failure mode
+  a new toggle must avoid, already in the tree.
+- **`manifest/hooks.json` under-declares `throwIfBlocked` by one literal.** The method tests
+  six endpoints; `tigon_url_block.semantic_deps` lists five. `/clips/discover` is declared on
+  `replace_reels_discover_endpoint` as `clips/discover/`, and `assessment.is_blocked`'s
+  containment gives `"clips/discover/" in "clips/discover"` = False, so it is covered by
+  neither. `rulings.unenforced_endpoints` checks the manifest→source direction only; the
+  reverse would report this.
+- **`tools/port_430/verify_apk.py`'s exact-symbol check cannot pass on a probe-instrumented
+  build.** `exact_custom_symbols = custom_symbols == set(REQUIRED_CUSTOM_SYMBOLS)` and the
+  built `classes21.dex` also contains `Lcom/dfinstagram/probe;`. `verify_build.py` uses a
+  superset check and passes, which is why nothing has noticed.
+
+**A design note for when a ruling's guard is written**: `REQUIRED_CUSTOM_SYMBOLS` is a
+module-level global pinned by three tests, so hardcoding an endpoint there would contradict
+`verify_build.py`'s own rule that every version-specific fact is supplied by the caller. The
+right shape is a second caller-supplied map beside `--host-hooks` — a `--required-strings`
+JSON the driver derives per run — with the same empty-map refusal, or the check passes
+vacuously. Endpoint literals *are* searchable in a DEX (measured on the 440 release: all six
+endpoints, all five preference keys and the exception message are present as bytes), unlike
+method references, which is why the existing list holds type descriptors only.
+
 **Small, batchable:**
 
 - `work/by-anchor-proposal.json` is in a bespoke schema `read_proposals` refuses. The producer
