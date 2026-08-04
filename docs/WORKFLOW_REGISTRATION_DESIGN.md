@@ -318,6 +318,11 @@ argued: the first version of this harness polled `query("status")` and died with
 `RPCError: Timeout expired`, and `temporal workflow query`, an unrelated client, reports
 `query timed out before a worker could process it` against the same running stage.
 
+The worker records the other side of this itself. Its log fills with
+`Query not found when attempting to respond to it … query task not found, or already expired` —
+191 of them across one 340 and one 430 run: the server expired each query task while the loop
+was blocked, and the worker answered after the stage let go.
+
 A heartbeater task in the wrapper would therefore be starved for the whole capture — exactly
 when a heartbeat matters — and a `heartbeat_timeout` sized to a working heartbeater would then
 expire and deliver the cancellation that quarantines. **F4 now has a prerequisite nobody had
