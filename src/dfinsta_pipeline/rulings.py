@@ -352,8 +352,12 @@ def unenforced_endpoints(
         # no url-block hook, or two, would read as clean. That is absence
         # reported as a pass, which is the one failure this project refuses
         # everywhere else.
+        # `str(...)` because this runs on a raw JSON read, not on a loaded
+        # manifest: a hook with no `hook_id` would otherwise make the *error
+        # path* raise a TypeError, replacing a legible refusal with a traceback
+        # about the refusal.
         blockers = [
-            entry.get("hook_id")
+            str(entry.get("hook_id"))
             for entry in data.get("hooks", ())
             if entry.get("strategy") == URL_BLOCK_STRATEGY
         ]
@@ -588,11 +592,18 @@ def plan(
     try:
         guarded = guarded_endpoints(source_path)
         keys = existing_preference_keys(source_path)
-    except OSError:
+    except (OSError, RulingError) as error:
+        # Both cases, deliberately: a source that is missing and a source that is
+        # the wrong file are the same fact — this plan cannot say whether the app
+        # blocks these. Raising for one and noting the other would lose the
+        # human's rulings entirely over an operator's wrong `--source` path, and
+        # this module already settled that priority in `apply`: a decision
+        # recorded with no block is recoverable, a block with no record of who
+        # decided it is not.
         guarded, keys = frozenset(), ()
         notes.append(
-            f"{source_path} could not be read, so this plan cannot say whether the app "
-            "already blocks these. An unchecked source is not a checked one."
+            f"{source_path} could not be read ({error}), so this plan cannot say whether "
+            "the app already blocks these. An unchecked source is not a checked one."
         )
     if not refusals:
         for ruling in rulings:
