@@ -421,8 +421,14 @@ def assess(
     return [assess_gap(lit, g) for lit, g in coverage_gaps(groupings, blocked)], groupings
 
 
-def report(assessments: Sequence[Assessment], groupings: Sequence[Grouping]) -> dict[str, Any]:
+def report(
+    assessments: Sequence[Assessment],
+    groupings: Sequence[Grouping],
+    suppressed: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     """The document that goes to CAS and is hash-pinned into the gate."""
+    settled = dict(suppressed or {})
+    open_candidates = [a for a in assessments if a.candidate_id not in settled]
     return {
         "schema_version": 1,
         "note": (
@@ -432,11 +438,19 @@ def report(assessments: Sequence[Assessment], groupings: Sequence[Grouping]) -> 
             "as authority it has not earned."
         ),
         "groupings": [g.to_dict() for g in groupings],
-        "candidates": [a.to_dict() for a in assessments],
+        "candidates": [a.to_dict() for a in open_candidates],
+        # Reported rather than dropped: a human at this gate can see what a human
+        # at the last one decided, and why the list is shorter than the grouping.
+        "settled": [
+            {"candidate_id": a.candidate_id, **dict(settled[a.candidate_id])}
+            for a in assessments
+            if a.candidate_id in settled
+        ],
         "counts": {
             "groupings": len(groupings),
-            "candidates": len(assessments),
-            "judged": sum(1 for a in assessments if a.judgement is not None),
+            "candidates": len(open_candidates),
+            "settled": len(assessments) - len(open_candidates),
+            "judged": sum(1 for a in open_candidates if a.judgement is not None),
         },
     }
 
@@ -447,15 +461,33 @@ def report(assessments: Sequence[Assessment], groupings: Sequence[Grouping]) -> 
 DOCUMENT_SCHEMA_VERSION = 1
 
 
-def document(index: HookIndex, hooks: Sequence[Hook], min_seeds: int = 2) -> dict[str, Any]:
+def document(
+    index: HookIndex,
+    hooks: Sequence[Hook],
+    min_seeds: int = 2,
+    suppressed: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     """The whole of stage 4a as one call: index and hooks in, gate document out.
 
     Exists so that "the assessment" names exactly one thing. `assess` returns two
     values and `report` combines them, and every caller that wants the document
     has to remember to do both in the right order — which is the kind of
     invariant that survives on attention until it does not.
+
+    ``suppressed`` maps a candidate id to the ruling that settled it. A human who
+    ruled `ignore` said "we looked and decided not to block this"; nothing in the
+    app records that, so without suppression the candidate returns at every gate
+    and is re-decided at every gate. It is **passed in, never read from a file
+    here** — this module reads no filesystem, which is what keeps it
+    deterministic under Temporal replay.
+
+    Suppressed candidates are *reported*, not deleted. A shorter list with no
+    explanation would leave a human unable to see what a predecessor decided, and
+    `candidate_ids` reads only `candidates`, so the gate covers what is still
+    open while the document still carries the record of what is closed.
     """
-    return report(*assess(index, hooks, min_seeds=min_seeds))
+    assessments, groupings = assess(index, hooks, min_seeds=min_seeds)
+    return report(assessments, groupings, suppressed)
 
 
 def canonical_bytes(value: Mapping[str, Any]) -> bytes:

@@ -1286,7 +1286,7 @@ class ReportTests(AssessmentTestCase):
         # "Nothing found" must be a report, not an absence of one: the gate reads a
         # document either way and a missing one is indistinguishable from a crash.
         document = report([], [])
-        self.assertEqual(document["counts"], {"groupings": 0, "candidates": 0, "judged": 0})
+        self.assertEqual(document["counts"], {"groupings": 0, "candidates": 0, "settled": 0, "judged": 0})
         self.assertEqual(document["candidates"], [])
         self.assertEqual(document["groupings"], [])
         self.assertEqual(document["schema_version"], 1)
@@ -1717,7 +1717,7 @@ class MutationTests(AssessmentTestCase):
         # Nothing failed, which is exactly the problem.
         self.assertEqual(
             report(mutant_assessments, mutant_groupings)["counts"],
-            {"groupings": 0, "candidates": 0, "judged": 0},
+            {"groupings": 0, "candidates": 0, "settled": 0, "judged": 0},
         )
 
 

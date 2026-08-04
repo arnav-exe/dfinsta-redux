@@ -35,18 +35,51 @@ yet", so the candidate coming back is the point.
 
 **The app.** A block only happens because `throwIfBlocked` carries the endpoint
 literal and a preference key. That is hand-written smali in DFInsta's own source,
-and this module **does not write it**. It emits exactly what must be added and
-refuses to call a ruling applied until the built APK can be shown to carry it.
-The manifest half saying "blocked" while the app does not block is the precise
-shape of every inert patch this project has shipped, so the two are kept apart:
-`semantic_deps` records the *decision*, and only a static check against the built
-DEX records the *fact*.
+and this module **does not write it** — see the refusals at the bottom of this
+docstring for why.
+
+So `semantic_deps` records the *decision* and the source records the *fact*, and
+this module reads both. :func:`unenforced_endpoints` is the check: every URI-path
+entry on the url-block hook that `throwIfBlocked` does not test. A plan reports
+which of its own rulings the app does not yet enforce, and the same function run
+over the whole manifest catches the general case — "the manifest says blocked and
+the app does not block it", which is the precise shape of every inert patch this
+project has shipped.
+
+An earlier version of this docstring claimed the module "refuses to call a ruling
+applied until the built APK can be shown to carry it", and nothing in it looked
+at a DEX or at the source. That is recorded here rather than quietly corrected,
+because a docstring asserting a check nobody wrote is the same failure as a
+manifest asserting a block nobody implemented.
+
+===============================================================================
+  WHAT THIS MODULE WILL NOT WRITE, AND WHY
+===============================================================================
+
+The guard block is ten instructions and looks generable. Three measured reasons
+it is emitted for review instead:
+
+* **The match method is not derivable.** Every literal ending `/` uses
+  `endsWith` and every one that does not uses `contains` — 13 of 13 across both
+  source trees — but that is a record of a per-endpoint judgement about whether
+  the live request path carries a suffix, not a rule. Guess `endsWith` wrongly
+  and the rule never fires: the patch assembles, static verification passes, and
+  the toggle silently does nothing.
+* **The preference key is not derivable either**, and for the candidates
+  actually on the table a *new* key is probably wrong. `/feed/reels_tray/` is
+  `disable_stories`; `/profile_ads/get_profile_ads/` is `disable_adds`.
+  :func:`existing_preference_keys` offers what the app already reads.
+* **A new toggle is five coordinated edits, one of which fails silently.** The
+  settings dialog's index-to-key dispatch is the only per-key code in it, and its
+  default branch is a no-op — so a row that renders and animates and writes
+  nothing is what a mistake there produces.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -269,6 +302,45 @@ def append_rulings(path: Path | str, rulings: Sequence[Ruling]) -> None:
             )
 
 
+#: Where the pipeline's custom code lives. `driver.py` defaults `--custom-code`
+#: here, and `dfinsta_source_430` is byte-identical, so one path covers both.
+DEFAULT_SOURCE_PATH = Path("dfinsta_source_439/newCode/com/dfinstagram/hooks.smali")
+
+
+def unenforced_endpoints(
+    manifest_path: Path | str = DEFAULT_MANIFEST_PATH,
+    source_path: Path | str = DEFAULT_SOURCE_PATH,
+) -> tuple[str, ...]:
+    """URI-path rules the manifest declares blocked that the app does not test.
+
+    The whole point of keeping the decision and the fact apart. Run over the
+    shipped manifest today this returns nothing, and it returns something the
+    moment a ruling is recorded without the guard being written — which is
+    exactly the window this module opens and had no way to close.
+
+    Only the url-block hook's deps are checked. A rewriting hook's literals name
+    an endpoint it *replaces*, not one it blocks, and they live at a host call
+    site rather than in `throwIfBlocked`.
+    """
+    from .assessment import looks_like_uri_rule  # noqa: PLC0415
+
+    data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    hook_id = _hook_for(data, "")
+    if hook_id is None:
+        return ()
+    entry = next(h for h in data["hooks"] if h.get("hook_id") == hook_id)
+    guarded = guarded_endpoints(source_path)
+    return tuple(
+        dep
+        for dep in entry.get("semantic_deps") or ()
+        if looks_like_uri_rule(dep)
+        # Containment in both directions: the manifest writes `/feed/timeline/`
+        # where a candidate id yields `feed/timeline_stream/`, so exact equality
+        # would report a false gap on the very entries that do work.
+        and not any(dep in literal or literal in dep for literal in guarded)
+    )
+
+
 # ------------------------------------------------------------------- the plan
 
 
@@ -291,8 +363,12 @@ class RulingPlan:
     manifest_additions: tuple[tuple[str, str], ...] = ()
     #: Rulings that would be recorded, whether or not they change the manifest.
     store: tuple[Ruling, ...] = ()
-    #: `(endpoint, preference_key)` the app must gain before the ruling is real.
-    custom_code: tuple[tuple[str, str], ...] = ()
+    #: Endpoints the app does not test yet. Until `throwIfBlocked` gains them the
+    #: manifest records a decision and not a fact, and this is the field that
+    #: says which.
+    custom_code: tuple[str, ...] = ()
+    #: The preference keys the app already reads, offered rather than invented.
+    preference_keys: tuple[str, ...] = ()
     refusals: tuple[Refusal, ...] = ()
     notes: tuple[str, ...] = field(default_factory=tuple)
 
@@ -321,11 +397,19 @@ class RulingPlan:
                 lines.append(f"  {endpoint:38s} -> {hook_id}")
         if self.custom_code:
             lines.append(
-                "\nthe app does NOT block these yet. Until `throwIfBlocked` carries them "
-                "and the built DEX is shown to, the manifest records a decision and not a fact:"
+                "\nTHE APP DOES NOT BLOCK THESE YET. `throwIfBlocked` does not test them, so "
+                "the manifest records a decision and not a fact until it does:"
             )
-            for endpoint, preference in self.custom_code:
-                lines.append(f"  {endpoint:38s} preference {preference}")
+            for endpoint in self.custom_code:
+                lines.append(f"  {endpoint}")
+            lines.append(
+                "  preference keys the app already reads: "
+                + (", ".join(self.preference_keys) or "(none found)")
+            )
+            lines.append(
+                "  a NEW key is probably wrong for these — check whether an existing one "
+                "covers the family before adding a toggle, which is five coordinated edits."
+            )
         if self.store:
             lines.append(f"\nwould record {len(self.store)} ruling(s)")
         for refusal in self.refusals:
@@ -335,34 +419,68 @@ class RulingPlan:
         return "\n".join(lines)
 
 
-def preference_key_for(endpoint: str) -> str:
-    """The preference a toggle for this endpoint would use.
+PREFERENCE_KEY = re.compile(r'const-string v\d+, "(disable_[a-z_]+)"')
+GUARD_LITERAL = re.compile(r'const-string v\d+, "(/?[a-z0-9][a-z0-9/_.-]*)"')
 
-    Proposed, never invented into the manifest: a key that does not match what
-    `throwIfBlocked` and the settings dialog actually use is a toggle that reads
-    a preference nobody sets, which is a switch that does nothing. It is emitted
-    for a human to reconcile against the existing keys.
+
+def existing_preference_keys(source: Path | str) -> tuple[str, ...]:
+    """Every preference key `throwIfBlocked` already reads, in source order.
+
+    Emitted for a human to choose from, and deliberately *not* narrowed to one:
+    for the four candidates actually on the table the right key is almost
+    certainly an existing one — `feed/timeline_stream/` belongs under
+    `disable_feed`, the reels endpoints under `disable_reels` — so a module that
+    minted `disable_feed_timeline_stream` would create a toggle nobody wanted and
+    then owe it a declaration in four more places. Deriving a key from an
+    endpoint is not possible anyway: `/feed/reels_tray/` is `disable_stories` and
+    `/profile_ads/get_profile_ads/` is `disable_adds`.
     """
-    stem = endpoint.strip("/").replace("/", "_").replace("-", "_")
-    return f"disable_{stem}" if stem else "disable_unknown"
+    text = Path(source).read_text(encoding="utf-8", errors="replace")
+    seen: list[str] = []
+    for match in PREFERENCE_KEY.finditer(text):
+        if match.group(1) not in seen:
+            seen.append(match.group(1))
+    return tuple(seen)
+
+
+def guarded_endpoints(source: Path | str) -> frozenset[str]:
+    """Every endpoint literal `throwIfBlocked` actually tests.
+
+    This is the app's side of the claim. `semantic_deps` records what a human
+    *decided*; this records what the code *does*, and the two disagreeing is the
+    shape of every inert patch this project has shipped.
+    """
+    text = Path(source).read_text(encoding="utf-8", errors="replace")
+    body = text.split("throwIfBlocked", 1)[-1].split(".end method", 1)[0]
+    return frozenset(
+        match.group(1)
+        for match in GUARD_LITERAL.finditer(body)
+        if not match.group(1).startswith("disable_")
+    )
+
+
+#: The manifest's own word for "this hook blocks by URL". Keyed on rather than
+#: matched by shape: the first version of this looked for any hook declaring a
+#: URI-path rule and took the first in *file order*, which is `tigon_url_block`
+#: today and would silently become `replace_reels_discover_endpoint` — an
+#: endpoint-*rewriting* hook — if the manifest were reordered. A blocked endpoint
+#: filed under a rewriting hook is a decision recorded in a place nothing reads.
+URL_BLOCK_STRATEGY = "url_block"
 
 
 def _hook_for(data: Mapping[str, Any], endpoint: str) -> str | None:
     """Which hook's `semantic_deps` should gain this endpoint.
 
-    The hook that already guards the same *family* of endpoints, identified by
-    it declaring URI-path rules at all. `tigon_url_block` is the one that blocks
-    by URL today; a future second one would be found the same way rather than by
-    name, because naming it here would make this module wrong the day the
-    manifest gains another.
+    The hook that declares itself a URL blocker. Refuses rather than guesses when
+    there is not exactly one: two would make the choice arbitrary, and none means
+    there is nowhere to record that an endpoint is blocked.
     """
-    from .assessment import looks_like_uri_rule  # noqa: PLC0415
-
-    for entry in data.get("hooks", ()):
-        deps = entry.get("semantic_deps") or ()
-        if any(looks_like_uri_rule(dep) for dep in deps):
-            return entry.get("hook_id")
-    return None
+    blockers = [
+        entry.get("hook_id")
+        for entry in data.get("hooks", ())
+        if entry.get("strategy") == URL_BLOCK_STRATEGY
+    ]
+    return blockers[0] if len(blockers) == 1 else None
 
 
 def plan(
@@ -372,6 +490,7 @@ def plan(
     decision_id: str,
     recorded_at: str,
     manifest_path: Path | str = DEFAULT_MANIFEST_PATH,
+    source_path: Path | str = DEFAULT_SOURCE_PATH,
 ) -> RulingPlan:
     """Turn an admitted dispositions document into a reviewable change.
 
@@ -418,7 +537,19 @@ def plan(
         )
 
     additions: list[tuple[str, str]] = []
-    custom: list[tuple[str, str]] = []
+    custom: list[str] = []
+    # Read once, from the app's own source: what it *actually* tests, and which
+    # preference keys it *actually* reads. Both are facts about the built thing,
+    # not values this module may invent.
+    try:
+        guarded = guarded_endpoints(source_path)
+        keys = existing_preference_keys(source_path)
+    except OSError:
+        guarded, keys = frozenset(), ()
+        notes.append(
+            f"{source_path} could not be read, so this plan cannot say whether the app "
+            "already blocks these. An unchecked source is not a checked one."
+        )
     if not refusals:
         for ruling in rulings:
             if not ruling.blocking:
@@ -446,7 +577,8 @@ def plan(
                 )
                 continue
             additions.append((endpoint, hook_id))
-            custom.append((endpoint, preference_key_for(endpoint)))
+            if not any(endpoint in guard or guard in endpoint for guard in guarded):
+                custom.append(endpoint)
 
     if refusals:
         return RulingPlan(
@@ -471,6 +603,7 @@ def plan(
         manifest_additions=tuple(additions),
         store=tuple(rulings),
         custom_code=tuple(custom),
+        preference_keys=keys,
         notes=tuple(notes),
     )
 

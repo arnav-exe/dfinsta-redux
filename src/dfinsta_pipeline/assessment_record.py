@@ -117,6 +117,7 @@ def operation_input(
     decode_content_hash: str,
     manifest_sha256: str,
     policy_revision: str,
+    rulings_sha256: str = "",
 ) -> dict[str, str]:
     """What this operation is *of*. Its canonical hash is the operation key.
 
@@ -133,6 +134,13 @@ def operation_input(
         "decode_content_hash": decode_content_hash,
         "manifest_sha256": manifest_sha256,
         "policy_revision": policy_revision,
+        # The ruling store joins the key because it changes the *output*: a
+        # candidate a human ruled `ignore` stops being surfaced. Without it, a
+        # store that grew since the last record would compute the same operation
+        # key and a different document, and `record` would refuse with a message
+        # about two derivations disagreeing — which would be true, and would name
+        # the wrong cause.
+        "rulings_sha256": rulings_sha256,
     }
 
 
@@ -167,6 +175,7 @@ def record(
     allowed_actor: str,
     owner_token: str,
     expect_document_sha256: str | None = None,
+    rulings_path: Path | str | None = None,
 ) -> RecordedAssessment:
     """Admit the API surface, recompute the assessment, record the operation.
 
@@ -202,7 +211,22 @@ def record(
     revision = read_policy_revision(manifest_path)
     hooks = load_manifest(manifest_path)
 
-    document = build_document(index, hooks)
+    # What a human already settled, scoped to this policy revision. Read here and
+    # passed in, because `assessment` reads no filesystem — that is what keeps it
+    # deterministic under Temporal replay.
+    from .rulings import DEFAULT_STORE_PATH, suppressed_candidates  # noqa: PLC0415
+
+    store = Path(rulings_path) if rulings_path is not None else DEFAULT_STORE_PATH
+    settled = {
+        candidate: {"verdict": ruling.verdict, "run_id": ruling.run_id,
+                    "recorded_at": ruling.recorded_at}
+        for candidate, ruling in suppressed_candidates(revision, store).items()
+    }
+    rulings_sha256 = (
+        hashlib.sha256(store.read_bytes()).hexdigest() if store.exists() else ""
+    )
+
+    document = build_document(index, hooks, suppressed=settled)
     body = canonical_bytes(document)
     names = candidate_ids(document)
     digest = canonical_sha256(document)
@@ -216,7 +240,9 @@ def record(
     # Hashing the JSON-quoted *text* was deterministic and therefore harmless, and
     # also a number stored under a name no human could check.
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
-    payload = operation_input(run_id, decode_content_hash, manifest_sha256, revision)
+    payload = operation_input(
+        run_id, decode_content_hash, manifest_sha256, revision, rulings_sha256
+    )
     operation_key = canonical_sha256({"kind": ASSESSMENT_OPERATION_KIND, "input": payload})
     input_sha256 = canonical_sha256(payload)
 
