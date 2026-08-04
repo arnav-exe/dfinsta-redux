@@ -405,15 +405,25 @@ Reordered 2026-08-03. The two items that stood here are done.
       answer before the gate is raised and, on a hit, verifies against it without asking again.
       Both doors are pinned by tests.
 
-1. **The real 340/430 run through the registered Workflow.** Underway (2026-08-04) and already
-   productive: it found that the worker CLI could not supply `source_root` or `executor_paths`,
-   so fourteen registered Activities hosted a Workflow that could not run a single real stage;
-   and that a running stage blocks the worker's event loop, which **overturns the argument that
-   heartbeats are a small change**. See `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3c-measured.
-2. **Heartbeats (F4) now have a prerequisite.** A heartbeater in the wrapper would be starved
-   for the whole `capture_decoded_tree_fd`, and a `heartbeat_timeout` sized to a working one
-   would expire and deliver the cancellation that quarantines. Move the synchronous capture off
-   the loop first, or accept and measure the gap.
+- [x] **The real 340/430 run through the registered Workflow.** Done 2026-08-04, both targets
+      completed on a live Temporal server: 8 and 9 activities scheduled, History at 64,563 and
+      62,261 bytes of the 256 KB budget, verification receipts reporting success with 65 and 16
+      assertions, and the mid-run gate answered by `python -m dfinsta_pipeline.submission`
+      re-deriving the subject from a run id alone. It settled §3 items 1 and 3 and follow-up
+      F1, and unblocked F2. It also found two things before either target finished a stage: the
+      worker CLI could not supply `source_root` or `executor_paths`, so fourteen registered
+      Activities hosted a Workflow that could not run a single real stage; and a running stage
+      blocks the worker's event loop. See `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3c-measured.
+
+1. **Heartbeats (F4) now have a prerequisite, and a number.** 66 of 86 query samples on 340 and
+   113 of 144 on 430 went unanswered, the longest unbroken stretch over nine minutes. A
+   heartbeater in the wrapper would be starved for the whole `capture_decoded_tree_fd`, and a
+   `heartbeat_timeout` sized to a working one would expire and deliver the cancellation that
+   quarantines. Move the synchronous capture off the loop first, or accept and measure the gap.
+2. **F2, now unblocked.** Extract the pre-grant half of `_replay_verification_predecessors`
+   into a public seam and deduplicate `replay_gate.resolve_admitted_build` against it. Its only
+   stated blocker was that editing a proven Activity body invalidates the real-run evidence,
+   and that evidence has just been re-established through the registered path.
 3. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
    (439 → 2, 440 → 0). A third is what tells "falling" from "fell once".
 4. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt

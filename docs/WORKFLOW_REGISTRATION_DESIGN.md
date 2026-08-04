@@ -294,6 +294,43 @@ edits proven code and still waits for the real run.
 
 ## 3c-measured (2026-08-04) — the first run through the registered Workflow
 
+**Both targets completed.** Evidence markers at `success.json` under each run root.
+
+| | 340 | 430 |
+|---|---|---|
+| stages | decode, apply, build, verify | install_framework, decode, apply, build, verify |
+| activities scheduled | 8 | 9 |
+| History, `to_json()` bytes | 64,563 | 62,261 |
+| History, serialized | 27,326 | 23,426 |
+| verification receipt | success, 65 assertions, 59 proofs | success, 16 assertions, 8 proofs |
+| wall clock to verify | 3,301 s | 4,523 s |
+| queries answered | 20 of 86 | 31 of 144 |
+
+**F1 is settled with real evidence.** Both runs derive
+`real-replay-{340,430}-run-final-verification-{grant,gate,decode}`, the Workflow published a
+gate whose id equals the derivation, and the trusted client re-derived the subject from the run
+id alone and typed back its own prefix (`357fdb5cdb91`, `70d045303780`). All three hash fields
+are one derived request hash, as the contract requires. F1b — the request, grant and evidence
+digests no derivation can settle — is now recorded per run.
+
+**Section 3 item 3 is settled.** The 340 History is 64,563 bytes against the 256 KB budget, a
+quarter of it. Under the design that passes `AdmittedReplayV3` by value it would have carried
+over 510 KB of recipe and source paths. The privacy search found the control (the admitted
+replay digest) inside the decoded surface and *not* in the raw JSON, with 19 and 21 payloads
+decoded, so "no repository path, no source-tree marker" is an assertion that could have failed.
+
+**Section 3 item 1 is settled by data, not by a target literal.** 430 ran
+`install_framework` and 340 did not, from `ToolchainProfileV3.frameworks` alone. The first
+version of the harness compared against the sibling harness's vocabulary, which says
+`framework`; `ReplayRunResultV1` rejects any stage outside `REPLAY_STAGE_ORDER`, so that
+comparison could never have passed on 430 and would have passed vacuously on 340.
+
+**F2 is unblocked.** Its stated reason for waiting was that extracting
+`_replay_verification_predecessors` edits a body inside the verify Activity's proven execution
+path and would invalidate the real-run evidence. That evidence has now been re-established on
+both targets, through the registered Workflow rather than beside it.
+
+
 `tests/integration/test_registered_replay_harness.py` drives a real 340/430 replay
 through `ReplayRunWorkflow` on a live Temporal server: this harness builds the authority and
 starts the run, `python -m dfinsta_pipeline.worker` hosts it, and

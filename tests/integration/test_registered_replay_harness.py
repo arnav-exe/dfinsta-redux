@@ -685,7 +685,7 @@ async def _run_target(
 GATE_ACTIVITY = "prepare_replay_verification_gate_activity"
 
 
-def _activity_progress(events: Any) -> tuple[dict[str, float], str | None]:
+def _activity_progress(events: Any) -> tuple[frozenset[str], str | None]:
     """Read stage progress out of History, which the server serves by itself.
 
     Progress is NOT read from the `status` query, and that is the whole point of
@@ -702,7 +702,7 @@ def _activity_progress(events: Any) -> tuple[dict[str, float], str | None]:
     """
 
     scheduled: dict[int, str] = {}
-    completed: dict[str, float] = {}
+    completed: set[str] = set()
     running: str | None = None
     for event in events:
         if event.HasField("activity_task_scheduled_event_attributes"):
@@ -713,10 +713,10 @@ def _activity_progress(events: Any) -> tuple[dict[str, float], str | None]:
             attributes = event.activity_task_completed_event_attributes
             name = scheduled.get(attributes.scheduled_event_id)
             if name is not None:
-                completed[name] = event.event_time.ToDatetime().timestamp()
+                completed.add(name)
                 if running == name:
                     running = None
-    return completed, running
+    return frozenset(completed), running
 
 
 async def _sample_query(workflow_handle: Any) -> tuple[bool, str | None]:
