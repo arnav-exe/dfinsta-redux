@@ -240,7 +240,7 @@ earlier — including, on one memorable occasion, six gaps in a test suite that 
 
 Collected deliberately, because getting these wrong would be worse than omitting them.
 
-- **The current test count is 2,738**, not 2,170. The 2,170 figure is a real snapshot from
+- **The current test count is 2,801**, not 2,170. The 2,170 figure is a real snapshot from
   2026-08-02 and belongs only to the anecdote about that day ("2,170 tests and the runtime-probe
   module had none"). It moves most days — check `docs/IMPLEMENTATION_STATE.md` before quoting it.
 - **The heartbeat gap figure was hand-measured when it was first published** (30.9 s, read with
@@ -340,3 +340,27 @@ Collected deliberately, because getting these wrong would be worse than omitting
   directory is redundant" are the same statement.
 - The sweeper's most important test is that a mistyped root deletes **nothing** — not that it
   reports what it skipped afterwards, which would mean the damage was already done.
+- **The best find of the day came from asking what a report could honestly say.** The release
+  gate requires seven kinds of evidence per hook. One of them, `static_verified`, appeared in
+  six places — all of them inside the file that *defines* the enum. Nothing produced it. The
+  verifier that computes exactly that fact writes a JSON file and imports no pipeline module at
+  all. So release readiness had never passed for any hook on any version and structurally could
+  not, and every port ended by printing "7 hooks still lack post-build evidence" — a message
+  that read like a to-do list and was actually a bug report.
+  It hid behind a green suite *and* a successful port, because the driver only ever wrote the
+  **pre-apply** readiness file; the post-build one went to stdout and nowhere else. This is the
+  same shape as three earlier findings — a gate with no producer, rulings with no consumer,
+  hook resolution that was hand-authored — and the tell is identical every time: grep the name
+  across the tree and count the *modules*, rather than reading the module that defines it,
+  which always looks finished.
+- **The fix had to invent per-hook attribution, and the honest bit is that it cannot always
+  have it.** The verifier checks symbols per DEX file, and three Reels hooks all inject the same
+  call — so the report says the symbol is present without saying which hook that proves. The
+  claim now records `sole` or `shared`. A build carrying the project's own execution probes
+  attributes cleanly, because each probe symbol names its hook; a build without them does not.
+  Recording which is a lot more useful than picking one and hoping.
+- **And the producer's own tests found a defect in it within the hour.** The "a hook that proved
+  nothing is a failure, not a skip" branch was unreachable from the only caller, so such a hook
+  vanished from the count entirely — a two-hook port reported "static_verified: 1 of 1". A
+  denominator that shrinks to match the numerator is a nice, concrete example of why "N of M"
+  is worth testing.

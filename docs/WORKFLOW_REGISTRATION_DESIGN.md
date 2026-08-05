@@ -720,6 +720,50 @@ The operational lesson is smaller and sharper: **a run root is the only copy of 
 and the harness requires the root not to exist**, so the natural way to re-run a target is to
 pick a new name — or, as happened here, to lose the previous record.
 
+## 3i — 430, measured, and the timeout stays at 5 minutes (2026-08-05)
+
+The run §3g asked for. Clean: four stages, verification success with 8 assertions, **zero
+activity failures**, History 62,347 bytes.
+
+| | 430 before | 430 after |
+|---|---|---|
+| query samples answered | 31 of 144 (21%) | **78 of 90 (86%)** |
+| longest blocked stretch | 34 samples | **4 samples** |
+| `prepare_replay_verification_gate` | 80% | **0%** |
+| `replay_apply_tree` | 91% | 6% |
+| `replay_decode` | 80% | 12% |
+| `replay_build_patched_apk` | 68% | 26% |
+
+Both figures are recomputed by `tools/analyse_replay_run.py` from the committed records, so
+this table is reproducible in a way §3f's and §3g's were not.
+
+**The gate stage went 80% to 0%, which is §3h landing exactly where it was aimed** — and the
+useful part is again what did *not* move: build stayed the worst at 26%.
+
+**And the answer to the open question is no: the heartbeat timeout must not come down.**
+
+| stage | beats | worst gap |
+|---|---|---|
+| decode | 10 | 30.0 s |
+| apply | 14 | 30.0 s |
+| build | 10 | **111.6 s** |
+
+340's worst gap was 30.9 s, which made 300 s look like 10x margin. On 430 it is **2.7x**. The
+caution §3g recorded — *"only 340 is measured; 430 is larger and was more loop-blocked, so
+tightening further should wait for it"* — was load-bearing, and this is what it was protecting.
+
+**The 111.6 s is one block, and it is now located.** The build stage's heartbeat sequence is
+exactly 30.0 s twenty-two times and then 111.6 s once, near the end: `load_decoded_tree` plus
+`verify_materialized_decoded_tree` for the framework cache and the patched tree, running on the
+loop *after* the build subprocess returns. Neither manifest is used afterwards — the calls
+exist only to check — so both now go through `_load_and_verify_tree` in a thread, at all three
+sites (two in build, one in decode). The supervisor is `_await_thread_work` rather than a bare
+await because these sit inside `try` blocks holding directory descriptors, which is the case
+that rule was written for.
+
+Whether that recovers the margin is **unmeasured**, and the next 430 run is what settles it.
+The timeout stays at 300 s until it does.
+
 **Stale attempt workspaces are removed.** `src/dfinsta_pipeline/reaper.py`. Nothing had ever
 removed one, and §3d's change made it press: a cancelled stage now releases its claim, so
 retries happen where they previously could not, each minting a fresh leaf beside the one

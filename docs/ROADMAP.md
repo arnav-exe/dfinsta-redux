@@ -420,6 +420,17 @@ stopping at the first stage that cannot produce what the next needs.
       APK byte-identical to the hand-signed one.
 - [x] The run correctly reports that the APK is **not release-ready** because post-build
       evidence is absent. That message is the point of the whole exercise.
+      **Corrected 2026-08-05, and the correction matters more than the item.** That message was
+      partly a bug report, not a to-do list. `EvidenceKind.STATIC_VERIFIED` is required of every
+      hook by all three requirement sets and appeared in **six places, all inside
+      `evidence.py`** — nothing in `src/` or `tools/` produced one, and
+      `tools/verify/verify_build.py`, which computes exactly that fact, imports no pipeline
+      module at all. So `report("post_build")` escalated 7 of 7 hooks on every version for a
+      reason no hook could fix, and release readiness was unsatisfiable by construction.
+      `driver.hook_symbol_map` + `driver.static_verified_claims` close it; nothing gates on
+      post-build readiness today, so the change makes the report true rather than changing what
+      the pipeline does. The remaining escalations — `runtime_probe` and `differential` — are
+      the real to-do list.
 - [x] Same run with the two settings hooks — both now resolve mechanically and the
       own-profile guard is device-verified.
 - [x] **Instagram 440, from the stock APK, with no proposals of any kind: 7/7 hooks

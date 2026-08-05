@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-05, branch `port-430`. Suite: **2738 tests**, one expected skip,
+Resume point as of 2026-08-05, branch `port-430`. Suite: **2801 tests**, one expected skip,
 plus six green tool suites (indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
 device_validation 22).
 
@@ -413,7 +413,7 @@ Stage numbers refer to `pipeline_flowchart.md`.
 | **5c Mechanical validator** | **done** | `tools/resolver/validate_candidates.py` (+8 mutation tests) |
 | **Evidence ledger** | **done** | `src/dfinsta_pipeline/evidence.py` (+144 tests) |
 | 6-7 Apply / Build | done, target-parameterized, driven | `tools/port_430/build.py` |
-| **8 Static verify** | **done, target-neutral** | `tools/verify/verify_build.py` (host-hook map supplied per run) |
+| **8 Static verify** | **done, target-neutral, and now producing evidence** | `tools/verify/verify_build.py` (host-hook map supplied per run); `driver.static_verified_claims` |
 | **9 Runtime verify** | **done, three probe kinds + per-hook identity** | `src/dfinsta_pipeline/probes.py`, `runtime_identity.py` |
 | 10 Decision memory / cost ledger | **done** | `manifest_update.py`, `agent_cost.py` (the `agent_cost report` verdict reads `falling`) |
 | 11 Report | not started | — |
@@ -1032,7 +1032,7 @@ now takes `--custom-tree` and `--replace-dex`; defaults preserve 430.
 ```
 python        .venv/bin/python   (3.13; system python3 is 3.14 and unsupported)
 tests         PYTHONPATH=src .venv/bin/python -W error -m unittest discover -s tests
-              2738 tests, 1 expected skip
+              2801 tests, 1 expected skip
 tool suites   cd tools/<name>/tests && PYTHONPATH=<repo>/src:<repo> python -m unittest discover -s . -t .
               indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
               device_validation 22. Discovery from the repository root does NOT work:
@@ -1241,8 +1241,10 @@ including the `/clips/discover` added the same day, are present as bytes in `cla
 This is the only check that reaches the artifact; `unenforced_endpoints` and
 `undeclared_endpoints` both read text.
 
-**4. THE POST-BUILD EVIDENCE GATE CANNOT BE SATISFIED.** Found 2026-08-05 while inventorying
-what a stage-11 report could honestly say, and verified two ways rather than taken on report.
+**4. ~~THE POST-BUILD EVIDENCE GATE CANNOT BE SATISFIED.~~ Closed 2026-08-05**, hours after it
+was found, by `driver.hook_symbol_map` + `driver.static_verified_claims`. Found while
+inventorying what a stage-11 report could honestly say, and verified two ways rather than taken
+on report.
 
 `EvidenceKind.STATIC_VERIFIED` appears in exactly six places, **all of them in `evidence.py`** —
 the enum (`:110`), `ALLOWED_PRODUCERS` (`:123`), `CATCHES` (`:141`), `PHASES` (`:163`,
@@ -1258,9 +1260,40 @@ every one missing `static_verified`. So release readiness has never passed for a
 version and structurally cannot. Same shape as the feature gate having no producer and the
 rulings having no consumer — a requirement whose satisfier was never wired.
 
-**Why a green suite and a successful port both hide it**: the driver persists only the
-*pre-apply* readiness report (`driver.py:872-875`); the post-build one is computed at
-`driver.py:979` and printed to stdout, never written.
+**Why a green suite and a successful port both hid it**: the driver persists only the
+*pre-apply* readiness report; the post-build one is computed after the build and printed to
+stdout, never written.
+
+**The fix, and the honest part of it.** `hook_symbol_map` collects the same DFInsta symbols
+`host_hook_map` does but keys them by *hook* instead of unioning them per DEX — the union is
+exactly what made the verifier's own report unusable as per-hook evidence, since three Reels
+hooks contribute `Lcom/dfinstagram/hooks; replaceReelsEndpoint` and the report cannot say which
+was proven. `static_verified_claims` turns that map plus the report into one claim per hook,
+and records `attribution: sole | shared | none` beside the verdict, the same distinction
+`runtime_probe` draws for a signal two hooks emit. On the real 440 build `tigon_url_block` is
+`sole`; the three Reels hooks and the two settings hooks are `shared`. The probe symbol
+`Lcom/dfinstagram/probe; h_<hook_id>` is always sole, so a probe-instrumented build attributes
+cleanly and a bare one does not — a fact about the build, not a defect in the reader.
+
+Nothing gates on post-build readiness today (`finalize.py` never reads it, and the driver's
+`require_evidence` check is pre-apply), so this changed no behaviour. It made the report true.
+
+**A defect in the producer, found by its own tests within the hour and fixed.**
+`static_verified_claims`'s vacuous-pass branch — a hook with no symbols is `failed`, not skipped
+— was unreachable from its only caller, because `hook_symbol_map` populated its map only where
+a symbol matched. So a resolved hook naming nothing of DFInsta's was simply *absent*: no claim,
+and a gate reading `not_exercised` ("nobody looked") where the truth is `failed` ("there was
+nothing to look for"). The visible symptom was worse than the cause — the driver's
+`static_verified: N of M hook(s)` line took its denominator from the claims produced rather than
+the hooks in the run, so a two-hook port printed **`1 of 1`**. Now seeded per resolved hook.
+
+**Still open, a narrower version of the same shape.** A grafted DEX whose only hook contributes
+no symbol gets no entry in `host_hook_map`, so `--host-hooks` asks the verifier to prove nothing
+about its contents — which `host_hook_map`'s own docstring forbids. Seeding an empty entry there
+is *not* the fix: `verify_build` would be handed an assertion it cannot check. What that DEX
+does still get is `grafted_dex_changed`, required of every replaced entry, so it is proven to
+differ from stock and not proven to carry anything in particular. No hook in today's manifest
+triggers it.
 
 **Two things sitting unread in that same committed file.** `install_settings_long_click` runs
 `inconclusive → passed → passed`, which trips the ledger's own retry guard verbatim — *"reached
