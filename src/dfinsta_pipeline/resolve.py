@@ -186,6 +186,13 @@ class HookResolution:
             "escalates": self.escalates,
             "reason": self.reason,
             "descriptor": self.descriptor,
+            # The file the anchor actually matched in. Assigned on every resolved
+            # path and, until now, dropped here -- so the report named a class and
+            # not where it lives, and `driver.host_dex_entries` had to re-derive
+            # the path from an index rather than read it from the resolution that
+            # used it. None when the hook did not resolve, which is the only case
+            # where there is no such file.
+            "smali_path": self.resolution.smali_path if self.resolution else None,
             "searches": [search.to_dict() for search in self.searches],
             "candidates": [candidate.to_dict() for candidate in self.candidates],
             "supplies": [

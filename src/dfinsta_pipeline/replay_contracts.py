@@ -648,6 +648,38 @@ class ToolchainProfileV3:
             for plan in self.execution_plans
         ):
             raise ValueError("Execution plans do not match tool role assignments")
+        # A profile that installs frameworks must PIN the framework directory in
+        # every role that runs afterwards. `RoleExecutionPlan` allows `decode` and
+        # `build` to omit the slot, which is right for a native tool that has no
+        # framework concept at all — but a profile with frameworks is by
+        # definition using one that does, and apktool without `-p` falls back to
+        # its user-global directory under $HOME.
+        #
+        # That directory is the only mutable state any stage can reach outside
+        # its own per-attempt workspace, and `execute`'s mutation guard snapshots
+        # the workspace root, so a write there is invisible. It is also the single
+        # precondition of the one case where releasing a cancelled operation
+        # rather than quarantining it could corrupt an artifact: a subprocess
+        # whose grandchild outlived cancellation, mid-write on a shared
+        # `framework/1.apk` while a second attempt builds against it.
+        #
+        # Checked here rather than in `RoleExecutionPlan` because only the profile
+        # knows whether there are frameworks. Safe for recorded authority —
+        # `admitted_replays_v3` is append-only, so a stricter rule could make a
+        # stored row unloadable, and measured against both completed real runs
+        # every role plan on 340 and 430 already pins the slot.
+        if self.frameworks:
+            unpinned = sorted(
+                plan.role
+                for plan in self.execution_plans
+                if "framework_dir" not in {slot for _, slot in plan.arguments}
+            )
+            if unpinned:
+                raise ValueError(
+                    f"Execution plans {unpinned} declare no framework_dir while the "
+                    "profile installs frameworks; the tool would fall back to a "
+                    "directory shared with every other attempt"
+                )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ToolchainProfileV3:

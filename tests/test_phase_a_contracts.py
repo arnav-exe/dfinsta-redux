@@ -357,6 +357,62 @@ class StoreAndLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "owner"):
                 ledger.release_pending_operation("operation-1", "owner-1")
 
+    def test_a_stale_owner_cannot_ride_the_idempotency_shortcut(self) -> None:
+        """The owner is checked BEFORE the already-recorded shortcut.
+
+        `record_effect` returned early when the claim was already in `effect`
+        with byte-identical output, and that test ran ahead of the owner check —
+        so a caller holding the same bytes returned successfully without ever
+        being compared to the claim. Unreachable while only one attempt can run,
+        and live the moment a cancelled operation is released rather than
+        quarantined, which is exactly what would let a zombie attempt reach this
+        line at all.
+
+        The bytes here are identical on purpose: that is the whole point. If the
+        outputs differed, the status check would have caught it anyway and the
+        ordering would not matter.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory) / "ledger.sqlite3")
+            output = ArtifactRef(
+                1, "test", "b" * 64, 1, f"cas://sha256/{'b' * 64}", "operation-1", ()
+            )
+            ledger.begin_operation("operation-1", "test", "a" * 64, "owner-1", retry_safe=False)
+            ledger.record_effect("operation-1", "owner-1", output)
+
+            # The owner replaying its own effect still short-circuits.
+            self.assertEqual(ledger.record_effect("operation-1", "owner-1", output), output)
+            # A different owner with the SAME bytes is refused, not admitted.
+            with self.assertRaisesRegex(ValueError, "owner does not match"):
+                ledger.record_effect("operation-1", "owner-2", output)
+            self.assertEqual(ledger.operation_event_count("operation-1", "effect"), 1)
+
+    def test_completing_needs_the_owner_published_effect_not_an_owner_token(self) -> None:
+        """`complete_operation` takes no owner, and that is sound rather than lax.
+
+        Completing requires the claim to be in `effect` with byte-identical
+        `output_json`, and only the owner could have written that — `record_effect`
+        is owner-fenced. So the effect IS the authorisation. Pinned because the
+        absent owner check reads like an oversight next to its neighbours.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory) / "ledger.sqlite3")
+            output = ArtifactRef(
+                1, "test", "b" * 64, 1, f"cas://sha256/{'b' * 64}", "operation-1", ()
+            )
+            other = ArtifactRef(
+                1, "test", "c" * 64, 1, f"cas://sha256/{'c' * 64}", "operation-1", ()
+            )
+            ledger.begin_operation("operation-1", "test", "a" * 64, "owner-1", retry_safe=False)
+            # Nothing published yet: completing is refused however it is asked.
+            with self.assertRaisesRegex(ValueError, "cannot be completed"):
+                ledger.complete_operation("operation-1", output)
+            ledger.record_effect("operation-1", "owner-1", output)
+            # Different bytes are refused even though the claim is in `effect`.
+            with self.assertRaisesRegex(ValueError, "cannot be completed"):
+                ledger.complete_operation("operation-1", other)
+            self.assertEqual(ledger.complete_operation("operation-1", output), output)
+
     def test_operation_owner_token_must_be_nonempty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ledger = Ledger(Path(directory) / "ledger.sqlite3")

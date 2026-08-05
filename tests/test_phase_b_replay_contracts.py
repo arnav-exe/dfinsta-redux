@@ -1400,6 +1400,69 @@ class ReplayContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "path arguments"):
             non_path_profile.validate_capability("decode", non_path)
 
+    def test_a_profile_with_frameworks_must_pin_the_framework_directory(self) -> None:
+        """The tool's fallback is a directory shared with every other attempt.
+
+        `RoleExecutionPlan` lets `decode` and `build` omit the slot, which is
+        right for a native tool that has no framework concept —
+        `test_v3_native_tool_plan_needs_only_role_io_paths` is that case and must
+        keep passing. But a profile that *installs* frameworks is using a tool
+        that has one, and apktool without `-p` writes under $HOME. That is the
+        only mutable state a stage can reach outside its own workspace, and
+        `execute`'s mutation guard snapshots the workspace root, so it is
+        invisible.
+        """
+        base = profile_v3(with_framework=True)
+        self.assertTrue(base.frameworks)
+
+        for role in ("decode", "build"):
+            with self.subTest(role=role):
+                plans = tuple(
+                    replace(
+                        plan,
+                        arguments=tuple(
+                            pair for pair in plan.arguments if pair[1] != "framework_dir"
+                        ),
+                    )
+                    if plan.role == role
+                    else plan
+                    for plan in base.execution_plans
+                )
+                with self.assertRaises(ValueError) as caught:
+                    replace(base, execution_plans=plans)
+                self.assertIn("framework_dir", str(caught.exception))
+                self.assertIn(role, str(caught.exception))
+                self.assertIn("shared with every other attempt", str(caught.exception))
+
+        # The positive control: the unmodified profile, which pins it everywhere,
+        # is accepted. Without this the test would pass against a rule that
+        # rejected every framework profile.
+        self.assertEqual(
+            replace(base, execution_plans=base.execution_plans).frameworks, base.frameworks
+        )
+
+    def test_a_profile_without_frameworks_may_omit_it(self) -> None:
+        """The rule is about frameworks, not about roles."""
+        base = profile_v3(with_framework=False)
+        self.assertFalse(base.frameworks)
+        plans = tuple(
+            replace(
+                plan,
+                arguments=tuple(
+                    pair for pair in plan.arguments if pair[1] != "framework_dir"
+                ),
+            )
+            if plan.role == "decode"
+            else plan
+            for plan in base.execution_plans
+        )
+        relaxed = replace(base, execution_plans=plans)
+        self.assertNotIn(
+            "framework_dir",
+            {slot for plan in relaxed.execution_plans for _, slot in plan.arguments
+             if plan.role == "decode"},
+        )
+
     def test_v3_native_tool_plan_needs_only_role_io_paths(self) -> None:
         base = profile_v3()
         tool = replace(

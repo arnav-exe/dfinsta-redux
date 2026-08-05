@@ -393,10 +393,16 @@ class Ledger:
                 raise ValueError("Operation was not started")
             if output.producer_operation_id != operation_key:
                 raise ValueError("Effect producer does not match operation")
-            if row[3] == "effect" and row[4] == output_json:
-                return output
+            # Owner FIRST, then idempotency. The other order let a caller who
+            # happened to hold byte-identical output return successfully without
+            # ever being checked against the claim -- unreachable while only one
+            # attempt can run, and live the moment a cancelled operation is
+            # released rather than quarantined, which is what would let a zombie
+            # attempt reach this line at all.
             if row[2] != owner_token:
                 raise ValueError("Operation effect owner does not match claim")
+            if row[3] == "effect" and row[4] == output_json:
+                return output
             if row[3] != "pending":
                 raise ValueError("Operation cannot record effect")
             connection.execute(
@@ -422,6 +428,12 @@ class Ledger:
                 "WHERE operation_key = ?",
                 (operation_key,),
             ).fetchone()
+            # No owner check here, deliberately, and it is not an oversight the
+            # way `record_effect`'s ordering was: completing requires the claim to
+            # already be in `effect` with byte-identical `output_json`, which only
+            # the owner could have written -- `record_effect` is owner-fenced
+            # above. So the effect IS the authorisation, and a second caller can
+            # only ever complete the same bytes the owner published.
             if row and row[2] == "completed" and row[3] == output_json:
                 return output
             if not row or row[2] != "effect" or row[3] != output_json:
