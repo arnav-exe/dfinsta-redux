@@ -577,6 +577,22 @@ Heartbeats still come last, and `DEFAULT_GRACEFUL_SHUTDOWN_SECONDS` must be rais
 (only fault-injection mocks); `_capture_decoded_tree_manifest` is named by no test; the four
 supervisors have one direct test between them; nothing anywhere asserts a heartbeat.
 
+**A working precedent for the heartbeat itself, found 2026-08-05.** Phase A's `apply_activity`
+is the one Activity in the repo that calls `activity.heartbeat()`, and it does so **from the
+event loop** in an `async def` activity — which is exactly the shape F4 needs and the opposite
+of the from-a-thread shape that fails. It is worth reading before writing the heartbeater.
+
+It also still carries the pre-2026-08-05 cancel handler — a bare
+`except asyncio.CancelledError: quarantine_operation(...)`. **Examined and deliberately left**,
+because its situation is not the replay stages': it claims with `retry_safe=True` rather than
+`False`, it has no workspace and launches no subprocess, and its `record_effect` happens
+*before* the heartbeat loop, so a cancellation there quarantines an operation whose effect is
+already published and which `_adopt_existing` could otherwise adopt. That is arguably wrong for
+the same reason the replay handler was, but it is a different argument about a different
+activity — and this one's spec carries injection knobs (`apply_delay_seconds`,
+`crash_after_effect`), so what it is *for* should be established before its semantics are
+changed.
+
 ## 3b. Known follow-ups, deliberately not done in this slice
 
 **F1. The harness and the Workflow derive different verification-gate ids.**

@@ -137,3 +137,179 @@ The reviews repeatedly found useful distinctions that self-consistent tests miss
 - Added retry-safe abandoned-claim recovery, legacy-ledger migration, admitted-`RunSpec` executor binding, strict terminal-result invariants, exclusive gate-expiry validation, and cancellation-safe process creation.
 - Replaced attempt-number takeover with ledger-owned cross-execution fencing, serialized concurrent migrations, and supervised late subprocess handles.
 - Replayed fetched History successfully, deliberately triggered nondeterminism with incompatible code, and reached 35 Phase A tests plus 97 passing Python tests overall.
+
+---
+
+## The bug that kept happening (the strongest thread in the whole story)
+
+If the post needs one spine, this is it. The same species of bug appeared at least a dozen
+times in two weeks, always with the identical signature: a module — or a value, or a
+registration — fully implemented, heavily tested, passing, documented as done, and **connected
+to nothing**. Nothing produced its input, or nothing consumed its output, or nothing could
+invoke it.
+
+The project ended up coining its own phrase for it, and the phrase is in shipped source
+(`src/dfinsta_pipeline/assessment.py`): *a value that exists on disk and reaches nothing is
+**a wire that looks connected**.* And the reason it kept recurring is in `rulings.py`: *every
+piece is complete, tested and green, so the chain **looks** finished.*
+
+A partial inventory, with how long each gap lasted:
+
+| The thing | Gap |
+|---|---|
+| `feature_gate.py` — 624 lines, 54 tests, one importer: its own test file | 2 days |
+| The gate's rulings had no consumer — a human could rule and nothing read the verdict | 1 day |
+| `suppressed_candidates` had zero callers — *inside the module written to fix disconnection* | same day |
+| `assessment_record.record` had zero callers, so no port ever produced an assessment | 1 day |
+| `rulings.py` had a `main()` and no `__main__` guard: `python -m …` ran nothing, exit 0 | same day |
+| **14 Temporal Activities registered, 0 of them runnable** | 4 days |
+| `claims.py` — the recovery tool — zero importers *and* zero tests, marked done | 1 day |
+| `EvidenceKind.DIFFERENTIAL` — *required* of every hook since the ledger's birth, never produced | months |
+| A written-down loose end that **named the wrong module** | same day |
+
+That last one is the most interesting for a post, because it is the failure mode *of the fix*.
+A note said "stage 3 is a standalone CLI the driver never invokes; nothing schedules the thing
+that decides what to assess." Both sentences were true — and about **different modules**.
+Fixing what it named would have left the real gap open while the list said it was closed.
+
+Two lessons the project actually adopted:
+
+- **Check the ends of a chain by grep, not by reading the module.** A module is not done when
+  its code is done; ask what produces its input and what consumes its output.
+- **Run the documented command.** The 14-unrunnable-Activities bug survived four days and an
+  exhaustive registration test suite. It took under a minute to find once someone actually
+  started the worker: it registered every Activity and could supply neither the source root nor
+  the executor path that three of them require.
+
+There is a counterweight worth including, because it stops the lesson being "connect
+everything". `surface_diff.py` — 1,155 lines, 95 tests — is invoked by nothing, and the audited
+answer was **not to connect it**. Of the 105 candidates from its one real run, 44 were
+permalink spellings for a single surface the app already blocks, and putting 105 candidates
+through a gate proven at 4 would have turned "every candidate must be ruled on" into a rubber
+stamp — the exact check that exists to prevent that. Its one genuinely actionable finding was
+reachable by fixing a different stage instead.
+
+## Rules that looked deliberate and turned out to be residue
+
+Twice in one day, both in cancellation handling, both found by asking "why is this like this?"
+and getting no answer from the code, the comments, the commit messages or the docs.
+
+Three of five replay stages quarantined an operation unconditionally when cancelled — which is
+terminal, requiring a new run id and a new human approval to recover — while the other two
+released it if nothing had started yet. The git archaeology is almost comic: **it is a date,
+not a decision.** Everything written on 2026-07-28 got one shape; everything from 07-29 on got
+the other. Zero tests pinned either behaviour for the entire life of the drift.
+
+The better half of the story is what happened next. An adversarial review established that the
+differing branch was **unreachable** — cancellation in Python asyncio is delivered at a
+suspension point, and there is no `await` between claiming an operation and creating its
+workspace, so the cancellation is latched until the launch by which time both shapes behave
+identically. The change was still right, but it changed nothing that runs, and the real
+temptation was to tick the roadmap box it *looked* like it closed. Leaving a green checkbox
+over a live hazard is worse than leaving the box unticked, because the next reader stops
+looking.
+
+## Measurement beat argument, repeatedly
+
+The most quotable numbers, all from real runs rather than estimates:
+
+- **The worker could not answer anything while a stage ran.** 66 of 86 query samples went
+  unanswered on Instagram 340 and 113 of 144 on 430; the longest unbroken blocked stretch was
+  560.9 s (9.35 min) on 340 and 691.4 s (11.5 min) on 430. The worker logged 191
+  `query task not found, or already expired` warnings across the two runs. Cause: the stages
+  walk, hash and re-write tens of thousands of files synchronously on the event loop.
+- **That falsified a written design claim.** The docs had argued heartbeats were a small change
+  "because every long operation inside a stage yields the event loop". Measured: the decode
+  stage contains no `asyncio.to_thread` at all. The retraction is a commit —
+  `Retract the claim that a wrapper heartbeater would work`.
+- **The addictiveness calibration.** Six of seven candidate signals were noise, and the random
+  control landed *between* the two labelled groups. That is why the assessment has no composite
+  score — a scored list would be "here is the top of a ranking", which is a claim nothing
+  supports.
+- **Agent invocations per port: 439 → 2, 440 → 0.** 440 arrived *after* the fingerprints that
+  resolve it were written, and ported with one command and no agent calls at all. Two points is
+  a fall; the project's own roadmap says a third is needed before it is a trend.
+- **`by_anchor` selecting 1 class out of 182,479** on a version it had never seen.
+
+The practice underneath all of this: copy the source out of the tree, mutate it, and check the
+tests actually fail. It found roughly two dozen real defects, several in code written minutes
+earlier — including, on one memorable occasion, six gaps in a test suite that had just caught
+10 out of 10 deliberately introduced bugs.
+
+## Corrections — things a post should not overstate
+
+Collected deliberately, because getting these wrong would be worse than omitting them.
+
+- **The current test count is 2,672**, not 2,170. The 2,170 figure is a real snapshot from
+  2026-08-02 and belongs only to the anecdote about that day ("2,170 tests and the runtime-probe
+  module had none").
+- **"100% loop-blocked" is a derived complement**, not the recorded measurement. What was
+  recorded is "probe ticks served: 0 of ~6,000". Prefer the raw form.
+- **The threading benchmark is not reproducible from the repository** — no benchmark script was
+  committed. Treat those figures as a one-off measurement, or replace them with the live-run
+  numbers, which are reproducible.
+- **The cost metric counts hooks that needed an agent, not model calls**, and the count fell
+  because a *human* wrote the `by_anchor` fingerprints from what 439's agents had cited. The
+  generaliser proposes; it does not commit.
+- **430 and 439 share an architecture**, so agreement between them is closer to one data point
+  than two. The docs say so themselves. 440 is the genuine third.
+- **Several claims in the docs are self-corrections** — one commit retracts a heartbeat claim,
+  a later one corrects that correction, another retracts a note that "had it backwards". These
+  are not embarrassments to hide; they are the measurement discipline working, and they are
+  probably the most honest thing in the repository.
+
+## Timeline (continued)
+
+### 2026-07-27 → 08-01 — from one port to a pipeline
+
+- The hook manifest replaced hand-authored per-version resolutions: anchors became patterns
+  with typed captures, so a payload templates off whatever the anchor matched. Five of seven
+  hooks resolved mechanically on both 430 and 439 immediately; the two settings hooks did not,
+  and the tier taxonomy had predicted exactly that split.
+- A blind holdout answered the question the whole roadmap hinged on: *can a mapper rediscover
+  the anchors unaided?* Yes — including the hard settings site, found by two provably
+  uncontaminated mappers from an isolated stock decode. Verified from agent transcripts rather
+  than from denials.
+- "Presence is not execution" arrived as the lesson that reshaped everything. Four separate
+  failures — a `minshop`/`minishops` substring mismatch, the 430 settings hook, the 439
+  action-bar hook, and a verifier searching for a string DEX does not store — turned out to be
+  one failure: *something present and never reached*. Adding a check per incident would always
+  have been one version behind, so every hook now announces its own execution. On the first run
+  carrying that, two more hooks turned out never to run.
+
+### 2026-08-02 → 08-03 — the decide machine
+
+- Stage 4 was built to answer "is this new feature addictive?" from evidence rather than
+  assertion, after a calibration experiment ruled out a composite score.
+- The durable human gate landed: dispositions go to content-addressed storage, the decision
+  binds their hash, and every candidate must carry a ruling — one nobody ruled on blocks rather
+  than defaulting to ignore.
+- The design point worth stealing: **the update validator is a filter, the Activity is the
+  authority.** A Temporal update validator runs in a sandbox with no I/O, so it cannot read the
+  document the rulings live in. The admitting Activity therefore re-derives the request from the
+  ledger rather than trusting the workflow's copy. The first tests for it found the authority
+  was checking *less* than the filter.
+
+### 2026-08-04 — the first real port through the registered workflow
+
+- Instagram 440 ported itself for zero agent invocations, was device-proved, and shipped
+  through the release gate.
+- Both 340 and 430 ran end to end through the registered Temporal workflow on a live server for
+  the first time. It found two defects in its first minute, having passed every unit test.
+- History stayed at 64,563 bytes of a 256 KB budget — the design that passes the admitted
+  replay by value would have carried over 510 KB of recipe and source paths through Temporal
+  history on every stage.
+
+### 2026-08-05 — hardening, and the decide machine gets sharper
+
+- A leading slash was hiding an entire grouping. The manifest normalises `/clips/discover` to
+  `clips/discover`; the index holds the app's own spelling. So the lookup found nothing, and
+  the class it should have found also held `delivery/background_prefetch` — a surface absent
+  from 430, present on 439, and the one signal family that survived the addictiveness
+  calibration. Stage 4a went from 4 candidates to 6.
+- Better still: the *other* stage had already flagged that endpoint independently, riding with
+  the same two Reels endpoints. Two stages built on different evidence agreeing on one
+  candidate.
+- Cancellation became non-destructive, gated on whether the subprocess could be *proven* dead.
+- The decoded-tree walks moved off the event loop. Mid-decode queries that used to time out now
+  answer in ~110 ms.
