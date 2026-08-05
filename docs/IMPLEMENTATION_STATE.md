@@ -403,8 +403,9 @@ Stage numbers refer to `pipeline_flowchart.md`.
 | 6-7 Apply / Build | done, target-parameterized, driven | `tools/port_430/build.py` |
 | **8 Static verify** | **done, target-neutral** | `tools/verify/verify_build.py` (host-hook map supplied per run) |
 | **9 Runtime verify** | **done, three probe kinds + per-hook identity** | `src/dfinsta_pipeline/probes.py`, `runtime_identity.py` |
-| 10-11 Manifest update / report | not started | — |
-| Durable orchestration | `ReplayRunWorkflow` registered, **never run for real** | `src/dfinsta_pipeline/` |
+| 10 Decision memory / cost ledger | **done** | `manifest_update.py`, `agent_cost.py` (the `agent_cost report` verdict reads `falling`) |
+| 11 Report | not started | — |
+| Durable orchestration | `ReplayRunWorkflow` **run for real on a live server**, 340 and 430 | `src/dfinsta_pipeline/` |
 
 **The driver** is `python -m dfinsta_pipeline.driver <stock.apk> --out <dir>`. It runs
 extract → index → resolve → pre-apply evidence gate → compose → build → static verify,
