@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-05, branch `port-430`. Suite: **2672 tests**, one expected skip,
+Resume point as of 2026-08-05, branch `port-430`. Suite: **2738 tests**, one expected skip,
 plus six green tool suites (indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
 device_validation 22).
 
@@ -1032,7 +1032,7 @@ now takes `--custom-tree` and `--replace-dex`; defaults preserve 430.
 ```
 python        .venv/bin/python   (3.13; system python3 is 3.14 and unsupported)
 tests         PYTHONPATH=src .venv/bin/python -W error -m unittest discover -s tests
-              2672 tests, 1 expected skip
+              2738 tests, 1 expected skip
 tool suites   cd tools/<name>/tests && PYTHONPATH=<repo>/src:<repo> python -m unittest discover -s . -t .
               indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
               device_validation 22. Discovery from the repository root does NOT work:
@@ -1042,7 +1042,17 @@ replay run    .venv/bin/python -m tests.integration.test_registered_replay_harne
                   --targets 340 --run-root /abs/path/outside/the/repo
               About 55 min for 340 and 75 for 430, and roughly 10 GB of workspace each.
               Refuses a run root that exists, and refuses to start over a workflow id
-              that is still open, naming the terminate command.
+              that is still open, naming the terminate command. THE RUN ROOT IS THE
+              ONLY COPY OF ITS MEASUREMENTS: 340 ran twice on 2026-08-05 and only
+              the second record survives, so §3g of the design note cites a record
+              that no longer exists.
+read a run    .venv/bin/python tools/analyse_replay_run.py <run-root>/success.json
+              Query availability, per-stage blocking, longest blocked stretch and
+              worst heartbeat gap. Every percentage the design note quotes.
+sweep         .venv/bin/python -m dfinsta_pipeline.reaper \
+                  --attempts-root <state>/attempts --ledger <state>/ledger.sqlite3
+              Reports by default; removes only with --confirm, only workspaces the
+              ledger records as effect/completed, and only above a 3-hour age floor.
 assess a run  add --state-root/--assessment-run-id/--actor/--owner-token to the driver
 manifest vs   .venv/bin/python -m dfinsta_pipeline.rulings --audit
 the app       exit 1 if either direction disagrees
@@ -1166,8 +1176,12 @@ what it named would have left the real gap open while the list said it was close
   `candidate_id`, which `assessment.candidate_ids` requires. The two stages are siblings on the
   same `api_surface.json`. Wiring it into the driver is optional and would need a
   `--baseline-index`; giving its output a consumer is a separate design question.
-- **`claims.py` has zero importers and zero tests.** The recovery path for a wedged claim,
-  marked done in the roadmap, has never been exercised.
+- **`claims.py` has zero importers**, and had zero tests until 2026-08-05; `tests/test_claims.py`
+  now covers it. Zero importers is correct rather than a gap — it is an operator CLI, invoked by
+  a human at the moment a run wedges — but it means the suite is the only thing that has ever
+  run it. `reaper.py` deliberately does not call it either: releasing a claim and removing a
+  directory are separate decisions, and a sweeper that quietly released claims would be doing
+  the one thing `claims.py` refuses to do without a typed-back owner token.
 
 **Already banked — do not redo it.** 440's ledger carries identity claims for all seven hooks,
 four of them passing, so the 441 differential will be four comparisons wide against 439's two.
@@ -1227,6 +1241,35 @@ including the `/clips/discover` added the same day, are present as bytes in `cla
 This is the only check that reaches the artifact; `unenforced_endpoints` and
 `undeclared_endpoints` both read text.
 
+**4. THE POST-BUILD EVIDENCE GATE CANNOT BE SATISFIED.** Found 2026-08-05 while inventorying
+what a stage-11 report could honestly say, and verified two ways rather than taken on report.
+
+`EvidenceKind.STATIC_VERIFIED` appears in exactly six places, **all of them in `evidence.py`** —
+the enum (`:110`), `ALLOWED_PRODUCERS` (`:123`), `CATCHES` (`:141`), `PHASES` (`:163`,
+`POST_BUILD`), `MECHANICAL_REQUIREMENTS` (`:178`) and `ALREADY_APPLIED_REQUIREMENTS` (`:196`);
+`AGENT_REQUIREMENTS = frozenset(EvidenceKind)` requires it of agent-resolved hooks too. **No
+module in `src/` or `tools/` produces one.** `tools/verify/verify_build.py` computes exactly
+what the claim is about and imports no `dfinsta_pipeline` module at all, emitting a JSON report
+nothing converts into a claim.
+
+Measured: `EvidenceLedger.report("post_build")` over the committed
+`manifest/runtime_evidence/440.jsonl` gives `complete: False` with **7 of 7 hooks escalating**,
+every one missing `static_verified`. So release readiness has never passed for any hook on any
+version and structurally cannot. Same shape as the feature gate having no producer and the
+rulings having no consumer — a requirement whose satisfier was never wired.
+
+**Why a green suite and a successful port both hide it**: the driver persists only the
+*pre-apply* readiness report (`driver.py:872-875`); the post-build one is computed at
+`driver.py:979` and printed to stdout, never written.
+
+**Two things sitting unread in that same committed file.** `install_settings_long_click` runs
+`inconclusive → passed → passed`, which trips the ledger's own retry guard verbatim — *"reached
+passed only after a failure (3 attempts). Re-running until green is how a ledger gets
+defeated"*. And **all 23 claims carry `recorded_at: ""`**: `evidence.stamped()` exists and the
+driver never calls it, so no stored claim can be ordered in time, dated, or attributed to a
+port. `EvidenceClaim` also has no version and no build hash, so a claim cannot be joined to the
+APK it is about — which is the first thing stage 11 would need.
+
 **Small, batchable:**
 
 - `work/by-anchor-proposal.json` is in a bespoke schema `read_proposals` refuses. The producer
@@ -1266,5 +1309,12 @@ This is the only check that reaches the artifact; `unenforced_endpoints` and
 - `RESERVED_CAPTURE_NAMES` restates the regex lookahead and has no runtime consumer; a
   test binds them so they cannot drift.
 - The `type` kind accepts object and primitive arrays but not every exotic descriptor.
-- The registered `ReplayRunWorkflow` has never executed a real port — the real-evidence
-  harness drives Activities directly.
+- ~~The registered `ReplayRunWorkflow` has never executed a real port.~~ **Closed 2026-08-04**:
+  340 and 430 both completed against a live Temporal server, driven by
+  `tests/integration/test_registered_replay_harness.py`. Left in place because the sentence it
+  replaces was true for three weeks and the list is read for what is *not* done.
+- `load_decoded_tree` still runs on the event loop inside the decode and build checkpoint
+  Activities (residual 5% and 17% blocked on a real port, down from 82% and 62%). The gate
+  stage, which was 100%, now derives in a thread. The primitive cannot be threaded at its own
+  call sites the way the other two were, because four of its callers are synchronous validators
+  that already run *inside* `asyncio.to_thread` — the unit that moves is the Activity body.

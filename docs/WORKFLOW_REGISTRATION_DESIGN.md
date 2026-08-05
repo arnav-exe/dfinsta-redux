@@ -657,6 +657,100 @@ stop being destructive before a heartbeat could safely open the server-cancellat
 the loop had to be free before a heartbeater could run at all. Both were measured, not argued,
 and the second produced a free control — the one stage deliberately excluded stayed blocked.
 
+## 3h — the two tails after F4 (2026-08-05)
+
+Both were named in §3g as low priority and both are now done, because between them they are
+what the operational-hardening thread left half-finished.
+
+**The gate stage derives in a thread.** §3f scoped the threading change to two primitives and
+predicted `prepare_replay_verification_gate` would stay 100% blocked. It did, which was the
+control that made the diagnosis credible — and then the exclusion stopped being useful and
+started being the defect. Its whole cost is `load_decoded_tree`, reached three levels down
+through `resolve_replay_build`'s receipt validation, which re-reads and re-hashes every blob of
+the patched tree and the framework cache.
+
+**Why the primitive did not move and the Activity did.** §3f called `load_decoded_tree` "a third
+primitive that must move", with 18 call sites. That framing is wrong and the fix would not have
+compiled: four of those callers are *synchronous* validators that already run inside
+`asyncio.to_thread` — `capture_and_verify` and `_validate_replay_final_apk_verification_receipt`
+— and there is no loop to await on inside a thread. So `load_decoded_tree` cannot become
+awaitable the way `materialize_decoded_tree` and `capture_decoded_tree_fd` did. The unit that
+moves is the Activity body. Decode and build still call it on the loop, at a measured 5% and
+17% residual, which is the part that is genuinely low priority.
+
+The wait goes through `_await_thread_work`, the same drain-then-propagate supervisor the
+mutating stages use, even though nothing here holds a directory descriptor and so the
+descriptor-reuse hazard that rule was written for does not apply. The second-order reason
+stands on its own: a thread left hashing gigabytes after its caller moved on competes for the
+CPU it was moved off the loop to free. One rule is easier to keep than two.
+
+**Heartbeat gaps are now recorded by the harness.** The 30.9 s figure in §3g was read by hand
+with `temporal activity describe`, so the measurement that set `_STAGE_HEARTBEAT_TIMEOUT` was
+**not reproducible from the tree** — the same regret already written down about the standalone
+threading benchmark two sections up. `_sample_heartbeats` reads `pending_activities` off
+`describe()` each polling cycle and the run record carries `stage_heartbeats` and
+`worst_heartbeat_gap_seconds`. Read from `describe()` rather than a query on purpose:
+pending-activity state comes from the server's own record and arrives even while the worker is
+too busy to answer anything, which is exactly the condition being measured.
+
+**And the reductions are a committed script**, `tools/analyse_replay_run.py`. Every
+loop-blocking number in §3f and §3g is an aggregation of two arrays in `success.json`, and they
+were being aggregated by hand.
+
+**Running it over the surviving records found something worth knowing about the evidence
+itself.** 340 ran *twice* on 2026-08-05 — once for the threading measurement (committed 19:51)
+and once for heartbeats (record written 20:30) — and only the second run root is on disk. So
+§3g's "after" column reports a run whose record no longer exists. The surviving record is
+consistent with it and not identical:
+
+| | §3g (threading run, record gone) | surviving record, 20:30 |
+|---|---|---|
+| query samples answered | 58 of 63 (92%) | 48 of 53 (90%) |
+| longest blocked stretch | 3 samples | 2 samples |
+| `replay_apply_tree` | 0% | 5% |
+| `replay_decode` | 5% | 0% |
+| `replay_build_patched_apk` | 17% | 18% |
+
+The apply and decode residuals swap places between the two runs, which is the useful part: at
+14-20 samples per stage **one blocked sample is 5-7%**, so those two columns are noise and only
+the order-of-magnitude fall (80-90% → single digits) is a finding. Quote the availability total
+and the longest stretch; do not quote a per-stage residual as though it were stable.
+
+The operational lesson is smaller and sharper: **a run root is the only copy of a measurement,
+and the harness requires the root not to exist**, so the natural way to re-run a target is to
+pick a new name — or, as happened here, to lose the previous record.
+
+**Stale attempt workspaces are removed.** `src/dfinsta_pipeline/reaper.py`. Nothing had ever
+removed one, and §3d's change made it press: a cancelled stage now releases its claim, so
+retries happen where they previously could not, each minting a fresh leaf beside the one
+before it. The safety argument is that every stage publishes to the content store *before* its
+claim leaves `pending` — capture, then `put_bytes`, then `record_effect`, then
+`complete_operation` — so a claim at `effect` or `completed` has a workspace that is redundant
+by construction. Verified by reading the ordering at each site rather than assuming it. No
+adoption path reads a stale workspace either: re-validation materializes a *fresh* `validate-`
+workspace out of the store.
+
+Its refusals are the interesting half. A `pending` claim names its owner and
+`sha256(owner_token)` is the leaf that owner is writing, so the live workspace is identified
+rather than guessed — but a *superseded sibling* under the same key is reapable, which is the
+whole point of that join. `quarantined` needs a flag because the workspace is the only
+surviving record of why a fail-closed check refused. And any child of the root that is not a
+64-hex operation key aborts the whole sweep before anything is removed: a mistyped
+`--attempts-root` is the failure that matters, and a guard that reports what it skipped after
+deleting everything else has not guarded anything.
+
+The minimum-age floor is derived rather than picked. The age a sweeper can measure cheaply is
+the newest mtime of the workspace and its direct children, which is a *lower bound* on how
+recently something was written — a stage that spends an hour filling `output/` never touches
+the parent again. `MIN_AGE_FLOOR_SECONDS` is the longest stage budget, which covers that gap,
+and it computes to the same 10,800 as `DEFAULT_GRACEFUL_SHUTDOWN_SECONDS` for the same reason;
+a test pins the two together so neither drifts alone.
+
+**And its first smoke test found the defect worth recording**: `ValueError` out of
+`_validate_private_directory` escaped the module's refusal channel, so a root with ordinary
+wrong permissions produced a traceback where the contract says `refused: …`, exit 2. That is
+the third module to ship this exact gap.
+
 ## 3b. Known follow-ups, deliberately not done in this slice
 
 **F1. The harness and the Workflow derive different verification-gate ids.**

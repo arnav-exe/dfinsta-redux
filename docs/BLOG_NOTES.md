@@ -240,9 +240,12 @@ earlier — including, on one memorable occasion, six gaps in a test suite that 
 
 Collected deliberately, because getting these wrong would be worse than omitting them.
 
-- **The current test count is 2,672**, not 2,170. The 2,170 figure is a real snapshot from
+- **The current test count is 2,738**, not 2,170. The 2,170 figure is a real snapshot from
   2026-08-02 and belongs only to the anecdote about that day ("2,170 tests and the runtime-probe
-  module had none").
+  module had none"). It moves most days — check `docs/IMPLEMENTATION_STATE.md` before quoting it.
+- **The heartbeat gap figure was hand-measured when it was first published** (30.9 s, read with
+  `temporal activity describe`). The harness records it now, so a post can call it reproducible —
+  but only for runs from 2026-08-05 onward.
 - **"100% loop-blocked" is a derived complement**, not the recorded measurement. What was
   recorded is "probe ticks served: 0 of ~6,000". Prefer the raw form.
 - **The threading benchmark is not reproducible from the repository** — no benchmark script was
@@ -313,3 +316,27 @@ Collected deliberately, because getting these wrong would be worse than omitting
 - Cancellation became non-destructive, gated on whether the subprocess could be *proven* dead.
 - The decoded-tree walks moved off the event loop. Mid-decode queries that used to time out now
   answer in ~110 ms.
+- **The prediction that made the diagnosis believable was about what would *not* change.** The
+  threading fix was deliberately scoped to two of three primitives, and the design note said in
+  advance that one stage would stay 100% blocked. It did. An improvement everywhere is what a
+  placebo looks like; an improvement exactly where you predicted it, and nowhere else, is a
+  diagnosis. The excluded stage was then fixed as its own step.
+- **The fix for that stage was not the one the design note specified**, and finding out why is
+  the more interesting part. The note said "move the third primitive too, 18 call sites". Four
+  of those call sites are synchronous functions that already run *inside* a worker thread —
+  there is no event loop there to await on, so the change as written could not have compiled.
+  The unit that moves is the Activity, not the primitive. A plan can be right about the cause
+  and wrong about the shape of the fix.
+- **The measurement that set the timeout was not reproducible from the repository.** The worst
+  heartbeat gap — 30.9 s, which is why the detection window is 5 minutes rather than 3 hours —
+  had been read by hand off a CLI. The exact regret already written down about an earlier
+  benchmark, repeated within a day of writing it down. The harness records it now.
+- **Nothing had ever deleted an attempt workspace**, and the non-destructive-cancellation fix
+  is what made that urgent rather than tidy: releasing a claim means retries now *happen* where
+  before they were refused, and each one leaves another copy of two APKs and a decoded tree.
+  A safety fix generating a garbage problem is a nice shape for a post. The sweeper is safe for
+  a structural reason rather than a careful one: every stage publishes to content-addressed
+  storage *before* its ledger claim leaves `pending`, so "the ledger says completed" and "the
+  directory is redundant" are the same statement.
+- The sweeper's most important test is that a mistyped root deletes **nothing** — not that it
+  reports what it skipped afterwards, which would mean the damage was already done.

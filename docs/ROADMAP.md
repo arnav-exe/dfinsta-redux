@@ -506,13 +506,19 @@ Reordered 2026-08-03. The two items that stood here are done.
    oversight. **The liveness guard is the change itself**: `process_not_reaped` is, in code,
    the confirmation `claims.py` asks a human for.
 
-   **Two things it deliberately did not do, and they are now the open tail of this item.**
-   Nothing removes stale attempt workspaces, and release makes retries possible where they
-   previously could not happen — a build workspace holds two APKs and a decoded tree, so a
-   reaper or a bounded attempts budget is wanted before this runs unattended for long.
-   And `replay_workflow.py:44-52` still argues `maximum_attempts=2` is safe *from* quarantine
-   being what makes attempt 2 fail closed; under release attempt 2 re-runs the stage, which is
-   intended, but the comment now says the opposite of what happens.
+   **Two things it deliberately did not do. Both now closed.**
+   ~~Nothing removes stale attempt workspaces~~ — `src/dfinsta_pipeline/reaper.py`, 2026-08-05.
+   Release made retries possible where they previously could not happen, and each mints a fresh
+   leaf beside the one before it; a build workspace holds two APKs and a decoded tree. The
+   sweeper removes only what the ledger records as `effect` or `completed`, whose contents are
+   redundant with the content store by construction — every stage publishes before its claim
+   leaves `pending`. It refuses a live `pending` leaf by owner-token hash, refuses anything
+   younger than the longest stage budget, refuses `quarantined` and orphans without an explicit
+   flag, and aborts the whole sweep on any child of the root that is not a 64-hex operation key.
+   ~~And `replay_workflow.py:44-52` still argues `maximum_attempts=2` is safe *from* quarantine~~
+   — corrected the same day: two effects remain impossible because `record_effect` is
+   owner-fenced and the `pending` → `effect` transition runs under `BEGIN IMMEDIATE`, so the
+   release fences the attempt it replaced.
 - [x] **The two tree primitives run off the event loop** (2026-08-05). Measured on a real 340
       port: query availability 23% → **92%**, longest blocked stretch 28 samples → 3, apply
       92% → **0%** blocked, 69 expired query tasks → **0**. The port was unaffected — four
@@ -520,6 +526,12 @@ Reordered 2026-08-03. The two items that stood here are done.
       blocked exactly as predicted, because `load_decoded_tree`'s standalone sites were scoped
       out; that stage runs for seconds, so it is low priority, and the prediction holding is
       the evidence the diagnosis was right.
+- [x] **The gate stage derives in a thread too** (2026-08-05), closing the exclusion above.
+      `load_decoded_tree` could not be threaded at its own 18 call sites the way the other two
+      primitives were: four of its callers are synchronous validators that already run *inside*
+      `asyncio.to_thread`, where there is no loop to await on. So the unit that moved is the
+      Activity body, waited for through the same drain-then-propagate supervisor. Decode and
+      build still call it on the loop, at a measured 5% and 17% residual blocking.
 
 2. ~~Move the two tree primitives off the event loop~~ — done, see above. F4's other
    prerequisite.
