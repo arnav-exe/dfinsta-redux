@@ -1,8 +1,25 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-05, branch `port-430`. Suite: **2671 tests**, one expected skip,
+Resume point as of 2026-08-05, branch `port-430`. Suite: **2672 tests**, one expected skip,
 plus six green tool suites (indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
 device_validation 22).
+
+**Stage 4a now finds six candidates where it found four.** `find_groupings` looked classes up
+by the normalised rule while the index holds the app's own text, so `clips/discover` matched no
+class where `/clips/discover` matched one holding `delivery/background_prefetch` — a surface
+absent from 430 and present on 439, which `surface_diff` had independently classified
+`B_inline` riding with the two Reels endpoints. An audit settled the other half of that
+question: **stage 3 must not feed the feature gate** (44 of its 105 candidates are permalink
+spellings for a surface already blocked, 90 cannot be given a legal candidate id, and 105
+through a gate proven at 4 makes "every candidate must be ruled on" a rubber stamp). See
+`docs/ROADMAP.md`.
+
+**A cancelled replay operation is now released rather than quarantined**, unless its subprocess
+could not be shown to have exited — `executor.ProcessNotReaped` is that signal and
+`activities._releasable` is the rule. Quarantine is terminal, so this is what unblocks
+heartbeats. The remaining prerequisite, threading the decoded-tree primitives, is designed and
+benchmarked in `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3f: on a real 209k-file tree the loop is
+blocked 100% of a capture today, 5-7% in a thread, longest stall 59-67 s versus 0.16 s.
 
 **The registered `ReplayRunWorkflow` has run a real port.** Both 340 and 430 completed on a
 live Temporal server on 2026-08-04, driven by
@@ -1002,7 +1019,7 @@ now takes `--custom-tree` and `--replace-dex`; defaults preserve 430.
 ```
 python        .venv/bin/python   (3.13; system python3 is 3.14 and unsupported)
 tests         PYTHONPATH=src .venv/bin/python -W error -m unittest discover -s tests
-              2671 tests, 1 expected skip
+              2672 tests, 1 expected skip
 tool suites   cd tools/<name>/tests && PYTHONPATH=<repo>/src:<repo> python -m unittest discover -s . -t .
               indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
               device_validation 22. Discovery from the repository root does NOT work:
