@@ -28,6 +28,8 @@ from tests.integration.test_registered_replay_harness import (
     TARGET_EVIDENCE_KEYS,
     _CONFIRM,
     _history_evidence,
+    _sample_heartbeats,
+    _worst_heartbeat_gaps,
     derived_verification_identifiers,
     expected_activity_sequence,
     expected_stages,
@@ -201,6 +203,82 @@ class HarnessWiringTests(unittest.TestCase):
     def test_the_evidence_schema_names_the_worker_outcome(self) -> None:
         """A SIGKILLed worker must not produce evidence identical to a clean exit."""
         self.assertIn("worker_outcome", TARGET_EVIDENCE_KEYS)
+
+
+class HeartbeatSamplingTests(unittest.TestCase):
+    """The heartbeat reader, exercised at rest.
+
+    Two static defects in this harness -- a renamed key and a borrowed stage
+    vocabulary -- each cost a full run to discover, and a run is an hour. So the
+    protobuf walk gets a fast test against a hand-built description rather than
+    being first exercised at minute fifty of a real port.
+    """
+
+    @staticmethod
+    def _description(activities: list[tuple[str, bytes | None]]) -> object:
+        from temporalio.api.common.v1 import Payload
+        from temporalio.api.workflowservice.v1 import DescribeWorkflowExecutionResponse
+
+        raw = DescribeWorkflowExecutionResponse()
+        for name, payload in activities:
+            pending = raw.pending_activities.add()
+            pending.activity_type.name = name
+            pending.attempt = 1
+            if payload is not None:
+                pending.heartbeat_details.payloads.append(Payload(data=payload))
+        return mock.Mock(raw_description=raw)
+
+    def test_a_stage_reporting_its_gap_is_read_back(self) -> None:
+        details = {
+            "stage": "decode",
+            "beats": 2,
+            "elapsed_seconds": 61.4,
+            "worst_gap_seconds": 30.9,
+        }
+        samples = _sample_heartbeats(
+            self._description(
+                [("replay_decode_stage_activity", json.dumps(details).encode("utf-8"))]
+            )
+        )
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["activity"], "replay_decode_stage_activity")
+        self.assertEqual(samples[0]["details"], details)
+        self.assertEqual(_worst_heartbeat_gaps(samples), {"decode": 30.9})
+
+    def test_a_stage_that_has_not_beaten_yet_is_recorded_without_details(self) -> None:
+        """A pending activity with no heartbeat must not look like a zero gap."""
+        samples = _sample_heartbeats(
+            self._description([("replay_verify_final_apk_stage_activity", None)])
+        )
+        self.assertEqual(len(samples), 1)
+        self.assertNotIn("details", samples[0])
+        self.assertEqual(_worst_heartbeat_gaps(samples), {})
+
+    def test_an_undecodable_payload_is_recorded_rather_than_raised(self) -> None:
+        """A measurement that cannot be read must not fail a port that is fine."""
+        samples = _sample_heartbeats(
+            self._description([("replay_decode_stage_activity", b"\xff not json")])
+        )
+        self.assertIn("details_error", samples[0])
+        self.assertEqual(_worst_heartbeat_gaps(samples), {})
+
+    def test_the_worst_gap_per_stage_wins_over_the_run(self) -> None:
+        """The number a timeout is set from is the maximum, not the latest."""
+        samples = [
+            {"details": {"stage": "decode", "worst_gap_seconds": 30.9}},
+            {"details": {"stage": "decode", "worst_gap_seconds": 12.0}},
+            {"details": {"stage": "build", "worst_gap_seconds": 41.2}},
+            {"details": "not a mapping"},
+            {},
+        ]
+        self.assertEqual(
+            _worst_heartbeat_gaps(samples), {"decode": 30.9, "build": 41.2}
+        )
+
+    def test_the_evidence_schema_carries_the_measurement(self) -> None:
+        """Sampled and not recorded is the same as not sampled."""
+        self.assertIn("stage_heartbeats", TARGET_EVIDENCE_KEYS)
+        self.assertIn("worst_heartbeat_gap_seconds", TARGET_EVIDENCE_KEYS)
 
 
 if __name__ == "__main__":

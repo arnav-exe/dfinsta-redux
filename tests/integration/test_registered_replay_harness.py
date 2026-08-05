@@ -150,6 +150,8 @@ TARGET_EVIDENCE_KEYS = frozenset(
         "stage_first_observed_seconds",
         "published_gate",
         "worker_query_responsiveness",
+        "stage_heartbeats",
+        "worst_heartbeat_gap_seconds",
     }
 )
 
@@ -523,6 +525,7 @@ async def _run_target(
     deadline = started + TARGET_DEADLINE_SECONDS
     stage_marks: dict[str, float] = {}
     responsiveness: list[dict[str, Any]] = []
+    heartbeats: list[dict[str, Any]] = []
     completed = False
     await refuse_open_workflow(endpoint, run_id)
     with log_path.open("wb") as log:
@@ -538,7 +541,13 @@ async def _run_target(
                 deadline=min(deadline, started + 180.0),
             )
             status = await _watch_until_gate(
-                workflow_handle, deadline, stage_marks, responsiveness, process, log_path
+                workflow_handle,
+                deadline,
+                stage_marks,
+                responsiveness,
+                heartbeats,
+                process,
+                log_path,
             )
             show, submit = answer_gate(
                 state_root,
@@ -676,6 +685,8 @@ async def _run_target(
         ],
         "published_gate": status["gate"],
         "worker_query_responsiveness": responsiveness,
+        "stage_heartbeats": heartbeats,
+        "worst_heartbeat_gap_seconds": _worst_heartbeat_gaps(heartbeats),
     }
     if frozenset(evidence) != TARGET_EVIDENCE_KEYS:
         raise AssertionError("Target evidence schema drifted")
@@ -719,6 +730,58 @@ def _activity_progress(events: Any) -> tuple[frozenset[str], str | None]:
     return frozenset(completed), running
 
 
+def _sample_heartbeats(description: Any) -> list[dict[str, Any]]:
+    """Read the details every running stage last heartbeated, from the server.
+
+    The stage wrappers report `{stage, beats, elapsed_seconds, worst_gap_seconds}`
+    every 30 s, and `worst_gap_seconds` is the number that decides whether
+    `_STAGE_HEARTBEAT_TIMEOUT` can come down. The first reading of it -- 30.9 s on
+    a 340 decode -- was taken by hand with `temporal activity describe` and so was
+    **not reproducible from the tree**, which is the exact regret already written
+    down about the standalone threading benchmark. Recorded here instead.
+
+    Read from `describe()` rather than from a query, on purpose: pending-activity
+    state comes from the server's own record and arrives even while the worker is
+    too busy to answer anything, which is precisely the condition being measured.
+    """
+
+    from temporalio.api.common.v1 import Payloads
+
+    samples: list[dict[str, Any]] = []
+    for pending in description.raw_description.pending_activities:
+        sample: dict[str, Any] = {
+            "activity": pending.activity_type.name,
+            "attempt": pending.attempt,
+        }
+        if pending.HasField("last_heartbeat_time"):
+            sample["last_heartbeat"] = pending.last_heartbeat_time.ToJsonString()
+        payloads: Payloads = pending.heartbeat_details
+        for payload in payloads.payloads:
+            try:
+                sample["details"] = json.loads(payload.data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                # Recorded, never raised: a measurement that cannot be decoded
+                # must not fail a port that is otherwise running correctly.
+                sample["details_error"] = f"{type(error).__name__}: {error}"
+        samples.append(sample)
+    return samples
+
+
+def _worst_heartbeat_gaps(samples: list[dict[str, Any]]) -> dict[str, float]:
+    """The largest gap each stage ever reported. The number a timeout is set from."""
+
+    worst: dict[str, float] = {}
+    for sample in samples:
+        details = sample.get("details")
+        if not isinstance(details, dict):
+            continue
+        stage = details.get("stage")
+        gap = details.get("worst_gap_seconds")
+        if isinstance(stage, str) and isinstance(gap, (int, float)):
+            worst[stage] = max(worst.get(stage, 0.0), float(gap))
+    return worst
+
+
 async def _sample_query(workflow_handle: Any) -> tuple[bool, str | None]:
     """Can the worker answer right now? Recorded rather than relied on.
 
@@ -756,6 +819,7 @@ async def _watch_until_gate(
     deadline: float,
     stage_marks: dict[str, float],
     responsiveness: list[dict[str, Any]],
+    heartbeats: list[dict[str, Any]],
     process: subprocess.Popen[bytes] | None = None,
     log_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -777,9 +841,11 @@ async def _watch_until_gate(
                 "detail": detail,
             }
         )
+        description = await workflow_handle.describe()
+        for sample in _sample_heartbeats(description):
+            heartbeats.append({"elapsed_seconds": round(time.monotonic() - started, 1)} | sample)
         if GATE_ACTIVITY in completed:
             return await _read_open_gate(workflow_handle, deadline)
-        description = await workflow_handle.describe()
         if description.close_time is not None:
             raise AssertionError(
                 f"Workflow closed ({description.status}) without opening the gate"
