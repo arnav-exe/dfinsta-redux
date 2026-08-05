@@ -428,10 +428,24 @@ Reordered 2026-08-03. The two items that stood here are done.
       blocks the worker's event loop. See `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3c-measured.
 
 1. **Non-destructive cancellation within the graceful window** — the remaining half of F3, and
-   the prerequisite for heartbeats rather than a peer of them. Today three of the five stages
-   quarantine unconditionally on `CancelledError` and quarantine is terminal; build and verify
-   already release when cancellation lands before a workspace exists, which is the shape the
-   other three need.
+   the prerequisite for heartbeats rather than a peer of them. **Still open. The reachable
+   hazard is quarantine AFTER a workspace exists**, which is the normal case: the first
+   suspension point in every stage is the launch, so that is where a real cancellation lands.
+   Nothing has changed about it.
+
+   **What was done on 2026-08-05 was smaller than it looked, and is deliberately not this
+   item.** Three stages quarantined unconditionally on `CancelledError` where two used the
+   graduated form, with no comment, no commit message and zero tests either way — drift from
+   birth, not a decision. All five now use one `except BaseException` handler, which catches
+   cancellation too. But an adversarial review established, and an AST check confirms, that
+   **the branch this corrects is unreachable**: there is no `await`, `async with` or
+   `async for` between claiming the operation and `workspace_created = True` in any of the
+   five, and an async Activity is cancelled by `task.cancel()`, delivered only at a suspension
+   point. A cancellation requested in that region is latched until the launch, by which time a
+   workspace exists and both shapes quarantined identically. So it changes nothing that runs
+   today; it removes a trap for the day an await appears there, and it gains the release
+   protection the cancel path never had. `tests/test_phase_b_cancellation.py` fails if a
+   suspension point ever appears in that region.
 2. **Move the two tree primitives off the event loop**, which is F4's other prerequisite.
    `decoded_artifact.materialize_decoded_tree` and `capture_decoded_tree_fd` — 15 call sites
    across the five stages — each walk, hash and write tens of thousands of files synchronously.
