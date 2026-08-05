@@ -82,7 +82,7 @@ _LEDGER_TIMEOUT = timedelta(seconds=120)
 # from the event loop.
 #
 # **Five minutes, lowered from ten on measurement.** The wrappers report
-# `worst_gap_seconds`, and a real 340 port through this Workflow delivered every
+# `worst_gap_seconds`, and a real port through this Workflow delivered every
 # heartbeat essentially on schedule: worst gap 30.9 s in decode and exactly 30.0 s
 # in apply, build and verify -- including build, which is the stage still partly
 # blocking the loop. So the earlier ten minutes was twenty intervals against an
@@ -94,9 +94,12 @@ _LEDGER_TIMEOUT = timedelta(seconds=120)
 # still discards up to 25 minutes of build. Too loose only delays noticing a dead
 # worker. So this is deliberately about 10x the worst observed gap, not 2x.
 #
-# **One target measured.** 430 is bigger -- 133 MB against 79 MB -- and was more
-# loop-blocked than 340 before the threading change (68% against 62% in build).
-# Tightening further should wait for a 430 run rather than over-fit to one port.
+# **Measured on one target only**, and the larger one -- bigger APK, and more
+# loop-blocked in build before the threading change -- has not been run since.
+# Tightening further should wait for that rather than over-fit to one port. The
+# numbers per target live in `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3g, which is
+# also where they belong: this module may not name a target, and the guard in
+# `tests/test_phase_b_worker_registration.py` caught this comment doing it.
 _STAGE_HEARTBEAT_TIMEOUT = timedelta(seconds=300)
 
 

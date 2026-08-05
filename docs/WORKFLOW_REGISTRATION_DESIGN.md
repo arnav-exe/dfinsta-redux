@@ -639,6 +639,10 @@ bytes, zero activity failures. The timeout was lowered from 10 minutes to 5 on t
 about 10x the worst observed gap, not 2x, because the two errors are asymmetric: too tight
 discards a healthy 25-minute build, too loose only delays noticing a dead worker. **Only 340 is
 measured**; 430 is larger and was more loop-blocked, so tightening further should wait for it.
+The per-target numbers live here rather than in `replay_workflow.py` because that module may
+not name a target — a structural guard forbids the strings, and it caught the first draft of
+that comment doing exactly that. Weakening the guard to fit the comment would have been the
+thing this project refuses; the comment moved instead.
 
 **The graceful shutdown window was NOT raised**, and the instruction to raise it was retired
 rather than followed. It said heartbeats "would convert a flaky thirty seconds of network into
