@@ -303,6 +303,41 @@ Design and the experiment: [`docs/STAGE_4_DESIGN.md`](STAGE_4_DESIGN.md).
       `assessment.candidate_ids` requires. Stage 3 and stage 4 are siblings on the same
       `api_surface.json`. Wiring it in needs a `--baseline-index`; giving its output a
       consumer is the separate and larger question.
+
+      **Answered 2026-08-05, and the answer is no: stage 3 must not feed the feature gate.**
+      Audited against its one real artefact. `SurfaceDiff.candidates` applies no filter and no
+      ranking — every added API-path literal is a candidate — and of the 105 from 430→439,
+      **44 are Reels permalink spellings for a surface DFInsta already blocks**, 13 are build
+      and test junk, 10 are creator-tools and commerce (the calibration's explicit *negative*
+      class), and roughly **one row is genuinely actionable**. The self-filtering field
+      `maps_to_blocked_family` fired zero times out of 105, so 42% of the report prints as
+      "new area" about something already covered.
+
+      Three further blockers, any one of them sufficient: 90 of the 105 cannot be given a legal
+      `candidate_id` at all, and `candidate_ids` refuses the whole document on one bad id, so
+      merging would make the *working* gate underivable; `rulings.endpoint_of` refuses a foreign
+      namespace and one refusal voids the manifest additions for every other candidate in the
+      batch; and 105 candidates through a gate proven at 4 turns
+      `_require_every_candidate_ruled` — "the most important check in this file" — into a rubber
+      stamp, which is the precise failure it exists to prevent. No filter exists in the repo
+      that would cut it down, and `tests/test_assessment.py`'s `NoScoreTests` pins the
+      *prohibition* on building one.
+
+      **Its actionable content was reached by fixing stage 4a instead** — see the leading-slash
+      entry below. Stage 3 remains valuable as an operator report: survival rates as the honest
+      denominator, package deltas, co-location changes as a coverage-durability alarm, and the
+      `B_inline` branch that found `delivery/background_prefetch` before stage 4a could.
+- [x] **Stage 4a sees two surfaces it was blind to** (2026-08-05). `find_groupings` looked
+      classes up by the *normalised* rule while the index holds the app's own text, so
+      `clips/discover` matched no class where `/clips/discover` matched `LX/1qi;` — a class
+      holding `delivery/background_prefetch`. And `is_blocked` compared by containment alone, so
+      `/clips/homecoming` failed against the rule `clips/homecoming/` on a trailing slash and a
+      covered endpoint counted as unknown, dropping the grouping below `min_seeds`. Fixed with
+      slash-aware lookup and equality-once-stripped — **not** symmetric containment, which was
+      tried and destroys `feed/timeline_stream/`, the gap the stage exists to find.
+      **4 candidates to 6 on 440, no false gaps.** `delivery/background_prefetch` is absent from
+      430 and present on 439, so it is a genuinely new surface, and `surface_diff` had already
+      classified it `B_inline` riding with the two Reels endpoints stage 4a now finds it beside.
 - [x] **Stage 4a's producer is scheduled** (`driver.STAGES` gained `assess`, between `index`
       and `resolve`). `assessment_record.record` had zero callers outside its own `main`, so
       the real 440 assessment exists only because a human typed the command after the driver

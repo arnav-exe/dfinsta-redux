@@ -524,6 +524,59 @@ same day.
   being what stops attempt 2. Under release attempt 2 re-runs the stage instead of refusing.
   That is the intended behaviour, but the comment currently says the opposite.
 
+## 3f — threading the decoded-tree primitives (designed and measured, 2026-08-05)
+
+F4's other prerequisite, reviewed with a benchmark rather than an estimate. **The design already
+exists in the codebase**: `replay_verify_final_apk` at `activities.py:3097` already runs
+`capture_decoded_tree_fd` in a thread under a drain-then-propagate supervisor, file descriptor
+and all. The change generalises that to the seven loop-side sites.
+
+**Measured on a real 209,426-file, 1.22 GB decoded tree**, with a 10 ms probe standing in for a
+heartbeater:
+
+| | idle | on the loop (today) | in a thread |
+|---|---|---|---|
+| probe ticks served | 98% | **0 of ~6,000** | ~93% |
+| longest unbroken block | 0.012 s | **59-67 s, per capture** | **0.16 s** |
+| wall-clock cost | — | — | 0-6% |
+
+On the loop the probe did not tick once. A handful of these back to back is the nine-minute
+stretch the real runs recorded. One thread is enough; a pool would add GIL contention without
+shortening the tail. The benchmark ran on tmpfs, which is the *pessimistic* case — real disk
+raises the I/O share and lowers the GIL share.
+
+**Three things to get right, all of which would be silent if got wrong.**
+
+* **Only the drain-then-propagate supervisors.** `_await_apply_mutation`,
+  `_await_backend_composition` and `_await_verification_work` latch a cancellation and wait for
+  the task. `_await_verification_execution` **cancels its task**, which is right for its own
+  subject — an `execute()` coroutine that must kill and reap — and wrong for thread work.
+  `capture_decoded_tree_fd` re-opens the caller's descriptor as its first act
+  (`decoded_artifact.py:504`), so a `finally` closing that fd under a live thread could see the
+  number reused and capture **the wrong directory**, publishing a valid-looking manifest. A
+  wrong answer, not an error.
+* **Heartbeat from the loop, never from the thread.** `activity.info()` works inside
+  `asyncio.to_thread` because it copies the context, but `activity.heartbeat()` does not: for an
+  `async def` activity temporalio skips the thread-safe wrapper, so the raw callback does a
+  `put_nowait` on a non-thread-safe queue and *then* raises `RuntimeError: no running event
+  loop` — details enqueued, flush never scheduled. And a test would not catch it:
+  `ActivityEnvironment`'s heartbeat callback is a plain sync lambda, so heartbeat-from-thread
+  passes there and fails against a real worker.
+* **`load_decoded_tree` is a third primitive that must move.** It reads and hashes every blob
+  (`decoded_artifact.py:558`), has 18 call sites in `activities.py`, and is the *only* reason
+  `prepare_replay_verification_gate_activity` — which launches no subprocess — measured 80-100%
+  blocked. Scoping the change to two primitives leaves the cheapest-looking stage the most
+  blocked.
+
+**Ordering.** The threading change is independent of the liveness guard and can land either
+side of it; it adds no heartbeat and changes no ledger semantics. Landing it alone buys query
+responsiveness, 0% to 93%, without opening the server-originated cancellation channel at all.
+Heartbeats still come last, and `DEFAULT_GRACEFUL_SHUTDOWN_SECONDS` must be raised with them.
+
+**Test gaps it would have to close**: `capture_decoded_tree_fd` has no direct unit test at all
+(only fault-injection mocks); `_capture_decoded_tree_manifest` is named by no test; the four
+supervisors have one direct test between them; nothing anywhere asserts a heartbeat.
+
 ## 3b. Known follow-ups, deliberately not done in this slice
 
 **F1. The harness and the Workflow derive different verification-gate ids.**
