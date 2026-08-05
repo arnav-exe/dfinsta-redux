@@ -144,6 +144,13 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--required-strings",
+        type=Path,
+        help="JSON array of strings the built custom DEX must carry as bytes. "
+        "Forwarded to the generic verifier; the driver derives it from the "
+        "manifest so a recorded ruling is proven to have shipped.",
+    )
+    parser.add_argument(
         "--host-hooks",
         type=Path,
         help="JSON map of grafted DEX -> [[descriptor, method]], required by --verifier generic",
@@ -286,6 +293,11 @@ def main() -> None:
             args.replace_dex,
             "--host-hooks",
             str(args.host_hooks),
+            *(
+                ("--required-strings", str(args.required_strings))
+                if args.required_strings is not None
+                else ()
+            ),
             "--output",
             str(verification_report),
         ]

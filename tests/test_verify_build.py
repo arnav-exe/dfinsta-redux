@@ -159,6 +159,7 @@ REPORT_KEYS = frozenset(
         "custom_required_symbols",
         "custom_forbidden_symbols",
         "host_hooks",
+        "required_strings",
         "grafted_dex_changed",
         "added_entries",
         "preserved_entry_count",
@@ -217,7 +218,7 @@ class GraftFixture(unittest.TestCase):
             self.write_zip(self.root / "stock.apk", self.stock_entries),
         )
 
-    def verify(self, host_hooks=_UNSET) -> dict:
+    def verify(self, host_hooks=_UNSET, required_strings=_UNSET) -> dict:
         """`expect_signed` is passed only when True.
 
         Unsigned is the documented default and every caller that predates the
@@ -226,11 +227,22 @@ class GraftFixture(unittest.TestCase):
         """
         built, stock = self.apks()
         hooks = self.host_hooks if host_hooks is _UNSET else host_hooks
+        # Defaults to None — "not supplied" — because every test that predates
+        # this argument asserts the shape of a report that never asked.
+        required = None if required_strings is _UNSET else required_strings
         if self.expect_signed:
             return verify_build.verify(
-                built, stock, self.custom_dex, self.replaced, hooks, expect_signed=True
+                built,
+                stock,
+                self.custom_dex,
+                self.replaced,
+                hooks,
+                expect_signed=True,
+                required_strings=required,
             )
-        return verify_build.verify(built, stock, self.custom_dex, self.replaced, hooks)
+        return verify_build.verify(
+            built, stock, self.custom_dex, self.replaced, hooks, required_strings=required
+        )
 
     def run_main(self, *extra: str) -> tuple[int, str, Path, Path]:
         """Drive `main()` on the fixture. Stderr lands on `self.stderr`.
@@ -280,6 +292,7 @@ class GraftFixture(unittest.TestCase):
             "custom_forbidden_symbols": not any(results["custom_forbidden_symbols"].values()),
             "host_hooks": all(all(v.values()) for v in results["host_hooks"].values()),
             "grafted_dex_changed": all(results["grafted_dex_changed"].values()),
+            "required_strings": all((results["required_strings"] or {}).values()),
             "preserved_entries_missing": not results["preserved_entries_missing"],
             "preserved_entries_mismatched": not results["preserved_entries_mismatched"],
             "added_entries": not results["added_entries"],
@@ -463,6 +476,72 @@ class HostHookTests(GraftFixture):
         self.assertFalse(results["host_hooks"]["classes3.dex"][f"{descriptor} {method}"])
         self.assertTrue(all(results["host_hooks"]["classes.dex"].values()))
         self.assert_failing_verdicts(results, "host_hooks")
+
+    def test_a_required_string_absent_from_the_custom_dex_fails(self) -> None:
+        """What a ruling put in the manifest, proven present in the artifact.
+
+        This is the only check that connects the decide machine to the built APK.
+        `unenforced_endpoints` compares the manifest to the app's source and
+        `undeclared_endpoints` compares it back, but both read text; a block can
+        be recorded, guarded in smali, and still not reach the DEX. Measured on
+        the shipped 440 release: all six manifest endpoints are present as bytes
+        in `classes21.dex`.
+        """
+        present = "/feed/timeline/"
+        self.built_entries[self.custom_dex] = (
+            BUILT_ENTRIES[self.custom_dex] + present.encode("utf-8")
+        )
+        results = self.verify(required_strings=[present, "/clips/discover"])
+
+        self.assertEqual(
+            results["required_strings"], {present: True, "/clips/discover": False}
+        )
+        self.assert_failing_verdicts(results, "required_strings")
+
+    def test_every_required_string_present_passes(self) -> None:
+        wanted = ["/feed/timeline/", "/clips/discover"]
+        self.built_entries[self.custom_dex] = BUILT_ENTRIES[self.custom_dex] + b"".join(
+            value.encode("utf-8") for value in wanted
+        )
+        results = self.verify(required_strings=wanted)
+        self.assertEqual(results["required_strings"], {v: True for v in wanted})
+        self.assertIs(results["passed"], True)
+
+    def test_not_supplied_is_null_and_not_an_empty_answer(self) -> None:
+        """A report where the question was never asked must not read as an answer.
+
+        `{}` and `null` would both make `all(...)` true; only one of them tells a
+        reader that nothing was checked.
+        """
+        results = self.verify()
+        self.assertIsNone(results["required_strings"])
+        self.assertIs(results["passed"], True)
+
+    def test_an_empty_required_string_list_is_refused(self) -> None:
+        """Supplied-and-empty is a caller asking to prove nothing.
+
+        The same shape as an empty `--expected-certificate-sha256`, which was
+        falsy and silently turned the signing pin off.
+        """
+        with self.assertRaises(ValueError) as caught:
+            self.verify(required_strings=[])
+        self.assertIn("required_strings is empty", str(caught.exception))
+        self.assertIn("vacuous", str(caught.exception))
+
+    def test_a_required_string_in_a_host_dex_does_not_count(self) -> None:
+        """Searched in the CUSTOM dex, because that is where DFInsta's own code is.
+
+        A stock DEX may legitimately carry the same endpoint literal — it is
+        Instagram's own API path — so searching the whole archive would pass on a
+        build whose custom code never gained the guard at all.
+        """
+        endpoint = "/feed/reels_tray/"
+        self.built_entries["classes3.dex"] = (
+            BUILT_ENTRIES["classes3.dex"] + endpoint.encode("utf-8")
+        )
+        results = self.verify(required_strings=[endpoint])
+        self.assertEqual(results["required_strings"], {endpoint: False})
+        self.assert_failing_verdicts(results, "required_strings")
 
     def test_an_empty_host_hook_map_is_refused(self) -> None:
         """`all(...)` over an empty map is vacuously true, so it never reaches the zips."""

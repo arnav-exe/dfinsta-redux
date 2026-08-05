@@ -46,11 +46,26 @@ over the whole manifest catches the general case — "the manifest says blocked 
 the app does not block it", which is the precise shape of every inert patch this
 project has shipped.
 
+:func:`undeclared_endpoints` is the same question the other way round — what the
+app tests and no hook declares — because either direction alone reads as clean
+while the other is not. :func:`audit` runs both, and
+``python -m dfinsta_pipeline.rulings --audit`` is where an operator gets the
+answer.
+
+**And the artifact.** :func:`required_build_strings` names the literals a build
+must carry, for `tools/verify/verify_build.py --required-strings` to find as
+bytes in the custom DEX. Both checks above read *text* — a block can be recorded,
+guarded in smali, and still not reach the DEX — so this is the only one that
+reaches the thing that ships. The driver derives it per run rather than the
+verifier pinning it, because a manifest entry is a per-version fact.
+
 An earlier version of this docstring claimed the module "refuses to call a ruling
 applied until the built APK can be shown to carry it", and nothing in it looked
 at a DEX or at the source. That is recorded here rather than quietly corrected,
 because a docstring asserting a check nobody wrote is the same failure as a
-manifest asserting a block nobody implemented.
+manifest asserting a block nobody implemented. **The claim is now true**, but by
+three functions written afterwards rather than by the sentence — and it is still
+the *verifier* that refuses, not this module.
 
 ===============================================================================
   WHAT THIS MODULE WILL NOT WRITE, AND WHY
@@ -769,6 +784,43 @@ def apply(
         return False, (Refusal(REFUSE_DOES_NOT_LOAD, str(error)),)
     load_manifest(plan_.manifest_path)
     return True, ()
+
+
+def required_build_strings(
+    manifest_path: Path | str = DEFAULT_MANIFEST_PATH,
+) -> tuple[str, ...]:
+    """The endpoint literals a build must carry for its rulings to have landed.
+
+    The third direction, and the one that reaches the artifact.
+    :func:`unenforced_endpoints` compares the manifest to the app's source and
+    :func:`undeclared_endpoints` compares it back; both read text. This is what a
+    verifier can check against the *built APK*, where the same literals appear as
+    bytes inside DFInsta's own DEX — measured on the shipped 440 release, all six
+    present in `classes21.dex`.
+
+    Only the url-block hook's deps, for the same reason `unenforced_endpoints`
+    restricts itself: a rewriting hook's literals name an endpoint it replaces,
+    and the replacement is what reaches the DEX, not the original.
+
+    Refuses rather than returning `()` when there is no single url-block hook,
+    because a caller that gets an empty tuple would pass it to a verifier which
+    would then prove nothing — the same absence-as-a-pass this module refuses
+    everywhere else.
+    """
+    from .assessment import looks_like_uri_rule  # noqa: PLC0415
+
+    data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    hook_id = _hook_for(data, "")
+    if hook_id is None:
+        raise RulingError(
+            f"{manifest_path} has no single hook with strategy {URL_BLOCK_STRATEGY!r}, so "
+            "there is no set of literals a build can be required to carry. An empty "
+            "requirement would make the verifier's check pass vacuously."
+        )
+    entry = next(h for h in data["hooks"] if h.get("hook_id") == hook_id)
+    return tuple(
+        dep for dep in entry.get("semantic_deps") or () if looks_like_uri_rule(dep)
+    )
 
 
 def audit(

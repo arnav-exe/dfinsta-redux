@@ -380,6 +380,10 @@ class RunPaths:
         return self.out / "host-hooks.json"
 
     @property
+    def required_strings(self) -> Path:
+        return self.out / "required-strings.json"
+
+    @property
     def assessments(self) -> Path:
         return self.out / "assessments.json"
 
@@ -917,9 +921,23 @@ def _run_stages(
     paths.host_hooks.write_text(
         json.dumps(hooks_map, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    # What a ruling put in the manifest, for the verifier to find in the built
+    # DEX. Derived here because the manifest is a per-run fact and `verify_build`
+    # refuses to pin one for itself. Without this the decide machine could record
+    # a block that the execute machine never proved shipped.
+    from .rulings import RulingError, required_build_strings  # noqa: PLC0415
+
+    try:
+        required = required_build_strings(REPOSITORY / "manifest" / "hooks.json")
+    except RulingError as error:
+        raise DriverError(f"cannot derive the build's required strings: {error}") from error
+    paths.required_strings.write_text(
+        json.dumps(list(required), indent=2) + "\n", encoding="utf-8"
+    )
     artifacts["custom_tree"] = custom_tree
     artifacts["replace_dex"] = ",".join(replace_dex)
     artifacts["host_hooks"] = str(paths.host_hooks)
+    artifacts["required_strings"] = str(paths.required_strings)
     print(f"[build] custom tree {custom_tree}, grafting {', '.join(replace_dex)}", flush=True)
     if framework_apk is None:
         raise DriverError("--framework-apk is required to build", report=report)
@@ -950,6 +968,8 @@ def _run_stages(
                 "generic",
                 "--host-hooks",
                 paths.host_hooks,
+                "--required-strings",
+                paths.required_strings,
             ],
             "build",
         )

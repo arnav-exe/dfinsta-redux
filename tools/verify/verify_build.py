@@ -99,6 +99,7 @@ def verify(
     replaced: set[str],
     host_hooks: dict | None = None,
     expect_signed: bool = False,
+    required_strings: list[str] | None = None,
 ) -> dict:
     """Check a built APK against the stock archive it was grafted from.
 
@@ -116,6 +117,15 @@ def verify(
         raise ValueError(
             "host_hooks is empty: with nothing to prove, every hook assertion "
             "passes vacuously and the verifier certifies an unpatched graft"
+        )
+    # `None` means "not supplied", `[]` means "supplied, proving nothing" — and
+    # they must not be the same thing. The certificate pin had exactly this bug:
+    # an empty `--expected-certificate-sha256` was falsy and silently disabled it.
+    if required_strings is not None and not required_strings:
+        raise ValueError(
+            "required_strings is empty: a caller that asks for this check and then "
+            "names nothing gets a vacuous pass, which is indistinguishable from a "
+            "build that carries every string it should"
         )
     unknown = sorted(set(host_hooks) - replaced)
     if unknown:
@@ -167,6 +177,22 @@ def verify(
         results["custom_forbidden_symbols"] = {
             s: (s.encode() in custom) for s in FORBIDDEN_CUSTOM_SYMBOLS
         }
+
+        # What a DECISION requires the build to carry. `custom_required_symbols`
+        # holds type descriptors, which are the pipeline's own structure; this
+        # holds the version-specific strings a caller derived — the endpoint
+        # literals a human ruled `block` on, which reach the APK only as bytes
+        # inside DFInsta's own DEX. Supplied by the caller rather than pinned
+        # here, because a manifest entry is a per-run fact and this module's rule
+        # is that every version-specific fact comes from whoever knows it.
+        #
+        # Recorded as null when not supplied, so a report cannot be read as
+        # "nothing was missing" when the question was never asked.
+        results["required_strings"] = (
+            None
+            if required_strings is None
+            else {value: (value.encode() in custom) for value in required_strings}
+        )
 
         hooks: dict[str, dict[str, bool]] = {}
         for dex, pairs in host_hooks.items():
@@ -229,6 +255,11 @@ def verify(
         and all(results["custom_required_symbols"].values())
         and not any(results["custom_forbidden_symbols"].values())
         and all(all(v.values()) for v in results["host_hooks"].values())
+        # `all({}.values())` is True, but so is `all(None or {})` — and a report
+        # where the question was never asked must not read as an answer. The null
+        # case is admitted deliberately: a hand-run verify without a manifest to
+        # derive from is a weaker check, and `required_strings: null` says so.
+        and all((results["required_strings"] or {}).values())
         and all(results["grafted_dex_changed"].values())
         and not missing
         and not mismatched
@@ -312,6 +343,13 @@ def main() -> None:
     parser.add_argument("--require-signature", action="store_true")
     parser.add_argument("--expected-certificate-sha256")
     parser.add_argument(
+        "--required-strings",
+        type=Path,
+        help="JSON array of strings the custom DEX must carry as bytes — the "
+        "endpoint literals a ruling put in the manifest. Omit to skip the check, "
+        "which the report records as null rather than as nothing missing.",
+    )
+    parser.add_argument(
         "--apktool-jar",
         type=Path,
         help="not used to verify; its hash is recorded so the report names the "
@@ -340,6 +378,20 @@ def main() -> None:
                 args.host_hooks.read_text(encoding="utf-8")
             ).items()
         }
+
+    required_strings = None
+    if args.required_strings is not None:
+        loaded = json.loads(args.required_strings.read_text(encoding="utf-8"))
+        if not isinstance(loaded, list) or not all(isinstance(v, str) for v in loaded):
+            parser.error("--required-strings must hold a JSON array of strings")
+        # Deduplicated but order-preserving, so the report reads in the order the
+        # caller derived them and a repeated literal is not counted twice.
+        required_strings = list(dict.fromkeys(loaded))
+        if not required_strings:
+            parser.error(
+                "--required-strings names nothing; omit the flag to skip the check "
+                "rather than asking for a vacuous one"
+            )
 
     # The identity envelope is what lets the release gate consume this report:
     # `tools/release/finalize.py` refuses a report whose `schema_version` is not 1
@@ -370,6 +422,7 @@ def main() -> None:
             # behaviour without the release gate having to know about this file's
             # internals.
             expect_signed=args.apksigner is not None,
+            required_strings=required_strings,
         ),
     }
     if args.apktool_jar is not None:
