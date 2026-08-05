@@ -1177,14 +1177,25 @@ caused by that work. Two are closed; the third is scoped and deliberately left.
   is the caller's, per `verify_build.py`'s rule that every build-specific fact is supplied by
   whoever knows it.
 
-**A design note for when a ruling's guard is written**: `REQUIRED_CUSTOM_SYMBOLS` is a
-module-level global pinned by three tests, so hardcoding an endpoint there would contradict
-`verify_build.py`'s own rule that every version-specific fact is supplied by the caller. The
-right shape is a second caller-supplied map beside `--host-hooks` — a `--required-strings`
-JSON the driver derives per run — with the same empty-map refusal, or the check passes
-vacuously. Endpoint literals *are* searchable in a DEX (measured on the 440 release: all six
-endpoints, all five preference keys and the exception message are present as bytes), unlike
-method references, which is why the existing list holds type descriptors only.
+**~~A design note for when a ruling's guard is written~~ — built 2026-08-05, as designed.**
+`verify_build.py` gained `--required-strings`, a caller-supplied JSON array beside
+`--host-hooks`; `rulings.required_build_strings` derives it from the url-block hook's
+`semantic_deps`; the driver writes `required-strings.json` and passes it through `build.py`.
+`REQUIRED_CUSTOM_SYMBOLS` is untouched, so the rule that every version-specific fact comes from
+the caller still holds.
+
+Three states kept apart, because two of them look alike: **not supplied** reports
+`required_strings: null`, so a report cannot be read as "nothing was missing" when the question
+was never asked; **supplied empty** is refused, being a caller asking to prove nothing — the
+same shape as the empty `--expected-certificate-sha256` that silently turned the signing pin
+off; **supplied** contributes to `passed`.
+
+Searched in the *custom* DEX only. A stock DEX may legitimately carry the same literal — it is
+Instagram's own API path — so searching the archive would pass a build whose custom code never
+gained the guard. Confirmed against the shipped 440 release: all six manifest endpoints,
+including the `/clips/discover` added the same day, are present as bytes in `classes21.dex`.
+This is the only check that reaches the artifact; `unenforced_endpoints` and
+`undeclared_endpoints` both read text.
 
 **Small, batchable:**
 
