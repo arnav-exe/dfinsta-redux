@@ -4,6 +4,14 @@ Resume point as of 2026-08-05, branch `port-430`. Suite: **2672 tests**, one exp
 plus six green tool suites (indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
 device_validation 22).
 
+**The Execute machine has no open roadmap items.** The operational-hardening thread closed on
+2026-08-05, each step measured before the next was attempted: a cancelled replay stage now
+*releases* its claim unless its subprocess could not be shown to have exited; the decoded-tree
+walks moved off the event loop, taking query availability during a stage from 23% to 92%; and
+every stage now heartbeats every 30 s, so worker loss is detected in five minutes rather than
+at `start_to_close` expiry — three hours for verify. Measured worst heartbeat gap on a real
+port: 30.9 s. See `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3d-§3g.
+
 **Stage 4a now finds six candidates where it found four.** `find_groupings` looked classes up
 by the normalised rule while the index holds the app's own text, so `clips/discover` matched no
 class where `/clips/discover` matched one holding `delivery/background_prefetch` — a surface
