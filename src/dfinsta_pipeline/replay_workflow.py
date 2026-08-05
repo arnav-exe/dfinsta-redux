@@ -45,11 +45,19 @@ _STAGE_ACTIVITIES = {
 # fires on a second attempt: begin_operation returns an existing artifact just
 # when a prior attempt already reached effect or completed. With one attempt a
 # worker lost after record_effect fails the run outright and the proven adoption
-# path is unreachable. Every other second-attempt outcome fails closed, so no
-# path can produce two effects.
+# path is unreachable.
 #
-# The non-retryable list keeps a genuine fault visible: without it, attempt two
-# reports "Operation is quarantined" and hides the real error from attempt one.
+# **Corrected 2026-08-05.** This block used to conclude "every other
+# second-attempt outcome fails closed, so no path can produce two effects", and
+# argued it FROM quarantine being what stops attempt two. Cancellation now
+# releases the claim instead, so attempt two re-runs the stage rather than
+# meeting a terminal refusal — which is the intent, not a regression. Two effects
+# remain impossible for a different and better reason: `record_effect` is
+# owner-fenced and the transition to `effect` requires `status == 'pending'` under
+# `BEGIN IMMEDIATE`, so the release itself fences the attempt it replaced.
+#
+# The non-retryable list still keeps a genuine fault visible: a deterministic
+# failure fails on attempt one instead of being re-run to fail identically.
 _STAGE_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=1),
     backoff_coefficient=1.0,
@@ -68,6 +76,23 @@ _STAGE_RETRY = RetryPolicy(
 _LEDGER_RETRY = RetryPolicy(maximum_attempts=3)
 _LEDGER_TIMEOUT = timedelta(seconds=120)
 
+# How long the server waits for a stage to say it is alive. Until 2026-08-05 no
+# replay stage heartbeated, so worker loss was invisible until `start_to_close`
+# expired -- three hours for verify. The stage wrappers now heartbeat every 30 s
+# from the event loop.
+#
+# Ten minutes is twenty intervals, and an order of magnitude above the worst
+# measured loop unavailability on a real port (3 consecutive samples, ~60 s,
+# after the decoded-tree walks moved into a thread). Deliberately generous: a
+# missed heartbeat cancels the stage, and while that is no longer destructive --
+# it releases the claim for a later attempt to adopt -- it still throws away that
+# stage's work. Better to detect a dead worker in ten minutes than to re-run a
+# 25-minute build because the loop stalled for eleven.
+#
+# The wrappers report `worst_gap_seconds` in their heartbeat details, so this can
+# be tightened against evidence rather than re-guessed.
+_STAGE_HEARTBEAT_TIMEOUT = timedelta(seconds=600)
+
 
 @workflow.defn(versioning_behavior=VersioningBehavior.PINNED)
 class ReplayRunWorkflow:
@@ -83,8 +108,11 @@ class ReplayRunWorkflow:
     the ledger validates every stage, and each stage re-derives its predecessors.
     What this contributes is ordering and human consent.
 
-    No heartbeats: none of the underlying checkpoint Activities heartbeat, so
-    worker loss is only detected at start_to_close expiry.
+    The stage wrappers heartbeat every 30 s from the event loop, so worker loss is
+    detected in ten minutes rather than at `start_to_close` expiry — three hours
+    for verify. That became possible only once the decoded-tree walks moved into
+    a thread: a heartbeater is a loop task, and the loop used to be blocked for
+    nine minutes at a stretch.
     """
 
     def __init__(self) -> None:
@@ -124,6 +152,7 @@ class ReplayRunWorkflow:
                 _STAGE_ACTIVITIES[stage],
                 request.handle,
                 start_to_close_timeout=timedelta(seconds=budget),
+                heartbeat_timeout=_STAGE_HEARTBEAT_TIMEOUT,
                 retry_policy=_STAGE_RETRY,
                 cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
             )
@@ -223,6 +252,7 @@ class ReplayRunWorkflow:
             replay_verify_final_apk_stage_activity,
             grant_handle,
             start_to_close_timeout=timedelta(seconds=verify_budget),
+            heartbeat_timeout=_STAGE_HEARTBEAT_TIMEOUT,
             retry_policy=_STAGE_RETRY,
             cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
         )

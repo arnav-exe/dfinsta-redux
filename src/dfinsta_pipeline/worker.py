@@ -58,36 +58,39 @@ REGISTERED_ACTIVITIES = (
 
 REGISTERED_WORKFLOWS = (PortRunWorkflow, ReplayRunWorkflow, FeatureAssessmentRunWorkflow)
 
-# Worker shutdown cancels running Activities, and a replay stage quarantines its
-# operation on cancellation. Quarantine is terminal: the key is refused forever,
-# and because operation keys derive from admitted content, recovery from THAT
-# needs a new run id, a new run spec and a new human gate decision.
+# How long a stopping worker lets a running stage finish before cancelling it.
 #
-# Set above the longest stage budget on purpose, and this is the whole mitigation
-# rather than a partial one. A replay stage can only receive a cancellation it
-# can act on through two channels: a heartbeat response, and a local
-# `WORKER_SHUTDOWN` after this timeout. **No replay stage heartbeats**, so today
-# `WORKER_SHUTDOWN` is the only cancellation that reaches one — and a timeout
-# longer than any stage means it cannot arrive mid-stage at all. The destructive
-# path closes by construction.
+# **This is now an efficiency setting, not a safety one, and the change is worth
+# reading before touching it.** It used to be the whole mitigation for a real
+# hazard: a replay stage quarantined its operation on cancellation, quarantine is
+# terminal, and operation keys derive from admitted content — so recovery needed
+# a new run id, a new run spec and a new human gate decision. A window longer
+# than the longest stage meant the destructive cancellation could not arrive
+# mid-stage at all.
+#
+# As of 2026-08-05 a cancelled stage RELEASES its claim unless its subprocess
+# could not be shown to have exited, so a cancellation mid-stage costs that
+# stage's work and nothing more; a later attempt adopts every completed
+# predecessor. The comment that used to live here said "this must be raised again
+# before heartbeats are added", reasoning that heartbeating opens the channel for
+# server-originated cancellation and would turn a flaky thirty seconds of network
+# into a burned run. **Heartbeats landed the same day and the window was not
+# raised**, because the premise had gone: the cancellation that channel delivers
+# is no longer destructive. Raising it would not have helped either — the graceful
+# window governs `WORKER_SHUTDOWN`, not a cancellation from the server.
 #
 # 10,800 is the verify budget: `_STAGE_BUDGET_MULTIPLIER["verify"] == 18` against
 # a 600-second decode plan. Every other stage is shorter (build 5,400; decode and
-# apply 3,600; install_framework 1,800).
+# apply 3,600; install_framework 1,800). Kept generous so that stopping a worker
+# waits for a 25-minute build rather than discarding it — not because anything
+# breaks if it does not.
 #
-# **This must be raised again before heartbeats are added.** Heartbeating is what
-# opens the channel for server-originated cancellation — a workflow cancel, a
-# timeout, or a transient network failure while recording a heartbeat — and every
-# one of those lands in the same `except asyncio.CancelledError` that
-# quarantines. Adding heartbeats before cancellation is non-destructive would
-# convert a flaky thirty seconds of network into a burned admitted run.
-#
-# THE OPERATING RULE INVERTS what this comment used to say. A worker *kill*
-# (SIGKILL) delivers no cancellation at all: it leaves the claim `pending`, which
-# `release_pending_operation` can hand to a later attempt, so the run is wedged
-# for one `start_to_close` rather than burned. A worker *stop* that reaches the
-# end of this window is the destructive one. Until cancellation is genuinely
-# non-destructive, killing is the safe way to stop a worker mid-stage.
+# THE OPERATING RULE INVERTED TWICE, and both inversions are recorded because the
+# second undoes the first. It originally said stopping was safe and killing was
+# not; measurement showed the reverse, because a kill delivers no cancellation and
+# merely wedges the claim while a stop that exhausts this window quarantined it.
+# Now that cancellation releases, **both are safe**: a kill leaves the claim
+# `pending` for `release_pending_operation`, and a stop releases it directly.
 DEFAULT_GRACEFUL_SHUTDOWN_SECONDS = 10_800
 
 

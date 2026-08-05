@@ -5,10 +5,13 @@ import hashlib
 import json
 import os
 import stat
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping
+from typing import Awaitable, Mapping, TypeVar
+
+T = TypeVar("T")
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -3478,6 +3481,74 @@ def _replay_stage_budget(admitted: AdmittedReplayV3, stage: str) -> int:
 # module, so there is nothing left for an alias to decouple.
 
 
+#: How often a running stage tells the server it is alive. Chosen against measured
+#: loop availability rather than picked: after the decoded-tree walks moved into a
+#: thread, a real 340 port answered 58 of 63 query samples and its longest
+#: unbroken unavailable stretch was 3 samples (~60 s). Thirty seconds beats twice
+#: inside that worst case, and the `heartbeat_timeout` in `replay_workflow.py` is
+#: set an order of magnitude above it.
+HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+
+async def _with_heartbeat(stage: str, inner: Awaitable[T]) -> T:
+    """Run a stage while a loop-side task reports it alive.
+
+    **From the loop, never from a thread.** `activity.heartbeat()` inside an
+    `asyncio.to_thread` thread of an `async def` activity puts details on a queue
+    that is not thread-safe and *then* raises `RuntimeError: no running event
+    loop` — details enqueued, flush never scheduled. Worse, a test would not catch
+    it: `ActivityEnvironment`'s heartbeat callback is a plain sync lambda, so
+    heartbeat-from-thread passes there and fails against a real worker.
+
+    This is why the tree walks had to move off the loop first. A heartbeater is a
+    loop task, and a loop blocked for nine minutes at a time cannot run one — the
+    heartbeat would stop exactly when the stage most needs to say it is alive, and
+    a `heartbeat_timeout` sized for a working heartbeater would then expire.
+
+    `await inner` directly, not through a shielded task: cancellation must reach
+    the stage body so its handler can release or quarantine the claim. The
+    heartbeater is cancelled and awaited in the `finally` so a cancelled stage
+    does not leave a task pending.
+    """
+
+    started = time.monotonic()
+
+    async def beat() -> None:
+        beats = 0
+        last = time.monotonic()
+        worst = 0.0
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            now = time.monotonic()
+            # The gap the loop actually delivered, not the interval asked for.
+            # Recorded so the timeout can be tightened against evidence rather
+            # than re-guessed; `temporal workflow describe` shows the last one.
+            worst = max(worst, now - last)
+            last = now
+            beats += 1
+            activity.heartbeat(
+                {
+                    "stage": stage,
+                    "beats": beats,
+                    "elapsed_seconds": round(now - started, 1),
+                    "worst_gap_seconds": round(worst, 1),
+                }
+            )
+
+    beater = asyncio.ensure_future(beat())
+    try:
+        return await inner
+    finally:
+        beater.cancel()
+        try:
+            await beater
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            # A heartbeater that failed must not become the stage's outcome, and
+            # its own cancellation is expected. Either way the stage's result --
+            # or its cancellation -- is what propagates.
+            pass
+
+
 @activity.defn
 async def prepare_replay_plan_activity(handle: AdmittedReplayHandleV1) -> ReplayExecutionPlanV1:
     """Derive the stage sequence from recorded authority.
@@ -3503,28 +3574,28 @@ async def prepare_replay_plan_activity(handle: AdmittedReplayHandleV1) -> Replay
 async def replay_install_frameworks_stage_activity(handle: AdmittedReplayHandleV1) -> ArtifactRef:
     configured = runtime()
     admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
-    return await replay_install_frameworks_checkpoint_activity(admitted)
+    return await _with_heartbeat("install_framework", replay_install_frameworks_checkpoint_activity(admitted))
 
 
 @activity.defn
 async def replay_decode_stage_activity(handle: AdmittedReplayHandleV1) -> ArtifactRef:
     configured = runtime()
     admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
-    return await replay_decode_checkpoint_activity(admitted)
+    return await _with_heartbeat("decode", replay_decode_checkpoint_activity(admitted))
 
 
 @activity.defn
 async def replay_apply_tree_stage_activity(handle: AdmittedReplayHandleV1) -> ArtifactRef:
     configured = runtime()
     admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
-    return await replay_apply_tree_checkpoint_activity(admitted)
+    return await _with_heartbeat("apply", replay_apply_tree_checkpoint_activity(admitted))
 
 
 @activity.defn
 async def replay_build_patched_apk_stage_activity(handle: AdmittedReplayHandleV1) -> ArtifactRef:
     configured = runtime()
     admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
-    return await replay_build_patched_apk_checkpoint_activity(admitted)
+    return await _with_heartbeat("build", replay_build_patched_apk_checkpoint_activity(admitted))
 
 
 @activity.defn
@@ -3533,7 +3604,7 @@ async def replay_verify_final_apk_stage_activity(
 ) -> ArtifactRef:
     configured = runtime()
     grant = Ledger.load_admitted_replay_verification_grant_v1(configured.ledger, handle)
-    return await replay_verify_final_apk_checkpoint_activity(grant)
+    return await _with_heartbeat("verify", replay_verify_final_apk_checkpoint_activity(grant))
 
 
 @activity.defn
