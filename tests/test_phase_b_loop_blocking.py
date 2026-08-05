@@ -98,6 +98,91 @@ class GateDerivationLocationTests(unittest.TestCase):
         self.assertNotIn(".cancel()", body)
 
 
+class TreeVerificationLocationTests(unittest.TestCase):
+    """Re-hashing a materialized tree must never happen on the event loop.
+
+    Measured on a real 430 port *after* the two capture primitives had already
+    moved into threads: the build stage reported a heartbeat gap of exactly
+    30.0 s twenty-two times and then **111.6 s** once, near the end. That single
+    block is `load_decoded_tree` plus `verify_materialized_decoded_tree` running
+    on the loop after the build subprocess returned, and it is why build still
+    measured 26% blocked when apply had fallen to 6%.
+
+    111.6 s against a 300 s `_STAGE_HEARTBEAT_TIMEOUT` is 2.7x margin, not the
+    10x the 340-only measurement suggested — so this is what stands between the
+    timeout and being tightened, and a regression here is invisible except on a
+    full port of the larger target.
+    """
+
+    def test_the_tree_re_hash_is_only_ever_reached_through_a_thread(self) -> None:
+        tree = _activities_tree()
+        callers: set[str] = set()
+
+        def visit(node: ast.AST, enclosing: str | None) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    visit(child, child.name)
+                    continue
+                if (
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Name)
+                    and child.func.id == "verify_materialized_decoded_tree"
+                    and enclosing is not None
+                ):
+                    callers.add(enclosing)
+                visit(child, enclosing)
+
+        visit(tree, None)
+        # `_load_and_verify_tree` is the threaded helper; `capture_and_verify` is
+        # the verify stage's body, which `replay_verify_final_apk_checkpoint_activity`
+        # already hands to `asyncio.to_thread` whole.
+        self.assertEqual(callers, {"_load_and_verify_tree", "capture_and_verify"}, sorted(callers))
+
+    def test_the_helper_is_always_the_thing_handed_to_the_thread(self) -> None:
+        """A helper nothing threads is just a rename.
+
+        Checked as "every mention of it is `to_thread`'s first argument", so a
+        call site that reaches for it directly fails here rather than passing on
+        a count that happens to match.
+        """
+        tree = _activities_tree()
+        threaded = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "to_thread"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "_load_and_verify_tree"
+        )
+        mentions = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id == "_load_and_verify_tree"
+        )
+        self.assertEqual(threaded, 3, threaded)
+        self.assertEqual(mentions, threaded, (mentions, threaded))
+
+    def test_every_call_site_uses_the_drain_then_propagate_supervisor(self) -> None:
+        """These run inside `try` blocks holding directory descriptors.
+
+        That is the case `_await_thread_work`'s docstring was written for: a
+        `finally` closing an fd under a live thread can have its number reused,
+        and the walk then reads a *different* directory. A wrong answer, not an
+        error.
+        """
+        source = (
+            Path(__file__).resolve().parents[1] / "src/dfinsta_pipeline/activities.py"
+        ).read_text(encoding="utf-8")
+        threaded = source.count("_load_and_verify_tree,")
+        supervised = source.count('"framework cache verification"') + source.count(
+            '"patched tree verification"'
+        )
+        self.assertEqual(threaded, 3, threaded)
+        self.assertEqual(supervised, threaded, (supervised, threaded))
+
+
 class LoopAvailabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_loop_bound_derivation_starves_the_loop(self) -> None:
         """POSITIVE CONTROL for the test below.

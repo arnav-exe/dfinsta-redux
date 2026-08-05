@@ -756,6 +756,25 @@ def _strict_replay_final_apk_verification_receipt(
     )  # type: ignore[return-value]
 
 
+def _load_and_verify_tree(store: Any, manifest_ref: Any, destination: Path) -> None:
+    """Re-hash a materialized tree against its manifest. Runs in a thread.
+
+    Both halves must move together or neither is worth moving: `load_decoded_tree`
+    reads and re-hashes every blob in the content store, and
+    `verify_materialized_decoded_tree` then walks the materialized copy and
+    compares. Neither manifest is used for anything afterwards -- these calls
+    exist only to check -- so nothing is returned.
+
+    **Measured, which is why this exists.** On a real 430 port the build stage
+    reported a heartbeat gap of exactly 30.0 s twenty-two times and then **111.6
+    s** once, near the end. That single block is this pair, running on the event
+    loop after the build subprocess returned. It is also why the stage still
+    measured 26% loop-blocked when apply had fallen to 6%.
+    """
+
+    verify_materialized_decoded_tree(load_decoded_tree(store, manifest_ref), destination)
+
+
 async def _await_thread_work(task: asyncio.Task[Any], subject: str) -> Any:
     """Wait for uninterruptible work, then propagate the cancellation it raced.
 
@@ -1852,13 +1871,16 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
             if framework_receipt is not None:
                 assert framework_fd is not None
                 _verify_workspace_path(workspace / "framework", framework_fd)
-                framework_manifest = load_decoded_tree(
-                    configured.store,
-                    framework_receipt.framework_cache_manifest,
-                )
-                verify_materialized_decoded_tree(
-                    framework_manifest,
-                    workspace / "framework",
+                await _await_thread_work(
+                    asyncio.create_task(
+                        asyncio.to_thread(
+                            _load_and_verify_tree,
+                            configured.store,
+                            framework_receipt.framework_cache_manifest,
+                            workspace / "framework",
+                        )
+                    ),
+                    "framework cache verification",
                 )
             output_fd = _open_existing_directory(workspace_fd, "output")
             manifest_ref = await _await_thread_work(
@@ -2463,16 +2485,28 @@ async def replay_build_patched_apk_checkpoint_activity(
                     if _framework_cache_snapshot(framework_fd):
                         raise ValueError("Empty framework directory was mutated by replay build")
                 else:
-                    framework_manifest = load_decoded_tree(
-                        configured.store, framework_receipt.framework_cache_manifest
+                    await _await_thread_work(
+                        asyncio.create_task(
+                            asyncio.to_thread(
+                                _load_and_verify_tree,
+                                configured.store,
+                                framework_receipt.framework_cache_manifest,
+                                workspace / "framework",
+                            )
+                        ),
+                        "framework cache verification",
                     )
-                    verify_materialized_decoded_tree(
-                        framework_manifest, workspace / "framework"
+            await _await_thread_work(
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        _load_and_verify_tree,
+                        configured.store,
+                        patched_receipt.patched_tree_manifest,
+                        workspace / "patched-tree",
                     )
-            patched_manifest = load_decoded_tree(
-                configured.store, patched_receipt.patched_tree_manifest
+                ),
+                "patched tree verification",
             )
-            verify_materialized_decoded_tree(patched_manifest, workspace / "patched-tree")
 
             intermediate_fd, intermediate_stat = _open_pinned_regular(
                 workspace_fd, "intermediate.apk", "Intermediate APK"
