@@ -415,6 +415,23 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Ledger.operation_status(runtime().ledger, self.key), "quarantined")
         self.assertEqual(Ledger.operation_event_count(runtime().ledger, self.key, "effect"), 0)
 
+    def assert_released(self) -> None:
+        """Adoptable by a later attempt, and nothing published.
+
+        The owner is blanked rather than merely left in place: that is what makes
+        `begin_operation` hand the key to a second attempt, and it is also what
+        refuses a zombie's late `record_effect`.
+        """
+        with runtime().ledger._connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT owner_token, status FROM operation_claims WHERE operation_key = ?",
+                    (self.key,),
+                ).fetchone(),
+                ("", "pending"),
+            )
+        self.assertEqual(Ledger.operation_event_count(runtime().ledger, self.key, "effect"), 0)
+
     async def test_no_framework_primary_and_repository_independent_adoption(self) -> None:
         def decode_with_generated_framework(cwd: Path) -> None:
             shutil.copytree(self.decoded_source, cwd / "output")
@@ -719,7 +736,7 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "report"):
                 await self.invoke("report-adoption")
 
-    async def test_repeated_decoder_cancellation_waits_for_reap_then_quarantines(self) -> None:
+    async def test_repeated_decoder_cancellation_waits_for_reap_then_releases(self) -> None:
         self.process = FakeDecodeProcess(self.decoded_source, block=True)
         cleanup_started = asyncio.Event()
         cleanup_release = asyncio.Event()
@@ -746,9 +763,9 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertTrue(self.process.reaped)
-        self.assert_quarantined()
+        self.assert_released()
 
-    async def test_verification_cancellation_waits_for_thread_then_quarantines(self) -> None:
+    async def test_verification_cancellation_waits_for_thread_then_releases(self) -> None:
         started = threading.Event()
         release = threading.Event()
         real_verify = activities.verify_apk
@@ -775,7 +792,7 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             with self.assertRaises(asyncio.CancelledError):
                 await task
-        self.assert_quarantined()
+        self.assert_released()
 
     async def test_missing_executable_releases_pending_claim_before_workspace(self) -> None:
         configure_runtime(

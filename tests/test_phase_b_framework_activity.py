@@ -356,7 +356,7 @@ class ReplayFrameworkActivityTests(unittest.IsolatedAsyncioTestCase):
                 _, status = self.sole_operation()
                 self.assertEqual(status, "pending")
 
-    async def test_nonzero_cancellation_and_capture_failure_quarantine(self) -> None:
+    async def test_nonzero_and_capture_failures_quarantine_but_cancellation_releases(self) -> None:
         self.returncodes = [0, 9]
         with self.assertRaisesRegex(RuntimeError, "10 failed with exit code 9"):
             await self.invoke(owner="nonzero-owner")
@@ -384,7 +384,10 @@ class ReplayFrameworkActivityTests(unittest.IsolatedAsyncioTestCase):
         key, status = self.sole_operation()
         self.assertTrue(self.blocking.killed)
         self.assertTrue(self.blocking.reaped)
-        self.assertEqual(status, "quarantined")
+        # Released, not quarantined. The two failures above still quarantine:
+        # an ordinary fault is usually deterministic and failing closed on it
+        # is the point, while a cancellation says nothing about the work.
+        self.assertEqual(status, "pending")
         self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
 
     async def test_each_install_must_add_its_declared_id_without_overwrite(self) -> None:

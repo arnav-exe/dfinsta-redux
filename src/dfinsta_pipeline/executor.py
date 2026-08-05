@@ -20,6 +20,60 @@ _SUPERVISED_TASKS: set[asyncio.Future[Any]] = set()
 Launcher = Callable[..., Awaitable[Any]]
 
 
+class ProcessNotReaped(RuntimeError):
+    """The child was killed and could not be shown to have exited.
+
+    A distinct type because a caller has to *act* on it, and matching on the
+    message `"Subprocess did not exit after kill"` is not something to build a
+    terminality decision on.
+
+    What it means: this executor owns only its direct child, so a grandchild —
+    an apktool JVM, say — can hold the stdout pipes open after the child is
+    killed, and `communicate()` then blocks past the cleanup budget. A process
+    that may still be writing is the one case where a second attempt must not be
+    allowed to start, because it is the only way two attempts could ever touch
+    the same bytes.
+
+    `RuntimeError` on purpose: it is already in the replay stages' non-retryable
+    list, so raising this cannot silently buy a retry.
+    """
+
+
+#: Set on an exception that is NOT a `ProcessNotReaped` but happened alongside
+#: one. A cancellation cannot be replaced by the cleanup failure — that would
+#: report a cancelled activity as a plain failure — so the fact rides along on
+#: the exception instead of becoming it.
+_NOT_REAPED_ATTRIBUTE = "dfinsta_process_not_reaped"
+
+
+def _mark_not_reaped(error: BaseException) -> None:
+    setattr(error, _NOT_REAPED_ATTRIBUTE, True)
+
+
+def process_not_reaped(error: BaseException) -> bool:
+    """Did this failure leave a process that could not be shown to have exited?
+
+    The predicate a caller uses to decide whether a second attempt may start.
+    Public because that decision is made in `activities.py`, and it must not be
+    made by matching an error message.
+
+    Walks the cause chain because a stage wraps: `execute` raises, a supervisor
+    re-raises `from` it, and the activity sees the outer one. Bounded depth, so a
+    self-referential `__cause__` cannot spin.
+    """
+
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen and len(seen) < 32:
+        if isinstance(current, ProcessNotReaped):
+            return True
+        if getattr(current, _NOT_REAPED_ATTRIBUTE, False) is True:
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _require_tuple(value: object, label: str) -> None:
     if not isinstance(value, tuple):
         raise TypeError(f"{label} must be a tuple")
@@ -333,7 +387,7 @@ async def _clean_up(process: Any) -> None:
         async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
             await process.communicate()
     except TimeoutError as error:
-        raise RuntimeError("Subprocess did not exit after kill") from error
+        raise ProcessNotReaped("Subprocess did not exit after kill") from error
 
 
 def _consume_supervised_result(task: asyncio.Future[Any]) -> None:
@@ -373,8 +427,14 @@ async def _launch_with_cancellation_cleanup(launch: Awaitable[Any]) -> Any:
             async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
                 process = await asyncio.shield(task)
         except TimeoutError:
+            # Also a ProcessNotReaped: the launch never handed back a handle, so
+            # there may be a running child this code can never name, let alone
+            # kill. "We do not know" and "it is still running" have to be the
+            # same answer to a caller deciding whether a second attempt is safe.
             _supervise_late_launch(task)
-            raise RuntimeError("Subprocess launch did not return a process handle") from None
+            raise ProcessNotReaped(
+                "Subprocess launch did not return a process handle"
+            ) from None
         await asyncio.shield(_clean_up(process))
         raise
 
@@ -469,9 +529,18 @@ async def execute(
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_seconds)
-    except (TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError) as error:
         cleanup = asyncio.create_task(_clean_up(process))
-        await asyncio.shield(cleanup)
+        try:
+            await asyncio.shield(cleanup)
+        except ProcessNotReaped as not_reaped:
+            # Do NOT let this replace what got us here. Raising it bare turned a
+            # cancelled activity into a plainly failed one, and the caller that
+            # decides whether a cancelled operation may be released reads exactly
+            # that distinction -- it was being destroyed one frame below where it
+            # is read. The note carries the fact; `raise` preserves the cause.
+            error.add_note(f"{type(not_reaped).__name__}: {not_reaped}")
+            _mark_not_reaped(error)
         unexpected = _unexpected_mutations(
             before, _snapshot(workspace_root), capability.allowed_mutation_paths
         )

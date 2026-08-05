@@ -23,7 +23,13 @@ from .decoded_artifact import (
     materialize_decoded_tree,
     verify_materialized_decoded_tree,
 )
-from .executor import ExecutionMetadata, ExecutionRequest, Launcher, execute
+from .executor import (
+    ExecutionMetadata,
+    ExecutionRequest,
+    Launcher,
+    execute,
+    process_not_reaped,
+)
 from . import assessment_record, replay_gate
 from .feature_gate import (
     FeatureAssessmentGateV1,
@@ -171,6 +177,32 @@ def operation_key(kind: str, value: object) -> str:
 
 def _paths_overlap(first: Path, second: Path) -> bool:
     return first == second or first.is_relative_to(second) or second.is_relative_to(first)
+
+
+def _releasable(error: BaseException) -> bool:
+    """May a failure after the workspace exists leave the claim adoptable?
+
+    Only a cancellation, and only one whose subprocess was shown to have exited.
+
+    **Why a cancellation and not every failure.** Releasing is safe for the
+    ledger either way — nothing a stage writes after the workspace is shared, the
+    release blanks the owner so a zombie's late `record_effect` is refused, and
+    CAS publication is atomic and content-addressed. But an ordinary failure here
+    is usually deterministic, and quarantining it is how this pipeline fails
+    closed on a real fault; a cancellation carries no information about the work
+    at all. Widening this to every failure would change what happens on a corrupt
+    receipt or an undeclared mutation, which is not what the cancellation item is
+    about and would need its own argument.
+
+    **Why the process check.** `execute` owns only its direct child, so an
+    apktool JVM grandchild can outlive the kill. A process that may still be
+    writing is the one case where a second attempt could reach the same bytes,
+    through a directory outside the per-attempt workspace. `process_not_reaped`
+    is the code doing what `claims.py` asks a human to confirm before releasing:
+    that the first attempt is dead.
+    """
+
+    return isinstance(error, asyncio.CancelledError) and not process_not_reaped(error)
 
 
 def _activity_owner() -> str:
@@ -1597,7 +1629,7 @@ async def replay_install_frameworks_checkpoint_activity(
     # NOT the non-destructive cancellation item. That one is about quarantine
     # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
-        if workspace_created and not effect_recorded:
+        if workspace_created and not effect_recorded and not _releasable(error):
             Ledger.quarantine_operation(configured.ledger, key, owner)
         elif operation_claimed and not effect_recorded:
             try:
@@ -1924,7 +1956,7 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
     # NOT the non-destructive cancellation item. That one is about quarantine
     # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
-        if workspace_created and not effect_recorded:
+        if workspace_created and not effect_recorded and not _releasable(error):
             Ledger.quarantine_operation(configured.ledger, key, owner)
         elif operation_claimed and not effect_recorded:
             try:
@@ -2192,7 +2224,7 @@ async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> 
     # NOT the non-destructive cancellation item. That one is about quarantine
     # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
-        if workspace_created and not effect_recorded:
+        if workspace_created and not effect_recorded and not _releasable(error):
             Ledger.quarantine_operation(configured.ledger, key, owner)
         elif operation_claimed and not effect_recorded:
             try:
@@ -2545,7 +2577,7 @@ async def replay_build_patched_apk_checkpoint_activity(
     # NOT the non-destructive cancellation item. That one is about quarantine
     # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
-        if workspace_created and not effect_recorded:
+        if workspace_created and not effect_recorded and not _releasable(error):
             Ledger.quarantine_operation(configured.ledger, key, owner)
         elif operation_claimed and not effect_recorded:
             try:
@@ -3271,7 +3303,7 @@ async def replay_verify_final_apk_checkpoint_activity(
     # NOT the non-destructive cancellation item. That one is about quarantine
     # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
-        if workspace_created and not effect_recorded:
+        if workspace_created and not effect_recorded and not _releasable(error):
             Ledger.quarantine_operation(configured.ledger, key, owner)
         elif operation_claimed and not effect_recorded:
             try:

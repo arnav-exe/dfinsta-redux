@@ -1608,7 +1608,7 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.sha256, first.sha256)
         self.assertEqual(runtime().store.read_bytes(second), first_bytes)
 
-    async def test_cancellation_supervises_composition_and_quarantines(self) -> None:
+    async def test_cancellation_supervises_composition_then_releases(self) -> None:
         started = threading.Event()
         release = threading.Event()
         real_compose = activities.compose_apk
@@ -1635,9 +1635,11 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
         key, _, _ = activities._replay_build_operation_identity(
             self.admitted, predecessors[2], predecessors[3], predecessors[4], predecessors[0], predecessors[1]
         )
-        self.assertEqual(runtime().ledger.operation_status(key), "quarantined")
+        # Released: the composition thread was drained first, so nothing is
+        # still writing when the claim becomes adoptable.
+        self.assertEqual(runtime().ledger.operation_status(key), "pending")
 
-    async def test_subprocess_cancellation_kills_reaps_and_quarantines(self) -> None:
+    async def test_subprocess_cancellation_kills_reaps_and_releases(self) -> None:
         self.process = FakeBuildProcess(block=True)
         task = asyncio.create_task(self.invoke("subprocess-cancel"))
         await asyncio.wait_for(self.process.started.wait(), 2)
@@ -1655,7 +1657,9 @@ class ReplayBuildActivityTests(unittest.IsolatedAsyncioTestCase):
             predecessors[0],
             predecessors[1],
         )
-        self.assertEqual(runtime().ledger.operation_status(key), "quarantined")
+        # Released, because the process was reaped. `reaped` above is what makes
+        # this safe, and the unreapable case still quarantines.
+        self.assertEqual(runtime().ledger.operation_status(key), "pending")
 
     async def test_workspace_mutation_and_receipt_publication_failure_quarantine(self) -> None:
         original_communicate = self.process.communicate

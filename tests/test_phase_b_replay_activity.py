@@ -119,6 +119,20 @@ class BlockingProcess(FakeProcess):
         return self.stdout, self.stderr
 
 
+class UnreapableProcess(BlockingProcess):
+    """Killed, and never observed to exit.
+
+    A grandchild holding the stdout pipes does this in reality: the direct child
+    dies, `communicate()` does not return, and the cleanup budget expires. This
+    is the one case where a second attempt must not start.
+    """
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        self.started.set()
+        await asyncio.Event().wait()  # never returns, killed or not
+        raise AssertionError("unreachable")
+
+
 class ReplayDecodeCheckpointContractTests(unittest.TestCase):
     def test_result_is_strict_versioned_and_canonically_hashed(self) -> None:
         result = ReplayDecodeCheckpointResultV1(
@@ -802,7 +816,9 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
         first.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await first
-        self.assertEqual(runtime().ledger.operation_status(key), "quarantined")
+        # The subject of this test is the overlapping-owner refusal above; the
+        # cancellation is teardown, and a reaped one now releases.
+        self.assertEqual(runtime().ledger.operation_status(key), "pending")
 
     async def test_workspace_path_replacement_cannot_redirect_descriptor_capture(self) -> None:
         capture = activities.capture_decoded_tree_fd
@@ -828,7 +844,7 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
             ("empty", "resources.bin", "smali", "smali/Example.smali"),
         )
 
-    async def test_cancellation_kills_reaps_and_quarantines(self) -> None:
+    async def test_cancellation_kills_reaps_and_releases(self) -> None:
         process = BlockingProcess()
         self.process = process
         task = asyncio.create_task(self.invoke())
@@ -839,8 +855,42 @@ class ReplayDecodeCheckpointActivityTests(unittest.IsolatedAsyncioTestCase):
         key, status = self.sole_operation()
         self.assertTrue(process.killed)
         self.assertTrue(process.reaped)
+        # Released, not quarantined: the process was reaped, so nothing can
+        # still be writing, and quarantine is terminal. See `_releasable`.
+        self.assertEqual(status, "pending")
+        self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+
+    async def test_a_process_that_cannot_be_reaped_still_quarantines(self) -> None:
+        """The positive control for terminality, and the reason release is safe.
+
+        A cancelled operation is released so a later attempt can adopt it — but
+        only because nothing can still be writing. `execute` owns its direct
+        child alone, so a grandchild can outlive the kill; `_clean_up` then times
+        out and raises `ProcessNotReaped`, and this is the one path that must
+        stay terminal.
+
+        Without this test the release above would be indistinguishable from
+        having deleted the quarantine entirely.
+        """
+        self.process = UnreapableProcess()
+        task = asyncio.create_task(self.invoke())
+        await self.process.started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError) as raised:
+            await task
+        key, status = self.sole_operation()
+        self.assertTrue(self.process.killed)
+        self.assertFalse(self.process.reaped)
         self.assertEqual(status, "quarantined")
         self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
+        # And the cancellation is still a cancellation: the cleanup failure rides
+        # along as a note rather than replacing it, which is what the handler
+        # reads to make the decision above.
+        self.assertTrue(
+            any("ProcessNotReaped" in note
+                for note in getattr(raised.exception, "__notes__", ())),
+            getattr(raised.exception, "__notes__", ()),
+        )
 
     async def test_post_effect_completion_failure_retries_by_adoption_without_work(self) -> None:
         with mock.patch.object(

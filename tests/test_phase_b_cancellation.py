@@ -1,32 +1,45 @@
 """How the five replay checkpoint Activities must handle being cancelled.
 
-They did not agree, and nothing recorded that they did not. Three quarantined
-unconditionally on `CancelledError` and two used the graduated form — release if
-no workspace exists yet, quarantine only if one does — which is also what all
-five used for every *other* failure. No comment, no commit message, and (measured)
-zero tests pinned the difference. It was drift from birth: the three were written
-on 2026-07-28 and the two on 07-29 and 07-31.
+A cancelled operation is **released** so a later attempt can adopt it — except
+where the subprocess could not be shown to have exited, which stays terminal.
+`_releasable` is that rule and `executor.process_not_reaped` is the check.
 
-Two things are checked here, and the first is the one that matters:
+Quarantine is terminal: `begin_operation` refuses the key forever and operation
+keys derive from admitted content, so recovery needs a new run id, a new run spec
+and a new human gate decision. Releasing leaves the claim `pending` with a blanked
+owner, which is what lets `begin_operation` hand it to a second attempt *and* what
+refuses a zombie's late `record_effect`. Getting this backwards costs a run.
 
-* **the invariant is stated once.** A separate cancel handler is how the two
-  shapes came to exist, so there must not be one to drift again.
-* **cancellation before a workspace releases rather than quarantines**, and the
-  release cannot mask the cancellation.
+**Why release is safe**, established by audit and recorded in
+`docs/WORKFLOW_REGISTRATION_DESIGN.md` §3d: nothing a stage writes after its
+workspace exists is shared — every write lands in the per-attempt workspace
+`attempts_root/<key>/sha256(owner)` or in the content store, and every ledger call
+in that window is a SELECT. CAS publication is atomic and content-addressed. And
+`claims.py` already releases exactly this state by hand, adding only a human's
+confirmation that the first attempt is dead; `process_not_reaped` is that
+confirmation in code.
 
-`quarantine_operation` is terminal — `begin_operation` refuses the key forever and
-operation keys derive from admitted content, so recovery needs a new run id, a new
-run spec and a new human gate decision. Releasing leaves the claim `pending` for a
-later attempt to adopt. Getting this backwards costs a run.
+**Why only a cancellation.** An ordinary post-workspace failure still quarantines.
+Releasing would be equally safe for the ledger, but such a failure is usually
+deterministic and failing closed on it is the point, whereas a cancellation
+carries no information about the work at all.
 
-**This is not the non-destructive cancellation item**, and must not be recorded as
-closing it. Measured by AST over all five activities: there is no `await`,
-`async with` or `async for` between claiming the operation and
-`workspace_created = True`, and an async Activity is cancelled through
-`task.cancel()`, which is delivered only at a suspension point. So a cancellation
-requested in that region is latched and arrives at the first await — the launch —
-by which time a workspace exists. The reachable destructive path is quarantine
-*after* a workspace, and nothing here touches it.
+Three things are checked here:
+
+* **the invariant is stated once.** Three stages once quarantined unconditionally
+  where two used the graduated form, with no comment, no commit message and zero
+  tests either way — drift from birth (2026-07-28 versus 07-29 and 07-31). A
+  separate cancel handler is how that happened, so there must not be one.
+* **the shape is identical in all five**, read out of the source.
+* **the pre-workspace branch is still unreachable**, and the day it stops being
+  so is a day someone should notice. There is no suspension point between
+  claiming the operation and creating the workspace, and an async Activity is
+  cancelled by `task.cancel()`, delivered only at a suspension point.
+
+The behavioural halves live with the fixtures that can drive a real stage:
+`test_phase_b_replay_activity` has both the released case and the unreapable
+positive control, and `test_phase_b_verification_activity` injects the
+cancellation the runtime cannot deliver before a workspace exists.
 """
 
 import ast
@@ -93,7 +106,10 @@ class OneHandlerTests(unittest.TestCase):
         # existed and nothing compared them.
         self.assertEqual(len(set(handlers.values())), 1, sorted(handlers))
         body = next(iter(handlers.values()))
-        self.assertIn("if workspace_created and (not effect_recorded):", body)
+        self.assertIn(
+            "if workspace_created and (not effect_recorded) and (not _releasable(error)):",
+            body,
+        )
         self.assertIn("quarantine_operation", body)
         self.assertIn("elif operation_claimed and (not effect_recorded):", body)
         self.assertIn("release_pending_operation", body)

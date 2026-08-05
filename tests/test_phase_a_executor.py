@@ -9,6 +9,7 @@ from typing import Any
 from unittest import mock
 
 from dfinsta_pipeline.contracts import ArtifactRef, RunSpec
+from dfinsta_pipeline import executor
 from dfinsta_pipeline.executor import (
     ExecutionMetadata,
     ExecutionRequest,
@@ -503,7 +504,13 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             return process
 
         with mock.patch("dfinsta_pipeline.executor._CLEANUP_TIMEOUT_SECONDS", 0.01):
-            with self.assertRaisesRegex(RuntimeError, "did not exit"):
+            # The ORIGINAL failure surfaces, not the cleanup's. The subprocess
+            # exceeded its own timeout; that a killed child then would not reap
+            # is a second fact, and it used to replace the first. A caller
+            # deciding whether a cancelled operation may be released reads
+            # exactly that distinction, so destroying it here would destroy it
+            # for them.
+            with self.assertRaises(TimeoutError) as raised:
                 await asyncio.wait_for(
                     self.admitted_execute(
                         self.capability(),
@@ -515,6 +522,17 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
                     timeout=0.2,
                 )
         self.assertTrue(process.killed)
+        # Bounded, which is what this test is named for: it returned rather than
+        # waiting on a reap that never comes.
+        self.assertTrue(
+            any(
+                "did not exit" in note
+                for note in getattr(raised.exception, "__notes__", ())
+            ),
+            getattr(raised.exception, "__notes__", ()),
+        )
+        # And the fact is readable by type, not by grepping a message.
+        self.assertTrue(executor.process_not_reaped(raised.exception))
 
 
 if __name__ == "__main__":

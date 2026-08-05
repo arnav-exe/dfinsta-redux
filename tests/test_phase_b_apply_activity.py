@@ -766,7 +766,7 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [normalized])
         self.assertEqual(self.receipt(output).admitted_replay_sha256, normalized.sha256)
 
-    async def test_cancellation_waits_for_mutation_then_quarantines(self) -> None:
+    async def test_cancellation_waits_for_mutation_then_releases(self) -> None:
         started = threading.Event()
         release = threading.Event()
         real_apply = activities.apply_port
@@ -790,7 +790,9 @@ class ReplayApplyActivityTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
         key, _ = self.apply_key()
-        self.assertEqual(runtime().ledger.operation_status(key), "quarantined")
+        # Released: the mutation thread was drained before the cancellation
+        # propagated, so nothing is still writing.
+        self.assertEqual(runtime().ledger.operation_status(key), "pending")
         self.assertEqual(runtime().ledger.operation_event_count(key, "effect"), 0)
 
     async def test_adoption_rejects_source_evidence_file_count_mismatch(self) -> None:
