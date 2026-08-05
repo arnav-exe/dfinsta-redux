@@ -5,9 +5,8 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-04 (fifth pass: the feature gate raised, answered and *consumed* end to
-end — a human's ruling now reaches the manifest and stops stage 4a re-proposing the
-candidate).
+Last updated 2026-08-05 (sixth pass: the registered Workflow ran a real port, both targets,
+on a live Temporal server — and found in its first minutes that the worker could not run one).
 
 ## End goal
 
@@ -51,8 +50,15 @@ enumerating its violations.
       `apktool_full_rebuild` embeds build-time ZIP timestamps so it is not bit-reproducible,
       while `stock_dex_graft` keeps 16,399 stock timestamps and only rewrites what it writes.
       Verify rebuilds semantically, never by hash equality against a stored value.
-- [ ] **Opt-in real 340/430 run through the registered Workflow** — registration is proven by unit and time-skipping tests only
-- [ ] Fold in follow-ups F1/F2 from `docs/WORKFLOW_REGISTRATION_DESIGN.md` during that run
+- [x] **Real 340/430 run through the registered Workflow** (2026-08-04). Both completed on a
+      live server: 8 and 9 activities scheduled, History at 64,563 and 62,261 bytes of the
+      256 KB budget, verification receipts reporting success. Registration had been proven by
+      unit and time-skipping tests only, and the real run found in its first minutes that the
+      worker CLI could supply neither `source_root` nor `executor_paths` — so all fourteen
+      registered Activities hosted a Workflow that could not run one real stage.
+- [x] **Follow-ups F1 and F2 folded in.** F1's identifier pins are checked against a run rather
+      than against themselves; F2's extraction is done and its three stopgap aliases deleted,
+      with the refactor confirmed byte-identical by re-deriving both runs' bound gate subjects.
 - [x] **The destructive cancellation path is closed by construction** —
       `DEFAULT_GRACEFUL_SHUTDOWN_SECONDS` is now 10,800, above the longest stage budget, and
       derived-and-pinned by a test rather than asserted `> 0`. A replay stage can act on a
@@ -73,14 +79,20 @@ enumerating its violations.
       token that produced neither a release nor a refusal, and what
       `--release "$OWNER"` expands to when `OWNER` is unset.
 - [ ] Non-destructive cancellation *within* the window — the real fix, and it rewrites a
-      reviewed invariant (release rather than quarantine after a workspace exists). Needs the
-      real run to re-establish the five stages' evidence.
+      reviewed invariant (release rather than quarantine after a workspace exists). The real
+      run has now re-established the five stages' evidence, so this is unblocked.
 - [ ] Heartbeats in the replay Activities (worker loss undetected until `start_to_close`).
       **Must not land before the item above**: heartbeating is what opens the channel for
       server-originated cancellation, so shipping it first would turn a flaky thirty seconds
-      of network into a burned run. Measured correction to the earlier design note — this does
-      **not** require editing proven Activity bodies; a heartbeater in the unproven wrapper
-      works, because every long operation inside a stage yields the event loop.
+      of network into a burned run.
+      **A second prerequisite, measured 2026-08-04, which retracts what this line used to
+      say.** It claimed a heartbeater in the unproven wrapper works "because every long
+      operation inside a stage yields the event loop". It does not: the decode stage contains
+      no `asyncio.to_thread` at all, and its CAS read, workspace write and
+      `capture_decoded_tree_fd` are synchronous. 66 of 86 query samples on 340 and 113 of 144
+      on 430 went unanswered, the longest unbroken stretch over nine minutes, and the worker
+      logged 191 expired query tasks. A wrapper heartbeater would be starved exactly when a
+      heartbeat matters. Move the capture off the loop first, or accept and measure the gap.
 
 ## 2. Produce — the gap
 
@@ -415,15 +427,17 @@ Reordered 2026-08-03. The two items that stood here are done.
       Activities hosted a Workflow that could not run a single real stage; and a running stage
       blocks the worker's event loop. See `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3c-measured.
 
-1. **Heartbeats (F4) now have a prerequisite, and a number.** 66 of 86 query samples on 340 and
-   113 of 144 on 430 went unanswered, the longest unbroken stretch over nine minutes. A
-   heartbeater in the wrapper would be starved for the whole `capture_decoded_tree_fd`, and a
-   `heartbeat_timeout` sized to a working one would expire and deliver the cancellation that
-   quarantines. Move the synchronous capture off the loop first, or accept and measure the gap.
-2. **F2, now unblocked.** Extract the pre-grant half of `_replay_verification_predecessors`
-   into a public seam and deduplicate `replay_gate.resolve_admitted_build` against it. Its only
-   stated blocker was that editing a proven Activity body invalidates the real-run evidence,
-   and that evidence has just been re-established through the registered path.
+1. **Non-destructive cancellation within the graceful window** — the remaining half of F3, and
+   the prerequisite for heartbeats rather than a peer of them. Today three of the five stages
+   quarantine unconditionally on `CancelledError` and quarantine is terminal; build and verify
+   already release when cancellation lands before a workspace exists, which is the shape the
+   other three need.
+2. **Heartbeats (F4), after that, and they now have a second prerequisite and a number.** 66 of
+   86 query samples on 340 and 113 of 144 on 430 went unanswered, the longest unbroken stretch
+   over nine minutes. A heartbeater in the wrapper would be starved for the whole
+   `capture_decoded_tree_fd`, and a `heartbeat_timeout` sized to a working one would expire and
+   deliver exactly the cancellation item 1 is about. Move the synchronous capture off the loop
+   first, or accept and measure the gap.
 3. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
    (439 → 2, 440 → 0). A third is what tells "falling" from "fell once".
 4. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt

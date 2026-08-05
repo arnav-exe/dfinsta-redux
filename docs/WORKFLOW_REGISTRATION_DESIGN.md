@@ -291,6 +291,8 @@ re-run anyway.
 coupling with every body and the executed call graph byte-identical. The real extraction —
 deduplicating `resolve_admitted_build` against `_replay_verification_predecessors` — still
 edits proven code and still waits for the real run.
+**Superseded 2026-08-05: the real extraction is done and the aliases are deleted. See
+§3c-measured.**
 
 ## 3c-measured (2026-08-04) — the first run through the registered Workflow
 
@@ -325,10 +327,20 @@ version of the harness compared against the sibling harness's vocabulary, which 
 `framework`; `ReplayRunResultV1` rejects any stage outside `REPLAY_STAGE_ORDER`, so that
 comparison could never have passed on 430 and would have passed vacuously on 340.
 
-**F2 is unblocked.** Its stated reason for waiting was that extracting
+**F2 is done** (2026-08-05). Its stated reason for waiting was that extracting
 `_replay_verification_predecessors` edits a body inside the verify Activity's proven execution
-path and would invalidate the real-run evidence. That evidence has now been re-established on
-both targets, through the registered Workflow rather than beside it.
+path and would invalidate the real-run evidence. That evidence was re-established on both
+targets through the registered Workflow, so the extraction was made:
+`activities.resolve_replay_build(admitted)` is now the one implementation, and both
+`_replay_verification_predecessors` and `replay_gate.resolve_admitted_build` call it. The three
+public aliases are deleted — they removed the *private* half of the coupling and left the
+duplication, which was the point of F2.
+
+**Checked against the two completed runs rather than against the tests alone.** Re-deriving
+each target's verification request through the extracted seam reproduces the exact subject hash
+that run bound — `357fdb5cdb91143a` for 340 and `70d045303780eed5` for 430 — so the refactor is
+byte-identical in effect on the only two real ports that exist. The signature-drift test is
+replaced by one that asserts both callers name the same function and neither inlines the chain.
 
 
 `tests/integration/test_registered_replay_harness.py` drives a real 340/430 replay
