@@ -176,12 +176,13 @@ def resolve_admitted_build(
 ) -> tuple[ArtifactRef, ReplayPatchedApkReceiptV1]:
     """Locate the completed build receipt for an admitted replay.
 
-    This is the pre-grant half of `activities._replay_verification_predecessors`:
-    that function reconstructs the build operation identity from the admitted
-    replay and validates the recorded receipt, but it can only be called with an
-    `AdmittedReplayVerificationGrantV1`, which does not exist yet when the gate
-    subject is being derived.  Rather than restate the chain, the same private
-    helpers are reused verbatim.
+    One call, to the one implementation. It used to restate
+    `activities._replay_verification_predecessors` line for line through three
+    aliases, because that function can only be called with an
+    `AdmittedReplayVerificationGrantV1` and the grant does not exist yet when the
+    gate subject is being derived -- the grant binds the build receipt this
+    finds. Two copies of a chain that long agree until one is edited, and a
+    signature-drift test was all that held them together.
 
     `activities` is imported inside the function on purpose: the Activities that
     call this module import it at module scope, so a module-level import here
@@ -190,36 +191,5 @@ def resolve_admitted_build(
 
     from . import activities
 
-    (
-        completed_framework,
-        framework_receipt,
-        completed_apply,
-        patched_tree_receipt,
-        compiled,
-    ) = activities.replay_build_predecessors(admitted)
-    build_key, build_input, build_request = activities.replay_build_operation_identity(
-        admitted,
-        completed_apply,
-        patched_tree_receipt,
-        compiled,
-        completed_framework,
-        framework_receipt,
-    )
-    completed_build = Ledger.require_completed_operation(
-        activities.runtime().ledger,
-        build_key,
-        BUILD_OPERATION_KIND,
-        build_input,
-    )
-    build_receipt = activities.validate_replay_patched_apk_receipt(
-        completed_build,
-        build_key,
-        admitted=admitted,
-        completed_patched_tree_receipt=completed_apply,
-        patched_receipt=patched_tree_receipt,
-        compiled=compiled,
-        execution_request=build_request,
-        completed_framework_cache_receipt=completed_framework,
-        framework_receipt=framework_receipt,
-    )
+    _, _, completed_build, build_receipt, _ = activities.resolve_replay_build(admitted)
     return completed_build, build_receipt

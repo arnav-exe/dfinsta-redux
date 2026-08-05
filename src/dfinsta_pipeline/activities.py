@@ -2484,22 +2484,35 @@ async def replay_build_patched_apk_checkpoint_activity(
         raise
 
 
-def _replay_verification_predecessors(
-    grant: AdmittedReplayVerificationGrantV1,
+def resolve_replay_build(
+    admitted: AdmittedReplayV3,
 ) -> tuple[
-    AdmittedReplayV3,
     ArtifactRef | None,
     ReplayFrameworkCacheReceiptV1 | None,
     ArtifactRef,
     ReplayPatchedApkReceiptV1,
     TargetPortSpecV2,
 ]:
+    """The recorded build outcome for an admitted replay, validated.
+
+    **The one implementation of a chain two callers need.** It reconstructs the
+    build operation's identity from the admitted replay alone, requires the
+    ledger's completed claim for it, and validates the recorded receipt against
+    every predecessor. It does not look at a verification grant, because the
+    caller that derives the gate subject has none yet -- the grant binds a build
+    receipt, so the receipt has to be locatable before the grant exists.
+
+    `_replay_verification_predecessors` was the only implementation, and
+    `replay_gate.resolve_admitted_build` restated it line for line through three
+    aliases so the gate could be derived. Two copies of a chain this long agree
+    until one is edited; this is that edit made once.
+
+    Public because `replay_gate` is a different module. It grants nothing a
+    caller could not already do -- every step re-derives from admitted authority
+    and the ledger, and returns what is recorded rather than what was asked for.
+    """
+
     configured = runtime()
-    admitted = Ledger.require_admitted_replay_v3(
-        configured.ledger, grant.admitted_replay
-    )
-    if admitted != grant.admitted_replay:
-        raise ValueError("Verification grant admitted replay is not exact")
     (
         completed_framework,
         framework_receipt,
@@ -2532,6 +2545,38 @@ def _replay_verification_predecessors(
         completed_framework_cache_receipt=completed_framework,
         framework_receipt=framework_receipt,
     )
+    return (
+        completed_framework,
+        framework_receipt,
+        completed_build,
+        build_receipt,
+        compiled,
+    )
+
+
+def _replay_verification_predecessors(
+    grant: AdmittedReplayVerificationGrantV1,
+) -> tuple[
+    AdmittedReplayV3,
+    ArtifactRef | None,
+    ReplayFrameworkCacheReceiptV1 | None,
+    ArtifactRef,
+    ReplayPatchedApkReceiptV1,
+    TargetPortSpecV2,
+]:
+    configured = runtime()
+    admitted = Ledger.require_admitted_replay_v3(
+        configured.ledger, grant.admitted_replay
+    )
+    if admitted != grant.admitted_replay:
+        raise ValueError("Verification grant admitted replay is not exact")
+    (
+        completed_framework,
+        framework_receipt,
+        completed_build,
+        build_receipt,
+        compiled,
+    ) = resolve_replay_build(admitted)
     if (
         completed_build != grant.request.completed_patched_apk_receipt
         or build_receipt != grant.patched_apk_receipt
@@ -3296,21 +3341,14 @@ def _replay_stage_budget(admitted: AdmittedReplayV3, stage: str) -> int:
 
 
 
-# ---------------------------------------------------------------- public seams
-#
-# `replay_gate.resolve_admitted_build` needs these three, and reaching for the
-# private names made a module-boundary coupling that only a signature-drift test
-# was holding together. These aliases remove the *private* half of that coupling
-# at zero risk: every function body and the executed call graph are byte-identical,
-# because an alias is the same object under a second name.
-#
-# What they do NOT do is deduplicate `replay_gate.resolve_admitted_build` against
-# `_replay_verification_predecessors`, which is the real extraction. That one edits
-# a body inside the verify Activity's proven execution path, so it belongs in the
-# slice that re-establishes that evidence with a real run.
-replay_build_predecessors = _replay_build_predecessors
-replay_build_operation_identity = _replay_build_operation_identity
-validate_replay_patched_apk_receipt = _validate_replay_patched_apk_receipt
+# The three aliases that used to stand here -- `replay_build_predecessors`,
+# `replay_build_operation_identity`, `validate_replay_patched_apk_receipt` --
+# are gone. They existed so `replay_gate.resolve_admitted_build` could restate
+# this chain without reaching for private names, which removed the *private* half
+# of the coupling and left the duplication. `resolve_replay_build` above is the
+# extraction they were a stopgap for, and it has exactly one caller in each
+# module, so there is nothing left for an alias to decouple.
+
 
 @activity.defn
 async def prepare_replay_plan_activity(handle: AdmittedReplayHandleV1) -> ReplayExecutionPlanV1:

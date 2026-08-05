@@ -294,132 +294,92 @@ class ResolveCompletedBuildTests(unittest.TestCase):
 
 
 class ResolveAdmittedBuildTests(unittest.TestCase):
-    """`resolve_admitted_build` reuses `activities`' own predecessor helpers.
+    """`resolve_admitted_build` is a call to the one implementation.
 
-    The chain itself is exercised end to end by the build and verification
-    activity suites; what is checked here is that this module keeps calling
-    those helpers with the arguments they still declare, and that the import
-    stays deferred so `activities` can import this module.
+    It used to restate `activities._replay_verification_predecessors` line for
+    line — reconstruct the predecessors, rebuild the operation identity, require
+    the completed claim, validate the receipt — through three public aliases. Two
+    copies of a chain that long agree until one is edited, and only a
+    signature-drift test stood between them.
+
+    So what is checked here is no longer "does this module still call four
+    helpers with the arguments they declare" but "do both callers reach the same
+    function". The chain itself is exercised end to end by the build and
+    verification activity suites, and by two real ports through the registered
+    Workflow.
     """
 
     def setUp(self) -> None:
         self.case = GateFixture()
 
-    def test_reused_activity_helpers_still_accept_these_arguments(self) -> None:
+    def test_both_callers_share_one_implementation(self) -> None:
+        """The property the extraction exists for, checked on both sides.
+
+        `activities._replay_verification_predecessors` is the verify Activity's
+        proven path and this module derives the gate subject; if they ever stop
+        naming the same function, the gate can be derived from one chain and the
+        verification admitted against another.
+        """
         import inspect
 
         from dfinsta_pipeline import activities
 
         self.assertEqual(
-            tuple(inspect.signature(activities.replay_build_predecessors).parameters),
+            tuple(inspect.signature(activities.resolve_replay_build).parameters),
             ("admitted",),
         )
-        self.assertEqual(
-            len(
-                inspect.signature(
-                    activities.replay_build_operation_identity
-                ).parameters
+        for name in (
+            "replay_build_predecessors",
+            "replay_build_operation_identity",
+            "validate_replay_patched_apk_receipt",
+        ):
+            self.assertFalse(hasattr(activities, name), f"{name} alias survived")
+        for source, label in (
+            (inspect.getsource(resolve_admitted_build), "replay_gate"),
+            (
+                inspect.getsource(activities._replay_verification_predecessors),
+                "activities",
             ),
-            6,
-        )
-        validate = inspect.signature(activities.validate_replay_patched_apk_receipt)
-        self.assertEqual(
-            {
-                name
-                for name, parameter in validate.parameters.items()
-                if parameter.kind is inspect.Parameter.KEYWORD_ONLY
-            },
-            {
-                "admitted",
-                "completed_patched_tree_receipt",
-                "patched_receipt",
-                "compiled",
-                "execution_request",
-                "completed_framework_cache_receipt",
-                "framework_receipt",
-            },
-        )
+        ):
+            self.assertIn("resolve_replay_build(", source, label)
+            # And neither reconstructs the chain for itself any more.
+            for helper in ("_replay_build_predecessors(", "_replay_build_operation_identity("):
+                self.assertNotIn(helper, source, f"{label} still inlines {helper}")
 
-    def test_delegates_to_the_activity_helpers(self) -> None:
+    def test_delegates_and_returns_the_completed_build_and_receipt(self) -> None:
+        """Five values come back; exactly two are this caller's answer."""
         from dfinsta_pipeline import activities
 
-        predecessors = (
-            "completed-framework",
-            "framework-receipt",
-            "completed-apply",
-            "patched-tree-receipt",
-            "compiled",
-        )
-        identity = ("build-key", "build-input", "build-request")
         seen: dict[str, Any] = {}
 
-        def predecessor_helper(admitted: Any) -> tuple[Any, ...]:
-            seen["predecessors"] = admitted
-            return predecessors
-
-        def identity_helper(*arguments: Any) -> tuple[str, str, str]:
-            seen["identity"] = arguments
-            return identity
-
-        def require(ledger: Any, key: str, kind: str, input_sha256: str) -> ArtifactRef:
-            seen["require"] = (ledger, key, kind, input_sha256)
-            return self.case.completed_build
-
-        def validate(output: ArtifactRef, key: str, **kwargs: Any) -> Any:
-            seen["validate"] = (output, key, kwargs)
-            return self.case.receipt
-
-        runtime_double = mock.Mock(ledger="ledger-double")
-        # Patched by the PUBLIC names, because those are the names
-        # `resolve_admitted_build` reaches for. An alias is the same object but
-        # not the same binding: patching `_replay_build_predecessors` rebinds one
-        # module attribute and leaves `replay_build_predecessors` pointing at the
-        # original, so the double would never be called and the test would pass
-        # for the wrong reason — or, as it did here, fail loudly.
-        with mock.patch.object(
-            activities, "replay_build_predecessors", predecessor_helper
-        ), mock.patch.object(
-            activities, "replay_build_operation_identity", identity_helper
-        ), mock.patch.object(
-            activities, "validate_replay_patched_apk_receipt", validate
-        ), mock.patch.object(
-            activities, "runtime", lambda: runtime_double
-        ), mock.patch.object(
-            Ledger, "require_completed_operation", require
-        ):
-            resolved = resolve_admitted_build(self.case.admitted)
-
-        self.assertEqual(resolved, (self.case.completed_build, self.case.receipt))
-        self.assertIs(seen["predecessors"], self.case.admitted)
-        self.assertEqual(
-            seen["identity"],
-            (
-                self.case.admitted,
-                "completed-apply",
-                "patched-tree-receipt",
-                "compiled",
+        def resolve(admitted: Any) -> tuple[Any, ...]:
+            seen["admitted"] = admitted
+            return (
                 "completed-framework",
                 "framework-receipt",
-            ),
-        )
-        self.assertEqual(
-            seen["require"],
-            ("ledger-double", "build-key", BUILD_OPERATION_KIND, "build-input"),
-        )
-        self.assertEqual(seen["validate"][0], self.case.completed_build)
-        self.assertEqual(seen["validate"][1], "build-key")
-        self.assertEqual(
-            seen["validate"][2],
-            {
-                "admitted": self.case.admitted,
-                "completed_patched_tree_receipt": "completed-apply",
-                "patched_receipt": "patched-tree-receipt",
-                "compiled": "compiled",
-                "execution_request": "build-request",
-                "completed_framework_cache_receipt": "completed-framework",
-                "framework_receipt": "framework-receipt",
-            },
-        )
+                self.case.completed_build,
+                self.case.receipt,
+                "compiled",
+            )
+
+        with mock.patch.object(activities, "resolve_replay_build", resolve):
+            resolved = resolve_admitted_build(self.case.admitted)
+
+        self.assertIs(seen["admitted"], self.case.admitted)
+        self.assertEqual(resolved, (self.case.completed_build, self.case.receipt))
+
+    def test_a_refusal_from_the_shared_chain_is_not_swallowed(self) -> None:
+        """The chain refuses by raising; this module must not turn that into a
+        value, which is what a bare `except` around a five-tuple unpack would do.
+        """
+        from dfinsta_pipeline import activities
+
+        def refuse(admitted: Any) -> tuple[Any, ...]:
+            raise ValueError("recorded build does not match its predecessors")
+
+        with mock.patch.object(activities, "resolve_replay_build", refuse):
+            with self.assertRaisesRegex(ValueError, "does not match its predecessors"):
+                resolve_admitted_build(self.case.admitted)
 
     def test_activities_import_is_deferred(self) -> None:
         self.assertNotIn("activities", vars(replay_gate))
