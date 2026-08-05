@@ -510,7 +510,16 @@ Reordered 2026-08-03. The two items that stood here are done.
    And `replay_workflow.py:44-52` still argues `maximum_attempts=2` is safe *from* quarantine
    being what makes attempt 2 fail closed; under release attempt 2 re-runs the stage, which is
    intended, but the comment now says the opposite of what happens.
-2. **Move the two tree primitives off the event loop**, which is F4's other prerequisite.
+- [x] **The two tree primitives run off the event loop** (2026-08-05). Measured on a real 340
+      port: query availability 23% → **92%**, longest blocked stretch 28 samples → 3, apply
+      92% → **0%** blocked, 69 expired query tasks → **0**. The port was unaffected — four
+      stages, 65 assertions, History in budget. `prepare_replay_verification_gate` stayed 100%
+      blocked exactly as predicted, because `load_decoded_tree`'s standalone sites were scoped
+      out; that stage runs for seconds, so it is low priority, and the prediction holding is
+      the evidence the diagnosis was right.
+
+2. ~~Move the two tree primitives off the event loop~~ — done, see above. F4's other
+   prerequisite.
    `decoded_artifact.materialize_decoded_tree` and `capture_decoded_tree_fd` — 15 call sites
    across the five stages — each walk, hash and write tens of thousands of files synchronously.
    Attributed from the two real runs: apply is 92%/91% blocked, decode 82%/80%, build 62%/68%,
