@@ -427,6 +427,58 @@ is wrong; asking twice is. `resolve_replay_verification_grant_activity` now runs
 and, on a hit, the Workflow verifies against the recorded grant and never raises it. The result
 still names the decision id, so a resumed run does not report a success nobody approved.
 
+## 3d — can quarantine-after-workspace become a release? (audit, 2026-08-05)
+
+The reachable destructive path, and the last thing between here and heartbeats. Audited
+adversarially rather than assumed. **The finding is that release is safe for every invariant
+this pipeline owns, and the one counter-case is external.**
+
+**Nothing a stage writes between `workspace_created = True` and `record_effect` is shared.**
+Every write lands inside the per-attempt workspace `attempts_root/<key>/sha256(owner)` or in the
+CAS. Every `Ledger.*` call in that region is a `SELECT`. Workspaces are per-attempt because
+`_activity_owner()` embeds `info.attempt`, and `_exclusive_directory` uses `os.mkdir` with no
+`exist_ok`, so an activity-task redelivery of the *same* attempt raises `FileExistsError` before
+`workspace_created` is set — the release branch, failing closed.
+
+**The ledger already fences a zombie.** `release_pending_operation` blanks the owner, so a late
+`record_effect` from attempt 1 sees a token that is not its own and raises. Two effects are
+structurally impossible: the transition to `effect` requires `status == 'pending'` under
+`BEGIN IMMEDIATE`. And CAS publication is atomic — `put_blob` writes a hidden temp with
+`O_EXCL`, `fchmod(0o444)`, `fsync`, then `os.link` under the digest name, and every reader
+re-verifies mode, size, uid, inode stability and hash.
+
+**The repo already does this by hand and argues it is safe.** `claims.py` releases a `pending`
+claim whose workspace is on disk — which is exactly what a SIGKILLed worker leaves — and says
+so. The only thing it adds is a human confirming attempt 1 is dead. *That is the guard, and it
+is the whole guard.*
+
+**The counter-case.** `execute` owns only its direct child; a JVM grandchild can outlive
+cancellation, and if `_clean_up` times out (`_CLEANUP_TIMEOUT_SECONDS = 1.0`) the process is
+still running. Under release, attempt 2 could then build against state attempt 1 is mid-write
+on — but only through a directory outside the workspace, and the only such directory is
+apktool's `$HOME` framework fallback. **Closed 2026-08-05**: `ToolchainProfileV3` now refuses a
+profile that declares frameworks while any role plan omits `framework_dir`. The rule lives at
+the profile rather than in `RoleExecutionPlan` because only the profile knows whether there are
+frameworks, and a native tool with no framework concept must still be expressible.
+
+**Two latent fencing gaps, also closed**, both unreachable today and live the moment two
+attempts can run: `record_effect` tested its idempotency shortcut *before* the owner check, so a
+caller holding byte-identical output returned without ever being compared to the claim; and
+`complete_operation` takes no owner at all, which turns out to be sound — the effect is the
+authorisation — and is now pinned as such rather than reading like an oversight.
+
+**Quarantine-after-workspace is drift.** It entered as a blanket quarantine with no release
+branch at all; the release escape was carved out a day later and the cancel path kept the
+original default. No commit message, no comment, no doc argues for it.
+
+**What still stands between this and landing the release.** A liveness guard: an automatic
+release removes the human check `claims.py` requires. The shape that preserves the counter-case
+defence is to keep terminality for exactly the case where the subprocess could not be proven
+dead — the `_clean_up` timeout — and release otherwise. Plus a workspace reaper (nothing removes
+stale attempt directories, and a build workspace holds two APKs and a decoded tree), and an
+update to `replay_workflow.py`'s retry-policy rationale, which currently argues from quarantine
+being what makes attempt 2 fail closed.
+
 ## 3b. Known follow-ups, deliberately not done in this slice
 
 **F1. The harness and the Workflow derive different verification-gate ids.**

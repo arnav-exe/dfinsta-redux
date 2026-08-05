@@ -446,6 +446,22 @@ Reordered 2026-08-03. The two items that stood here are done.
    today; it removes a trap for the day an await appears there, and it gains the release
    protection the cancel path never had. `tests/test_phase_b_cancellation.py` fails if a
    suspension point ever appears in that region.
+
+   **Audited 2026-08-05** (`docs/WORKFLOW_REGISTRATION_DESIGN.md` §3d). Release after a
+   workspace exists is safe for every invariant this pipeline owns: nothing a stage writes in
+   that window is shared, the ledger fences a zombie by blanking the owner on release, CAS
+   publication is atomic and content-addressed, and `claims.py` already releases exactly this
+   state by hand and argues that it is safe. Quarantine-after-workspace is drift — it entered
+   as a blanket default and no commit, comment or doc argues for it.
+
+   Three prerequisites are now closed: `ToolchainProfileV3` refuses a framework-declaring
+   profile whose role plans omit `framework_dir` (the apktool `$HOME` fallback was the only
+   shared mutable state outside a workspace, and the sole precondition of the one counter-case);
+   `record_effect` checks the owner before its idempotency shortcut; and
+   `complete_operation`'s absent owner check is pinned as sound rather than left reading like an
+   oversight. **What remains is a liveness guard** — an automatic release removes the human
+   check `claims.py` requires — plus a workspace reaper and an update to `replay_workflow.py`'s
+   retry rationale, which argues from quarantine being what makes attempt 2 fail closed.
 2. **Move the two tree primitives off the event loop**, which is F4's other prerequisite.
    `decoded_artifact.materialize_decoded_tree` and `capture_decoded_tree_fd` — 15 call sites
    across the five stages — each walk, hash and write tens of thousands of files synchronously.
