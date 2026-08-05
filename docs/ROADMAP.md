@@ -87,18 +87,21 @@ enumerating its violations.
       exactly this state by hand. Only a *cancellation* releases; an ordinary post-workspace
       failure still quarantines, because it is usually deterministic and failing closed on it
       is the point.
-- [ ] Heartbeats in the replay Activities (worker loss undetected until `start_to_close`).
-      **Must not land before the item above**: heartbeating is what opens the channel for
-      server-originated cancellation, so shipping it first would turn a flaky thirty seconds
-      of network into a burned run.
-      **A second prerequisite, measured 2026-08-04, which retracts what this line used to
-      say.** It claimed a heartbeater in the unproven wrapper works "because every long
-      operation inside a stage yields the event loop". It does not: the decode stage contains
-      no `asyncio.to_thread` at all, and its CAS read, workspace write and
-      `capture_decoded_tree_fd` are synchronous. 66 of 86 query samples on 340 and 113 of 144
-      on 430 went unanswered, the longest unbroken stretch over nine minutes, and the worker
-      logged 191 expired query tasks. A wrapper heartbeater would be starved exactly when a
-      heartbeat matters. Move the capture off the loop first, or accept and measure the gap.
+- [x] **Heartbeats in the replay Activities** (2026-08-05). Every stage reports every 30 s
+      from the event loop; `heartbeat_timeout` is 5 minutes, so worker loss is detected in
+      minutes rather than at `start_to_close` expiry — three hours for verify. Measured on a
+      real 340 port: worst gap 30.9 s in decode and exactly 30.0 s in apply, build and verify,
+      with the run unaffected (65 assertions, History in budget, zero activity failures).
+
+      **Both prerequisites were closed the same day, in the order this list demanded**, and
+      each was measured before the next was attempted: cancellation stopped being destructive,
+      then the decoded-tree walks moved off the loop. Two claims that used to live here were
+      retracted rather than quietly dropped — that a wrapper heartbeater would work "because
+      every long operation inside a stage yields the event loop" (the decode stage contains no
+      `asyncio.to_thread` at all), and that the graceful window "must be raised again before
+      heartbeats are added" (its premise was quarantine-on-cancellation, which no longer
+      happens; and the window governs `WORKER_SHUTDOWN`, not server-originated cancellation).
+      See `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3g.
 
 ## 2. Produce — the gap
 

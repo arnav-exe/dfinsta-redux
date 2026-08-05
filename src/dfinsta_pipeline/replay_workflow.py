@@ -81,17 +81,23 @@ _LEDGER_TIMEOUT = timedelta(seconds=120)
 # expired -- three hours for verify. The stage wrappers now heartbeat every 30 s
 # from the event loop.
 #
-# Ten minutes is twenty intervals, and an order of magnitude above the worst
-# measured loop unavailability on a real port (3 consecutive samples, ~60 s,
-# after the decoded-tree walks moved into a thread). Deliberately generous: a
-# missed heartbeat cancels the stage, and while that is no longer destructive --
-# it releases the claim for a later attempt to adopt -- it still throws away that
-# stage's work. Better to detect a dead worker in ten minutes than to re-run a
-# 25-minute build because the loop stalled for eleven.
+# **Five minutes, lowered from ten on measurement.** The wrappers report
+# `worst_gap_seconds`, and a real 340 port through this Workflow delivered every
+# heartbeat essentially on schedule: worst gap 30.9 s in decode and exactly 30.0 s
+# in apply, build and verify -- including build, which is the stage still partly
+# blocking the loop. So the earlier ten minutes was twenty intervals against an
+# observed worst of one.
 #
-# The wrappers report `worst_gap_seconds` in their heartbeat details, so this can
-# be tightened against evidence rather than re-guessed.
-_STAGE_HEARTBEAT_TIMEOUT = timedelta(seconds=600)
+# Not lowered further, and the reason is the shape of the two errors rather than
+# the margin. Too tight cancels a healthy stage: no longer destructive, since the
+# claim is released and a later attempt adopts every completed predecessor, but it
+# still discards up to 25 minutes of build. Too loose only delays noticing a dead
+# worker. So this is deliberately about 10x the worst observed gap, not 2x.
+#
+# **One target measured.** 430 is bigger -- 133 MB against 79 MB -- and was more
+# loop-blocked than 340 before the threading change (68% against 62% in build).
+# Tightening further should wait for a 430 run rather than over-fit to one port.
+_STAGE_HEARTBEAT_TIMEOUT = timedelta(seconds=300)
 
 
 @workflow.defn(versioning_behavior=VersioningBehavior.PINNED)

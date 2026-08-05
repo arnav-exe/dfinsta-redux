@@ -617,6 +617,42 @@ activity — and this one's spec carries injection knobs (`apply_delay_seconds`,
 `crash_after_effect`), so what it is *for* should be established before its semantics are
 changed.
 
+## 3g — F4 is done, and measured (2026-08-05)
+
+Every replay stage now heartbeats every 30 s from the event loop, and
+`_STAGE_HEARTBEAT_TIMEOUT` is 5 minutes. Worker loss was previously invisible until
+`start_to_close` expiry — **three hours** for verify.
+
+**Measured on a real 340 port through the registered Workflow**, reading `heartbeatDetails`
+back off the server while it ran:
+
+| stage | worst gap | beats | stage elapsed |
+|---|---|---|---|
+| decode | 30.9 s | 4 | — |
+| apply | 30.0 s | 8 | 247.9 s |
+| build | 30.0 s | 6 | 201.5 s |
+| verify | 30.0 s | 18 | 556.5 s |
+
+Essentially exact, including `build`, which is the stage still partly blocking the loop. The
+run itself was unaffected: four stages, verification success with 65 assertions, History 64,571
+bytes, zero activity failures. The timeout was lowered from 10 minutes to 5 on this evidence —
+about 10x the worst observed gap, not 2x, because the two errors are asymmetric: too tight
+discards a healthy 25-minute build, too loose only delays noticing a dead worker. **Only 340 is
+measured**; 430 is larger and was more loop-blocked, so tightening further should wait for it.
+
+**The graceful shutdown window was NOT raised**, and the instruction to raise it was retired
+rather than followed. It said heartbeats "would convert a flaky thirty seconds of network into
+a burned admitted run" — true while cancellation quarantined, and the premise disappeared when
+cancellation began releasing earlier the same day. Raising it would not have helped regardless:
+the window governs `WORKER_SHUTDOWN`, not a cancellation originating at the server. It remains
+at 10,800 as an efficiency setting, so stopping a worker waits for a long build rather than
+discarding it.
+
+**The order was forced and every step of it was checked before the next.** Cancellation had to
+stop being destructive before a heartbeat could safely open the server-cancellation channel;
+the loop had to be free before a heartbeater could run at all. Both were measured, not argued,
+and the second produced a free control — the one stage deliberately excluded stayed blocked.
+
 ## 3b. Known follow-ups, deliberately not done in this slice
 
 **F1. The harness and the Workflow derive different verification-gate ids.**
