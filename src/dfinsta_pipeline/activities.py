@@ -753,7 +753,25 @@ def _strict_replay_final_apk_verification_receipt(
     )  # type: ignore[return-value]
 
 
-async def _await_apply_mutation(task: asyncio.Task[ApplyReport]) -> ApplyReport:
+async def _await_thread_work(task: asyncio.Task[Any], subject: str) -> Any:
+    """Wait for uninterruptible work, then propagate the cancellation it raced.
+
+    `asyncio.to_thread` hands work to a thread no cancellation can reach, so the
+    only safe response to being cancelled is to keep waiting. Cancelling the task
+    instead returns control while the thread runs on — and the `finally` blocks in
+    these Activities close directory descriptors, which `capture_decoded_tree_fd`
+    re-opens as its first act. A descriptor closed under a live thread can have
+    its number reused, and the capture would then walk a *different* directory and
+    publish a manifest that looks perfectly valid. A wrong answer, not an error.
+    That is why `_await_verification_execution` — which does call `task.cancel()`,
+    correctly, for a subprocess that must be killed and reaped — must never be
+    used for thread work.
+
+    Three copies of this existed, structurally identical and differing only in
+    their note wording; an AST comparison found no other difference. They are one
+    function now, which is also what makes it safe to add callers.
+    """
+
     cancellation: asyncio.CancelledError | None = None
     while True:
         try:
@@ -764,109 +782,43 @@ async def _await_apply_mutation(task: asyncio.Task[ApplyReport]) -> ApplyReport:
                 try:
                     task.result()
                 except asyncio.CancelledError:
-                    cancellation.add_note(
-                        "Replay apply mutation task was cancelled unexpectedly"
-                    )
-                except BaseException as apply_error:
-                    cancellation.add_note(
-                        "Replay apply failed while cancellation raced with mutation: "
-                        f"{type(apply_error).__name__}: {apply_error}"
-                    )
-                raise cancellation
-            if cancellation is None:
-                cancellation = error
-            else:
-                cancellation.add_note(
-                    "Repeated cancellation waited for replay apply mutation"
-                )
-            continue
-        except BaseException as error:
-            if cancellation is None:
-                raise
-            cancellation.add_note(
-                "Replay apply failed while cancellation waited for mutation: "
-                f"{type(error).__name__}: {error}"
-            )
-            raise cancellation
-        if cancellation is not None:
-            raise cancellation
-        return result
-
-
-async def _await_backend_composition(task: asyncio.Task[BackendReport]) -> BackendReport:
-    cancellation: asyncio.CancelledError | None = None
-    while True:
-        try:
-            result = await asyncio.shield(task)
-        except asyncio.CancelledError as error:
-            if task.done():
-                cancellation = cancellation or error
-                try:
-                    task.result()
-                except asyncio.CancelledError:
-                    cancellation.add_note(
-                        "Replay backend composition task was cancelled unexpectedly"
-                    )
-                except BaseException as composition_error:
-                    cancellation.add_note(
-                        "Replay backend composition failed while cancellation raced with "
-                        f"composition: {type(composition_error).__name__}: {composition_error}"
-                    )
-                raise cancellation
-            if cancellation is None:
-                cancellation = error
-            else:
-                cancellation.add_note(
-                    "Repeated cancellation waited for replay backend composition"
-                )
-            continue
-        except BaseException as error:
-            if cancellation is None:
-                raise
-            cancellation.add_note(
-                "Replay backend composition failed while cancellation waited for "
-                f"composition: {type(error).__name__}: {error}"
-            )
-            raise cancellation
-        if cancellation is not None:
-            raise cancellation
-        return result
-
-
-async def _await_verification_work(task: asyncio.Task[object]) -> object:
-    cancellation: asyncio.CancelledError | None = None
-    while True:
-        try:
-            result = await asyncio.shield(task)
-        except asyncio.CancelledError as error:
-            if task.done():
-                cancellation = cancellation or error
-                try:
-                    task.result()
-                except asyncio.CancelledError:
-                    cancellation.add_note("Replay verification work was cancelled unexpectedly")
+                    cancellation.add_note(f"Replay {subject} was cancelled unexpectedly")
                 except BaseException as work_error:
                     cancellation.add_note(
-                        "Replay verification failed while cancellation raced with work: "
+                        f"Replay {subject} failed while cancellation raced with it: "
                         f"{type(work_error).__name__}: {work_error}"
                     )
                 raise cancellation
             if cancellation is None:
                 cancellation = error
             else:
-                cancellation.add_note("Repeated cancellation waited for replay verification work")
+                cancellation.add_note(f"Repeated cancellation waited for replay {subject}")
             continue
         except BaseException as error:
             if cancellation is None:
                 raise
             cancellation.add_note(
-                "Replay verification failed while cancellation waited for work: "
+                f"Replay {subject} failed while cancellation waited for it: "
                 f"{type(error).__name__}: {error}"
             )
             raise cancellation
         if cancellation is not None:
             raise cancellation
         return result
+
+
+async def _await_apply_mutation(task: asyncio.Task[ApplyReport]) -> ApplyReport:
+    return await _await_thread_work(task, "apply mutation")
+
+
+async def _await_backend_composition(task: asyncio.Task[BackendReport]) -> BackendReport:
+    return await _await_thread_work(task, "backend composition")
+
+
+async def _await_verification_work(task: asyncio.Task[object]) -> object:
+    return await _await_thread_work(task, "verification work")
+
+
 
 
 async def _await_verification_execution(task: asyncio.Task[object]) -> object:
@@ -1558,12 +1510,20 @@ async def replay_install_frameworks_checkpoint_activity(
                     )
                 cache_snapshot = current_snapshot
 
-            manifest_ref = capture_decoded_tree_fd(
-                configured.store,
-                framework_fd,
-                key,
-                execution_input_hashes,
+            manifest_ref = await _await_thread_work(
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        capture_decoded_tree_fd,
+                        configured.store,
+                        framework_fd,
+                        key,
+                        execution_input_hashes,
+                    )
+                ),
+                "framework cache capture",
             )
+            if type(manifest_ref) is not ArtifactRef:
+                raise TypeError("Decoded tree capture must return an exact ArtifactRef")
         finally:
             _close_descriptors(
                 framework_fd,
@@ -1801,11 +1761,17 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
                 if framework_receipt is None:
                     os.mkdir("framework", mode=0o700, dir_fd=workspace_fd)
                 else:
-                    materialize_decoded_tree(
-                        configured.store,
-                        framework_receipt.framework_cache_manifest,
-                        workspace,
-                        "framework",
+                    await _await_thread_work(
+                        asyncio.create_task(
+                            asyncio.to_thread(
+                                materialize_decoded_tree,
+                                configured.store,
+                                framework_receipt.framework_cache_manifest,
+                                workspace,
+                                "framework",
+                            )
+                        ),
+                        "framework cache materialisation",
                     )
                 framework_fd = _open_existing_directory(workspace_fd, "framework")
             try:
@@ -1841,12 +1807,20 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
                     workspace / "framework",
                 )
             output_fd = _open_existing_directory(workspace_fd, "output")
-            manifest_ref = capture_decoded_tree_fd(
-                configured.store,
-                output_fd,
-                key,
-                execution_input_hashes,
+            manifest_ref = await _await_thread_work(
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        capture_decoded_tree_fd,
+                        configured.store,
+                        output_fd,
+                        key,
+                        execution_input_hashes,
+                    )
+                ),
+                "decoded tree capture",
             )
+            if type(manifest_ref) is not ArtifactRef:
+                raise TypeError("Decoded tree capture must return an exact ArtifactRef")
         finally:
             _close_descriptors(
                 output_fd,
@@ -2098,11 +2072,17 @@ async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> 
             workspace_created = True
             _verify_workspace_path(workspace, workspace_fd)
 
-            work_tree = materialize_decoded_tree(
-                configured.store,
-                decoded_receipt.decoded_tree_manifest,
-                workspace,
-                "work-tree",
+            work_tree = await _await_thread_work(
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        materialize_decoded_tree,
+                        configured.store,
+                        decoded_receipt.decoded_tree_manifest,
+                        workspace,
+                        "work-tree",
+                    )
+                ),
+                "work tree materialisation",
             )
             work_tree_fd = _open_existing_directory(workspace_fd, "work-tree")
             source_report = admit_source_bundle_v2(
@@ -2153,13 +2133,20 @@ async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> 
                 source_report.sha256,
                 apply_report.sha256,
             )
-            await asyncio.sleep(0)
-            manifest_ref = capture_decoded_tree_fd(
-                configured.store,
-                work_tree_fd,
-                key,
-                execution_input_hashes,
+            manifest_ref = await _await_thread_work(
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        capture_decoded_tree_fd,
+                        configured.store,
+                        work_tree_fd,
+                        key,
+                        execution_input_hashes,
+                    )
+                ),
+                "patched tree capture",
             )
+            if type(manifest_ref) is not ArtifactRef:
+                raise TypeError("Decoded tree capture must return an exact ArtifactRef")
         finally:
             _close_descriptors(work_tree_fd, workspace_fd, operation_fd, attempts_fd)
 
@@ -2347,22 +2334,34 @@ async def replay_build_patched_apk_checkpoint_activity(
             _exclusive_file(workspace_fd, "stock.apk", stock_bytes)
             if tool_bytes is not None:
                 _exclusive_file(workspace_fd, "tool", tool_bytes)
-            materialize_decoded_tree(
-                configured.store,
-                patched_receipt.patched_tree_manifest,
-                workspace,
-                "patched-tree",
+            await _await_thread_work(
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        materialize_decoded_tree,
+                        configured.store,
+                        patched_receipt.patched_tree_manifest,
+                        workspace,
+                        "patched-tree",
+                    )
+                ),
+                "patched tree materialisation",
             )
             patched_tree_fd = _open_existing_directory(workspace_fd, "patched-tree")
             if any(slot == "framework_dir" for _, slot in plan.arguments):
                 if framework_receipt is None:
                     os.mkdir("framework", mode=0o700, dir_fd=workspace_fd)
                 else:
-                    materialize_decoded_tree(
-                        configured.store,
-                        framework_receipt.framework_cache_manifest,
-                        workspace,
-                        "framework",
+                    await _await_thread_work(
+                        asyncio.create_task(
+                            asyncio.to_thread(
+                                materialize_decoded_tree,
+                                configured.store,
+                                framework_receipt.framework_cache_manifest,
+                                workspace,
+                                "framework",
+                            )
+                        ),
+                        "framework cache materialisation",
                     )
                 framework_fd = _open_existing_directory(workspace_fd, "framework")
             try:
@@ -3061,11 +3060,17 @@ async def replay_verify_final_apk_checkpoint_activity(
             if framework_receipt is None:
                 os.mkdir("framework", mode=0o700, dir_fd=workspace_fd)
             else:
-                materialize_decoded_tree(
-                    configured.store,
-                    framework_receipt.framework_cache_manifest,
-                    workspace,
-                    "framework",
+                await _await_thread_work(
+                    asyncio.create_task(
+                        asyncio.to_thread(
+                            materialize_decoded_tree,
+                            configured.store,
+                            framework_receipt.framework_cache_manifest,
+                            workspace,
+                            "framework",
+                        )
+                    ),
+                    "framework cache materialisation",
                 )
             framework_fd = _open_existing_directory(workspace_fd, "framework")
             if framework_receipt is None and _framework_cache_snapshot(framework_fd):
