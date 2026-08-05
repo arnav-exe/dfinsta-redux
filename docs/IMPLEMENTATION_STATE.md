@@ -261,7 +261,11 @@ wrong one is the ordinary mistake, and it is refused naming the candidate and bo
 ## Something raises the gate now, and stage 4 runs end to end
 
 `src/dfinsta_pipeline/feature_workflow.py`. Driven against the real recorded 440 assessment
-through a time-skipping Temporal environment, no hand-holding:
+through a time-skipping Temporal environment, no hand-holding — and, on 2026-08-05, against a
+**live Temporal server** (`tests/integration/test_registered_feature_gate.py`), three processes,
+six candidates, subject `bc794384…` re-derived by the client from a run id alone. That run costs
+seconds rather than the replay harness's hour: every Activity here is ledger and store work.
+The time-skipping figures below stand as recorded:
 
     gate raised          port-440-feature-assessment-gate
     published subject    9f9dc0eb0076acae087f8b1b95a9e197098736b54ca604622b719b536d24560a

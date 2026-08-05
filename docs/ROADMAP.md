@@ -359,9 +359,13 @@ Design and the experiment: [`docs/STAGE_4_DESIGN.md`](STAGE_4_DESIGN.md).
       arrays, found by content and never by class name.
 - [x] **Present conclusion plus grounding evidence at a durable human gate.**
       `FeatureAssessmentRunWorkflow` raises it, `submission.py` answers it with a ruling per
-      candidate, and `rulings.py` consumes the answer. Proven end to end against the real 440
-      assessment with no Temporal server: published subject matched the client's independent
-      re-derivation, and the admitted artifact was byte-identical to the signed one.
+      candidate, and `rulings.py` consumes the answer. First proven against the real 440
+      assessment in a time-skipping environment; **run against a live Temporal server on
+      2026-08-05** (`tests/integration/test_registered_feature_gate.py`), which is what proves
+      the update, the query and the payload survive the wire rather than only the Workflow's
+      logic. Six candidates, published subject `bc794384…` matching the client's independent
+      re-derivation from the run id alone, `completed`, and the admitted dispositions reachable
+      afterwards by run id — the property `rulings.py` depends on.
 - [x] **A ruling changes something.** `block`/`offer_toggle` reach `semantic_deps`, verified by
       re-running the assessment and watching the candidate disappear; `ignore` suppresses
       through `manifest/rulings.jsonl`, scoped to the policy revision; `defer` correctly
