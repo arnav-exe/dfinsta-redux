@@ -1696,14 +1696,21 @@ class MutationTests(AssessmentTestCase):
         # And the guard's own input moves.
         self.assertLess(mutant.cohesion, real.cohesion)
 
-    def test_without_normalise_the_stage_finds_nothing_at_all(self):
+    def test_without_normalise_a_blocked_endpoint_is_reported_as_a_gap(self):
         """Mutation: `normalise` becomes the identity function.
 
-        The manifest writes `/api/v1/clips/homecoming/`, the index holds
-        `clips/homecoming/`, and nothing raises. In production this reports zero
-        groupings and zero gaps on a version that added four unblocked continuous
-        surfaces — a clean, confident, empty run that is indistinguishable from
-        "nothing changed", which is the worst way for this stage to break.
+        This used to assert that the stage found *nothing* — a clean, confident,
+        empty run indistinguishable from "nothing changed". It no longer does,
+        and the reason is worth recording: `_spellings` now strips slashes for
+        the index lookup, so the seed search survives the mutation and what
+        `normalise` uniquely carries is the `api/v1/` prefix strip.
+
+        The remaining failure is worse than the old one. The manifest writes
+        `/api/v1/clips/homecoming/` and the index holds `clips/homecoming/`, so
+        without the prefix strip an endpoint DFInsta really does block is
+        reported as an unprotected gap. `is_blocked`'s own docstring says why
+        that outranks a miss: a human who checks one claim, finds it wrong, and
+        discounts the rest has been actively misled by the report.
         """
         index = self.curated_index()
         assessments, groupings = assess(index, blocking_hooks())
@@ -1712,12 +1719,20 @@ class MutationTests(AssessmentTestCase):
 
         with mock.patch.object(assessment, "normalise", lambda literal: literal):
             mutant_assessments, mutant_groupings = assess(index, blocking_hooks())
-        self.assertEqual(mutant_assessments, [])
-        self.assertEqual(mutant_groupings, [])
-        # Nothing failed, which is exactly the problem.
+        invented = sorted(
+            {item.literal for item in mutant_assessments}
+            - {item.literal for item in assessments}
+        )
+        self.assertEqual(invented, ["clips/homecoming/"])
+        # And it IS blocked — the manifest declares it, so this is a false gap
+        # and not a disagreement about scope.
+        self.assertIsNotNone(
+            assessment.is_blocked("clips/homecoming/", blocked_endpoints(blocking_hooks()))
+        )
+        # Nothing failed, which is exactly the problem: five candidates read like
+        # a version with more to answer for than it has.
         self.assertEqual(
-            report(mutant_assessments, mutant_groupings)["counts"],
-            {"groupings": 0, "candidates": 0, "settled": 0, "judged": 0},
+            report(mutant_assessments, mutant_groupings)["counts"]["candidates"], 5
         )
 
 
@@ -1736,15 +1751,40 @@ class RealIndexTests(unittest.TestCase):
     It reads only `api_surface.json`, never the 63 MB structural file.
     """
 
-    EXPECTED_GAPS = [
+    #: The recycled grouping, present on both versions under different obfuscated
+    #: names. These four are what the stage was built on.
+    RECYCLED_GAPS = [
         "feed/injected_reels_media/",
         "feed/reels_media/",
         "feed/reels_media_stream/",
         "feed/timeline_stream/",
     ]
-    EXPECTED_DESCRIPTORS = {"index-430": "LX/05jj;", "index-439": "LX/03Ez;"}
+    RECYCLED_DESCRIPTORS = {"index-430": "LX/05jj;", "index-439": "LX/03Ez;"}
+    #: A grouping in a STABLE named class, so it carries the same descriptor on
+    #: both versions — the contrast that makes the recycling above meaningful.
+    TIGON = "Lcom/instagram/api/tigon/TigonServiceLayer;"
+    #: Present on 439 and absent from 430 entirely. A genuinely new surface.
+    NEW_ON_439 = "delivery/background_prefetch"
 
-    def test_both_versions_yield_the_same_four_gaps_under_different_descriptors(self):
+    def test_the_recycled_grouping_agrees_and_439_adds_a_surface_430_lacks(self):
+        """Three facts one real pair of indexes can establish and a fixture cannot.
+
+        First, the four known gaps come from one class on each version and the
+        class is named differently on each — which is what makes cross-version
+        agreement evidence rather than a coincidence, and why a descriptor may
+        never be carried across an index boundary.
+
+        Second, a second grouping sits in a *stable named* class and therefore
+        carries the same descriptor on both. Recycling is a property of the
+        obfuscated namespace, not of every class.
+
+        Third, 439 yields a gap 430 does not, because the literal does not exist
+        on 430 at all. That is the stage doing the job the pipeline is for:
+        noticing a consumption surface a version bump introduced. It was found
+        independently by `surface_diff`, which classified it `B_inline` riding
+        with `/clips/discover` and `/clips/homecoming` — the same two endpoints
+        this stage finds it beside.
+        """
         missing = [
             str(directory)
             for directory in (INDEX_430, INDEX_439)
@@ -1754,39 +1794,47 @@ class RealIndexTests(unittest.TestCase):
             self.skipTest(f"real index not built: {', '.join(missing)}")
 
         hooks = blocking_hooks()
-        found = {}
+        recycled = {}
         for directory in (INDEX_430, INDEX_439):
             with self.subTest(index=directory.name):
                 index = HookIndex.load(directory)
                 assessments, groupings = assess(index, hooks)
+                by_class: dict[str, list[str]] = {}
+                for item in assessments:
+                    by_class.setdefault(
+                        item.measured[0].detail["descriptor"], []
+                    ).append(item.literal)
 
-                self.assertEqual(
-                    sorted(item.literal for item in assessments),
-                    self.EXPECTED_GAPS,
-                    f"{directory.name} no longer yields the four known gaps",
+                descriptor = next(
+                    name
+                    for name, gaps in by_class.items()
+                    if sorted(gaps) == self.RECYCLED_GAPS
                 )
-                carrying = {
-                    item.measured[0].detail["descriptor"] for item in assessments
-                }
-                self.assertEqual(len(carrying), 1, "the four gaps came from several classes")
-                descriptor = carrying.pop()
-                self.assertEqual(descriptor, self.EXPECTED_DESCRIPTORS[directory.name])
-
-                grouping = next(
-                    item for item in groupings if item.descriptor == descriptor
-                )
-                # The same nine-member curated list on both versions, found without
-                # the descriptor being known in advance.
+                self.assertEqual(descriptor, self.RECYCLED_DESCRIPTORS[directory.name])
+                grouping = next(item for item in groupings if item.descriptor == descriptor)
                 self.assertEqual(grouping.size, 9)
                 self.assertEqual(len(grouping.known), 5)
                 self.assertGreater(grouping.cohesion, MIN_COHESION)
-                found[directory.name] = descriptor
+                recycled[directory.name] = descriptor
 
-        self.assertEqual(found, self.EXPECTED_DESCRIPTORS)
-        # The two versions name the same class differently. That is what makes the
-        # cross-version agreement evidence rather than a coincidence, and it is why
-        # a descriptor may never be carried across an index boundary.
-        self.assertNotEqual(found["index-430"], found["index-439"])
+                # The stable named class, same name on both.
+                self.assertIn(self.TIGON, by_class, "the tigon grouping vanished")
+                self.assertEqual(by_class[self.TIGON], ["feed/text_post_app_timeline"])
+
+                found = {item.literal for item in assessments}
+                if directory.name == "index-439":
+                    self.assertIn(self.NEW_ON_439, found)
+                else:
+                    self.assertNotIn(self.NEW_ON_439, found)
+                    # Absent because the app does not carry it, not because the
+                    # stage missed it. Without this the assertion above would
+                    # also pass on a version where the search simply broke.
+                    self.assertEqual(
+                        tuple(index.descriptors_with_literal(self.NEW_ON_439)), ()
+                    )
+
+        self.assertEqual(recycled, self.RECYCLED_DESCRIPTORS)
+        self.assertNotEqual(recycled["index-430"], recycled["index-439"])
 
 
 # ------------------------------------------------------------------ known gaps

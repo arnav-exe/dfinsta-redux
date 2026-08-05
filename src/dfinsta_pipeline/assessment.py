@@ -218,6 +218,25 @@ class Assessment:
 # ---------------------------------------------------------------- normalising
 
 
+def _spellings(literal: str) -> tuple[str, ...]:
+    """The forms one endpoint is written in, for an exact index lookup.
+
+    `normalise` exists so a manifest rule and an index literal *compare* equal.
+    This exists so a rule can be *looked up*: `descriptors_with_literal` is an
+    exact-match index, and the app writes `/clips/discover` where the manifest
+    normalises to `clips/discover`.
+
+    Slash variants only. Nothing here re-adds an `api/v1/` prefix, because that
+    would look up a string the app may never carry and the point is to find the
+    text as written.
+    """
+
+    bare = literal.strip().strip("/")
+    if not bare:
+        return ()
+    return (bare, f"{bare}/", f"/{bare}", f"/{bare}/")
+
+
 def normalise(literal: str) -> str:
     """Compare endpoints the way the app writes them, not the way we do.
 
@@ -283,7 +302,22 @@ def is_blocked(literal: str, blocked: Iterable[str]) -> str | None:
     of the rule — which is exactly why that one is a genuine gap.
     """
     target = normalise(literal)
-    matches = [rule for rule in blocked if rule and rule in target]
+    # Containment, OR equality once both sides are stripped of slashes. The
+    # second is not a relaxation of the first: it merges `X` with `X/` and
+    # nothing else. Measured on 440, `/clips/homecoming` normalises to
+    # `clips/homecoming` and the rule is `clips/homecoming/`, so containment
+    # fails on a trailing slash alone and an endpoint the app really does cover
+    # was being counted as unknown.
+    #
+    # NOT symmetric containment, which was tried and destroys the load-bearing
+    # case above: `feed/timeline/` would then cover `feed/timeline_stream/`, and
+    # that is a genuine gap the whole stage exists to find. Equality cannot,
+    # because `feed/timeline` != `feed/timeline_stream`.
+    matches = [
+        rule
+        for rule in blocked
+        if rule and (rule in target or rule.strip("/") == target.strip("/"))
+    ]
     if not matches:
         return None
     # Longest first, then lexicographic. `blocked` arrives as a set, so taking
@@ -338,9 +372,18 @@ def find_groupings(
         return []
     # Only classes that already hold a seed can be a group, so the search starts
     # from them rather than walking all 181,000 classes.
+    #
+    # Looked up in every spelling, because `normalise` strips the leading slash
+    # and the index holds the app's own text. Measured on 440: the seed
+    # `clips/discover` matches NO class, while `/clips/discover` matches `LX/1qi;`
+    # — which also holds `delivery/background_prefetch`, the one signal that
+    # survived the addictiveness calibration. A leading slash was hiding an
+    # entire grouping, and it failed the way this stage fails worst: silently,
+    # looking exactly like "no new features".
     candidates: set[str] = set()
     for literal in wanted:
-        candidates.update(index.descriptors_with_literal(literal))
+        for spelling in _spellings(literal):
+            candidates.update(index.descriptors_with_literal(spelling))
 
     groupings: list[Grouping] = []
     for descriptor in candidates:
