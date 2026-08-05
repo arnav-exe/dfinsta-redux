@@ -78,9 +78,15 @@ enumerating its violations.
       branch was skipped and the tool printed the claim and exited 0 — the one wrong owner
       token that produced neither a release nor a refusal, and what
       `--release "$OWNER"` expands to when `OWNER` is unset.
-- [ ] Non-destructive cancellation *within* the window — the real fix, and it rewrites a
-      reviewed invariant (release rather than quarantine after a workspace exists). The real
-      run has now re-established the five stages' evidence, so this is unblocked.
+- [x] **Non-destructive cancellation *within* the window** (2026-08-05). A cancelled operation
+      releases its claim so a later attempt can adopt it, *unless* its subprocess could not be
+      shown to have exited — `executor.ProcessNotReaped` is the signal and
+      `activities._releasable` the rule. Audited first: nothing a stage writes after its
+      workspace exists is shared, the release blanks the owner so a zombie's late
+      `record_effect` is refused, CAS publication is atomic, and `claims.py` already released
+      exactly this state by hand. Only a *cancellation* releases; an ordinary post-workspace
+      failure still quarantines, because it is usually deterministic and failing closed on it
+      is the point.
 - [ ] Heartbeats in the replay Activities (worker loss undetected until `start_to_close`).
       **Must not land before the item above**: heartbeating is what opens the channel for
       server-originated cancellation, so shipping it first would turn a flaky thirty seconds
@@ -462,14 +468,10 @@ Reordered 2026-08-03. The two items that stood here are done.
       Activities hosted a Workflow that could not run a single real stage; and a running stage
       blocks the worker's event loop. See `docs/WORKFLOW_REGISTRATION_DESIGN.md` §3c-measured.
 
-1. **Non-destructive cancellation within the graceful window** — the remaining half of F3, and
-   the prerequisite for heartbeats rather than a peer of them. **Still open. The reachable
-   hazard is quarantine AFTER a workspace exists**, which is the normal case: the first
-   suspension point in every stage is the launch, so that is where a real cancellation lands.
-   Nothing has changed about it.
+- [x] **Non-destructive cancellation within the graceful window — done 2026-08-05.** See the
+   Execute section above for what landed. Two things are worth keeping from how it got there.
 
-   **What was done on 2026-08-05 was smaller than it looked, and is deliberately not this
-   item.** Three stages quarantined unconditionally on `CancelledError` where two used the
+   **First, a smaller change came before it and was deliberately NOT this item.** Three stages quarantined unconditionally on `CancelledError` where two used the
    graduated form, with no comment, no commit message and zero tests either way — drift from
    birth, not a decision. All five now use one `except BaseException` handler, which catches
    cancellation too. But an adversarial review established, and an AST check confirms, that
@@ -494,9 +496,16 @@ Reordered 2026-08-03. The two items that stood here are done.
    shared mutable state outside a workspace, and the sole precondition of the one counter-case);
    `record_effect` checks the owner before its idempotency shortcut; and
    `complete_operation`'s absent owner check is pinned as sound rather than left reading like an
-   oversight. **What remains is a liveness guard** — an automatic release removes the human
-   check `claims.py` requires — plus a workspace reaper and an update to `replay_workflow.py`'s
-   retry rationale, which argues from quarantine being what makes attempt 2 fail closed.
+   oversight. **The liveness guard is the change itself**: `process_not_reaped` is, in code,
+   the confirmation `claims.py` asks a human for.
+
+   **Two things it deliberately did not do, and they are now the open tail of this item.**
+   Nothing removes stale attempt workspaces, and release makes retries possible where they
+   previously could not happen — a build workspace holds two APKs and a decoded tree, so a
+   reaper or a bounded attempts budget is wanted before this runs unattended for long.
+   And `replay_workflow.py:44-52` still argues `maximum_attempts=2` is safe *from* quarantine
+   being what makes attempt 2 fail closed; under release attempt 2 re-runs the stage, which is
+   intended, but the comment now says the opposite of what happens.
 2. **Move the two tree primitives off the event loop**, which is F4's other prerequisite.
    `decoded_artifact.materialize_decoded_tree` and `capture_decoded_tree_fd` — 15 call sites
    across the five stages — each walk, hash and write tens of thousands of files synchronously.
