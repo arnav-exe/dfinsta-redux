@@ -372,13 +372,39 @@ The worker records the other side of this itself. Its log fills with
 191 of them across one 340 and one 430 run: the server expired each query task while the loop
 was blocked, and the worker answered after the stage let go.
 
-**How wide the gap is, from the completed 340 run.** The harness samples a five-second query
-every poll and records the outcome as `worker_query_responsiveness`. **66 of 86 samples went
-unanswered — 77% of a 55-minute run — and the longest unbroken blocked stretch was over nine
-minutes**, beginning 80 seconds in, during the decode. Answered samples cluster at stage
-boundaries. So a heartbeat interval would have to exceed nine and a half minutes to survive
-this workload unchanged, and `heartbeat_timeout` longer still — which is most of what
-heartbeats were for.
+**How wide the gap is, from the completed runs.** The harness samples a five-second query every
+poll and records the outcome as `worker_query_responsiveness`. **66 of 86 samples went
+unanswered on 340 and 113 of 144 on 430 — and the longest unbroken blocked stretch was over
+nine minutes**, beginning 80 seconds in. Answered samples cluster at stage boundaries. So a
+heartbeat interval would have to exceed nine and a half minutes to survive this workload
+unchanged, and `heartbeat_timeout` longer still — which is most of what heartbeats were for.
+
+**Attributed per stage, which corrects the first reading of this.** The blocking is not the
+decode's tree capture specifically; it is every stage, and the worst offender already threads
+its main work:
+
+| stage | 340 blocked | 430 blocked |
+|---|---|---|
+| `replay_apply_tree` | 92% | 91% |
+| `replay_decode` | 82% | 80% |
+| `replay_build_patched_apk` | 62% | 68% |
+| `prepare_replay_verification_gate` | 100% (1 sample) | 80% |
+
+`apply` already runs `apply_port` under `asyncio.to_thread` and is still 91% blocked, so
+threading a stage's *subprocess or mutation* is not what matters. And
+`prepare_replay_verification_gate` launches nothing at all — it only reads the ledger and the
+store — yet blocks too.
+
+What all of them share is `decoded_artifact.materialize_decoded_tree` and
+`capture_decoded_tree_fd`: two primitives, 15 call sites across the five stages, each walking,
+hashing and writing tens of thousands of files synchronously. **That is the F4 prerequisite,
+and it is two functions rather than five stages.**
+
+It cannot land before the cancellation item, and not only for the reason already given:
+`asyncio.to_thread` introduces new cancellation points, and a cancelled `to_thread` does not
+stop the thread. That is exactly why `apply_port`'s task is wrapped in `_await_apply_mutation`,
+a supervisor that waits for the thread before propagating cancellation. Any new threading has
+to follow that pattern, so what cancellation *means* has to be settled first.
 
 A heartbeater task in the wrapper would therefore be starved for the whole capture — exactly
 when a heartbeat matters — and a `heartbeat_timeout` sized to a working heartbeater would then

@@ -432,15 +432,23 @@ Reordered 2026-08-03. The two items that stood here are done.
    quarantine unconditionally on `CancelledError` and quarantine is terminal; build and verify
    already release when cancellation lands before a workspace exists, which is the shape the
    other three need.
-2. **Heartbeats (F4), after that, and they now have a second prerequisite and a number.** 66 of
-   86 query samples on 340 and 113 of 144 on 430 went unanswered, the longest unbroken stretch
-   over nine minutes. A heartbeater in the wrapper would be starved for the whole
-   `capture_decoded_tree_fd`, and a `heartbeat_timeout` sized to a working one would expire and
-   deliver exactly the cancellation item 1 is about. Move the synchronous capture off the loop
-   first, or accept and measure the gap.
-3. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
+2. **Move the two tree primitives off the event loop**, which is F4's other prerequisite.
+   `decoded_artifact.materialize_decoded_tree` and `capture_decoded_tree_fd` — 15 call sites
+   across the five stages — each walk, hash and write tens of thousands of files synchronously.
+   Attributed from the two real runs: apply is 92%/91% blocked, decode 82%/80%, build 62%/68%,
+   and even `prepare_replay_verification_gate`, which launches nothing, is 80-100%. `apply`
+   already threads `apply_port` and is still the worst, so a stage's subprocess is not the
+   lever. Must follow item 1, because `asyncio.to_thread` adds cancellation points and a
+   cancelled `to_thread` does not stop the thread — which is why `apply_port` is already
+   wrapped in the `_await_apply_mutation` supervisor.
+3. **Heartbeats (F4), after both.** 66 of 86 query samples on 340 and 113 of 144 on 430 went
+   unanswered, the longest unbroken stretch over nine minutes, and the worker logged 191
+   expired query tasks. Until items 1 and 2 land, a wrapper heartbeater is starved exactly when
+   a heartbeat matters, and a `heartbeat_timeout` sized to a working one would expire and
+   deliver the very cancellation item 1 is about.
+4. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
    (439 → 2, 440 → 0). A third is what tells "falling" from "fell once".
-4. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
+5. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference — now an escalation path rather than the normal one, since 440 resolved all
    seven hooks with no proposals at all.
 
