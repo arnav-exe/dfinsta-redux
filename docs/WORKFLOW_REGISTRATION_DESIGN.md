@@ -479,6 +479,51 @@ stale attempt directories, and a build workspace holds two APKs and a decoded tr
 update to `replay_workflow.py`'s retry-policy rationale, which currently argues from quarantine
 being what makes attempt 2 fail closed.
 
+## 3e — the liveness guard, designed and not yet built (2026-08-05)
+
+§3d established that releasing a cancelled operation is safe *provided attempt 1 is dead*, and
+that `claims.py` gets that guarantee from a human. An automatic release has to get it from the
+code. This is the shape, written before implementing because it touches all five proven Activity
+bodies and the executor's cancellation machinery.
+
+**The rule.** Post-workspace, release — **except** where the subprocess could not be *proven*
+reaped, which stays terminal. That keeps quarantine for exactly the case §3d's counter-case
+needs and releases the rest, which is every ordinary cancellation.
+
+**Where the signal is, measured across the three cleanup paths in `executor.py`:**
+
+| path | shape | can it report? |
+|---|---|---|
+| `execute`'s own, on timeout or cancel (`:473`) | `await asyncio.shield(cleanup)` | **yes** — the `RuntimeError` propagates |
+| `_launch_with_cancellation_cleanup` (`:378`) | `await asyncio.shield(_clean_up(process))` | **yes** |
+| `_supervise_late_launch` (`:360`) | fire-and-forget task, result consumed by `_consume_supervised_result` | **no**, and structurally cannot: the launch never returned a handle inside the window, so there is nothing to await |
+
+So two paths can carry it and the third is the case where a process may exist that we never got
+a handle for — which must be treated as *not proven dead*, i.e. terminal, for the same reason.
+
+**What to build.** A distinct exception (`ProcessNotReaped`, subclassing `RuntimeError` so the
+existing non-retryable list still covers it) raised by `_clean_up` on timeout and by
+`_supervise_late_launch`'s failure to obtain a handle; the five handlers then read
+`isinstance(error, ProcessNotReaped)` to choose quarantine over release. Matching on a type, not
+on the message — the current signal is the string `"Subprocess did not exit after kill"`.
+
+**A masking defect found while measuring this, worth fixing regardless.** On `execute`'s main
+path a cleanup timeout raises out of `await asyncio.shield(cleanup)` and *replaces* the
+`CancelledError` that got there. So a cancelled activity whose child would not die is reported
+as a plain failure, and the distinction the rule above depends on is destroyed one frame below
+where it is read. Same shape as the unprotected `release_pending_operation` closed earlier the
+same day.
+
+**Two things that must land with it, not after:**
+
+* **A workspace reaper, or a bounded attempts budget.** Release makes retries possible where
+  they previously could not happen, and nothing in `src/` removes stale attempt directories. A
+  build workspace holds a stock APK, an intermediate APK, a final APK and a full decoded tree.
+* **`replay_workflow.py`'s retry rationale becomes false.** It argues `maximum_attempts=2` is
+  safe because "every other second-attempt outcome fails closed", reasoning *from* quarantine
+  being what stops attempt 2. Under release attempt 2 re-runs the stage instead of refusing.
+  That is the intended behaviour, but the comment currently says the opposite.
+
 ## 3b. Known follow-ups, deliberately not done in this slice
 
 **F1. The harness and the Workflow derive different verification-gate ids.**
