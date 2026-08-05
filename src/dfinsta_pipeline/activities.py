@@ -1573,10 +1573,29 @@ async def replay_install_frameworks_checkpoint_activity(
         Ledger.record_effect(configured.ledger, key, owner, output)
         effect_recorded = True
         return Ledger.complete_operation(configured.ledger, key, output)
-    except asyncio.CancelledError:
-        if not effect_recorded:
-            Ledger.quarantine_operation(configured.ledger, key, owner)
-        raise
+    # One handler for cancellation and for every other failure, because they
+    # want the same thing and having two is how they drifted apart.
+    #
+    # `CancelledError` is a BaseException, so this catches it. The separate
+    # cancel block that used to sit here quarantined unconditionally in three of
+    # the five stages and used the graduated form in the other two, with no
+    # comment and no commit message anywhere saying why -- drift from birth
+    # (2026-07-28 vs 07-29/07-31), not a decision.
+    #
+    # The difference was also **unreachable**: measured by AST over all five,
+    # there is no await, async-with or async-for between claiming the operation
+    # and `workspace_created = True`, and an async activity is cancelled by
+    # `task.cancel()`, which is only delivered at a suspension point. A cancel
+    # requested during that synchronous region is latched and arrives at the
+    # first await -- the launch -- by which time a workspace exists and both
+    # shapes quarantined identically. So this changes nothing that runs today.
+    # It matters the moment an await appears before workspace creation, and it
+    # gains the release protection the cancel path never had: an unprotected
+    # `release_pending_operation` that raised would swallow the CancelledError
+    # and report the activity as failed rather than cancelled.
+    #
+    # NOT the non-destructive cancellation item. That one is about quarantine
+    # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
         if workspace_created and not effect_recorded:
             Ledger.quarantine_operation(configured.ledger, key, owner)
@@ -1881,10 +1900,29 @@ async def replay_decode_checkpoint_activity(candidate: AdmittedReplayV3) -> Arti
         Ledger.record_effect(configured.ledger, key, owner, output)
         effect_recorded = True
         return Ledger.complete_operation(configured.ledger, key, output)
-    except asyncio.CancelledError:
-        if not effect_recorded:
-            Ledger.quarantine_operation(configured.ledger, key, owner)
-        raise
+    # One handler for cancellation and for every other failure, because they
+    # want the same thing and having two is how they drifted apart.
+    #
+    # `CancelledError` is a BaseException, so this catches it. The separate
+    # cancel block that used to sit here quarantined unconditionally in three of
+    # the five stages and used the graduated form in the other two, with no
+    # comment and no commit message anywhere saying why -- drift from birth
+    # (2026-07-28 vs 07-29/07-31), not a decision.
+    #
+    # The difference was also **unreachable**: measured by AST over all five,
+    # there is no await, async-with or async-for between claiming the operation
+    # and `workspace_created = True`, and an async activity is cancelled by
+    # `task.cancel()`, which is only delivered at a suspension point. A cancel
+    # requested during that synchronous region is latched and arrives at the
+    # first await -- the launch -- by which time a workspace exists and both
+    # shapes quarantined identically. So this changes nothing that runs today.
+    # It matters the moment an await appears before workspace creation, and it
+    # gains the release protection the cancel path never had: an unprotected
+    # `release_pending_operation` that raised would swallow the CancelledError
+    # and report the activity as failed rather than cancelled.
+    #
+    # NOT the non-destructive cancellation item. That one is about quarantine
+    # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
         if workspace_created and not effect_recorded:
             Ledger.quarantine_operation(configured.ledger, key, owner)
@@ -2130,10 +2168,29 @@ async def replay_apply_tree_checkpoint_activity(candidate: AdmittedReplayV3) -> 
         Ledger.record_effect(configured.ledger, key, owner, output)
         effect_recorded = True
         return Ledger.complete_operation(configured.ledger, key, output)
-    except asyncio.CancelledError:
-        if not effect_recorded:
-            Ledger.quarantine_operation(configured.ledger, key, owner)
-        raise
+    # One handler for cancellation and for every other failure, because they
+    # want the same thing and having two is how they drifted apart.
+    #
+    # `CancelledError` is a BaseException, so this catches it. The separate
+    # cancel block that used to sit here quarantined unconditionally in three of
+    # the five stages and used the graduated form in the other two, with no
+    # comment and no commit message anywhere saying why -- drift from birth
+    # (2026-07-28 vs 07-29/07-31), not a decision.
+    #
+    # The difference was also **unreachable**: measured by AST over all five,
+    # there is no await, async-with or async-for between claiming the operation
+    # and `workspace_created = True`, and an async activity is cancelled by
+    # `task.cancel()`, which is only delivered at a suspension point. A cancel
+    # requested during that synchronous region is latched and arrives at the
+    # first await -- the launch -- by which time a workspace exists and both
+    # shapes quarantined identically. So this changes nothing that runs today.
+    # It matters the moment an await appears before workspace creation, and it
+    # gains the release protection the cancel path never had: an unprotected
+    # `release_pending_operation` that raised would swallow the CancelledError
+    # and report the activity as failed rather than cancelled.
+    #
+    # NOT the non-destructive cancellation item. That one is about quarantine
+    # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
         if workspace_created and not effect_recorded:
             Ledger.quarantine_operation(configured.ledger, key, owner)
@@ -2464,12 +2521,29 @@ async def replay_build_patched_apk_checkpoint_activity(
         Ledger.record_effect(configured.ledger, key, owner, output)
         effect_recorded = True
         return Ledger.complete_operation(configured.ledger, key, output)
-    except asyncio.CancelledError:
-        if workspace_created and not effect_recorded:
-            Ledger.quarantine_operation(configured.ledger, key, owner)
-        elif operation_claimed and not effect_recorded:
-            Ledger.release_pending_operation(configured.ledger, key, owner)
-        raise
+    # One handler for cancellation and for every other failure, because they
+    # want the same thing and having two is how they drifted apart.
+    #
+    # `CancelledError` is a BaseException, so this catches it. The separate
+    # cancel block that used to sit here quarantined unconditionally in three of
+    # the five stages and used the graduated form in the other two, with no
+    # comment and no commit message anywhere saying why -- drift from birth
+    # (2026-07-28 vs 07-29/07-31), not a decision.
+    #
+    # The difference was also **unreachable**: measured by AST over all five,
+    # there is no await, async-with or async-for between claiming the operation
+    # and `workspace_created = True`, and an async activity is cancelled by
+    # `task.cancel()`, which is only delivered at a suspension point. A cancel
+    # requested during that synchronous region is latched and arrives at the
+    # first await -- the launch -- by which time a workspace exists and both
+    # shapes quarantined identically. So this changes nothing that runs today.
+    # It matters the moment an await appears before workspace creation, and it
+    # gains the release protection the cancel path never had: an unprotected
+    # `release_pending_operation` that raised would swallow the CancelledError
+    # and report the activity as failed rather than cancelled.
+    #
+    # NOT the non-destructive cancellation item. That one is about quarantine
+    # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
         if workspace_created and not effect_recorded:
             Ledger.quarantine_operation(configured.ledger, key, owner)
@@ -3173,12 +3247,29 @@ async def replay_verify_final_apk_checkpoint_activity(
         Ledger.record_effect(configured.ledger, key, owner, output)
         effect_recorded = True
         return Ledger.complete_operation(configured.ledger, key, output)
-    except asyncio.CancelledError:
-        if workspace_created and not effect_recorded:
-            Ledger.quarantine_operation(configured.ledger, key, owner)
-        elif operation_claimed and not effect_recorded:
-            Ledger.release_pending_operation(configured.ledger, key, owner)
-        raise
+    # One handler for cancellation and for every other failure, because they
+    # want the same thing and having two is how they drifted apart.
+    #
+    # `CancelledError` is a BaseException, so this catches it. The separate
+    # cancel block that used to sit here quarantined unconditionally in three of
+    # the five stages and used the graduated form in the other two, with no
+    # comment and no commit message anywhere saying why -- drift from birth
+    # (2026-07-28 vs 07-29/07-31), not a decision.
+    #
+    # The difference was also **unreachable**: measured by AST over all five,
+    # there is no await, async-with or async-for between claiming the operation
+    # and `workspace_created = True`, and an async activity is cancelled by
+    # `task.cancel()`, which is only delivered at a suspension point. A cancel
+    # requested during that synchronous region is latched and arrives at the
+    # first await -- the launch -- by which time a workspace exists and both
+    # shapes quarantined identically. So this changes nothing that runs today.
+    # It matters the moment an await appears before workspace creation, and it
+    # gains the release protection the cancel path never had: an unprotected
+    # `release_pending_operation` that raised would swallow the CancelledError
+    # and report the activity as failed rather than cancelled.
+    #
+    # NOT the non-destructive cancellation item. That one is about quarantine
+    # AFTER a workspace exists, which is the reachable path and is untouched here.
     except BaseException as error:
         if workspace_created and not effect_recorded:
             Ledger.quarantine_operation(configured.ledger, key, owner)

@@ -797,6 +797,68 @@ class ReplayFinalApkVerificationActivityTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertFalse(self.attempts.exists())
 
+    async def test_cancelling_before_the_workspace_releases_the_claim(self) -> None:
+        """The one handler treats cancellation like every other failure.
+
+        Injected, because the runtime cannot deliver it here: there is no
+        suspension point between claiming the operation and creating the
+        workspace, so a real cancellation is latched until the launch. Pinned
+        anyway — the branch becomes live the moment an `await` appears in that
+        region, and `tests/test_phase_b_cancellation` fails when one does.
+
+        The distinction is worth a run: quarantine is terminal, so a cancellation
+        that arrives before anything has started would otherwise burn an admitted
+        replay that had done nothing at all.
+        """
+        original = activities._open_or_create_directory
+
+        def cancel_instead(path: Path) -> int:
+            raise asyncio.CancelledError
+
+        with mock.patch.object(activities, "_open_or_create_directory", cancel_instead):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.invoke("cancelled-before-workspace")
+
+        with runtime().ledger._connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT owner_token, status FROM operation_claims WHERE operation_key = ?",
+                    (self.key,),
+                ).fetchone(),
+                ("", "pending"),
+            )
+        self.assertFalse(self.attempts.exists())
+        # And released means adoptable: the next attempt runs rather than meeting
+        # a terminal refusal.
+        activities._open_or_create_directory = original
+        output = await self.invoke("after-cancellation")
+        self.assertEqual(Ledger.operation_status(runtime().ledger, self.key), "completed")
+        self.assertTrue(self.receipt(output).success)
+
+    async def test_a_failing_release_cannot_mask_the_cancellation(self) -> None:
+        """A cancelled Activity must still report as cancelled.
+
+        The cancel path used to call the ledger unprotected, so a release that
+        raised would replace `CancelledError` with its own exception and the
+        Activity would be reported failed rather than cancelled — which is a
+        different thing to the retry policy and to `WAIT_CANCELLATION_COMPLETED`.
+        """
+
+        def cancel_instead(path: Path) -> int:
+            raise asyncio.CancelledError
+
+        def refuse_release(*_args, **_kwargs):
+            raise RuntimeError("ledger is unavailable")
+
+        with mock.patch.object(activities, "_open_or_create_directory", cancel_instead):
+            with mock.patch.object(Ledger, "release_pending_operation", refuse_release):
+                with self.assertRaises(asyncio.CancelledError) as raised:
+                    await self.invoke("release-fails")
+        self.assertTrue(
+            any("release failed" in note for note in getattr(raised.exception, "__notes__", ())),
+            getattr(raised.exception, "__notes__", ()),
+        )
+
     async def test_after_workspace_failure_quarantines(self) -> None:
         self.process = FakeDecodeProcess(
             self.decoded_source,
