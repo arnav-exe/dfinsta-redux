@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-04, branch `port-430`. Suite: **2654 tests**, one expected skip,
+Resume point as of 2026-08-05, branch `port-430`. Suite: **2671 tests**, one expected skip,
 plus six green tool suites (indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
 device_validation 22).
 
@@ -1002,7 +1002,7 @@ now takes `--custom-tree` and `--replace-dex`; defaults preserve 430.
 ```
 python        .venv/bin/python   (3.13; system python3 is 3.14 and unsupported)
 tests         PYTHONPATH=src .venv/bin/python -W error -m unittest discover -s tests
-              2654 tests, 1 expected skip
+              2671 tests, 1 expected skip
 tool suites   cd tools/<name>/tests && PYTHONPATH=<repo>/src:<repo> python -m unittest discover -s . -t .
               indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
               device_validation 22. Discovery from the repository root does NOT work:
