@@ -44,6 +44,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -230,6 +231,139 @@ def host_hook_map(
                 # field rather than calling) still proves the type reference.
                 out.setdefault(dex, set()).add((field.group("descriptor"), "<init>"))
     return {dex: sorted([list(pair) for pair in pairs]) for dex, pairs in out.items()}
+
+
+def hook_symbol_map(
+    report: ResolveReport, index: HookIndex, hooks: Sequence[Hook]
+) -> dict[str, list[list[str]]]:
+    """The same symbols as `host_hook_map`, kept per HOOK instead of per DEX.
+
+    `host_hook_map` unions every hook's DFInsta calls into one set per DEX,
+    because that is the shape the verifier checks. The union is exactly what
+    makes its result unusable as evidence: `verify_build`'s report says
+    `classes3.dex` carries `Lcom/dfinstagram/hooks; replaceReelsEndpoint`, and
+    three Reels hooks contribute that same pair, so the report cannot say which
+    of them was proven.
+
+    This is what `EvidenceKind.STATIC_VERIFIED` needs and had never had. That
+    kind is required of every hook by two requirement sets and **nothing in the
+    tree produced one** -- so `EvidenceLedger.report("post_build")` escalated 7
+    of 7 hooks on every version, and release readiness was unsatisfiable by
+    construction rather than by any hook's fault.
+
+    A pair one hook contributes is not always unique to it, and the claim says
+    so rather than pretending otherwise: `attribution` is `sole` when every pair
+    is this hook's alone and `shared` when any is not. Same distinction
+    `runtime_probe` already draws for a signal two hooks emit. The probe symbol
+    `Lcom/dfinstagram/probe; h_<hook_id>` is always sole, so a probe-instrumented
+    build attributes cleanly and a bare one does not -- which is a fact about the
+    build, not a defect in the reader.
+    """
+
+    by_id = {hook.hook_id: hook for hook in hooks}
+    out: dict[str, set[tuple[str, str, str]]] = {}
+    for item in report.resolutions:
+        if item.outcome not in {Outcome.RESOLVED, Outcome.ALREADY_APPLIED}:
+            continue
+        assert item.descriptor is not None
+        path = index.path_for(item.descriptor)
+        if path is None:  # pragma: no cover - resolved hosts are always indexed
+            continue
+        dex = dex_name(path.split("/", 1)[0])
+        # Seeded for EVERY resolved hook, before any symbol is looked for. A hook
+        # whose payload references nothing of DFInsta's would otherwise be simply
+        # ABSENT from this map -- and then `static_verified_claims` emits no claim
+        # for it, the gate reports `not_exercised` ("nobody looked") where the
+        # truth is `failed` ("there was nothing to look for"), and the driver's
+        # own "N of M hook(s)" line takes its denominator from the claims it
+        # produced rather than the hooks in the run. A two-hook port with one such
+        # hook printed `1 of 1`. No hook in today's manifest does this, which is
+        # exactly why it needed pinning rather than watching.
+        out.setdefault(item.hook_id, set())
+        payload = (
+            item.resolution.payload
+            if item.resolution is not None
+            else list(by_id[item.hook_id].payload)
+        )
+        for line in payload:
+            call = CALL_TARGET.search(line)
+            if call and "dfinstagram" in call.group("descriptor"):
+                out[item.hook_id].add(
+                    (dex, call.group("descriptor"), call.group("method"))
+                )
+                continue
+            field = FIELD_TARGET.search(line)
+            if field and "dfinstagram" in field.group("descriptor"):
+                out[item.hook_id].add((dex, field.group("descriptor"), "<init>"))
+    return {
+        hook_id: sorted([list(triple) for triple in triples])
+        for hook_id, triples in out.items()
+    }
+
+
+def static_verified_claims(
+    symbols: Mapping[str, list[list[str]]], verification: Mapping[str, Any]
+) -> list[EvidenceClaim]:
+    """One `static_verified` claim per hook, read out of the verifier's report.
+
+    The verifier's `host_hooks` is `{dex: {"<descriptor> <method>": bool}}`. A
+    hook passes when every symbol it contributed is present **and** the report
+    passed overall -- the second half matters because a build can carry every
+    DFInsta call and still have a mismatched preserved entry or an unexpected
+    added file, and a per-hook pass beside a failed build would read as though
+    the hook were fine.
+
+    A hook with no symbols at all is `failed`, not skipped. That is the vacuous
+    pass `verify_build` refuses globally, reintroduced one hook at a time: a hook
+    that contributed nothing to prove has not been proven.
+    """
+
+    host_hooks = verification.get("host_hooks") or {}
+    overall = verification.get("passed") is True
+    counts: Counter[tuple[str, str, str]] = Counter()
+    for triples in symbols.values():
+        counts.update(tuple(triple) for triple in triples)
+
+    claims: list[EvidenceClaim] = []
+    for hook_id in sorted(symbols):
+        triples = symbols[hook_id]
+        checked: dict[str, bool] = {}
+        for dex, descriptor, method in triples:
+            checked[f"{dex} {descriptor} {method}"] = bool(
+                host_hooks.get(dex, {}).get(f"{descriptor} {method}")
+            )
+        sole = all(counts[tuple(triple)] == 1 for triple in triples)
+        passed = bool(triples) and all(checked.values()) and overall
+        missing = sorted(name for name, found in checked.items() if not found)
+        if not triples:
+            summary = f"{hook_id} contributed no DFInsta symbol to assert"
+        elif passed:
+            summary = (
+                f"{hook_id}: {len(checked)} DFInsta symbol(s) present in the built DEX"
+            )
+        elif not overall and not missing:
+            summary = f"{hook_id}: symbols present, but the build verification failed"
+        else:
+            summary = f"{hook_id}: missing {', '.join(missing)}"
+        claims.append(
+            deterministic_claim(
+                hook_id,
+                EvidenceKind.STATIC_VERIFIED,
+                passed,
+                "tools/verify/verify_build.py",
+                summary,
+                {
+                    "symbols": checked,
+                    # Three states, not two. A hook that contributed nothing is
+                    # neither solely nor jointly attributed -- calling it
+                    # `shared` would read as "proven, alongside others" when the
+                    # truth is that nothing was checked at all.
+                    "attribution": ("sole" if sole else "shared") if triples else "none",
+                    "build_verification_passed": overall,
+                },
+            )
+        )
+    return claims
 
 
 def host_dex_entries(report: ResolveReport, index: HookIndex) -> list[str]:
@@ -976,6 +1110,35 @@ def _run_stages(
     except DriverError as error:
         raise DriverError(*error.args, report=report) from error
     artifacts["apk"] = str(paths.output_apk)
+
+    # The build's own verifier report, turned into evidence. Until 2026-08-05
+    # `build.py` wrote this file, `verify_build.py` computed every assertion in
+    # it, and nothing joined the two to the ledger -- so `static_verified` was
+    # required of every hook and produced for none, and the post-build report
+    # below escalated all seven on every version for a reason no hook could fix.
+    verification_path = paths.output_apk.with_suffix(".verification.json")
+    try:
+        verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        # Not fatal, and deliberately so: the APK is built and verified by the
+        # time this runs -- `build.py` exits non-zero on a failed verification,
+        # so reaching here at all means it passed. Losing the claim costs
+        # evidence, not correctness, and turning a readable-report problem into a
+        # failed port would be the tail wagging the dog.
+        print(f"[build] no static_verified evidence: {error}", flush=True)
+    else:
+        static_claims = static_verified_claims(
+            hook_symbol_map(report, index, hooks), verification
+        )
+        for claim in static_claims:
+            ledger.record(claim)
+        passed = sum(1 for claim in static_claims if claim.verdict is Verdict.PASSED)
+        artifacts["static_verified"] = f"{passed}/{len(static_claims)}"
+        print(
+            f"[build] static_verified: {passed} of {len(static_claims)} hook(s)",
+            flush=True,
+        )
+
     outstanding = ledger.report("post_build")["escalations"]
     if outstanding:
         print(
