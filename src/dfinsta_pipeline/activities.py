@@ -997,6 +997,57 @@ def _secure_remove_tree_entry(
         os.close(descriptor)
 
 
+def open_private_directory(parent_fd: int, name: str, label: str) -> int:
+    """Open an existing directory relative to `parent_fd` and check it is private.
+
+    A public seam for `reaper.py`, which walks the same tree these Activities
+    build. Reaching for `_open_existing_directory` and `_validate_private_directory`
+    across the module boundary is the private coupling F2 removed once already,
+    and a second copy of the open-then-validate order is the specific thing worth
+    not having: forgetting the `os.close` on a failed validation leaks a
+    descriptor per refused directory, which is invisible until a long sweep.
+    """
+
+    descriptor = _open_existing_directory(parent_fd, name)
+    try:
+        _validate_private_directory(descriptor, label)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def open_private_root(path: Path, label: str) -> int:
+    """Open an absolute directory that must already exist, and check it is private.
+
+    Deliberately NOT `_open_or_create_directory`: that one mkdirs every missing
+    component, which is right for a stage that owns its workspace and wrong for a
+    sweeper. A reaper handed a mistyped `--attempts-root` must fail, not create
+    the directory and then report cheerfully that it found nothing to remove.
+    """
+
+    descriptor = os.open(path, _secure_directory_flags())
+    try:
+        _validate_private_directory(descriptor, label)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def remove_attempt_workspace(parent_fd: int, name: str) -> None:
+    """Remove one attempt workspace, identity-pinned at every level.
+
+    The one implementation, shared with the validation-workspace cleanup that has
+    always run in `_validate_replay_final_apk_verification_receipt`'s `finally`.
+    A reaper with its own recursive remover would be a second security-sensitive
+    deletion path that agrees with this one until one of them is edited -- the
+    exact shape `resolve_replay_build` was written to end.
+    """
+
+    _secure_remove_tree_entry(parent_fd, name, "Attempt workspace")
+
+
 def _secure_remove_optional_build_tree(patched_tree_fd: int) -> None:
     try:
         initial = os.stat("build", dir_fd=patched_tree_fd, follow_symlinks=False)
@@ -3447,9 +3498,15 @@ async def apply_activity(stage: StageInput) -> ArtifactRef:
 # runs every static assertion. Observed real durations are 932-2,448 s against
 # subprocess timeouts of 300-600 s, so budgets are deliberate multiples.
 #
-# These are ceilings, not targets, and they are generous on purpose: an expired
-# start_to_close delivers CancelledError, which quarantines the operation, which
-# is terminal. A tight timeout does not retry a stage, it destroys the run.
+# These are ceilings, not targets, and they are generous on purpose. They used to
+# be generous for a stronger reason than they are now: an expired start_to_close
+# delivers CancelledError, and a cancelled stage QUARANTINED its operation, so a
+# tight timeout did not retry a stage, it destroyed the run. Since 2026-08-05 a
+# cancelled stage releases its claim unless its subprocess could not be shown to
+# have exited, so an expired budget now costs that stage's work and a retry
+# adopts every completed predecessor. Generous is still right -- redoing a
+# 25-minute build to save a timeout constant is a bad trade -- but the failure it
+# guards against is no longer terminal.
 _STAGE_BUDGET_ROLE = {
     "install_framework": "install_framework",
     "decode": "decode",
@@ -3464,6 +3521,12 @@ _STAGE_BUDGET_MULTIPLIER = {
     "build": 9,
     "verify": 18,
 }
+
+#: The longest any replay stage may legitimately run, as a multiple of its
+#: subprocess timeout. Derived rather than restated, because `reaper.py` turns it
+#: into the floor under its minimum-age option: a workspace younger than this
+#: might still be being written by a stage that has not finished.
+LONGEST_STAGE_BUDGET_MULTIPLIER = max(_STAGE_BUDGET_MULTIPLIER.values())
 
 
 def _replay_stage_budget(admitted: AdmittedReplayV3, stage: str) -> int:
@@ -3637,17 +3700,29 @@ async def resolve_replay_verification_grant_activity(
     return Ledger.admitted_replay_verification_resumption(configured.ledger, grant_id)
 
 
-@activity.defn
-async def prepare_replay_verification_gate_activity(
+def _derive_replay_verification_gate(
     handle: AdmittedReplayHandleV1,
 ) -> ReplayVerificationGateV1:
-    """Publish only the hash of the final-verification gate subject.
+    """The gate derivation, synchronous, so it can be run in a thread.
 
-    The subject binds a build receipt that does not exist when the run is
-    admitted, so it is derived here from recorded state after the build stage.
-    The Workflow never sees the request body; it binds the human decision to
-    this hash, and the admitting Activity re-derives the request independently.
+    Separated from the Activity for one measured reason. This stage launches no
+    subprocess and mutates nothing, and it was still the *most* loop-blocked
+    stage of a real port -- 100% of query samples on 340 and 80% on 430, and
+    still 100% after the tree walks moved into threads, because that change was
+    deliberately scoped to `materialize_decoded_tree` and `capture_decoded_tree_fd`.
+    All of this stage's cost is `load_decoded_tree`, reached three levels down
+    through `resolve_replay_build`'s receipt validation: it re-reads and re-hashes
+    every blob of the patched tree and the framework cache to confirm the recorded
+    semantic hash. On a 209k-file decode that is tens of seconds of uninterrupted
+    CPU on the worker's event loop.
+
+    `load_decoded_tree` could not be threaded at its own call sites the way the
+    other two primitives were: four of its callers are synchronous validators
+    that already run *inside* `asyncio.to_thread` (`capture_and_verify`,
+    `_validate_replay_final_apk_verification_receipt`), where there is no loop to
+    await on. So the unit that moves is the Activity body, not the primitive.
     """
+
     configured = runtime()
     admitted = Ledger.load_admitted_replay_v3(configured.ledger, handle)
     completed_build, build_receipt = replay_gate.resolve_admitted_build(admitted)
@@ -3659,6 +3734,29 @@ async def prepare_replay_verification_gate_activity(
         request.sha256,
         request.allowed_actor,
         request.policy_revision,
+    )
+
+
+@activity.defn
+async def prepare_replay_verification_gate_activity(
+    handle: AdmittedReplayHandleV1,
+) -> ReplayVerificationGateV1:
+    """Publish only the hash of the final-verification gate subject.
+
+    The subject binds a build receipt that does not exist when the run is
+    admitted, so it is derived here from recorded state after the build stage.
+    The Workflow never sees the request body; it binds the human decision to
+    this hash, and the admitting Activity re-derives the request independently.
+
+    Run in a thread, and waited for through the same drain-then-propagate
+    supervisor every other threaded stage uses. Nothing here holds a directory
+    descriptor, so the descriptor-reuse hazard that rule was written for does not
+    apply -- but a thread left hashing gigabytes after its caller moved on would
+    contend with the next stage for the CPU it was moved off the loop to free.
+    """
+    return await _await_thread_work(
+        asyncio.create_task(asyncio.to_thread(_derive_replay_verification_gate, handle)),
+        "verification gate derivation",
     )
 
 
