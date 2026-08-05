@@ -531,8 +531,32 @@ exists in the codebase**: `replay_verify_final_apk` at `activities.py:3097` alre
 `capture_decoded_tree_fd` in a thread under a drain-then-propagate supervisor, file descriptor
 and all. The change generalises that to the seven loop-side sites.
 
-**Measured on a real 209,426-file, 1.22 GB decoded tree**, with a 10 ms probe standing in for a
-heartbeater:
+**Landed 2026-08-05, and measured on a real 340 port through the registered Workflow** — the
+reproducible number, from a committed harness, superseding the standalone benchmark below:
+
+| | before | after |
+|---|---|---|
+| query samples answered | 20 of 86 (23%) | **58 of 63 (92%)** |
+| longest unbroken blocked stretch | 28 samples (~560 s) | **3 samples** |
+| `replay_apply_tree` | 92% blocked | **0%** |
+| `replay_decode` | 82% | 5% |
+| `replay_build_patched_apk` | 62% | 17% |
+| `prepare_replay_verification_gate` | 100% | **100%** |
+| expired query tasks in the worker log | 69 | **0** |
+
+The run itself was unaffected: four stages, verification success with 65 assertions, History
+64,550 bytes of the 256 KB budget. Mid-decode queries that previously timed out now answer in
+roughly 110 ms.
+
+**The gate stage is unchanged, exactly as this design predicted**, because
+`load_decoded_tree`'s standalone call sites in the validation helpers were deliberately scoped
+out — it launches no subprocess and its blocking is entirely that function. That prediction
+holding is the best evidence the diagnosis was right, and it is what makes the remaining work
+worth doing rather than guesswork. The stage runs for seconds, so it is low priority.
+
+**The prior standalone benchmark**, on a 209,426-file, 1.22 GB decoded tree with a 10 ms probe
+standing in for a heartbeater. Recorded for its detail, but **note it is not reproducible from
+the tree** — no benchmark script was committed:
 
 | | idle | on the loop (today) | in a thread |
 |---|---|---|---|
