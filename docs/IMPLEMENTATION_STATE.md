@@ -416,7 +416,7 @@ Stage numbers refer to `pipeline_flowchart.md`.
 | **8 Static verify** | **done, target-neutral, and now producing evidence** | `tools/verify/verify_build.py` (host-hook map supplied per run); `driver.static_verified_claims` |
 | **9 Runtime verify** | **done, three probe kinds + per-hook identity** | `src/dfinsta_pipeline/probes.py`, `runtime_identity.py` |
 | 10 Decision memory / cost ledger | **done** | `manifest_update.py`, `agent_cost.py` (the `agent_cost report` verdict reads `falling`) |
-| 11 Report | not started | — |
+| 11 Report | not started — **unblocked 2026-08-06**: claims now carry version, build hash and a timestamp | — |
 | Durable orchestration | `ReplayRunWorkflow` **run for real on a live server**, 340 and 430 | `src/dfinsta_pipeline/` |
 
 **The driver** is `python -m dfinsta_pipeline.driver <stock.apk> --out <dir>`. It runs
@@ -1302,6 +1302,52 @@ defeated"*. And **all 23 claims carry `recorded_at: ""`**: `evidence.stamped()` 
 driver never calls it, so no stored claim can be ordered in time, dated, or attributed to a
 port. `EvidenceClaim` also has no version and no build hash, so a claim cannot be joined to the
 APK it is about — which is the first thing stage 11 would need.
+
+**5. ~~An evidence claim cannot be joined to anything.~~ Closed 2026-08-06**, and it was the
+thing standing between the ledger and a stage-11 report.
+
+`EvidenceClaim` carried `hook_id` and nothing else identifying the port. **No version** — it was
+knowable only from the filename a human chose (`manifest/runtime_evidence/440.jsonl`), so it
+lived in the path rather than the data. **No build hash** — a `runtime_probe` names a device
+serial and never which APK was installed, so 440's device evidence could not be joined to the
+release APK it was gathered against. And **`recorded_at` was `""` on all 30 committed claims**:
+`evidence.stamped()` existed and the driver never called it, so nothing could be ordered in
+time or dated.
+
+`version`, `build_sha256` and a real `recorded_at` now come from one `Attribution`, applied at
+`EvidenceLedger.record` — one place per run that can forget, rather than one per builder.
+
+**Three things about it that took the care, all recorded because each would be invisible if got
+wrong.**
+
+- **Unset fields write no key at all.** `claim_id` is a content hash of `to_dict()` and
+  `supersedes` names a parent by it, so emitting `"version": null` on every claim would have
+  changed the id of every claim already on disk and broken every stored supersede chain. Same
+  rule the gate journal follows for `payload_sha256`. Verified: all 23 committed 440 claims
+  round-trip byte-identically.
+- **A pre-apply claim may not name a build, and its absence is meaningful.** `anchor_unique` and
+  `registers_safe` are established before anything is built, so a hash there would be a claim
+  about an artifact that did not exist when the fact was established. The constructor refuses it;
+  `attributed()` *drops* it for those kinds rather than making every call site re-classify — the
+  classification is `PHASES` and two copies of it drift. Deliberately split: the helper is the
+  safe path for a batch, the constructor is the strict one for a hand-built claim.
+- **`bind_build` refuses a second, different hash.** The APK does not exist when the ledger is
+  opened, so the build hash arrives later; a ledger whose later claims silently pointed at a
+  second artifact would have every claim individually true and describe no APK that ever
+  existed.
+
+**Still open, and a design call rather than a fix**: `differential` claims have no durable home.
+`manifest/runtime_evidence/README.md` forbids filing them beside the per-version baselines, for
+a good reason — the next comparison would read a previous comparison's output as though it were
+a measurement. A sibling location avoids that. Regenerating 439→440 today gives **2 passing
+claims**, `set_app_context` and `tigon_url_block`; the other five are `shapes_disjoint` against
+439's thin baseline.
+
+**Those same two hooks are the first realistic candidates to pass the post-build gate**, with no
+device involved: both already have a clean `runtime_probe`, `static_verified` is now produced,
+and a 440 re-port would emit it. `install_settings_long_click` cannot join them — its
+`inconclusive → passed → passed` sequence trips the ledger's retry guard and needs a clean
+single-shot measurement.
 
 **Small, batchable:**
 
