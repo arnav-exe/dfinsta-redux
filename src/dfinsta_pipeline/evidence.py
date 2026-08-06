@@ -239,10 +239,46 @@ class EvidenceClaim:
     rationale: str = ""
     supersedes: str | None = None
     recorded_at: str = ""
+    #: Which Instagram version this claim is about, e.g. "440".
+    #:
+    #: Added 2026-08-06. Until then a claim carried `hook_id` and nothing else
+    #: identifying the port, so the version was knowable only from the *filename*
+    #: a human chose (`manifest/runtime_evidence/440.jsonl`) — in the path, not
+    #: the data. A report cannot join what a path spells.
+    version: str | None = None
+    #: The APK the claim is about, when there is one.
+    #:
+    #: **Absent means "this claim predates the artifact", not "unknown".** Every
+    #: pre-apply kind is recorded before anything is built, so `anchor_unique` and
+    #: `registers_safe` can never carry one and a reader must not treat their
+    #: absence as a gap. The post-build kinds can, and a `runtime_probe` that does
+    #: not is the case that matters: 440's device evidence names a device serial
+    #: and never which APK was installed.
+    build_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not self.hook_id.strip():
             raise EvidenceError("claim needs a hook_id")
+        if self.version is not None and not self.version.strip():
+            raise EvidenceError(
+                f"{self.hook_id}/{self.kind.value}: version is present and blank. Omit it "
+                "rather than recording an empty one — absent says 'not attributed', an "
+                "empty string says 'attributed to nothing'."
+            )
+        if self.build_sha256 is not None and (
+            len(self.build_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.build_sha256)
+        ):
+            raise EvidenceError(
+                f"{self.hook_id}/{self.kind.value}: build_sha256 must be a lowercase "
+                f"SHA-256, got {self.build_sha256!r}"
+            )
+        if self.build_sha256 is not None and PHASES[self.kind] == PRE_APPLY:
+            raise EvidenceError(
+                f"{self.hook_id}/{self.kind.value}: a pre-apply claim cannot name a build. "
+                "It is recorded before anything is built, so a hash here would be a claim "
+                "about an artifact that did not exist when the fact was established."
+            )
         if not self.actor.strip():
             raise EvidenceError(
                 f"{self.hook_id}/{self.kind.value}: claim needs an actor. Evidence with "
@@ -297,7 +333,7 @@ class EvidenceClaim:
         return canonical_sha256(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "schema_version": SCHEMA_VERSION,
             "hook_id": self.hook_id,
             "kind": self.kind.value,
@@ -312,6 +348,17 @@ class EvidenceClaim:
             "supersedes": self.supersedes,
             "recorded_at": self.recorded_at,
         }
+        # An unattributed claim writes NO KEY, rather than a null. `claim_id` is a
+        # content hash of exactly this dict and `supersedes` names a parent by it,
+        # so emitting `"version": null` on every claim would change the id of every
+        # claim already on disk and break every stored supersede chain. Same rule
+        # the gate journal follows for `payload_sha256`, and for the same reason:
+        # an additive field must leave pre-change files byte-identical.
+        if self.version is not None:
+            data["version"] = self.version
+        if self.build_sha256 is not None:
+            data["build_sha256"] = self.build_sha256
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> EvidenceClaim:
@@ -332,6 +379,59 @@ class EvidenceClaim:
             rationale=data.get("rationale", ""),
             supersedes=data.get("supersedes"),
             recorded_at=data.get("recorded_at", ""),
+            version=data.get("version"),
+            build_sha256=data.get("build_sha256"),
+        )
+
+
+@dataclass(frozen=True)
+class Attribution:
+    """What run a batch of claims belongs to: when, which version, which build.
+
+    Held by an :class:`EvidenceLedger` and applied in `record`, so a run has one
+    place that can forget rather than one per builder.
+
+    `build_sha256` is set only once the APK exists, which is why it is separate
+    from the other two and why `with_build` returns a new value rather than
+    mutating: the pre-apply claims of a run are recorded before the build and are
+    genuinely not about any artifact. See :func:`attributed`.
+    """
+
+    recorded_at: str
+    version: str
+    build_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.recorded_at.strip():
+            raise EvidenceError("attribution needs a recorded_at")
+        if not self.version.strip():
+            raise EvidenceError("attribution needs a version")
+        # Checked HERE, where the value still has a provenance to name, and not
+        # only at the `record` that eventually uses it. Without this the digest
+        # was accepted by `bind_build`, carried silently, and rejected several
+        # steps later by `EvidenceClaim` -- by which point the error names a hook
+        # rather than the report the value came out of. `driver` binds from a
+        # verifier report's `apk_sha256` and had its own weaker length-only
+        # check, so an uppercase digest passed there and killed a finished port
+        # from inside the claim builder. One value, one rule.
+        if self.build_sha256 is not None and (
+            len(self.build_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.build_sha256)
+        ):
+            raise EvidenceError(
+                f"attribution build_sha256 must be a lowercase SHA-256, got "
+                f"{self.build_sha256!r}"
+            )
+
+    def with_build(self, build_sha256: str) -> Attribution:
+        return replace(self, build_sha256=build_sha256)
+
+    def apply(self, claim: EvidenceClaim) -> EvidenceClaim:
+        return attributed(
+            claim,
+            recorded_at=self.recorded_at,
+            version=self.version,
+            build_sha256=self.build_sha256,
         )
 
 
@@ -428,10 +528,22 @@ class EvidenceLedger:
     a line: superseding a claim appends a new one naming the old.
     """
 
-    def __init__(self, path: Path | str | None = None):
+    def __init__(
+        self,
+        path: Path | str | None = None,
+        *,
+        attribution: Attribution | None = None,
+    ):
         self._path = Path(path) if path is not None else None
         self._subjects: dict[str, Subject] = {}
         self._claims: list[EvidenceClaim] = []
+        # Set once per run by whoever knows what the run is about, and applied in
+        # `record`. Attaching it here rather than at each recording site is the
+        # point: a claim reaches the file through exactly one method, so there is
+        # one place that can forget, instead of one per builder. Left None by
+        # tests and by any caller that has no run identity, and an unattributed
+        # claim is written exactly as before.
+        self._attribution = attribution
 
     # ------------------------------------------------------------------ state
 
@@ -451,6 +563,30 @@ class EvidenceLedger:
                 "would silently change which evidence is required"
             )
         self._subjects[subject.hook_id] = subject
+
+    def bind_build(self, build_sha256: str) -> None:
+        """Name the artifact this run's later claims are about.
+
+        Separate from the constructor because the APK does not exist when the
+        ledger is opened: a run records its pre-apply evidence, then builds, then
+        records what the build proved. Claims already written keep no build hash,
+        which is correct — they were established before there was one.
+
+        Rebinding to a *different* hash is refused. One run produces one APK, and
+        a ledger whose later claims silently pointed at a second one would be the
+        worst kind of wrong: every claim individually true, the set describing no
+        artifact that ever existed.
+        """
+
+        if self._attribution is None:
+            return
+        existing = self._attribution.build_sha256
+        if existing is not None and existing != build_sha256:
+            raise EvidenceError(
+                f"this ledger's claims already name build {existing}; refusing to "
+                f"re-bind to {build_sha256}. One run, one artifact."
+            )
+        self._attribution = self._attribution.with_build(build_sha256)
 
     def record(self, claim: EvidenceClaim) -> EvidenceClaim:
         """Append one claim, refusing self-attestation and unauthorised waivers."""
@@ -472,6 +608,19 @@ class EvidenceLedger:
             # Not an error: extra evidence is welcome, it just cannot be what
             # makes a hook ready. Recorded so a gate still sees it.
             pass
+        if self._attribution is not None:
+            if claim.version is None:
+                claim = self._attribution.apply(claim)
+            elif not claim.recorded_at:
+                # A claim that arrives with its own version keeps it —
+                # `differential` is the case, since it is about two versions and
+                # a single `version` field cannot express that. But it must still
+                # be *dated*: skipping attribution whole meant such a claim kept
+                # `recorded_at=""`, which is the very hole this all closes, and
+                # bringing your own version is no reason to be unorderable in
+                # time. The build hash is deliberately still withheld — a claim
+                # spanning two builds cannot name one of them.
+                claim = replace(claim, recorded_at=self._attribution.recorded_at)
         self._claims.append(claim)
         if self._path is not None:
             self._append_to_disk(claim)
@@ -937,3 +1086,45 @@ def stamped(claim: EvidenceClaim, recorded_at: str) -> EvidenceClaim:
     the caller — an Activity or a test — rather than from `datetime.now()` here.
     """
     return replace(claim, recorded_at=recorded_at)
+
+
+def attributed(
+    claim: EvidenceClaim,
+    *,
+    recorded_at: str,
+    version: str,
+    build_sha256: str | None = None,
+) -> EvidenceClaim:
+    """Attach when, which version, and — when there is one — which build.
+
+    **One call rather than three, because the failure mode is partial
+    attribution.** Every one of these is optional on the claim and each was
+    missing for a different reason: `recorded_at` because `stamped()` existed and
+    the driver never called it, `version` because it was never a field, and
+    `build_sha256` because nothing joined a probe to the APK it ran against. Three
+    separate `replace(...)` calls at each recording site is three chances to fill
+    two and forget the third, and a claim with a version and no timestamp is
+    exactly as unjoinable as one with neither.
+
+    `build_sha256` is genuinely optional and its absence is meaningful: pre-apply
+    evidence is established before anything is built. A caller recording a whole
+    run's claims has one build hash and a mix of phases, so **this drops it for
+    the pre-apply kinds** rather than making every call site classify its own
+    claim — that classification is `PHASES`, and asking each caller to repeat it
+    is how the two copies drift.
+
+    `EvidenceClaim` still *refuses* a pre-apply claim naming a build. The split is
+    deliberate: this helper is the safe path for a caller attributing a batch,
+    and the constructor is the strict one for anyone building a claim by hand.
+    Relaxing the constructor to match would remove the check entirely.
+
+    The clock still belongs to the caller, for the same replay-determinism reason
+    `stamped` documents.
+    """
+
+    return replace(
+        claim,
+        recorded_at=recorded_at,
+        version=version,
+        build_sha256=None if PHASES[claim.kind] == PRE_APPLY else build_sha256,
+    )

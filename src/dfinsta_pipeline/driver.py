@@ -61,7 +61,9 @@ from .discovery import (
 )
 from .evidence import (
     PRE_APPLY,
+    Attribution,
     EvidenceClaim,
+    EvidenceError,
     EvidenceKind,
     EvidenceLedger,
     Producer,
@@ -756,6 +758,13 @@ def port(
             refutations=refutations,
             stop_after=stop_after,
             require_evidence=require_evidence,
+            # Only when the run is labelled. `version` and `recorded_at` are
+            # already required together a few lines up, for the cost ledger and
+            # for the same reason: a record stamped with nothing is one no reader
+            # can order. An unlabelled run records claims exactly as before.
+            attribution=(
+                Attribution(recorded_at, version) if version.strip() else None
+            ),
             discovery=discovery,
             assessment=assessment,
         )
@@ -823,6 +832,7 @@ def _run_stages(
     require_evidence: bool = True,
     discovery: Discovery | None = None,
     assessment: AssessmentRequest | None = None,
+    attribution: Attribution | None = None,
 ) -> RunResult:
     """The stages themselves. Split out so stage 10 has exactly one call site."""
     if stop_after not in STAGES:
@@ -875,7 +885,7 @@ def _run_stages(
     except IndexUnusable as error:
         raise DriverError(str(error)) from error
 
-    ledger = EvidenceLedger(paths.evidence)
+    ledger = EvidenceLedger(paths.evidence, attribution=attribution)
     assessments: dict[str, Assessment] = {}
     if full_proposals is not None:
         try:
@@ -1127,6 +1137,24 @@ def _run_stages(
         # failed port would be the tail wagging the dog.
         print(f"[build] no static_verified evidence: {error}", flush=True)
     else:
+        # Every claim from here down names the APK it is about. Taken from the
+        # verifier's report rather than by re-hashing the file: that digest is of
+        # the bytes the verifier actually checked, and hashing the path again
+        # would answer a different question if anything touched it in between.
+        #
+        # `Attribution` owns the rule for what a digest must look like; this used
+        # to check the length here and let anything 64 characters long through,
+        # which meant an uppercase digest passed and then killed a finished port
+        # from inside the claim builder several steps later. Two checks of one
+        # value, only one of them right. A malformed digest is treated exactly
+        # like an unreadable report above — evidence lost, run intact — because
+        # the APK is built and verified by the time this line runs.
+        built_sha256 = verification.get("apk_sha256")
+        if isinstance(built_sha256, str):
+            try:
+                ledger.bind_build(built_sha256)
+            except EvidenceError as error:
+                print(f"[build] claims will not name the APK: {error}", flush=True)
         static_claims = static_verified_claims(
             hook_symbol_map(report, index, hooks), verification
         )

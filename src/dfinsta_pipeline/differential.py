@@ -218,6 +218,32 @@ def _claim(
     summary: str,
     detail: Mapping[str, Any],
 ) -> EvidenceClaim:
+    """One differential claim, versioned from the detail it already carries.
+
+    **`version` is read out of `detail` rather than passed alongside it**, so the
+    two can never disagree: a claim saying it compared against 439 and stamped
+    440 is one statement, not two that happen to match today.
+
+    Which version a *comparison* belongs to is a real question and the answer is
+    the current one — "440 did not regress" is a fact about 440, with the
+    baseline named in `detail`. `EvidenceLedger.record` preserves a version a
+    claim brings with it precisely for this case; until this function set one,
+    that branch had no producer and a differential recorded through an attributed
+    ledger was stamped with whatever single version the run was about.
+
+    Missing is an error rather than a `None`. Every branch of `compare` builds on
+    `base_detail`, so a branch that did not is a branch that forgot, and an
+    unversioned differential is exactly as unjoinable as the claims this all
+    exists to fix.
+    """
+
+    payload = dict(detail)
+    version = payload.get("current_version")
+    if not isinstance(version, str) or not version.strip():
+        raise EvidenceError(
+            f"{hook_id}: a differential claim must record current_version in its detail; "
+            "that is where its own version comes from"
+        )
     return EvidenceClaim(
         hook_id=hook_id,
         kind=EvidenceKind.DIFFERENTIAL,
@@ -225,7 +251,8 @@ def _claim(
         producer=Producer.DEVICE,
         actor=actor,
         summary=summary,
-        detail=dict(detail),
+        detail=payload,
+        version=version,
     )
 
 

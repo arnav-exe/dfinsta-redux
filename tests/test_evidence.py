@@ -54,6 +54,7 @@ from dfinsta_pipeline.evidence import (
     Subject,
     Verdict,
     agreement_claim,
+    attributed,
     deterministic_claim,
     probe_claim,
     requirements_for,
@@ -2002,6 +2003,14 @@ class DeterminismTests(LedgerTestCase):
             "stamped": lambda: stamped(
                 deterministic_claim("hook.x", EvidenceKind.ANCHOR_UNIQUE, True, "chk", "s"),
                 STAMP,
+            ),
+            # Takes the clock from its caller for exactly the reason this class
+            # exists, so two calls with the same arguments must agree.
+            "attributed": lambda: attributed(
+                probe_claim("hook.x", "reels", "throwIfBlocked", 3, 0, True, "device:1"),
+                recorded_at=STAMP,
+                version="440",
+                build_sha256="c9" + "0" * 62,
             ),
         }
         # If a function is added to evidence.py, this fails until it is covered.
