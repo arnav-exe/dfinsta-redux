@@ -61,11 +61,13 @@ be testing this module against the ledger someone imagined.
 positive-control shape, and for the CLI-streams fixture.
 """
 
+import ast
 import contextlib
 import dataclasses
 import hashlib
 import io
 import os
+import stat
 import time
 import unittest
 from pathlib import Path
@@ -1189,6 +1191,108 @@ class SurveyReportTests(ReaperTestCase):
 
 
 # ------------------------------------------------------------------ known defects
+
+
+class ReadOnlySourceTreeTests(ReaperTestCase):
+    """The one thing 49 tests and 11 mutations all missed.
+
+    Every fixture in this file builds its workspaces at ``0o700``, because that is
+    what `_exclusive_directory` does — and a real attempt workspace contains one
+    directory tree that a *different* module wrote. `source_admission` publishes
+    `admitted-source/` with **read-only directories**, deliberately, and unlinking
+    a file needs write permission on its parent rather than on the file. So the
+    first real sweep removed two of five workspaces and died on
+    `SettingsWrapper.smali`; a plain `rm -rf` fails identically.
+
+    A fixture that mirrors the module under test can only ever produce the
+    permissions that module produces. This one is built the way production builds
+    it, which is the whole point of the class.
+    """
+
+    def admitted_source(self, workspace: Path) -> Path:
+        """A read-only source tree, the shape `source_admission` publishes.
+
+        Directories at ``0o500`` and files at ``0o444`` — write-protected against
+        accident, not against their owner, which is exactly why the remover is
+        allowed to restore write and why it must.
+        """
+        tree = workspace / "admitted-source" / "dfinsta_source_430" / "newCode"
+        tree.mkdir(parents=True)
+        (tree / "SettingsWrapper.smali").write_bytes(b".class public LSettingsWrapper;\n")
+        (tree / "hooks.smali").write_bytes(b".class public Lhooks;\n")
+        for path in (tree / "SettingsWrapper.smali", tree / "hooks.smali"):
+            os.chmod(path, 0o444)
+        # Innermost first: a parent chmodded to 0o500 first would block the rest.
+        for directory in sorted(
+            (workspace / "admitted-source").rglob("*"), reverse=True
+        ):
+            if directory.is_dir():
+                os.chmod(directory, 0o500)
+        os.chmod(workspace / "admitted-source", 0o500)
+        return tree
+
+    def test_a_workspace_holding_a_read_only_source_tree_is_removed(self):
+        """The exact failure, as a test. Was `PermissionError`, is now gone."""
+        self.reach_completed(COMPLETED_KEY)
+        workspace = self.workspace(COMPLETED_KEY, owner_leaf(OWNER_TOKEN))
+        self.admitted_source(workspace)
+
+        found = reaper.survey(self.attempts, self.ledger_path, now=aged())
+        self.assertEqual([w.reapable for w in found], [True])
+
+        removed = reap(self.attempts, found)
+
+        self.assertEqual(len(removed), 1)
+        self.assertEqual(self.tree(), {})
+
+    def test_the_control_is_that_the_directories_really_were_unwritable(self):
+        """POSITIVE CONTROL: without it, the test above proves nothing.
+
+        If the fixture's chmod silently failed — wrong order, umask, a
+        `Path.mkdir(mode=...)` that does not apply to parents — the removal would
+        succeed for the ordinary reason and the guard it is meant to exercise
+        would never run.
+        """
+        self.reach_completed(COMPLETED_KEY)
+        workspace = self.workspace(COMPLETED_KEY, owner_leaf(OWNER_TOKEN))
+        tree = self.admitted_source(workspace)
+
+        self.assertFalse(os.stat(tree).st_mode & stat.S_IWUSR, "fixture is writable")
+        with self.assertRaises(PermissionError):
+            (tree / "planted.smali").write_bytes(b"x")
+
+    def test_the_live_cleanup_path_does_not_widen_permissions(self):
+        """`restore_write` is opt-in, and the Activity cleanup must not opt in.
+
+        That path removes only `validate-` workspaces this module created at
+        ``0o700``, so it never needs the relaxation — and a remover that quietly
+        widens permissions everywhere is not what a live stage wants near its own
+        descriptors.
+        """
+        source = (
+            Path(__file__).resolve().parents[1] / "src/dfinsta_pipeline/activities.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        remover = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_secure_remove_tree_entry"
+        )
+        names = [keyword.arg for keyword in remover.args.kwonlyargs]
+        self.assertIn("restore_write", names)
+
+        # The DEFAULT, not just the parameter. Checking only that the option
+        # exists let a mutation flip it to `True` and pass every test in this
+        # file — opt-in is the property, and an opt-in whose default is on is
+        # not one.
+        default = remover.args.kw_defaults[names.index("restore_write")]
+        self.assertIsInstance(default, ast.Constant)
+        self.assertIs(default.value, False)
+
+        # The workspace remover opts in; `_remove_private_workspace` does not.
+        self.assertIn("restore_write=True", source)
+        private = source[source.index("def _remove_private_workspace") :][:400]
+        self.assertNotIn("restore_write", private)
 
 
 class ClosedDefectTests(ReaperTestCase):

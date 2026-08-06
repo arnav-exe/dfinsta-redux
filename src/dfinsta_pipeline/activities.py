@@ -961,7 +961,31 @@ def _secure_remove_tree_entry(
     label: str,
     *,
     expected: os.stat_result | None = None,
+    restore_write: bool = False,
 ) -> None:
+    """Remove one entry, identity-pinned at every level.
+
+    ``restore_write`` makes a directory writable before its entries are unlinked.
+    Off by default, because the live cleanup path removes only workspaces this
+    module created at ``0o700`` and a remover that quietly widens permissions is
+    not what that path wants.
+
+    **It exists because a real sweep needed it.** `source_admission` publishes the
+    admitted source tree with read-only directories, deliberately, and unlinking
+    a file needs write permission on its *parent* — so `reaper.py` removed two
+    workspaces and then died on `SettingsWrapper.smali`. A plain `rm -rf` fails
+    identically. `source_admission._remove_tree` already chmods every directory
+    before `shutil.rmtree` for exactly this reason.
+
+    The re-baseline below is the subtle part, and it is safe for a stated reason
+    rather than a hopeful one: both identity helpers include ``st_mode`` and
+    ``_stable_file_identity`` also includes ``st_ctime_ns``, so *our own* chmod
+    would otherwise fail our own tamper check. Re-reading through the descriptor
+    we already hold opens no window — a descriptor cannot be redirected to
+    another inode — so ``(st_dev, st_ino)`` is asserted across it and everything
+    that moves is exactly what we moved.
+    """
+
     initial = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if expected is not None and _stable_file_identity(initial) != _stable_file_identity(
         expected
@@ -972,12 +996,20 @@ def _secure_remove_tree_entry(
         try:
             if _stable_file_identity(os.fstat(child_fd)) != _stable_file_identity(initial):
                 raise ValueError(f"{label} changed while being opened")
+            if restore_write and not initial.st_mode & stat.S_IWUSR:
+                os.fchmod(child_fd, 0o700)
+                rebased = os.fstat(child_fd)
+                if (rebased.st_dev, rebased.st_ino) != (initial.st_dev, initial.st_ino):
+                    raise ValueError(f"{label} changed while being made writable")
+                initial = rebased
             with os.scandir(child_fd) as entries:
                 names = sorted(
                     (entry.name for entry in entries), key=lambda value: value.encode("utf-8")
                 )
             for child_name in names:
-                _secure_remove_tree_entry(child_fd, child_name, label)
+                _secure_remove_tree_entry(
+                    child_fd, child_name, label, restore_write=restore_write
+                )
             with os.scandir(child_fd) as entries:
                 if next(entries, None) is not None:
                     raise ValueError(f"{label} changed during cleanup")
@@ -1064,7 +1096,7 @@ def remove_attempt_workspace(parent_fd: int, name: str) -> None:
     exact shape `resolve_replay_build` was written to end.
     """
 
-    _secure_remove_tree_entry(parent_fd, name, "Attempt workspace")
+    _secure_remove_tree_entry(parent_fd, name, "Attempt workspace", restore_write=True)
 
 
 def _secure_remove_optional_build_tree(patched_tree_fd: int) -> None:

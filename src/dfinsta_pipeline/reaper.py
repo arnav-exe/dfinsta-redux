@@ -381,8 +381,23 @@ def reap(attempts_root: Path | str, workspaces: list[Workspace]) -> list[Workspa
     """
 
     root = Path(attempts_root)
-    with _refusing(f"cannot reap {root}"):
-        return _reap(root, workspaces)
+    removed: list[Workspace] = []
+    try:
+        with _refusing(f"cannot reap {root}"):
+            _reap(root, workspaces, removed)
+    except ReaperError as error:
+        # Say what already went. A sweep is not atomic -- each workspace is its
+        # own recursive unlink -- and the first real run removed two of five and
+        # then failed, telling the operator only that it had failed. "It broke"
+        # and "it broke after removing these two" are different situations, and
+        # only the second makes it obvious that re-running is safe.
+        if removed:
+            error.add_note(
+                f"{len(removed)} workspace(s) were removed before this: "
+                + ", ".join(workspace.path for workspace in removed)
+            )
+        raise
+    return removed
 
 
 def _validate_target(workspace: Workspace) -> None:
@@ -412,8 +427,7 @@ def _validate_target(workspace: Workspace) -> None:
         raise ReaperError(f"{name!r} is not an attempt workspace name; refusing to remove it")
 
 
-def _reap(root: Path, workspaces: list[Workspace]) -> list[Workspace]:
-    removed: list[Workspace] = []
+def _reap(root: Path, workspaces: list[Workspace], removed: list[Workspace]) -> None:
     by_key: dict[str, list[Workspace]] = {}
     for workspace in workspaces:
         if workspace.reapable:
@@ -439,10 +453,9 @@ def _reap(root: Path, workspaces: list[Workspace]) -> list[Workspace]:
                 os.rmdir(key, dir_fd=root_fd)
     finally:
         os.close(root_fd)
-    return removed
 
 
-def describe_survey(workspaces: list[Workspace]) -> str:
+def describe_survey(workspaces: list[Workspace], *, confirmed: bool = False) -> str:
     if not workspaces:
         return "No attempt workspaces found."
     lines: list[str] = []
@@ -454,7 +467,10 @@ def describe_survey(workspaces: list[Workspace]) -> str:
     reapable = sum(1 for workspace in workspaces if workspace.reapable)
     lines.append("")
     lines.append(f"{reapable} of {len(workspaces)} workspaces reapable.")
-    if reapable:
+    # Only when this IS the dry run. Printing "re-run with --confirm" underneath a
+    # sweep that was confirmed reads as though nothing happened, which is exactly
+    # what it looked like the first time a real removal failed part-way.
+    if reapable and not confirmed:
         lines.append("Re-run with --confirm to remove them.")
     return "\n".join(lines)
 
@@ -495,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
     except ReaperError as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2
-    print(describe_survey(found))
+    print(describe_survey(found, confirmed=args.confirm))
     if not args.confirm:
         return 0
     try:
