@@ -416,7 +416,7 @@ Stage numbers refer to `pipeline_flowchart.md`.
 | **8 Static verify** | **done, target-neutral, and now producing evidence** | `tools/verify/verify_build.py` (host-hook map supplied per run); `driver.static_verified_claims` |
 | **9 Runtime verify** | **done, three probe kinds + per-hook identity** | `src/dfinsta_pipeline/probes.py`, `runtime_identity.py` |
 | 10 Decision memory / cost ledger | **done** | `manifest_update.py`, `agent_cost.py` (the `agent_cost report` verdict reads `falling`) |
-| 11 Report | not started — **unblocked 2026-08-06**: claims now carry version, build hash and a timestamp | — |
+| **11 Report** | **done 2026-08-06** — first run: 2 of 7 hooks release-ready | `src/dfinsta_pipeline/final_report.py` (+73 tests) |
 | Durable orchestration | `ReplayRunWorkflow` **run for real on a live server**, 340 and 430 | `src/dfinsta_pipeline/` |
 
 **The driver** is `python -m dfinsta_pipeline.driver <stock.apk> --out <dir>`. It runs
@@ -1348,6 +1348,52 @@ device involved: both already have a clean `runtime_probe`, `static_verified` is
 and a 440 re-port would emit it. `install_settings_long_click` cannot join them — its
 `inconclusive → passed → passed` sequence trips the ledger's retry guard and needs a clean
 single-shot measurement.
+
+## Stage 11 exists, and two hooks are release-ready
+
+2026-08-06. `python -m dfinsta_pipeline.final_report --version 440 --evidence <run>/evidence.jsonl
+--evidence manifest/runtime_evidence/440.jsonl --evidence manifest/differentials/439-440.jsonl`
+
+    RELEASE-READY      2 of 7   (post-build evidence)
+    build              742fee81…   named by 7 of 51 claims
+    ✓ set_app_context
+    ✓ tigon_url_block
+
+**The first hooks ever to satisfy complete post-build evidence.** It needed all three of the
+day's fixes at once: `static_verified` had no producer, differentials had nowhere durable to
+live, and no claim could be joined to a version or a build. Any one of them missing and the
+answer is 0 of 7 for a reason that is not about the hooks.
+
+**2 of 7 is the honest ceiling today, not a shortfall.** Three hooks are `shapes_disjoint`
+against 439's thin baseline — unfixable retroactively — and `install_settings_long_click` trips
+the retry guard (`inconclusive → passed → passed`) and needs a clean single-shot measurement,
+which is a 441 job.
+
+**It computes nothing.** Every verdict is `EvidenceLedger.report(POST_BUILD)`'s. A reporter that
+re-derived readiness would be a second opinion on the one question the ledger exists to answer,
+and the two would agree until one was edited. Exit 1 when incomplete, so a release script can
+gate on it without parsing prose.
+
+**Two things it deliberately says out loud.** The build line reports **7 of 51** claims name an
+APK, because one digest in a header reads as "all of this is about that artifact" when a device
+probe names a serial and a differential spans two builds. And undated evidence prints
+*"(undated — claims predate attribution)"* rather than omitting the line.
+
+**Reporting the full requirement set was tried and reverted**, and the reason is worth keeping:
+`mechanical`, `agent` and `already_applied` require **exactly the same three kinds** after a
+build — everything provenance decides lives in PRE_APPLY. So `--provenance` changes no verdict
+here; it exists to let a `Subject` be constructed, and an agent hook still cannot be registered
+without naming its proposer. Requiring the pre-apply half would escalate every hook for want of
+files that live under gitignored `work/` — incomplete for a reason of file location rather than
+of evidence, and that half is separately gated anyway, since the driver refuses to build when it
+fails.
+
+**The build hash earned its keep within minutes.** The 440 re-port produced a *different* APK
+from the one the device evidence was taken against — invisible before that field existed. The
+project's own equivalence test settled it: every archive entry is byte-identical and the two
+differ by **exactly one ZIP timestamp on `classes21.dex`**. So the evidence carries over, with a
+measured argument rather than an assumption — and that also puts a precise number on "builds are
+semantically, not bitwise, reproducible".
 
 **Small, batchable:**
 
