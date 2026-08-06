@@ -240,7 +240,7 @@ earlier — including, on one memorable occasion, six gaps in a test suite that 
 
 Collected deliberately, because getting these wrong would be worse than omitting them.
 
-- **The current test count is 2,863**, not 2,170. The 2,170 figure is a real snapshot from
+- **The current test count is 2,936**, not 2,170. The 2,170 figure is a real snapshot from
   2026-08-02 and belongs only to the anecdote about that day ("2,170 tests and the runtime-probe
   module had none"). It moves most days — check `docs/IMPLEMENTATION_STATE.md` before quoting it.
 - **The heartbeat gap figure was hand-measured when it was first published** (30.9 s, read with
