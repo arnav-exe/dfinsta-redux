@@ -389,7 +389,14 @@ Design and the experiment: [`docs/STAGE_4_DESIGN.md`](STAGE_4_DESIGN.md).
 ## 4. Runtime truth — cross-cutting
 
 - [x] Feed, Explore, Stories, Reels contrasts verified on device (Reels needs its own probe)
-- [ ] Profile ads — inconclusive; needs an ad-eligible account
+- [~] **Profile ads — dropped 2026-08-06, by the project owner's decision.** It needed an
+      ad-eligible account and there isn't one, so the contrast can never be measured here. Not
+      "still to do": there is no path to doing it, and leaving it open would keep implying the
+      port is incomplete when the limitation is the test account. **The ad-blocking claim is
+      therefore bounded by what the manifest declares and `verify_build --required-strings`
+      proves shipped** — see [`docs/IMPLEMENTATION_STATE.md`](IMPLEMENTATION_STATE.md) — with no
+      runtime confirmation that a profile ad is blocked on a live account. Say that, rather than
+      implying coverage. Reopen only if an ad-eligible account becomes available.
 - [ ] Reels deep cache-exhaustion check
 - [ ] Re-verify the full contract on any new target before calling a port good
 
