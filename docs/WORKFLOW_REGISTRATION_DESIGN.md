@@ -764,6 +764,38 @@ that rule was written for.
 Whether that recovers the margin is **unmeasured**, and the next 430 run is what settles it.
 The timeout stays at 300 s until it does.
 
+## 3j — it did, and the timeout still does not come down (2026-08-06)
+
+Third 430 run, clean: four stages, verification success with 8 assertions, zero activity
+failures, History 62,348 bytes.
+
+| | 430 before anything | after §3f+§3h | after §3i's fix |
+|---|---|---|---|
+| query samples answered | 21% | 86% | **91%** (102 of 111) |
+| longest blocked stretch | 34 samples | 4 | **3** |
+| `prepare_replay_verification_gate` | 80% | 0% | 0% |
+| `replay_apply_tree` | 91% | 6% | 4% |
+| `replay_decode` | 80% | 12% | 5% |
+| `replay_build_patched_apk` | 68% | 26% | **16%** |
+| **build's worst heartbeat gap** | — | **111.6 s** | **38.9 s** |
+
+**The 111.6 s block is gone, and the gap sequences say so cleanly.** Decode reported 30.0 s
+eighteen times and apply forty-six times, with no excursion at all. Build reported 30.0 s
+sixteen times and then a single 38.9 s step — 8.9 s over the interval, against 81.6 s before.
+
+**And the answer to the question §3g left open is still no.** The rule that set 300 s was "about
+10x the worst observed gap", from 340's 30.9 s. On the larger target the worst gap is **38.9 s**,
+so 300 s is **7.7x** — comfortably safe, and already slightly under what that rule would ask for
+(389 s). The timeout is left at 300 s rather than raised: the asymmetry §3g describes has
+softened since cancellation began releasing rather than quarantining, so an expired heartbeat now
+costs one stage's work instead of the run, and 7.7x on the worst target measured does not need
+correcting in either direction. **What is settled is that it must not be lowered** — which is
+what a 340-only reading would have invited.
+
+Residual, and deliberately not chased: build is 16% loop-blocked with an 8.9 s excursion. The
+remaining synchronous work there is the APK reads and hashes around composition, not a tree
+walk. Nothing measured suggests it matters.
+
 **Stale attempt workspaces are removed.** `src/dfinsta_pipeline/reaper.py`. Nothing had ever
 removed one, and §3d's change made it press: a cancelled stage now releases its claim, so
 retries happen where they previously could not, each minting a fresh leaf beside the one
