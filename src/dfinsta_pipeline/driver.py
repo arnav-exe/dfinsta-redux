@@ -474,6 +474,21 @@ def record_assessment(request: AssessmentRequest, index_dir: Path):
             rulings_path=request.rulings_path,
         )
     except RecordError as error:
+        # "Nothing to gate on" is a SUCCESS, not a failure, and it took blocking
+        # every candidate 441 produced to notice. `candidate_ids` refuses an empty
+        # document because a gate over nothing would show a human an empty list
+        # and record their approval of it — right for the gate's decoder, wrong as
+        # a reason to fail a port. A version whose new surfaces are all already
+        # blocked is the outcome this project is working towards, and it must not
+        # read as a broken run.
+        if "no candidates" in str(error):
+            print(
+                "[assess] no unblocked consumption surfaces found — nothing to gate "
+                "on, and no gate raised. This is the good outcome: every surface the "
+                "assessor found is already in the manifest.",
+                flush=True,
+            )
+            return None
         raise DriverError(f"could not record the assessment: {error}") from error
 
 
@@ -917,8 +932,13 @@ def _run_stages(
         )
     else:
         recorded = record_assessment(assessment, paths.index_dir)
-        artifacts["assessment"] = recorded.assessment.uri
-        artifacts["assessment_run_id"] = recorded.run_id
+        # `None` when there was nothing to gate on. No artifact keys, because a
+        # run that recorded no assessment must not publish coordinates to one —
+        # a downstream reader holding `assessment_run_id` would resolve it and
+        # get a refusal, which is the disconnection this project keeps shipping.
+        if recorded is not None:
+            artifacts["assessment"] = recorded.assessment.uri
+            artifacts["assessment_run_id"] = recorded.run_id
     if stop_after == "assess":
         return RunResult("assess", artifacts=artifacts)
 

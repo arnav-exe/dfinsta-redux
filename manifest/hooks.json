@@ -56,7 +56,13 @@
         "/api/v1/clips/homecoming/",
         "/clips/discover",
         "/feed/reels_tray/",
-        "/profile_ads/get_profile_ads/"
+        "/profile_ads/get_profile_ads/",
+        "feed/injected_reels_media/",
+        "feed/reels_media/",
+        "feed/reels_media_stream/",
+        "feed/timeline_stream/",
+        "delivery/background_prefetch",
+        "feed/text_post_app_timeline"
       ],
       "hosts": [
         {

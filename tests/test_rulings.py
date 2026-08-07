@@ -965,6 +965,23 @@ class OperationKeyTests(RulingTestCase):
 # ----------------------------------------------- what the app actually enforces
 
 
+#: Declared blocked in the shipped manifest and NOT yet tested by
+#: `throwIfBlocked`. Six endpoints entered this state on 2026-08-08 when the
+#: owner ruled `block` on every candidate Instagram 441 exposed; they leave it
+#: one at a time as the guard is written, and this tuple shrinks to `()` again.
+#: Pinned rather than computed, so the app work stays visible: an empty
+#: expectation would have quietly accepted a manifest that promises six blocks
+#: the app does not make.
+DECLARED_NOT_YET_ENFORCED = (
+    "delivery/background_prefetch",
+    "feed/injected_reels_media/",
+    "feed/reels_media/",
+    "feed/reels_media_stream/",
+    "feed/text_post_app_timeline",
+    "feed/timeline_stream/",
+)
+
+
 class EnforcementTests(RulingTestCase):
     """`semantic_deps` records the decision; the smali records the fact.
 
@@ -1116,7 +1133,12 @@ class EnforcementTests(RulingTestCase):
         self.require_real_source()
         if not REAL_MANIFEST.is_file():
             self.skipTest(f"manifest not present: {REAL_MANIFEST}")
-        self.assertEqual(unenforced_endpoints(REAL_MANIFEST, REAL_SOURCE), ())
+        self.assertEqual(
+            sorted(unenforced_endpoints(REAL_MANIFEST, REAL_SOURCE)),
+            sorted(DECLARED_NOT_YET_ENFORCED),
+            "the shipped manifest's declared-but-unenforced set changed; if the guard "
+            "was written for one of these, remove it from DECLARED_NOT_YET_ENFORCED",
+        )
 
         declared = self.write_manifest(
             [
@@ -1167,10 +1189,22 @@ class EnforcementTests(RulingTestCase):
 
         # And the pair, which is what an operator actually runs. Either direction
         # alone reads as clean while the other is not.
-        self.assertEqual(audit(REAL_MANIFEST, REAL_SOURCE), ((), ()))
-        self.assertEqual(audit(without, REAL_SOURCE), ((), ("/clips/discover",)))
+        declared_only, undeclared = audit(REAL_MANIFEST, REAL_SOURCE)
+        # The second half is the one this test is named for and it stays empty:
+        # the app must never guard an endpoint the manifest does not record. The
+        # first half is the six the owner ruled `block` on 2026-08-08, which the
+        # app has yet to implement.
+        self.assertEqual(sorted(declared_only), sorted(DECLARED_NOT_YET_ENFORCED))
+        self.assertEqual((), undeclared)
+        without_declared, without_undeclared = audit(without, REAL_SOURCE)
+        self.assertEqual(sorted(without_declared), sorted(DECLARED_NOT_YET_ENFORCED))
+        self.assertEqual(("/clips/discover",), without_undeclared)
+        # No longer "agree in both directions": six endpoints are declared and not
+        # yet guarded, so the audit correctly reports a disagreement. What this
+        # test still pins is that the *undeclared* direction is clean — the app
+        # must never guard something the manifest does not record.
         agreed = describe_audit(*audit(REAL_MANIFEST, REAL_SOURCE))
-        self.assertIn("agree in both directions", agreed)
+        self.assertIn("the manifest records a decision the app does not implement", agreed)
         reported = describe_audit(*audit(without, REAL_SOURCE))
         self.assertIn("/clips/discover", reported)
         self.assertIn("NOT declared in any hook", reported)
@@ -1220,7 +1254,10 @@ class EnforcementTests(RulingTestCase):
                     self.assertIn("none", message)
 
         # Control one: the real manifest, one url-block hook, agrees with the app.
-        self.assertEqual(unenforced_endpoints(REAL_MANIFEST, REAL_SOURCE), ())
+        self.assertEqual(
+            sorted(unenforced_endpoints(REAL_MANIFEST, REAL_SOURCE)),
+            sorted(DECLARED_NOT_YET_ENFORCED),
+        )
         # Control two: one url-block hook, and it does report a real gap.
         self.assertEqual(
             unenforced_endpoints(

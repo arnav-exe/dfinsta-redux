@@ -3167,6 +3167,23 @@ class AssessStageTests(DriverCase):
         real_index = REPOSITORY / "work" / "440-clean" / "index"
         if not (real_index / "api_surface.json").is_file():
             self.skipTest(f"no real index at {real_index}")
+
+        # A COPY of the manifest with the url_block hook's `semantic_deps`
+        # emptied, and that is the point rather than convenience. This test used
+        # the shipped manifest directly, so it depended on the project still
+        # having at least one unblocked consumption surface — and on 2026-08-08 a
+        # real ruling blocked the last six, `candidate_ids` correctly refused "no
+        # candidates", and this test broke for a reason that had nothing to do
+        # with what it checks. A test whose premise is a product decision fails
+        # the day the decision is made.
+        manifest = json.loads(
+            (REPOSITORY / "manifest" / "hooks.json").read_text(encoding="utf-8")
+        )
+        for entry in manifest["hooks"]:
+            if entry.get("strategy") == "url_block":
+                entry["semantic_deps"] = []
+        manifest_path = self.base / "assess-manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         state_root = self.base / "state"
         stream = io.StringIO()
         with contextlib.redirect_stdout(stream):
@@ -3189,6 +3206,7 @@ class AssessStageTests(DriverCase):
                     run_id="driver-assess-test",
                     allowed_actor="tester",
                     owner_token="token-1",
+                    manifest_path=manifest_path,
                     rulings_path=self.base / "rulings.jsonl",
                 ),
             )

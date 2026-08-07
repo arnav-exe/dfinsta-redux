@@ -803,7 +803,7 @@ class BlockedSurfaceTests(SurfaceTestCase):
         if not REAL_MANIFEST.is_file():  # pragma: no cover - repo layout
             self.skipTest("manifest/hooks.json is absent")
         blocked = BlockedSurface.from_manifest(REAL_MANIFEST)
-        self.assertEqual(blocked.families, {"clips", "discover", "feed", "profile_ads"})
+        self.assertEqual(blocked.families, {"feed", "discover", "profile_ads", "clips", "delivery"})
 
 
 class ClassifyCandidateTests(SurfaceTestCase):
