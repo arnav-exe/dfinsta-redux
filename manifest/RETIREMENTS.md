@@ -5,6 +5,24 @@ No hook has been retired. `dfinsta_pipeline.expectation` reads its absence as
 "none recorded" and expects every hook that was release-ready on the previous
 version to be release-ready on this one.
 
+**Do not hand-write a row.** `dfinsta_pipeline.retirement` produces them, and
+going around it skips every check below:
+
+```
+python -m dfinsta_pipeline.retirement candidates --version 441
+python -m dfinsta_pipeline.retirement case --version 441 --hook <id> \
+    --investigation <json> --out case.json
+python -m dfinsta_pipeline.retirement rule --case case.json --verdict retire \
+    --rationale "..." --ruled-by <you> --ruled-at <ISO8601> --out ruling.json
+python -m dfinsta_pipeline.retirement publish --case case.json --ruling ruling.json
+```
+
+The two steps are separate because the middle one is a human's and the others are
+not. A case is bytes anyone can reproduce from `(version, hook)` plus the
+committed evidence; the ruling is bound to that case's hash, so editing the case
+after it was signed makes `publish` refuse rather than apply a stale answer to new
+evidence.
+
 ## Why a record and not a field
 
 `dfinsta_pipeline.expectation` derives what a port owes from the previous port's
@@ -45,9 +63,12 @@ decision gate. But if the proposer could also *sign* the retirement, the cheapes
 route past a red build would be for the thing being measured to rule that the
 measurement no longer applies.
 
-**`effective_from` is the first version that stops expecting the hook.** A
-retirement ruled for 442 does not reach back and excuse a hook that had already
-stopped passing on 441 — that port's failure stays on the record.
+**`effective_from` is the first version that stops expecting the hook, and it is
+derived rather than chosen.** It is always the version *after* the one the case
+was built from, and there is no flag for it: a retirement that could name its own
+effective version could be backdated onto the port that exposed the drop, which
+is "approve your way out of a red build" wearing a date. A retirement ruled from
+441's evidence takes effect at 442, so 441's failure stays on the record.
 
 **Earliest wins, not latest.** The ledger's usual rule is that a later claim
 supersedes an earlier one, and it is wrong here: appending a second row for the

@@ -85,38 +85,33 @@ class DisconnectionTests(unittest.TestCase):
         """
         self.assertEqual(importers_of("surface_diff"), set())
 
-    def test_nothing_produces_a_retirement_row(self):
-        """`retirements.jsonl` is read by the expectation and written by nobody.
+    def test_no_durable_gate_raises_the_retirement_question(self):
+        """A human can rule on a retirement, but nothing *asks* them to.
 
-        A recorded retirement is the only legitimate way to lower the release-ready
-        expectation — `expectation.read_retirements` consumes it and
-        `manifest/RETIREMENTS.md` specifies the row — but no code path emits one.
-        Until something does, a genuinely deprecated hook fails the expectation for
-        ever and the only escape is to hand-write the row, which is precisely the
-        unreviewed edit the derivation exists to prevent.
+        `dfinsta_pipeline.retirement` closed the older gap — it builds a case,
+        takes a human's ruling and appends the row `expectation` consumes. What it
+        does not do is wait. The whole reason the feature gate is a Temporal
+        Workflow is that a human decision takes hours or days and must survive a
+        worker restart; today a retirement case is a file somebody has to remember
+        to look at, which is the same "complete and reached by nothing" shape one
+        step along.
 
-        This is the same both-ends disconnection the feature gate shipped three
-        times (`the-gates-rulings-have-no-consumer`,
-        `nothing-computes-a-stage-4a-assessment`,
-        `the-post-build-gate-cannot-be-satisfied`), caught this time on the day the
-        consumer was written rather than a fortnight later.
-
-        A *test* fixture writing one is not a producer, so `tests/` is excluded;
-        production code means `src/` and `tools/`. This failing means the
-        retirement gate landed: confirm it, update "Known open items", delete this.
+        This failing means the durable gate landed: confirm it, update "Known open
+        items", and delete this.
         """
-        writers = {
+        defined = {
             str(path.relative_to(ROOT))
-            for path in (*(ROOT / "src").rglob("*.py"), *(ROOT / "tools").rglob("*.py"))
-            if "retirements.jsonl" in path.read_text(encoding="utf-8")
+            for path in (ROOT / "src").rglob("*.py")
+            if "@workflow.defn" in path.read_text(encoding="utf-8")
         }
-        # The reader is the control. An empty set here would mean the search
-        # itself broke — the string not being found anywhere at all reads
-        # identically to "nothing writes one", and only one of those is the fact
-        # being asserted.
-        self.assertIn("src/dfinsta_pipeline/expectation.py", writers)
-        self.assertEqual(writers, {"src/dfinsta_pipeline/expectation.py"}, sorted(writers))
-        self.assertFalse((ROOT / "manifest" / "retirements.jsonl").exists())
+        # The existing workflows are the control: an empty set would mean the
+        # search broke, which reads identically to "no retirement workflow".
+        self.assertIn("src/dfinsta_pipeline/feature_workflow.py", defined)
+        self.assertNotIn("src/dfinsta_pipeline/retirement_workflow.py", defined)
+        self.assertNotIn(
+            "retirement",
+            (ROOT / "src/dfinsta_pipeline/worker.py").read_text(encoding="utf-8"),
+        )
 
     def test_claims_py_still_has_no_production_importer(self):
         """The wedged-claim recovery tool is invoked by a human, never by code.

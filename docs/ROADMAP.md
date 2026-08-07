@@ -587,12 +587,18 @@ Reordered 2026-08-03. The two items that stood here are done.
    `final_report` already exits 1 for "incomplete", and incomplete is this project's normal
    state. `tests/test_expectation_corpus.py` runs it over `manifest/` in the ordinary suite, so
    it is not a fourth command nobody invokes.
-6. **Hook retirement as a recorded human decision** — the FEATURE-GATE pattern, and the next
-   thing to build. `manifest/RETIREMENTS.md` specifies the row and `expectation` already reads
-   it; what is missing is the durable gate that produces one. Temporal for the multi-day human
-   wait, an agent to investigate and *draft*, a human to rule, landing in the manifest for the
-   *next* port. **Not a gate inside the port**: if retirement blocked a port, the fastest way
-   past a red build would be to approve the retirement.
+6. **Hook retirement as a recorded human decision.** `dfinsta_pipeline.retirement` is built
+   and verified end to end: `candidates` → `case` → `rule` → `publish`, with the row landing
+   where `expectation` already reads it. An agent assembles the case and **cannot close it**
+   (`ruled_by: agent` is refused); a ruling is bound to the case's hash, so editing the evidence
+   after signing makes publication refuse; and `effective_from` is **derived** as the version
+   after the case's, so a retirement cannot be backdated onto the port that exposed the drop.
+   **Not a gate inside the port** — if retirement could unblock a red build, approving one would
+   be the cheapest thing a tired person could do at the end of a long port.
+   *Remaining:* the **durable wait**. The feature gate is a Temporal Workflow because a human
+   decision takes days and must survive a worker restart; a retirement case is currently a file
+   somebody must remember to open. Tracked in "Known open items" with a test that fails when it
+   lands.
 7. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference — now an escalation path rather than the normal one, since 440 resolved all
    seven hooks with no proposals at all.

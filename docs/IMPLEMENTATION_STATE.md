@@ -1030,6 +1030,50 @@ a drop is to fix the hook. That is the right default and the wrong end state —
 deprecated hook would fail forever. The producer is the next item, on the feature-gate pattern,
 and it is tracked in "Known open items" with a test that fails when it lands.
 
+## A hook can now be retired, and only by a human
+
+2026-08-08. `manifest/retirements.jsonl` had a consumer from the day it was specified and no
+producer, so the only way past a dropped hook was to fix it. Correct as a default and wrong as an
+end state: a hook whose surface Instagram had genuinely removed would fail the expectation for
+ever. `src/dfinsta_pipeline/retirement.py` is the producer.
+
+    python -m dfinsta_pipeline.retirement candidates --version 441
+    python -m dfinsta_pipeline.retirement case --version 441 --hook <id> --investigation <json>
+    python -m dfinsta_pipeline.retirement rule --case case.json --verdict retire … --ruled-by <you>
+    python -m dfinsta_pipeline.retirement publish --case case.json --ruling ruling.json
+
+**It is deliberately the most expensive path in the project**, and four properties are what make
+it so. Each was falsified against the real corpus rather than argued.
+
+* **`effective_from` is derived, never supplied** — always the version *after* the one the case
+  was built from, with no flag for it. Verified: a retirement ruled from 441's evidence is not in
+  force at 441 and is in force at 442. A retirement that could name its own date could be
+  backdated onto the port that exposed the drop, which is "approve your way out of a red build"
+  wearing a date. `RetirementCase.from_dict` re-derives it on the way in, because a case file
+  travels between the machine that built it and the human who signs it.
+* **An agent cannot close a case.** It assembles every fact and carries a `recommendation`, and
+  nothing reads that as a verdict — `RECOMMENDATIONS` is deliberately a different vocabulary from
+  `VERDICTS` so the two cannot be interchanged by code. `ruled_by: agent` is refused in both
+  `retirement` and `expectation`. Otherwise the cheapest route past a failing check is for the
+  thing being measured to rule that the measurement no longer applies.
+* **A ruling is bound to exact case bytes.** `case_sha256` is a pure canonical hash of the case,
+  and `validate_ruling` re-derives it from the case in hand rather than trusting a value carried
+  alongside. Verified by editing one field of a signed case: publication refuses, naming both
+  digests. The human answered a specific set of bytes or they answered nothing.
+* **A regression and a dormancy are named differently.** `candidates` splits them and tells the
+  reader that a hook working one version ago is a regression to fix, not a candidate to retire.
+  On the real corpus it returns exactly the three known-dormant hooks and no regressions.
+
+`standings()` treats a version whose readiness is **not computable** as absent rather than as
+zero. 439 has runtime evidence and no static evidence, and recording that as "no hook passed"
+would mark every hook in the manifest as never-release-ready and turn the whole manifest into
+retirement candidates.
+
+**What is not built: the durable wait.** The feature gate is a Temporal Workflow precisely
+because a human decision takes days and must survive a worker restart. A retirement case is
+currently a file somebody has to remember to open — complete, and reached by nothing, one step
+along from the gap it closed. `tests/test_open_items.py` fails when that lands.
+
 ## The three hooks that have never passed a probe, re-derived on 441
 
 2026-08-07. They are the reason release-readiness caps at 4 of 7, and the recorded explanations
@@ -1767,14 +1811,13 @@ semantically, not bitwise, reproducible".
   340 and 430 both completed against a live Temporal server, driven by
   `tests/integration/test_registered_replay_harness.py`. Left in place because the sentence it
   replaces was true for three weeks and the list is read for what is *not* done.
-- **Nothing produces a retirement row.** `manifest/retirements.jsonl` is the only legitimate
-  way to lower the release-ready expectation, `expectation.read_retirements` reads it and
-  `manifest/RETIREMENTS.md` specifies it — but no gate writes one, so a genuinely deprecated
-  hook would fail the expectation for ever. The producer is the feature-gate pattern applied to
-  retirement: Temporal for the multi-day human wait, an agent to investigate and draft, a human
-  to rule, landing in the manifest for the *next* port. Explicitly **not** a gate inside the
-  port: if retirement blocked a port, the fastest way past a red build would be to approve the
-  retirement.
+- **A retirement can be ruled on, but nothing asks.** `dfinsta_pipeline.retirement` builds the
+  case, takes a human's ruling and appends the row `expectation` consumes — the producer gap is
+  closed and verified end to end. What is missing is the **durable wait**: the feature gate is a
+  Temporal Workflow precisely because a human decision takes days and must survive a worker
+  restart, and a retirement case is currently a file somebody must remember to open. Same
+  "complete and reached by nothing" shape, one step along, and `test_open_items` fails when it
+  closes.
 - `load_decoded_tree` still runs on the event loop inside the decode and build checkpoint
   Activities (residual 5% and 17% blocked on a real port, down from 82% and 62%). The gate
   stage, which was 100%, now derives in a thread. The primitive cannot be threaded at its own

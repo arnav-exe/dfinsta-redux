@@ -41,6 +41,27 @@ def assessment_identity(record: Mapping[str, Any]) -> dict[str, str]:
     return {name: str(record[name]) for name in ASSESSMENT_IDENTITY_FIELDS}
 
 
+#: Sameness for a retirement docket. Note what is absent: `docket_sha256` is
+#: stored and is NOT part of identity, mirroring the reason `api_surface_sha256`
+#: and `manifest_sha256` are absent above. The operation key already pins the
+#: inputs the docket derives from, and comparing the derived document too would
+#: undo the idempotency the key was chosen to give -- a guard placed correctly at
+#: one layer, cancelled by a comparison at another.
+RETIREMENT_DOCKET_IDENTITY_FIELDS = (
+    "run_id",
+    "operation_key",
+    "input_sha256",
+    "version",
+    "policy_revision",
+    "allowed_actor",
+)
+
+
+def retirement_docket_identity(record: Mapping[str, Any]) -> dict[str, str]:
+    """The subset of a retirement docket authority row that decides sameness."""
+    return {name: str(record[name]) for name in RETIREMENT_DOCKET_IDENTITY_FIELDS}
+
+
 class Ledger:
     """The authority for artifacts, decisions and lineage. Append-only by trigger.
 
@@ -182,6 +203,46 @@ class Ledger:
                 """CREATE TRIGGER IF NOT EXISTS admitted_dispositions_v1_no_delete
                     BEFORE DELETE ON admitted_dispositions_v1 BEGIN
                     SELECT RAISE(ABORT, 'admitted dispositions v1 are append-only'); END""",
+                # The hook-retirement gate, input and output, in the same two
+                # shapes and for the same two reasons. `GateKind.resolve` in the
+                # submission client takes a run id and nothing else, so a gate
+                # whose subject cannot be reached from one is structurally
+                # unanswerable -- which is why `phase-a-approval` is deliberately
+                # unregistered rather than trusted.
+                """CREATE TABLE IF NOT EXISTS recorded_retirement_dockets_v1 (
+                    run_id TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                    operation_key TEXT NOT NULL UNIQUE,
+                    input_sha256 TEXT NOT NULL,
+                    docket_sha256 TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    policy_revision TEXT NOT NULL,
+                    allowed_actor TEXT NOT NULL,
+                    recorded_json TEXT NOT NULL
+                )""",
+                """CREATE TRIGGER IF NOT EXISTS recorded_retirement_dockets_v1_no_update
+                    BEFORE UPDATE ON recorded_retirement_dockets_v1 BEGIN
+                    SELECT RAISE(ABORT, 'recorded retirement dockets are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS recorded_retirement_dockets_v1_no_delete
+                    BEFORE DELETE ON recorded_retirement_dockets_v1 BEGIN
+                    SELECT RAISE(ABORT, 'recorded retirement dockets are append-only'); END""",
+                """CREATE TABLE IF NOT EXISTS admitted_retirement_rulings_v1 (
+                    run_id TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                    decision_id TEXT NOT NULL UNIQUE,
+                    rulings_sha256 TEXT NOT NULL,
+                    rulings_size INTEGER NOT NULL,
+                    docket_sha256 TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    policy_revision TEXT NOT NULL,
+                    admitted_json TEXT NOT NULL
+                )""",
+                """CREATE TRIGGER IF NOT EXISTS admitted_retirement_rulings_v1_no_update
+                    BEFORE UPDATE ON admitted_retirement_rulings_v1 BEGIN
+                    SELECT RAISE(ABORT, 'admitted retirement rulings are append-only'); END""",
+                """CREATE TRIGGER IF NOT EXISTS admitted_retirement_rulings_v1_no_delete
+                    BEFORE DELETE ON admitted_retirement_rulings_v1 BEGIN
+                    SELECT RAISE(ABORT, 'admitted retirement rulings are append-only'); END""",
                 """CREATE TRIGGER IF NOT EXISTS operation_events_no_update
                     BEFORE UPDATE ON operation_events BEGIN
                     SELECT RAISE(ABORT, 'operation events are append-only'); END""",
@@ -776,6 +837,130 @@ class Ledger:
             ).fetchone()
         if row is None:
             raise ValueError("No dispositions are admitted for this run")
+        return json.loads(row[0])
+
+    def record_retirement_docket_authority(self, record: Mapping[str, Any]) -> None:
+        """File the run-keyed row that makes a retirement docket reachable.
+
+        Idempotent for the same docket and a hard error for a different one, as
+        with `record_assessment_authority`: two different dockets under one run is
+        the state where nobody can say which one the human read.
+        """
+        self._require_writable()
+        required = (
+            "run_id",
+            "operation_key",
+            "input_sha256",
+            "docket_sha256",
+            "version",
+            "policy_revision",
+            "allowed_actor",
+        )
+        missing = [name for name in required if not record.get(name)]
+        if missing:
+            raise ValueError(f"Retirement docket authority is missing {', '.join(missing)}")
+        values = tuple(str(record[name]) for name in required)
+        payload = canonical_json({name: record[name] for name in required})
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT recorded_json FROM recorded_retirement_dockets_v1 WHERE run_id = ?",
+                (values[0],),
+            ).fetchone()
+            if existing is not None:
+                if retirement_docket_identity(
+                    json.loads(existing[0])
+                ) != retirement_docket_identity(record):
+                    raise ValueError(
+                        "A different retirement docket is already recorded for this run"
+                    )
+                connection.execute("COMMIT")
+                return
+            connection.execute(
+                "INSERT INTO recorded_retirement_dockets_v1 (run_id, schema_version, "
+                "operation_key, input_sha256, docket_sha256, version, policy_revision, "
+                "allowed_actor, recorded_json) VALUES (?,1,?,?,?,?,?,?,?)",
+                (*values, payload),
+            )
+            connection.execute("COMMIT")
+
+    def recorded_retirement_docket_for_run(self, run_id: str) -> dict[str, Any]:
+        """Coordinates for a caller holding only a run id. Not for stages."""
+        if type(run_id) is not str:
+            raise TypeError("Retirement docket run id must be a string")
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT recorded_json FROM recorded_retirement_dockets_v1 WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Retirement docket authority is not recorded")
+        return json.loads(row[0])
+
+    def record_admitted_retirement_rulings(self, record: Mapping[str, Any]) -> None:
+        """File the run-keyed row for rulings a human actually made.
+
+        Written by the admitting Activity only after `validate_submission` has
+        passed, so a row here means the rulings were authorised — and it is what
+        `manifest/retirements.jsonl` is later written from. Without it the gate
+        would admit an answer and put it out of reach, which is the disconnection
+        this project has shipped at one end or the other three times.
+        """
+        self._require_writable()
+        required = (
+            "run_id",
+            "decision_id",
+            "rulings_sha256",
+            "rulings_size",
+            "docket_sha256",
+            "version",
+            "policy_revision",
+        )
+        missing = [name for name in required if record.get(name) in (None, "")]
+        if missing:
+            raise ValueError(f"Admitted retirement rulings are missing {', '.join(missing)}")
+        payload = canonical_json({name: record[name] for name in required})
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT admitted_json FROM admitted_retirement_rulings_v1 WHERE run_id = ?",
+                (str(record["run_id"]),),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != payload:
+                    raise ValueError(
+                        "Different retirement rulings are already admitted for this run"
+                    )
+                connection.execute("COMMIT")
+                return
+            connection.execute(
+                "INSERT INTO admitted_retirement_rulings_v1 (run_id, schema_version, "
+                "decision_id, rulings_sha256, rulings_size, docket_sha256, version, "
+                "policy_revision, admitted_json) VALUES (?,1,?,?,?,?,?,?,?)",
+                (
+                    str(record["run_id"]),
+                    str(record["decision_id"]),
+                    str(record["rulings_sha256"]),
+                    int(record["rulings_size"]),
+                    str(record["docket_sha256"]),
+                    str(record["version"]),
+                    str(record["policy_revision"]),
+                    payload,
+                ),
+            )
+            connection.execute("COMMIT")
+
+    def admitted_retirement_rulings_for_run(self, run_id: str) -> dict[str, Any]:
+        """The admitted retirement rulings for a run. Coordinates, not the document."""
+        if type(run_id) is not str:
+            raise TypeError("Retirement rulings run id must be a string")
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT admitted_json FROM admitted_retirement_rulings_v1 WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("No retirement rulings are admitted for this run")
         return json.loads(row[0])
 
     def recorded_assessment_for_run(self, run_id: str) -> dict[str, Any]:

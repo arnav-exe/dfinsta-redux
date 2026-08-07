@@ -30,6 +30,8 @@ WRITE_METHOD_NAMES = (
     "record_admitted_replay_verification_grant_v1",
     "record_assessment_authority",
     "record_admitted_dispositions",
+    "record_retirement_docket_authority",
+    "record_admitted_retirement_rulings",
 )
 
 # `__init__` runs the schema statements and is the one method allowed to write
@@ -306,6 +308,37 @@ class ReadOnlyLedgerWriteGuardTests(ReadOnlyLedgerFixture):
                         "manifest_sha256": "e" * 64,
                         "policy_revision": "2026-08-01",
                         "allowed_actor": "someone",
+                    },
+                ),
+                {},
+            ),
+            # The hook-retirement gate's two rows. Complete records for the same
+            # reason as the pair above: the read-only guard must be what refuses,
+            # not a missing field, or the test passes for the wrong reason.
+            "record_retirement_docket_authority": (
+                (
+                    {
+                        "run_id": "run-1",
+                        "operation_key": "a" * 64,
+                        "input_sha256": "b" * 64,
+                        "docket_sha256": "c" * 64,
+                        "version": "442",
+                        "policy_revision": "2026-08-01",
+                        "allowed_actor": "someone",
+                    },
+                ),
+                {},
+            ),
+            "record_admitted_retirement_rulings": (
+                (
+                    {
+                        "run_id": "run-1",
+                        "decision_id": "decision-1",
+                        "rulings_sha256": "f" * 64,
+                        "rulings_size": 42,
+                        "docket_sha256": "c" * 64,
+                        "version": "442",
+                        "policy_revision": "2026-08-01",
                     },
                 ),
                 {},
