@@ -847,6 +847,49 @@ kinds is what let the walkthrough run with no code change.
 Not yet automated: the device session needs a human three times (toggles on, off, on), and there
 is no CI.
 
+## Static evidence has a durable home, and the history reads as a series
+
+2026-08-07. Two changes that only make sense together.
+
+**`static_verified` was ephemeral.** It was written only to `<run>/evidence.jsonl` under
+gitignored `work/`, so recomputing 441 from committed data gave **0 of 7 release-ready**, not the
+4 of 7 reported all day — the difference being a scratch directory that `reaper.py` exists to
+delete. `manifest/static_evidence/<version>.jsonl` now holds it, published by the driver when a
+run is labelled, with 440 and 441 backfilled from the runs whose artifacts were kept. 439 gets no
+file, deliberately: it was ported before the kind had a producer, and absent is not zero. Same
+gap `manifest/differentials/` closed the day before, one evidence kind over.
+
+**`python -m dfinsta_pipeline.history`** reads the arc rather than a pair. Everything else in the
+pipeline is pairwise — `differential` compares N to N-1, `agent_cost report` compares N to N-1 —
+so nothing could tell a trend from a wobble. Pinned at **439** on the owner's instruction: earlier
+versions are a different architecture and 430/439 are "closer to one data point" than two.
+
+    PORT HISTORY  439 → 441   (3 points)
+      agent invocations        2    0    0
+      hooks runtime-passed     2    4    4
+      differential passed      —    2    4
+      selectivity  reels     5→1  7→1  4→1
+
+**It refuses to name a direction below five points**, and says so on every run rather than only
+when a number moves — the guard is worth nothing after someone is already tempted. The Reels
+margin moving down once is a change, not a trend.
+
+**Two counting errors, three days apart, both mine.** The cost metric counted runs rather than
+ports; the history first counted claims rather than hooks, reading `2 → 13 → 6` and looking like a
+441 regression that never happened — 440 holds 23 claims to 441's 9 and the difference is
+re-measurement, including the retry sequence the ledger's own guard refuses. **A version that
+measured three times must not outscore one that got it right first time.** See
+[[count-subjects-not-records]].
+
+**Seven further defects found by the tests written for it, all fixed**: versions sorted as
+strings (a 1000 release would order first and every differential would look up the wrong
+predecessor), `--baseline nope` escaping the refusal channel, a non-numeric ledger row crashing
+the tool, a missing field arriving as a bare `KeyError`, selectivity not following the
+latest-run rule its own docstring states, `recorded_at` compared across the two spellings the
+ledger actually holds (`+00:00` and `Z`), and `render([])` raising `IndexError`. **Five of the
+seven are the module mishandling its own inputs**, not anything about Instagram — a reporting
+tool reads whatever accumulated on disk from several writers over months.
+
 ## The three hooks that have never passed a probe, re-derived on 441
 
 2026-08-07. They are the reason release-readiness caps at 4 of 7, and the recorded explanations
