@@ -5,8 +5,10 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-05 (sixth pass: the registered Workflow ran a real port, both targets,
-on a live Temporal server — and found in its first minutes that the worker could not run one).
+Last updated 2026-08-07 (seventh pass: Instagram 441 ported for zero agent invocations and was
+device-proved at 4 of 7 release-ready — and the session found the release gate had been verifying
+against a hard-coded DEX topology for three versions, and the signing env pointing at a
+superseded keystore that only the certificate pin caught).
 
 ## End goal
 
@@ -566,8 +568,11 @@ Reordered 2026-08-03. The two items that stood here are done.
    expired query tasks. Until items 1 and 2 land, a wrapper heartbeater is starved exactly when
    a heartbeat matters, and a `heartbeat_timeout` sized to a working one would expire and
    deliver the very cancellation item 1 is about.
-4. **Port 441 when it exists.** The cost claim is about a sequence and now has two points
-   (439 → 2, 440 → 0). A third is what tells "falling" from "fell once".
+4. ~~**Port 441 when it exists.**~~ **Done 2026-08-07.** 7/7 resolved, **0 agent invocations**,
+   own assessment recorded, device-proved at **4 of 7 release-ready**. The third cost point reads
+   `at_floor` rather than `falling` — 0 cannot fall — which is why the verdict gained that case.
+   What moves now is **selectivity, not the count**: the Reels margin went 5→1, 7→1, **4→1**,
+   NARROWING for the first time. That is the number to watch at 442.
 5. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference — now an escalation path rather than the normal one, since 440 resolved all
    seven hooks with no proposals at all.

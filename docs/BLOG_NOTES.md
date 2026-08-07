@@ -236,6 +236,42 @@ tests actually fail. It found roughly two dozen real defects, several in code wr
 earlier — including, on one memorable occasion, six gaps in a test suite that had just caught
 10 out of 10 deliberately introduced bugs.
 
+### 2026-08-07 — Instagram 441, and what a real port session breaks
+
+- **441 ported for zero agent invocations and was device-proved at 4 of 7 release-ready.** The
+  prediction was written down *before* the session and held exactly, including the conditional
+  one: `install_settings_long_click` had to pass first try to clear a retry guard, and did.
+- **The best structural result is quiet**: 441 moved a host into `classes4`, so the graft list
+  went from three DEX files to four and the driver worked that out unaided. That list used to be
+  hand-edited per version and silently produces a broken APK when wrong.
+- **The release gate had been verifying the wrong thing for three versions.** Three
+  build-specific facts with hard-coded defaults, and the release script passed none of them, so
+  the post-signing check re-verified against an older version's DEX topology. It matched by
+  coincidence until 441. Good line for a post: *a default that happens to be right is
+  indistinguishable from a default that is right* — the question is never "is the default
+  correct", it is "which caller is failing to pass it".
+- **A certificate pin stopped a wrong-key signing.** The signing environment pointed at a
+  superseded keystore. The pin refused; otherwise the build would have shipped under an identity
+  that cannot upgrade any existing install, and it would have failed on the phone rather than in
+  the gate.
+- **And the obvious cleanup was wrong.** Asked to delete the "stale, unused" keystore, the audit
+  found it is the *430 signing identity*, referenced by a contract file the device-validation
+  runner actually reads. Deleting it would have been irreversible. The hazard was the pointer,
+  not the thing pointed at.
+- **A measurement I nearly recorded was a lie.** The app's toggles were off after the upgrade, so
+  the "toggles enabled" side of a contrast read zero blocks. The `--state enabled` flag is the
+  operator's assertion, not the device's. Pairing it would have manufactured a clean-looking
+  delta out of two identical states. Re-measured properly: 10 blocks on, 0 off.
+- **A control test failed, correctly.** "No committed claim carries a version" was true until this
+  session and then failed nine times. The wrong repair is deleting it — the round-trip tests it
+  guards need *some* pre-change data. It became a frontier instead: these two files must stay
+  unattributed, this one must be attributed.
+- **The honest robustness answer.** A minor version bump is near-unattended. But the fingerprint
+  margins are *narrowing* for the first time (5→1, 7→1, 4→1), three of seven hooks have never
+  passed a runtime probe on any version, and **every defect found this session was found by
+  running, not by testing** — with ~2,980 tests green. The gaps live in the seams between
+  components, not inside them.
+
 ## Corrections — things a post should not overstate
 
 Collected deliberately, because getting these wrong would be worse than omitting them.

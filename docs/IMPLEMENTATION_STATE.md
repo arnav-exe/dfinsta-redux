@@ -414,7 +414,7 @@ Stage numbers refer to `pipeline_flowchart.md`.
 | **5c Mechanical validator** | **done** | `tools/resolver/validate_candidates.py` (+8 mutation tests) |
 | **Evidence ledger** | **done** | `src/dfinsta_pipeline/evidence.py` (+144 tests) |
 | 6-7 Apply / Build | done, target-parameterized, driven | `tools/port_430/build.py` |
-| **8 Static verify** | **done, target-neutral, and now producing evidence** | `tools/verify/verify_build.py` (host-hook map supplied per run); `driver.static_verified_claims` |
+| **8 Static verify** | **done, target-neutral, producing evidence, and the release gate now checks the run's own topology** | `tools/verify/verify_build.py` (host-hook map supplied per run); `driver.static_verified_claims` |
 | **9 Runtime verify** | **done, three probe kinds + per-hook identity** | `src/dfinsta_pipeline/probes.py`, `runtime_identity.py` |
 | 10 Decision memory / cost ledger | **done** | `manifest_update.py`, `agent_cost.py` (the `agent_cost report` verdict reads `falling`) |
 | **11 Report** | **done 2026-08-06** — first run: 2 of 7 hooks release-ready | `src/dfinsta_pipeline/final_report.py` (+73 tests) |
@@ -767,6 +767,85 @@ it. That is the module producing `runtime_probe` evidence, the check between a b
 release. `agent_runner.py` was at 38%, `proposer.py` at 71%. A day of adding tests to a
 reporting module left the module that decides whether a hook *works* untested, and the growing
 total made the suite look healthier. **Read coverage by module, not the test count.**
+
+## Instagram 441: ported, device-proved, 4 of 7 release-ready
+
+2026-08-07. The prediction in `docs/DEVICE_SESSION_441.md`, written before the session, held
+exactly: **4 of 7**, with `install_settings_long_click` conditional on passing first try. It did.
+
+    RELEASE-READY  4 of 7
+    ✓ install_settings_long_click        passed on attempt 1 — retry guard cleared
+    ✓ replace_reels_stream_endpoint
+    ✓ set_app_context
+    ✓ tigon_url_block                    10 enabled / 0 disabled, identical to 440
+
+Ported with **zero agent invocations, 7/7 resolved**, and its own assessment recorded. Four
+passing differentials against 440, up from two on 439 → 440.
+
+**The structural result worth keeping: 441 moved a host into `classes4`**, so the graft list went
+from three DEX files to four, and the driver derived it unaided. That list was hand-edited per
+version once and silently produces a broken APK when wrong.
+
+### What the session broke, and it was the tooling rather than the port
+
+**The release gate had been verifying the wrong DEX topology for three versions.**
+`verify_build` has three build-specific facts with hard-coded defaults — `--custom-dex`,
+`--replaced-dex` and `--host-hooks` — and `finalize.py` passed **none** of them. The default
+three-DEX map matched 430, 439 and 440 by coincidence, and even there asserted a *weaker*
+host-hook map than the unsigned run. 441's four DEX files exposed it: the gate expected
+`classes4.dex` preserved byte-for-byte from stock, found it patched, and failed a correct build.
+Fixed by having `verify_build` **record what it checked** and `finalize` **derive all four inputs
+from the unsigned report**, so the post-signing check asserts exactly what the pre-signing check
+asserted. A report that cannot say what it checked is now refused rather than defaulted.
+
+**The signing environment pointed at the wrong keystore.**
+`~/.config/dfinsta/release-signing.env` named a 26-July keystore (alias `dfinsta-release`, cert
+`798cda91…`); the current identity is alias `dfinsta`, cert `ee12866d…`. **The certificate pin in
+`release/signing_policy.json` caught it and refused to sign** — otherwise 441 would have shipped
+under an identity that cannot upgrade any existing install, and the failure would have surfaced
+on the phone rather than in the gate. Env and cert file repointed; the superseded values are
+preserved as `*.superseded-2026-08-07`. **The old keystore is NOT unused** — `798cda91…` is the
+430 signing identity, referenced by `dfinsta_source_430/behavior_contract.json`, which
+`tools/device_validation/runner.py` reads. Retiring it is a separate decision.
+
+**Device evidence now names the APK it was measured against.** `record_runtime` gained
+`--version`, `--build-sha256` and `--recorded-at`; before this a `runtime_probe` named a device
+serial and no artifact. **441 is the first version whose runtime evidence carries that join**, and
+the hash is verified rather than assumed — the APK pulled off the phone hashes to exactly the
+built release.
+
+**Stage 11 caught a real case one day after it was written.** It reported *2 DIFFERENT APKs*
+because `static_verified` names the unsigned build and the device claims name the signed release.
+Resolved by measurement: all 21 DEX entries byte-identical, differing only by the three `META-INF`
+files apksigner adds.
+
+**Two measurements that were nearly wrong.** The five toggles were **off** after the upgrade, so
+the first "enabled" delta read 0 blocks — `--state enabled` is the caller's assertion, not the
+device's, and pairing it would have manufactured a delta from two identical states. Discarded and
+re-measured at 10/0. And **441 reverted 440's bottom-nav rename**: `feed_tab`, `clips_tab`,
+`search_tab`, `profile_tab` resolve again, so that rename was transient and keeping both selector
+kinds is what let the walkthrough run with no code change.
+
+### Where this leaves robustness — the honest split
+
+**Near-unattended for a minor bump.** Resolve and build handled a topology change unaided.
+
+**Three limits, all measured rather than felt:**
+
+- **The fingerprints are eroding.** The Reels `by_literal` margin went `5→1` (439), `7→1` (440),
+  **`4→1`** (441) — NARROWING for the first time. It still selects correctly; the trend exists to
+  show this before it reaches `1→1`, and it has now turned.
+- **Three of seven hooks have never passed a runtime probe on any version** —
+  `install_settings_long_click_actionbar` and the two dormant Reels variants. Believed dormant on
+  this device and configuration, statically verified, and *believed dormant* versus *inert* is
+  exactly the pair a single capture cannot separate. **4 of 7 is a structural ceiling**, not a
+  scoring accident.
+- **Every defect found today was found by running, not by testing.** The gate's wrong topology
+  survived three versions; the keystore mismatch had no failing test. With ~2,980 tests green, the
+  gaps are in the seams between components rather than inside them.
+
+Not yet automated: the device session needs a human three times (toggles on, off, on), and there
+is no CI.
 
 ## The 441 device session has a written plan
 
