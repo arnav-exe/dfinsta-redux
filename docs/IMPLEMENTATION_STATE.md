@@ -768,6 +768,18 @@ release. `agent_runner.py` was at 38%, `proposer.py` at 71%. A day of adding tes
 reporting module left the module that decides whether a hook *works* untested, and the growing
 total made the suite look healthier. **Read coverage by module, not the test count.**
 
+## The 441 device session has a written plan
+
+[`docs/DEVICE_SESSION_441.md`](DEVICE_SESSION_441.md), written **before** the session so the
+prediction is falsifiable and the shape checklist is not reconstructed afterwards from whatever
+happened to get captured.
+
+The prediction: **4 of 7 release-ready, up from 2**, with the fourth conditional on
+`install_settings_long_click` passing first try — its 440 sequence was
+`inconclusive → passed → passed`, which trips the retry guard. Three hooks can only be
+inconclusive whatever the session does, because 440 holds no passing baseline for them and a
+baseline that did not pass yields `inconclusive`, never `passed`.
+
 ## Immediate next steps, in order
 
 Reordered 2026-08-03 after 440 ported itself for zero agent invocations. Steps 1-4 of the
