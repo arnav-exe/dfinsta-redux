@@ -582,8 +582,8 @@ Reordered 2026-08-03. The two items that stood here are done.
    minus any with a recorded retirement, **derived and never declared**: there is no target
    number in this repo, because a declared one has a one-character repair that is
    indistinguishable in a diff from a legitimate change. A set rather than a count, so the
-   output names the hook to go and look at, and so it survives the hook set changing size —
-   which it already has, 439 carrying 10 ids to 440's 7. Exit 3, deliberately not 1:
+   output names the hook to go and look at, and so it survives the hook set changing size. Exit
+   3, deliberately not 1:
    `final_report` already exits 1 for "incomplete", and incomplete is this project's normal
    state. `tests/test_expectation_corpus.py` runs it over `manifest/` in the ordinary suite, so
    it is not a fourth command nobody invokes.

@@ -757,6 +757,7 @@ def port(
     recorded_at: str = "",
     discovery: Discovery | None = None,
     assessment: AssessmentRequest | None = None,
+    static_evidence_root: Path | None = None,
 ) -> RunResult:
     """Run the pipeline as far as the evidence allows, then record what it cost.
 
@@ -769,6 +770,16 @@ def port(
     *discovery* turns on stage 5a. Without it the run is exactly what it was
     before that stage existed — deterministic, offline, and stopping at a hook
     whose host nothing points at.
+
+    *static_evidence_root* is where a labelled run publishes its `static_verified`
+    claims, defaulting to the repository's `manifest/static_evidence/`. **It
+    exists because the default is a write into tracked files.** Until 2026-08-08
+    there was no seam at all: any caller passing a `version` appended to the
+    committed corpus, and `tests/test_claim_attribution` — which runs ports
+    labelled `439` against fixture hooks — had silently written 36 rows for three
+    hook ids that do not exist into `manifest/static_evidence/439.jsonl`, and
+    those rows were committed. A durable evidence store with no way to redirect it
+    is one every test writes to.
     """
     if discovery is not None and not version.strip():
         raise DriverError(NEEDS_VERSION)
@@ -799,6 +810,7 @@ def port(
             ),
             discovery=discovery,
             assessment=assessment,
+            static_evidence_root=static_evidence_root,
         )
     except DriverError as error:
         # A stage that threw still spent whatever it spent. Recording happens
@@ -865,6 +877,7 @@ def _run_stages(
     discovery: Discovery | None = None,
     assessment: AssessmentRequest | None = None,
     attribution: Attribution | None = None,
+    static_evidence_root: Path | None = None,
 ) -> RunResult:
     """The stages themselves. Split out so stage 10 has exactly one call site."""
     if stop_after not in STAGES:
@@ -1211,7 +1224,9 @@ def _run_stages(
         # attribution on the way through, so publishing the inputs would write
         # unattributed rows and lose the join to version and build.
         if attribution is not None:
-            published = publish_static_evidence(recorded, attribution.version)
+            published = publish_static_evidence(
+                recorded, attribution.version, root=static_evidence_root
+            )
             artifacts["static_evidence"] = str(published)
             print(f"[build] published static evidence to {published}", flush=True)
 
@@ -1347,6 +1362,14 @@ def main(argv: list[str] | None = None) -> int:
         "--reuse-index", type=Path, help="use this existing index instead of building one"
     )
     parser.add_argument("--stop-after", choices=STAGES, default="build")
+    parser.add_argument(
+        "--static-evidence-root",
+        type=Path,
+        default=None,
+        help="where a labelled run publishes its static_verified claims "
+        f"(default {STATIC_EVIDENCE}). Point it elsewhere for a trial run; the "
+        "default appends to tracked files",
+    )
     assess_group = parser.add_argument_group(
         "assess",
         "Record the stage 4a assessment so this run's feature gate can be answered "
@@ -1513,6 +1536,7 @@ def main(argv: list[str] | None = None) -> int:
             recorded_at=args.recorded_at,
             discovery=discovery,
             assessment=assessment,
+            static_evidence_root=args.static_evidence_root,
         )
     except (DriverError, ManifestError) as error:
         print(f"error: {error}", file=sys.stderr)

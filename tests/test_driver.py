@@ -478,8 +478,20 @@ class DriverCase(unittest.TestCase):
         )
 
     def run_port(self, fixture: Fixture, hooks: Sequence[Hook], **kwargs) -> RunResult:
-        """Call `port` over a reused decode and index, capturing what it printed."""
+        """Call `port` over a reused decode and index, capturing what it printed.
+
+        `static_evidence_root` defaults into the case's own temp tree, and that
+        default is the point rather than a tidy-up. A labelled run publishes its
+        `static_verified` claims to `manifest/static_evidence/` in the repository,
+        so before the driver had this seam every test calling `run_port(...,
+        version="439")` appended to a tracked file. `test_claim_attribution` does
+        exactly that, and 36 rows naming three hooks that do not exist had reached
+        `manifest/static_evidence/439.jsonl` and been committed. Overriding it per
+        test would have worked and would have needed remembering; defaulting it
+        here cannot be forgotten.
+        """
         out = kwargs.pop("out", "run")
+        kwargs.setdefault("static_evidence_root", self.base / "static_evidence")
         stream = io.StringIO()
         try:
             with contextlib.redirect_stdout(stream):

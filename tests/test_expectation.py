@@ -341,7 +341,7 @@ class ExpectationTestCase(unittest.TestCase):
         conventional one — 440's differential file is named `439-440.jsonl`, so
         440 can only be release-ready in anything if 439 is in the series before
         it. The first version of a series can never be release-ready itself,
-        which is why the real corpus reads 0 of 10 on 439.
+        which is why 439 has no computable readiness at all.
         """
 
         self.port("439", {CONTEXT: triple(differential=None)})
@@ -428,7 +428,7 @@ class DropTests(ExpectationTestCase):
     def test_the_expectation_is_the_previous_ports_ready_set_and_not_a_count(self):
         """Derived, and derived as a *set*. `4 -> 3` says a port got worse; a name
         says which thing to go and look at, and the module survives the hook set
-        changing size — which it already has, 439 carrying 10 ids and 440 seven.
+        changing size, and naming the hook rather than a delta.
         """
         self.two_ports(
             {CONTEXT: triple(), TIGON: triple()},

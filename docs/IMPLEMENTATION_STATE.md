@@ -915,9 +915,10 @@ same reason one level down: `"active"` → `"retired"` is that same one-line edi
 who decided or why.
 
 **A set, not a number.** `4 → 3` says a port got worse; `set_app_context is no longer
-release-ready` says what to go and look at. It also survives the hook set changing size, which it
-already has — 439 carries 10 hook ids and 440 carries 7, so a count comparison across that pair
-was never meaningful in the first place.
+release-ready` says what to go and look at, and a count cannot. It also survives the hook set
+changing size. **Correction, same day:** the first draft of this section argued the point from
+"439 carries 10 hook ids and 440 carries 7", and that was an artefact — three of 439's ten were
+fixture hooks a test had written into the committed corpus (see below). Both real sets are 7.
 
 **Exit 3, deliberately not 1.** `final_report` already exits 1 for "incomplete", and incomplete
 is this project's *normal* state: three hooks have never passed a runtime probe on any version,
@@ -981,6 +982,27 @@ system alone; the signal that would is a *release* having happened for that vers
 repo keeps no record of releases. So the skip is listed in the output rather than hidden, and the
 gate this closes is "a hook silently stopped being release-ready", not "a port shipped without
 being measured".
+
+**A test had been writing into the committed corpus, and it was caught by luck.** `git status`
+before the commit showed `manifest/static_evidence/439.jsonl` modified by nothing in the session.
+It had gained 54 rows during the suite run, and the 36 already committed the previous day were
+**entirely fabricated** — `install_probe_long_click`, `replace_probe_endpoint`,
+`set_probe_context`, none of them hooks. `publish_static_evidence` defaulted to
+`REPOSITORY / "manifest" / "static_evidence"` and `_run_stages` called it with no root, so any
+caller running a labelled port appended to tracked files; `tests/test_claim_attribution` runs
+ports labelled `"439"`. No test mentioned the directory and no grep for the function in `tests/`
+found anything — it was reached three layers down through `DriverCase.run_port`.
+
+That is why 439 read "0 of 10 hooks", and why the first draft of this section argued for a set
+over a count from "439 carries 10 hook ids". Both real sets are 7. Three fixes: `port()` and
+`_run_stages` now take `static_evidence_root` (and the driver a `--static-evidence-root`);
+`DriverCase.run_port` **defaults** it into the case's temp tree, because an override has to be
+remembered and a default cannot be forgotten; and
+`test_expectation_corpus.test_no_evidence_file_names_a_hook_that_does_not_exist` asserts every
+claim in `manifest/*/` names a hook `hooks.json` declares, with a positive control on the row
+count. The file was deleted — 439 legitimately has no static evidence, because `static_verified`
+had no producer until 440, so `439 → 440` is now reported as NOT CHECKED rather than compared
+against fiction.
 
 **What is not built: nothing produces a retirement.** `manifest/RETIREMENTS.md` specifies the
 row and `expectation` reads it, but there is no gate that writes one, so today the only way past

@@ -15,6 +15,7 @@ See `absence-assertions-need-positive-controls`.
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
@@ -44,17 +45,25 @@ class CommittedCorpusTests(unittest.TestCase):
         comparisons, skipped = expectation.sweep(REPOSITORY)
         compared = {item.version for item in comparisons}
         series = expectation.versions_with_evidence(REPOSITORY)
-        full = [
+        full = {
             version
             for version in series
             if (REPOSITORY / "manifest" / "static_evidence" / f"{version}.jsonl").is_file()
             and (REPOSITORY / "manifest" / "runtime_evidence" / f"{version}.jsonl").is_file()
-        ]
-        # Every full-corpus version except the first of the series owes a
-        # comparison. A version part-way through a port has half a corpus and is
-        # legitimately skipped -- that is what `skipped` is for, and it is
-        # reported so the two never blur.
-        owed = {version for version in full if version != series[0]}
+        }
+        # BOTH sides of the pair must be full, not just the later one. 439 has
+        # runtime evidence and no static evidence -- `static_verified` had no
+        # producer until 440 -- so its release-ready set is not computable and
+        # 439 -> 440 cannot be compared by anything. Requiring only the later
+        # version made this test demand a comparison the corpus cannot support.
+        # A version part-way through a port has half a corpus and is skipped the
+        # same way; that is what `skipped` is for, and it is reported so the two
+        # never blur.
+        owed = {
+            version
+            for previous, version in zip(series, series[1:])
+            if previous in full and version in full
+        }
         self.assertEqual(
             owed,
             compared,
@@ -85,6 +94,57 @@ class CommittedCorpusTests(unittest.TestCase):
                     "record a retirement -- see manifest/RETIREMENTS.md.",
                 ]
             ),
+        )
+
+    def test_no_evidence_file_names_a_hook_that_does_not_exist(self) -> None:
+        """The guard for the failure that made this test file necessary.
+
+        On 2026-08-08 `manifest/static_evidence/439.jsonl` was found to be 36 rows
+        of pure fixture data — `install_probe_long_click`, `replace_probe_endpoint`
+        and `set_probe_context`, none of them hooks — written by
+        `tests/test_claim_attribution`, which runs labelled ports through the
+        driver. `driver.publish_static_evidence` defaulted to the repository's own
+        `manifest/static_evidence/`, so a test that passed `version="439"` appended
+        to a tracked file. Those rows had been committed the day before, and the
+        readiness numbers derived from them were quoted in four documents.
+
+        It was caught by `git status` showing a file dirty that nobody had edited,
+        which is luck rather than a check. This is the check: every claim in the
+        durable corpus must name a hook the manifest actually declares. A fixture
+        hook cannot survive it, and neither can a hook deleted from the manifest
+        without its evidence being dealt with.
+        """
+
+        declared = {
+            hook["hook_id"]
+            for hook in json.loads(
+                (REPOSITORY / "manifest" / "hooks.json").read_text(encoding="utf-8")
+            )["hooks"]
+        }
+        self.assertTrue(declared, "no hooks in the manifest; the check cannot bite")
+
+        strangers: dict[str, set[str]] = {}
+        checked = 0
+        for directory in ("static_evidence", "runtime_evidence", "differentials"):
+            for path in sorted((REPOSITORY / "manifest" / directory).glob("*.jsonl")):
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    checked += 1
+                    hook = row.get("record", row)["hook_id"]
+                    if hook not in declared:
+                        strangers.setdefault(str(path.relative_to(REPOSITORY)), set()).add(hook)
+
+        # The positive control. A glob that matched nothing would report no
+        # strangers, which reads identically to a clean corpus.
+        self.assertGreater(checked, 20, "too few claims read; the sweep found nothing")
+        self.assertEqual(
+            {},
+            {path: sorted(hooks) for path, hooks in strangers.items()},
+            "evidence naming hooks the manifest does not declare — either a test "
+            "wrote into the committed corpus, or a hook was removed and its "
+            "evidence left behind",
         )
 
     def test_no_retirement_is_recorded_yet(self) -> None:

@@ -27,8 +27,16 @@ retirement that names a human and a reason.
 
 **A set, not a number.** `4 -> 3` says a port got worse. `set_app_context is no
 longer release-ready` says which thing to go and look at, and the two are not the
-same message. It also survives the hook set changing size, which it already has:
-439 carries 10 hook ids and 440 carries 7.
+same message. It also survives the hook set changing size, and a set is the only form that can
+say *which* hook without a reader going to look it up.
+
+(An earlier draft of this argued from the corpus: "439 carries 10 hook ids and
+440 carries 7". That was false, and false in an instructive way -- 439's extra
+three were `install_probe_long_click`, `replace_probe_endpoint` and
+`set_probe_context`, fixture hooks that `tests/test_claim_attribution` had
+written into the committed `manifest/static_evidence/439.jsonl` because the
+driver had no way to point its evidence writes anywhere else. The real sets are
+both 7. The argument for a set stands on its own; the evidence for it did not.)
 
 ===============================================================================
   WHAT THIS REFUSES TO DO
