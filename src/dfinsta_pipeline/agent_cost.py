@@ -1074,12 +1074,59 @@ def _margins(
     return out
 
 
-#: The three verdicts the central claim can take. Spelled out so the query cannot
+#: The verdicts the central claim can take. Spelled out so the query cannot
 #: report "improving" for a number that did not move.
 VERDICT_UNTESTABLE = "untestable"
 VERDICT_FALLING = "falling"
 VERDICT_FLAT = "flat"
 VERDICT_RISING = "rising"
+
+def _genuinely_at_floor(now: Mapping[str, Any], was: Mapping[str, Any]) -> bool:
+    """Did this port reach zero agent invocations by RESOLVING, or by not trying?
+
+    Three ways to spend nothing, and only one of them is the claim holding.
+
+    **Fewer hooks.** Zero invocations across a manifest that shrank is a smaller
+    problem being solved, not the same problem solved for free. Without this,
+    coverage falls out of the metric silently -- the shape of a growing test count
+    hiding a module with no tests.
+
+    **Nothing resolved.** A wholly blocked port spends nothing because the stage
+    *stopped rather than asking*, which `blocked` counts precisely so it cannot be
+    read as cheapness. The first draft of `at_floor` congratulated exactly that,
+    and the report contradicted itself four lines apart: "the port is blocked, not
+    expensive" above "the claim holding rather than the pipeline stalling".
+
+    **Nothing done.** A re-run over an already-patched decode resolves every hook
+    `already_applied`, whose own note says the port "paid nothing for this hook and
+    learned nothing about what it would cost". Zero there measures a no-op.
+
+    So the floor means: no fewer hooks than last time, nothing blocked, and at
+    least one hook actually resolved this port. Found by the tests written for
+    `at_floor` within the hour, which is the argument for writing them.
+    """
+
+    if now["hooks"] < was["hooks"] or now["blocked"]:
+        return False
+    earned = ROUTE_MECHANICAL, ROUTE_DETERMINISTIC_SUPPLIER
+    return any(now["routes"][route] for route in earned)
+
+
+#: Flat, but at zero, which is the floor.
+#:
+#: Added 2026-08-07, when Instagram 441 produced the third point of the sequence:
+#: 439 -> 2, 440 -> 0, 441 -> 0. The flowchart's claim is "agent invocations fall
+#: with every port, and a flat count means the pipeline is not learning", and the
+#: report duly said FLAT and "not learning" -- of a port that needed no agent at
+#: all. **A count that has reached zero cannot fall, so `flat` there is measuring
+#: the wrong thing.** At 2 -> 2 the wording was right; at 0 -> 0 it was not, and
+#: the metric could not tell the two apart.
+#:
+#: This is deliberately NOT a fourth way of saying "good". It is refused when the
+#: hook count fell, because zero invocations over three hooks is not the
+#: achievement zero over seven is -- the same shape as a growing test count hiding
+#: a module with no tests.
+VERDICT_AT_FLOOR = "at_floor"
 
 
 #: Which run got reported, and why — carried in the output rather than left to be
@@ -1138,9 +1185,14 @@ def cost_report(
         delta = None
     else:
         delta = now["agent_invocations"] - was["agent_invocations"]
-        verdict = (
-            VERDICT_FALLING if delta < 0 else VERDICT_FLAT if delta == 0 else VERDICT_RISING
-        )
+        if delta < 0:
+            verdict = VERDICT_FALLING
+        elif delta > 0:
+            verdict = VERDICT_RISING
+        elif now["agent_invocations"] == 0 and _genuinely_at_floor(now, was):
+            verdict = VERDICT_AT_FLOOR
+        else:
+            verdict = VERDICT_FLAT
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1326,11 +1378,30 @@ def render(report: Mapping[str, Any]) -> list[str]:
                 f"  VERDICT: falling — {abs(delta)} fewer than {previous}. Retired: "
                 f"{', '.join(report['retired']) or 'none named'}"
             )
+        elif verdict == VERDICT_AT_FLOOR:
+            lines.append(
+                f"  VERDICT: at the floor — 0 agent invocations again, over "
+                f"{now['hooks']} hook(s) against {was['hooks']}. The count cannot fall "
+                "further, so this is the claim holding rather than the pipeline "
+                "stalling."
+            )
+            lines.append(
+                "     What would move next is SELECTIVITY, not the count: read the "
+                "margins below. A fingerprint narrowing toward 1 -> 1 is how this "
+                "reaches zero hooks resolved while still reporting zero agents."
+            )
         elif verdict == VERDICT_FLAT:
             lines.append(
                 f"  VERDICT: FLAT against {previous}. A pipeline whose agent count is flat "
                 "is not learning — the same hooks cost the same agent this port."
             )
+            if now["agent_invocations"] == 0:
+                # The one case that reads like the floor and is not.
+                lines.append(
+                    f"     0 invocations, but over {now['hooks']} hook(s) against "
+                    f"{was['hooks']} last time. Fewer hooks is a smaller problem, not a "
+                    "cheaper solution — this is NOT the floor."
+                )
         else:
             lines.append(
                 f"  VERDICT: RISING — {delta} more than {previous}. Newly costly: "
