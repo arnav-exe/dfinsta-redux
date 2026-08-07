@@ -2,6 +2,15 @@
 
 Last updated: 2026-07-31
 
+> **Corrections, 2026-08-08.** Three statements below are now false and are load-bearing:
+> `:255` "durable Workflow ~~registration remains pending~~ (**landed 2026-07-31**)", `:259` "The Activity remains
+> intentionally absent from worker/workflow registration" and `:299` "**Not yet done:** an opt-in
+> real 340/430 run through the registered Workflow" — registration landed 2026-07-31 and both runs
+> completed 2026-08-04. `:351` "release signing remains pending" is contradicted by `:126` in this
+> same file. `:9` and `:310` name Google ADK as the reasoning layer; it was rejected by
+> measurement — see [`PROPOSER_RUNTIME.md`](PROPOSER_RUNTIME.md). Test counts throughout are
+> stale. The authority for current state is [`ROADMAP.md`](ROADMAP.md).
+
 Start with [`HANDOVER.md`](../HANDOVER.md). It is the concise entry point and carries evidence caveats this document does not repeat, including the freshness boundary on the 340 final-verifier proof and a recorded Temporal ephemeral-server startup flake. This file is the detailed chronological record; earlier sections are point-in-time and are not rewritten when later work lands, so prefer the newest dated statement whenever two sections disagree.
 
 ## End Goal
@@ -252,7 +261,7 @@ Commits `1a30252` through `b45fc0d` implement the reviewed deterministic core an
 - A target-neutral decoded-tree applier. Provisioned mini-tree tests apply all 59 340 operations and all seven 430 operations, then classify every second-run operation as already applied.
 - Full-rebuild and stock-DEX-graft archive backends with no-clobber staging, exact DEX topology, signature stripping, and retained stock entry byte/order/metadata preservation.
 - A receipt-bound verifier for operation proofs, descriptor placement, DEX strings, archive preservation, resources, manifest components, and backend policy. The decoded tree is accepted only through an output/tree/tool-capability receipt that the admitted executor and CAS must own.
-- Immutable source and tool bytes plus exact producer lineage are bound into recorded replay authority. `ToolchainProfileV3` role plans bind tool identity, logical paths, timeout, and executor capability shape. Replay-v3 admission resolves and validates exact concrete executor capabilities only after the recorded gate decision and artifact relationships pass. The ledger records canonical admitted replay-v3 authority append-only and returns a normalized object for execution; durable Workflow registration remains pending.
+- Immutable source and tool bytes plus exact producer lineage are bound into recorded replay authority. `ToolchainProfileV3` role plans bind tool identity, logical paths, timeout, and executor capability shape. Replay-v3 admission resolves and validates exact concrete executor capabilities only after the recorded gate decision and artifact relationships pass. The ledger records canonical admitted replay-v3 authority append-only and returns a normalized object for execution; durable Workflow ~~registration remains pending~~ (**landed 2026-07-31**).
 - An unregistered decode Activity requires normalized ledger authority before all external access, creates descriptor-relative attempt-private inputs, projects the selected capability into an internal Phase A `RunSpec`, and invokes unchanged `execute()` with admitted arguments and timeout. It emits `ReplayDecodedTreeReceiptV1`, binding the exact input APK, profile, plan, capability, tool, request, canonical tree manifest, semantic hash, and operation key. Receipt, manifest, and every child blob are validated before effect recording and again during adoption.
 - Decode output is opened relative to the still-pinned workspace descriptor and captured by descriptor, so replacing the workspace pathname cannot redirect the authoritative scan. Active decode claims reject takeover. A pre-workspace failure may release only its exact pending claim for a later owner; cancellation and failures after workspace creation quarantine. Release persists in the mutable current-claim index but is not represented in the append-only operation event stream.
 - An unregistered tree apply Activity accepts only replay-v3 authority, derives the exact completed ledger-owned decode predecessor, materializes and revalidates its complete closure, stages source through schema-2 admission, compiles/applies the target-neutral specification, and emits `ReplayPatchedTreeReceiptV1`. The receipt binds reconstructable source-admission evidence, ordered operation results, the exact `ApplyReport` hash, and the complete patched-tree manifest/blob closure. Adoption validates both input and output closures without source/workspace access.

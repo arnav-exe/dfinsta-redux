@@ -1,5 +1,23 @@
 # Google ADK Pipeline Plan
 
+> **Corrections, 2026-08-08.** This remains the orchestration authority for the threat model,
+> record taxonomy and gate design, and its Phase structure is still the plan. Three things in it
+> are now false:
+>
+> - **Google ADK was rejected by measurement.** `:177` says it "remains deferred until
+>   deterministic generalization, when `google-adk[db]==2.5.0` will be evaluated". It was
+>   evaluated; see [`PROPOSER_RUNTIME.md`](PROPOSER_RUNTIME.md), which is the authority for the
+>   agent runtime. `pyproject.toml` pins `claude-agent-sdk`. Wherever this file says ADK, read
+>   "the proposer runtime".
+> - **Registration is not pending** (`:270`, `:282`). Four workflows are registered.
+> - **APK, signing and device operations have entered the Workflow** (`:231`).
+>   `ReplayRunWorkflow` runs decode/apply/build/verify against real APKs; `tools/release/finalize.py`
+>   signs.
+>
+> The "Still pending before Phase A is production-ready" list at `:210-219` is still accurate and
+> is the best inventory of genuine gaps in the repo. Phase 9 promotion (`BaselineBundle`,
+> `PromotionRecord`) remains specified and unbuilt.
+
 ## Objective
 
 Build a recurring release pipeline for DFInsta. Each cycle acquires an approved future stock Instagram release, starts from the latest human-promoted `BaselineBundle`, uses bounded Google ADK reasoning to propose target-native adaptations, and runs deterministic approval, apply, build, static verification, signing, and device-validation stages. Acceptance promotes the exact reviewed release as the baseline for the next cycle.

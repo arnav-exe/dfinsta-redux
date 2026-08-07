@@ -2,6 +2,10 @@
 
 > **Superseded concept document — do not implement from this file.**
 >
+> **Also**: google-adk itself was rejected by measurement on 2026-08-02. Read
+> `docs/PROPOSER_RUNTIME.md` — `ADK_PIPELINE_PLAN.md`, named below as the authority, still says
+> ADK is coming and is wrong about that one thing.
+>
 > Written 2026-06-07, before Temporal became the durable orchestrator. `docs/ADK_PIPELINE_PLAN.md`
 > is the authority; it explicitly incorporates this document but corrects its pre-ADK-2.x
 > assumptions and unsafe authority boundaries. Retained for the design reasoning behind the

@@ -27,7 +27,7 @@ Completion requires:
 6. Add one bounded mapping/assessment agent only after deterministic candidate generation and generalization are benchmarked.
 7. Attempt profile-ad endpoint/UI contrast only when eligible inventory is available; treat absent inventory as inconclusive and do not let it block pipeline development.
 
-Phase A durability evidence is not execution authority. The current executor admits exact tool digests, argv templates, environment values, workspace paths, artifact kinds, and mutation paths, but those checks are not an OS sandbox. No APK tool has been admitted and no signing/device/ADK worker exists yet.
+Phase A durability evidence is not execution authority. The current executor admits exact tool digests, argv templates, environment values, workspace paths, artifact kinds, and mutation paths, but those checks are not an OS sandbox. ~~No APK tool has been admitted and no signing/device/ADK worker exists yet.~~ **Stale.** apktool is admitted through `ToolchainProfileV3`, `tools/release/finalize.py` signs, and `tools/device_validation/runner.py` collects device evidence. The ADK worker will not exist — see `docs/PROPOSER_RUNTIME.md`.
 
 ## Lazy Profile Options
 

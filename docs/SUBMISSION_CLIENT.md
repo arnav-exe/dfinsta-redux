@@ -131,8 +131,11 @@ change. Recorded, not overlooked.
 
 **It does not authenticate to a remote authority.** See the principal note above.
 
-**It does not answer the feature gate yet.** The gate's contracts exist
-(`feature_gate.py`) but nothing raises it — see below.
+~~**It does not answer the feature gate yet.**~~ **Closed 2026-08-03**, and the client now
+answers three gates: `REPLAY_VERIFICATION_GATE`, `FEATURE_ASSESSMENT_GATE` and
+`HOOK_RETIREMENT_GATE` (`submission.GATE_KINDS`). Both non-replay gates also have starters
+(`assessment_record.raise_gate`, `retirement_record.raise_gate`), added 2026-08-08 — until then
+the feature gate was answerable and unraisable, which is the same disconnection one link along.
 
 ## What this uncovered
 
@@ -143,11 +146,13 @@ state.** Every existing test stubbed it. Building the client's resolver meant
 building the first test that drives the real derivation over a real ledger and
 content store, which is now `tests/test_submission_resolver.py`.
 
-**The feature gate has no producer.** `feature_gate.py` and `assessment.py` are
-each imported by nothing but their own tests. Stage 4a computes an assessment in
-the *driver* world (a plain Python pipeline over a decode); the gate expects the
-assessment to exist in CAS as a completed ledger operation in the *Temporal*
-world. Nothing joins those two today. So "the gate's Activities and Workflow" is
-not the next unit of work — the missing link is an Activity that records a stage
-4a assessment as a ledger operation, and that is a real design question about
-where the driver and the durable pipeline meet, not a wiring task.
+~~**The feature gate has no producer.**~~ **Closed 2026-08-03 by
+`src/dfinsta_pipeline/assessment_record.py`**, and the diagnosis below was exactly right about
+what the missing link was. *Kept because the reasoning is the reusable part:* stage 4a computes an
+assessment in the *driver* world while the gate expects it in CAS as a completed ledger operation
+in the *Temporal* world, and the join is a design question about where those two meet rather than
+a wiring task. What it needed, and now has, is a **run-keyed authority row**
+(`recorded_assessments_v1`) — the operation tables are keyed by content hash, so without it a
+client holding only a run id cannot reach the subject at all. `recorded_retirement_dockets_v1`
+exists for the same reason, and `phase-a-approval` is still unregistered because it has no such
+row.

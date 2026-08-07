@@ -208,9 +208,9 @@ accepting the update into History and classifying inside the handler — a
 deliberate inversion that deserves its own reviewed change. Out of scope here,
 and noted so it is a decision rather than an oversight.
 
-**There is no trusted submission client.** `execute_update` appears only in
-tests. A human cannot actually answer this gate until one exists, which makes it
-the first thing to build after the gate itself.
+~~**There is no trusted submission client.**~~ **Closed 2026-08-02, one day after this was
+written** — `src/dfinsta_pipeline/submission.py`, design record `docs/SUBMISSION_CLIENT.md`. The
+prediction in the last sentence held: it was the first thing built after the gate.
 
 ## What stage 4 must not do
 

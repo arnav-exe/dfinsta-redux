@@ -4,13 +4,29 @@
 
 - `dfinsta_source_1.4.1/` is the reconstructed, delta-driven 340 patch source; `dfinsta_source_1.3/` is the legacy 300 source. The repository root also holds APK oracles, large decoded trees, and research notes.
 - This is an apktool/smali patch for package `com.instagram.android`, not a Gradle Android app. The patch source targets Instagram `300.0.0.29.110` / DFInsta `1.3.0`.
-- The maintainable DFInsta `1.4.1` source has been reconstructed by diffing stock Instagram 340 against `apks/dfinsta_1_4_1.apk`, built, signed, installed, and partially behavior-validated. Complete the remaining behavioral/privacy decisions, then use this cleaner 340 patch as the baseline for Instagram 430. Do not port the brittle 1.3 patch directly to 430.
-- Artifact coverage: 300 has stock/modified APKs, decoded trees, and legacy patch source; 340 has stock/modified APKs, fresh ignored decodes, reconstructed patch source, and device evidence; 430 has only a stock APK.
+- The maintainable DFInsta `1.4.1` source was reconstructed by diffing stock Instagram 340 against `apks/dfinsta_1_4_1.apk`, built, signed, installed and behavior-validated. That was the 340 baseline, and it did its job: **430, 439, 440 and 441 have all been ported since.** Do not port the brittle 1.3 patch to anything.
+- Artifact coverage: 300 and 340 are holdout/oracle fixtures; **430, 439, 440 and 441 are ported**, with `dfinsta_source_430/`, `dfinsta_source_439/`, signed artifacts and committed device evidence under `manifest/runtime_evidence/`.
 - `docs/FINDINGS.md` records a successful partial 300-to-340 dry run and is higher-value porting evidence than stale class-role prose in `dfinsta_source_1.3/CLAUDE.md`. The `autopatch/` scripts/artifacts named there are not present in this checkout.
+
+## Where the project actually is — read this first
+
+This file predates the pipeline and its Scope section above is four months old. **The current
+authority is [`docs/ROADMAP.md`](docs/ROADMAP.md)**, then
+[`docs/IMPLEMENTATION_STATE.md`](docs/IMPLEMENTATION_STATE.md), then
+[`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) for what a machine needs.
+
+There is now an agentic porting pipeline under `src/dfinsta_pipeline/`: a hook manifest
+(`manifest/hooks.json`), a driver that resolves, applies, builds and verifies, an append-only
+evidence ledger, four registered Temporal workflows, two human decision gates, and a release-ready
+expectation that fails when a hook is lost. Instagram 441 is the newest port — seven hooks
+resolved mechanically, zero agent invocations, four of seven release-ready.
+
+**The "Version-Porting Rules" section below is still correct and still mandatory.** So is
+everything about not staging `dfinsta_source_1.3/`. The Scope and Goal bullets are historical.
 
 ## Build and Generated State
 
-- Rebuild 1.4.1 from a clean stock-340 decode with `python3 tools/reconstruction/rebuild.py <stock-decode> dfinsta_source_1.4.1 apktool_2.9.3.jar --work-tree <new-work-tree> --output-apk <new-unsigned.apk>`. The command applies 38 idempotent host operations, builds with aapt1, and verifies the DEX contract.
+- Rebuild 1.4.1 from a clean stock-340 decode with `python3 tools/reconstruction/rebuild.py <stock-decode> dfinsta_source_1.4.1 apktool_2.9.3.jar --work-tree <new-work-tree> --output-apk <new-unsigned.apk>`. The command applies **37** idempotent host operations — 30 in `endpoint_replacements.json` plus 7 in `anchored_patches.json`, counted from the files — builds with aapt1, and verifies the DEX contract. *(Said 38 until 2026-08-08. `HANDOVER.md:121` counts 59/45 for a wider scope including resource and manifest edits; `docs/RECONSTRUCTION_1.4.1.md:52` says 30+7 and is right.)*
 - Run patch commands from `dfinsta_source_1.3/`. On Windows: `./extract.ps1 -ApkPath <stock.apk>`, then `./build.ps1 -Version <label>`.
 - Use apktool `2.9.3` and aapt1. `build.ps1` passes `--use-aapt1`; this was also required for the 340 dry run. It invokes `python`, `zipalign`, `apksigner`, and `adb` and expects `$env:USERPROFILE/.android/dfinsta-release-key.keystore`.
 - `-Version` only names `dfinsta_<label>.apk`; it does not update the displayed version/base version in `newRes/values/istrings.xml`.

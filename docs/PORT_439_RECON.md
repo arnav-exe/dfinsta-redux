@@ -6,7 +6,7 @@ First read on porting from 430 to Instagram `439.0.0.37.89`
 Decoded 2026-08-01 with apktool 2.9.3 and the API 36 framework to
 `work/439-explore/stock-439` — 20 smali trees, 1.7 GiB.
 
-This is reconnaissance, not a port. Nothing has been patched or built for 439.
+This is reconnaissance, not a port. ~~Nothing has been patched or built for 439.~~ **Stale — 439 was ported, built and device-proved on 2026-08-02**, and 440 and 441 have shipped since. `dfinsta_source_439/`, `manifest/runtime_evidence/439.jsonl` and `manifest/differentials/439-440.jsonl` are committed. Kept as the *pre-port* prediction, which is its value: it called the settings hooks the hard case and the honest test of any automated mapper, and `kind: by_anchor` went on to resolve all seven mechanically, for zero agent invocations on 440 and 441.
 
 ## The headline: obfuscated names are recycled, so name existence is a false positive
 

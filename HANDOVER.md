@@ -2,6 +2,30 @@
 
 Evidence snapshot: 2026-07-31. The audited development baseline is branch `port-430` at commit `b68256ec64f50eeaecd64ea4ee3e5cc026f55022` (`Document final replay verification evidence`). `HANDOVER.md` is the concise entry point; supporting sources include [the detailed session handoff](docs/SESSION_HANDOFF.md), [the orchestration plan](docs/ADK_PIPELINE_PLAN.md), [the 340 reconstruction record](docs/RECONSTRUCTION_1.4.1.md), [the 430 mapping](docs/PORT_430_MAPPING.md), and [the device-validation record](docs/DEVICE_VALIDATION_1.4.1.md).
 
+## Corrections, 2026-08-08
+
+**This document is a 2026-07-31 snapshot and four things in it are now false.** Read this before
+section 6, whose "exact continuation point" is one of them.
+
+1. **The replay chain IS registered.** Nine statements here say it is deliberately not
+   (`:34`, `:49`, `:59`, `:399`, `:404-415`, `:553`, `:596-600`). Registration landed 2026-07-31,
+   and there are now four registered workflows — `PortRunWorkflow`, `ReplayRunWorkflow`,
+   `FeatureAssessmentRunWorkflow`, `HookRetirementRunWorkflow` — with 340 and 430 both completed
+   through `ReplayRunWorkflow` against a live server on 2026-08-04. **An agent following the
+   continuation point in section 6 would redo finished work.**
+2. **`docs/FINDINGS.md` and `docs/adk_pipeline_design.md` are tracked**, not untracked
+   (`:131`, `:386`, `:547`). Check with `git ls-files docs/`.
+3. **The "eight anchored operations" claim at `:121` is wrong about two other files.**
+   `docs/RECONSTRUCTION_1.4.1.md:52` and `docs/BLOG_NOTES.md:110` both say **seven**, and
+   `dfinsta_source_1.4.1/patches/anchored_patches.json` holds seven.
+4. **Every test count here is stale** (`:337-344`). The suite is ~3400 and moves most days;
+   `docs/IMPLEMENTATION_STATE.md` carries the current figure.
+
+For current state read [`docs/ROADMAP.md`](docs/ROADMAP.md) — it is the authority — then
+[`docs/IMPLEMENTATION_STATE.md`](docs/IMPLEMENTATION_STATE.md). Everything below is preserved as
+the audited record of what was true on 2026-07-31, including its evidence grading, which is why it
+is not being rewritten.
+
 ## How to read claims
 
 This handover does not treat its conclusions as infallible. Important claims use these fields:
@@ -31,7 +55,7 @@ Principal inputs and outputs:
 
 Major pipeline stages are: admit immutable inputs and capabilities; install framework if required; decode stock APK; stage admitted patch sources; compile/apply deterministic operations; build with apktool/aapt1; for 430, graft only changed DEX entries into stock; separately authorize and re-decode the final APK; run static assertions and operation proofs; adopt completed results without relaunch; later sign/publish and validate on a device under separate gates.
 
-**Current high-level conclusion:** the target-neutral engine and all framework/decode/apply/build/final-verification Activities are implemented. Real 430 proof matches current executable code; 340 has historical real proof plus current fixture/unit compatibility, but its real run predates the latest generic verifier normalization. Those Activities are deliberately not registered in the durable Workflow. Authenticated production authority, hard process-loss recovery, signing/publication orchestration, and controlled runtime contrasts remain separate work.
+**Current high-level conclusion:** the target-neutral engine and all framework/decode/apply/build/final-verification Activities are implemented. Real 430 proof matches current executable code; 340 has historical real proof plus current fixture/unit compatibility, but its real run predates the latest generic verifier normalization. ~~Those Activities are deliberately not registered in the durable Workflow.~~ **Registered 2026-07-31; see the corrections at the top.** Authenticated production authority, hard process-loss recovery, signing/publication orchestration, and controlled runtime contrasts remain separate work.
 
 - **Evidence:** `src/dfinsta_pipeline/activities.py` symbols `replay_install_frameworks_checkpoint_activity`, `replay_decode_checkpoint_activity`, `replay_apply_tree_checkpoint_activity`, `replay_build_patched_apk_checkpoint_activity`, and `replay_verify_final_apk_checkpoint_activity`; exclusion assertions in `tests/test_phase_b_*_activity.py`; `src/dfinsta_pipeline/worker.py:34`; `docs/SESSION_HANDOFF.md` Phase B checkpoint; canonical evidence listed in section 5.
 - **Confidence:** high for mechanical direct-Activity execution; medium for the broader release readiness statement.
@@ -128,7 +152,7 @@ Current executable authority resolves 340 to 59 total operations: 45 Smali edits
 ### Porting and patch invariants
 
 1. Diff independent clean stock and modified decodes. `tools/reconstruction/inventory.py` resolves classes by in-file `.class` descriptor and strips `.line`, comments, and blank lines for comparison. Never derive a delta from an already overlaid tree.
-2. Map behavior, not old obfuscated filenames. Prefer stable named types/interfaces and endpoint strings, then structural shape, then numeric constants. `docs/FINDINGS.md` is useful working-tree evidence, but it is currently untracked; `docs/DFINSTA_1.4.1_DELTA.md` and `docs/PORT_430_MAPPING.md` are the tracked maps.
+2. Map behavior, not old obfuscated filenames. Prefer stable named types/interfaces and endpoint strings, then structural shape, then numeric constants. `docs/FINDINGS.md` is useful working-tree evidence, but it is ~~currently untracked~~ **tracked since 2026-08-01**; `docs/DFINSTA_1.4.1_DELTA.md` and `docs/PORT_430_MAPPING.md` are the tracked maps.
 3. Reuse the target decode's exact path after resolving the descriptor. Obfuscated classes can move across `smali_classesN`, and Windows apktool can add unstable `.N` filename suffixes for case collisions.
 4. Apply narrow instruction sequences. `patches/anchored_patches.json` ignores `.line` and blank-line noise, enforces exact anchor and marker counts, is idempotent, and rejects missing, duplicate, or partially applied state.
 5. Never copy a complete old Instagram host class forward. Whole-class overlays are allowed only for the approved custom code bundles identified by exact source manifests.
@@ -396,7 +420,7 @@ Do not stage, revert, normalize line endings, or “clean up” those pre-existi
 | Minimal resource-free 430 port | `dfinsta_source_430/`, port docs/tests/device contract | complete for current approved feature subset |
 | Phase A durable gate and executor foundation | commits/history through `docs/ADK_PIPELINE_PLAN.md`, Phase A tests | implemented; production deployment gaps remain |
 | Target-neutral Phase B compiler/apply/backend/verifier | `pipeline_specs/`, `src/dfinsta_pipeline/`, 440-test suite | implemented |
-| Ledger-owned framework/decode/apply/build/final verification | commits `7bc5e09` through `609bacf`, real evidence above | mechanically proven, intentionally unregistered |
+| Ledger-owned framework/decode/apply/build/final verification | commits `7bc5e09` through `609bacf`, real evidence above | mechanically proven; ~~intentionally unregistered~~ **registered 2026-07-31** |
 | Handoff/evidence documentation | `b68256e` plus this file | current as of audit |
 
 ### Exact continuation point

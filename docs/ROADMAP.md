@@ -565,11 +565,16 @@ Reordered 2026-08-03. The two items that stood here are done.
    lever. Must follow item 1, because `asyncio.to_thread` adds cancellation points and a
    cancelled `to_thread` does not stop the thread — which is why `apply_port` is already
    wrapped in the `_await_apply_mutation` supervisor.
-3. **Heartbeats (F4), after both.** 66 of 86 query samples on 340 and 113 of 144 on 430 went
-   unanswered, the longest unbroken stretch over nine minutes, and the worker logged 191
-   expired query tasks. Until items 1 and 2 land, a wrapper heartbeater is starved exactly when
-   a heartbeat matters, and a `heartbeat_timeout` sized to a working one would expire and
-   deliver the very cancellation item 1 is about.
+3. ~~**Heartbeats (F4), after both.**~~ **Done 2026-08-05; this entry was stale until
+   2026-08-08.** The reasoning below was right and its conclusion was reached: a wrapper
+   heartbeater is starved while the loop is blocked, so it had to follow items 1 and 2 — and once
+   they landed, `_with_heartbeat` went in (`activities.py`), the replay stages heartbeat every
+   30 s from the event loop, and `_STAGE_HEARTBEAT_TIMEOUT = 300 s` is set on them
+   (`replay_workflow.py:103`). The gate Activities deliberately do **not** heartbeat: they are
+   ledger-and-CAS work bounded at two minutes, so worker loss is detected at `start_to_close`.
+   *The original problem statement, kept because it is the measurement that justified the
+   ordering:* 66 of 86 query samples on 340 and 113 of 144 on 430 went unanswered, the longest
+   unbroken stretch over nine minutes, and the worker logged 191 expired query tasks.
 4. ~~**Port 441 when it exists.**~~ **Done 2026-08-07.** 7/7 resolved, **0 agent invocations**,
    own assessment recorded, device-proved at **4 of 7 release-ready**. The third cost point reads
    `at_floor` rather than `falling` — 0 cannot fall — which is why the verdict gained that case.

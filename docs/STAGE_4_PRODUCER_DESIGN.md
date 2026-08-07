@@ -157,7 +157,12 @@ Conditions that would reproduce that trap:
 - **U5** — anything run-scoped only the driver knew: index path, decode path, clock,
   `--out`.
 - **U6** — an over-long or malformed run id.
-- **U7 — and this one bites even if U1–U6 are solved.** The client structurally
+- **U7 — ~~and this one bites even if U1–U6 are solved~~. RETRACTED**, see
+  `docs/ANSWERING_THE_FEATURE_GATE.md:148-155`, which records U7 as *"overstated on
+  `DerivedSubject`"* and F10/U1 as already stale. `GateKind.payload` is the seam that closed it.
+  **The tail of this bullet is still open** and is the one live item in this file: the CAS-write
+  capability, restated at the end of §F. Marked 2026-08-08. The original text follows.
+  The client structurally
   cannot submit this gate's response today. `submit_answer` sends a bare
   `GateDecision` (`submission.py:720-722`) while the feature gate's payload is
   `FeatureGateSubmissionV1 {decision, dispositions: ArtifactRef}`. `Answer` holds a
@@ -178,10 +183,14 @@ a gate that is answerable in a test and unanswerable in practice.
 
 ## F. Surprises worth knowing before touching this
 
-1. **Nothing computes a stage 4a assessment — not even the driver.** `driver.py`
-   never imports `assessment`; the only importer in the tree is
-   `tests/test_assessment.py`. The stage has no CLI and no caller. Stage 3 is the
-   same: `surface_diff.py` is a standalone CLI the driver never invokes.
+1. ~~**Nothing computes a stage 4a assessment — not even the driver.**~~ **Closed 2026-08-03**
+   by `assessment_record.py`, which recomputes the document from admitted bytes, puts it in CAS
+   and files the run-keyed row; the driver calls it from the `assess` stage. *The second half is
+   still true and is deliberate:* `surface_diff.py` remains a standalone CLI the driver never
+   invokes, and an audit settled that it must stay that way — 44 of its 105 candidates are
+   permalink spellings of one already-blocked surface, and putting 105 candidates through a gate
+   proven at 4 would turn "every candidate must be ruled on" into a rubber stamp.
+   `tests/test_open_items.py` asserts it still has no importer.
 2. **`driver.py` has an `assessments` artifact, an `assess()` and an `Assessment` —
    all of them the *other* ones**, from `.proposals` (`driver.py:73-80, 317-319,
    655-675`). Grepping the driver for stage 4a finds four hits and none is stage 4a.

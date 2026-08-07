@@ -1,6 +1,13 @@
 # Replay Workflow Registration — Design
 
-Status: draft for independent review. No `workflow.py` or `worker.py` change has been made.
+Status: **the design landed.** Registration was committed on 2026-07-31 and there are now four
+registered workflows (`PortRunWorkflow`, `ReplayRunWorkflow`, `FeatureAssessmentRunWorkflow`,
+`HookRetirementRunWorkflow`). §1–§3a below are the *proposal* and are preserved as written; the
+dated appendices §3b-corrected through §3j retract and supersede them section by section, and
+each says so. **Read the appendices before believing any status line in §1–§3a.**
+
+*This header said "draft for independent review. No `workflow.py` or `worker.py` change has been
+made" until 2026-08-08 — for eight days after the change, in the first line of the file.*
 Author pass: 2026-07-31, at `b6feddf`.
 
 This document decides how the five proven replay checkpoint Activities enter the durable
@@ -479,7 +486,13 @@ stale attempt directories, and a build workspace holds two APKs and a decoded tr
 update to `replay_workflow.py`'s retry-policy rationale, which currently argues from quarantine
 being what makes attempt 2 fail closed.
 
-## 3e — the liveness guard, designed and not yet built (2026-08-05)
+## 3e — the liveness guard, **built** (2026-08-05; heading corrected 2026-08-08)
+
+*Was headed "designed and not yet built". It was built the same day and the heading was never
+changed.* `executor.ProcessNotReaped` and `executor.process_not_reaped()` exist, and
+`activities._releasable` (`activities.py:216`) is the rule that chooses release over quarantine:
+`isinstance(error, asyncio.CancelledError) and not process_not_reaped(error)`. Pinned by
+`tests/test_phase_a_executor.py:535` and `tests/test_phase_b_cancellation.py`.
 
 §3d established that releasing a cancelled operation is safe *provided attempt 1 is dead*, and
 that `claims.py` gets that guarantee from a human. An automatic release has to get it from the
@@ -828,6 +841,11 @@ wrong permissions produced a traceback where the contract says `refused: …`, e
 the third module to ship this exact gap.
 
 ## 3b. Known follow-ups, deliberately not done in this slice
+
+> **All four of F1–F4 have since been closed** (F1 §3c, F2 §3c, F3 §3d/§3e, F4 §3g). This section
+> is kept verbatim as the record of what was believed on the day, per the rule at the top of the
+> appendices — but a reader who arrives here without having read §3c–§3j will take "**F4. Still no
+> heartbeats**" below as a live status line, and it is not. Marker added 2026-08-08.
 
 **F1. The harness and the Workflow derive different verification-gate ids.**
 `tests/integration/test_real_replay_harness.py::_verification_request_and_decision` names ids

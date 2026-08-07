@@ -113,7 +113,7 @@ resolves mechanically, **no agent runs at all**.
 | 0 Load, 1 Extract, 2 Index | done, driven by `driver.py` |
 | 3 Surface diff | done — `surface_diff.py` |
 | 4a Assess | done — `assessment.py` |
-| 4b Gate 1 contracts | done — `feature_gate.py`. **Nothing raises it, and nothing can**: no producer joins stage 4a to CAS |
+| 4b Gate 1 contracts | **done and raisable** — `feature_gate.py` + `assessment_record.py` (producer, run-keyed row, and `raise_gate` starter) + `FeatureAssessmentRunWorkflow` (registered, PINNED) + `FEATURE_ASSESSMENT_GATE` in `submission.GATE_KINDS`. *This cell read "nothing raises it, and nothing can" until 2026-08-08 — six weeks after the producer landed and in the most recently refreshed table in the repo, which is exactly where a reader trusts it.* |
 | 5 Resolve | done — **7 of 7 hooks resolve mechanically on 430, 439 *and* 440, hosts included**. `kind: "by_anchor"` retired the last two `by_agent` fingerprints: the anchor itself selects exactly one class per decode. 440 is the transfer test — it arrived *after* the fingerprints were written and each anchor still selected 1 class of 182,479 |
 | 5 · capture supply | done — `capture_supply.py`. A payload capture the anchor cannot bind is filled by a supplier chain, deterministic first, agent as fallback. A decline is a returned value; a failure is an exception |
 | 5a/5b Proposer + verifier | done, and the full k-of-n + verifier chain has run for real: 2-of-3 on the host, 1-of-3 by effect, both verifiers failed to refute — one signal passed, one did not, gate correctly shut |
@@ -200,7 +200,7 @@ old names still exist as unrelated classes.
 ## The point of stage 10
 
 **An agent's finding must become a deterministic rule.** This is the whole game,
-and it is why Manifest Update — currently unbuilt — is worth more than anything
+and it is why Manifest Update — the write-back half, still ad hoc; `manifest_update.py` is the decision-memory half and is built — is worth more than anything
 left in stage 5.
 
 The five `robust` hooks were originally found by hand and by agents. They are
