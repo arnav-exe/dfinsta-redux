@@ -47,6 +47,7 @@ entirely on the sandbox.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -271,7 +272,9 @@ class RetirementGateRequestV1:
             "schema_version": self.schema_version,
             "run_id": self.run_id,
             "gate_id": self.gate_id,
-            "docket": self.docket.to_dict(),
+            # `dataclasses.asdict`, because `ArtifactRef` has `from_dict` and no
+            # `to_dict` — matching how `feature_gate` serialises the same type.
+            "docket": dataclasses.asdict(self.docket),
             "version": self.version,
             "policy_revision": self.policy_revision,
             "allowed_actor": self.allowed_actor,
@@ -454,7 +457,7 @@ class RetirementGateSubmissionV1:
                 "rationale": self.decision.rationale,
                 "issued_at": self.decision.issued_at,
             },
-            "rulings": self.rulings.to_dict(),
+            "rulings": dataclasses.asdict(self.rulings),
         }
 
     @classmethod
@@ -532,7 +535,7 @@ class RetirementRunResultV1:
             "run_id": self.run_id,
             "state": self.state,
             "decision_id": self.decision_id,
-            "rulings": self.rulings.to_dict() if self.rulings else None,
+            "rulings": dataclasses.asdict(self.rulings) if self.rulings else None,
         }
 
     @classmethod
