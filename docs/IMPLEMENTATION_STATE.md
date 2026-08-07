@@ -417,7 +417,8 @@ Stage numbers refer to `pipeline_flowchart.md`.
 | **8 Static verify** | **done, target-neutral, producing evidence, and the release gate now checks the run's own topology** | `tools/verify/verify_build.py` (host-hook map supplied per run); `driver.static_verified_claims` |
 | **9 Runtime verify** | **done, three probe kinds + per-hook identity** | `src/dfinsta_pipeline/probes.py`, `runtime_identity.py` |
 | 10 Decision memory / cost ledger | **done** | `manifest_update.py`, `agent_cost.py` (the `agent_cost report` verdict reads `falling`) |
-| **11 Report** | **done 2026-08-06** — first run: 2 of 7 hooks release-ready | `src/dfinsta_pipeline/final_report.py` (+73 tests) |
+| **11 Report** | **done 2026-08-06** — 440 reads 2 of 7, 441 reads 4 of 7 | `src/dfinsta_pipeline/final_report.py` (+73 tests) |
+| **11a Expectation** | **done 2026-08-08** — the count is now an assertion, not a printout; a lost hook exits 3 | `src/dfinsta_pipeline/expectation.py`, `manifest/RETIREMENTS.md`, `tests/test_expectation_corpus.py` |
 | Durable orchestration | `ReplayRunWorkflow` **run for real on a live server**, 340 and 430 | `src/dfinsta_pipeline/` |
 
 **The driver** is `python -m dfinsta_pipeline.driver <stock.apk> --out <dir>`. It runs
@@ -889,6 +890,103 @@ latest-run rule its own docstring states, `recorded_at` compared across the two 
 ledger actually holds (`+00:00` and `Z`), and `render([])` raising `IndexError`. **Five of the
 seven are the module mishandling its own inputs**, not anything about Instagram — a reporting
 tool reads whatever accumulated on disk from several writers over months.
+
+## The release-ready count is an assertion now, not a printout
+
+2026-08-08. `final_report` says 441 reads **4 of 7**. `history` prints that beside 440's 2 and
+439's 0. Neither *fails* when it falls — and the sentence a reader keeps out of "4 of 7
+release-ready" is "4". If 442 reads 3 of 7, both tools are equally calm about it.
+
+`src/dfinsta_pipeline/expectation.py` makes the assertion the other two deliberately refuse to:
+
+    every hook release-ready on N-1 is release-ready on N,
+    unless a human recorded a decision to retire it.
+
+    python -m dfinsta_pipeline.expectation            # sweep every consecutive pair
+    python -m dfinsta_pipeline.expectation --version 441
+
+**Derived, never declared.** There is no expected count in the module, in a config file, or on
+the command line. A declared expectation has exactly one repair when it fails, that repair takes
+one character, and in a diff it is indistinguishable from a legitimate change: edit `4` to `3`.
+Deriving it from the previous port's committed evidence leaves two ways to lower it — make the
+hook pass again, or append a row to `manifest/retirements.jsonl`, which the reader refuses unless
+it names a human, a decision id and a reason. `Hook.status` was rejected as the lever for the
+same reason one level down: `"active"` → `"retired"` is that same one-line edit with no record of
+who decided or why.
+
+**A set, not a number.** `4 → 3` says a port got worse; `set_app_context is no longer
+release-ready` says what to go and look at. It also survives the hook set changing size, which it
+already has — 439 carries 10 hook ids and 440 carries 7, so a count comparison across that pair
+was never meaningful in the first place.
+
+**Exit 3, deliberately not 1.** `final_report` already exits 1 for "incomplete", and incomplete
+is this project's *normal* state: three hooks have never passed a runtime probe on any version,
+so 441's honest best is 4 of 7. A drop sharing an exit code with the condition that is true on
+every successful port is a gate nobody can see.
+
+**Run on the real corpus, both directions falsified.** The sweep passes today and shows the
+`good-news-takes-two-versions` asymmetry playing out exactly as predicted: 440's two gains
+(`set_app_context`, `tigon_url_block`) became 441's expectation, and 441 held both while adding
+two of its own, which are reported as **UNCONFIRMED** because a hook cannot become release-ready
+in the port that fixes it. Then, against copies of the corpus: flipping `set_app_context`'s
+differential to `failed` produces *"differential: failed — set_app_context passed its identity
+probe on 440 and FAILED it on 441"* and exit 3; deleting every 441 claim about `tigon_url_block`
+produces the louder *"NO CLAIM AT ALL on 441 … it was removed from the manifest, or its evidence
+was never published"* and exit 3. Those two need opposite responses, so they are worded
+differently rather than counted together.
+
+**It has a consumer, which is the part this project keeps getting wrong.**
+`tests/test_expectation_corpus.py` runs the sweep over `manifest/` in the ordinary suite, so a
+port that drops a hook and commits its evidence turns the suite red in the run everyone does
+anyway — `final_report` and `history` are still invoked only by hand. The corpus test also pins
+`{439, 440, 441}` as having evidence and asserts that **every full-corpus version was actually
+compared**, because deleting an evidence file makes a pair uncomparable and a sweep of nothing
+passes vacuously. That is `absence-assertions-need-positive-controls` applied to the guard
+itself.
+
+**Two defects, found by 35 out-of-tree mutations rather than by 95 tests.** An independent agent
+wrote `tests/test_expectation.py` and then mutated the module in a scratch copy to prove each test
+bit; all 35 mutations were caught, and writing them surfaced two things no test had asked about:
+
+* **`--json` silently dropped the pairs it could not check.** `sweep` returns the skipped pairs
+  precisely so a pair nobody checked is never mistaken for one that passed, and `render_sweep`
+  prints a NOT CHECKED block. The machine-readable form — the one a release script actually gates
+  on — had no such field and exited 0. **The human view was the honest one and the automatable
+  view was the silent one, which is exactly the wrong way round.** `--json` now emits an object
+  with `comparisons` and `not_checked` rather than a bare list.
+* **A retirements row that is not a JSON object left as a traceback.** `row.get("record", row)`
+  on `null`, `3` or `[1, 2]` raises `AttributeError`, which `sweep` does not treat as a skip and
+  `main` does not catch — so one of the two ways to be malformed had a path and a line number and
+  the other had neither. Third module to ship that gap after `history`.
+
+And one sharp edge fixed: **`--previous` used to change which evidence the port was read from**,
+not just whose bar it was measured against. `--version 442 --previous 440` looked for
+`differentials/440-442.jsonl`, found nothing, and reported 442 as having lost every hook — with
+the reason `differential: no claim recorded`, true of a file that was never supposed to exist. It
+failed in the safe direction for a fabricated cause. A port's own evidence is now always assembled
+from its true predecessor.
+
+The agent also found that the `ValueError` arm of `main`'s refusal channel is live for a reason
+the comment got wrong: `--baseline nope` never reaches `int()` because `versions_with_evidence`
+guards it, but `\d+` matches a number of any length while CPython refuses to parse an int past
+4300 digits — so a 4301-digit `--version` is the real path. The comment now says so.
+
+**The limit worth stating: a pair with no evidence is skipped, not failed.** The sweep can only
+compare versions whose evidence is committed, so a port that never runs its device session leaves
+`manifest/runtime_evidence/<N>.jsonl` absent, the pair is skipped, and the previous pairs still
+pass. That is correct mid-port — the driver publishes static evidence at build time and the
+device session lands hours later — and it is a real hole at release time, because "not measured"
+and "measured and fine" are the same silence from here. Nothing distinguishes them from the file
+system alone; the signal that would is a *release* having happened for that version, and this
+repo keeps no record of releases. So the skip is listed in the output rather than hidden, and the
+gate this closes is "a hook silently stopped being release-ready", not "a port shipped without
+being measured".
+
+**What is not built: nothing produces a retirement.** `manifest/RETIREMENTS.md` specifies the
+row and `expectation` reads it, but there is no gate that writes one, so today the only way past
+a drop is to fix the hook. That is the right default and the wrong end state — a genuinely
+deprecated hook would fail forever. The producer is the next item, on the feature-gate pattern,
+and it is tracked in "Known open items" with a test that fails when it lands.
 
 ## The three hooks that have never passed a probe, re-derived on 441
 
@@ -1627,6 +1725,14 @@ semantically, not bitwise, reproducible".
   340 and 430 both completed against a live Temporal server, driven by
   `tests/integration/test_registered_replay_harness.py`. Left in place because the sentence it
   replaces was true for three weeks and the list is read for what is *not* done.
+- **Nothing produces a retirement row.** `manifest/retirements.jsonl` is the only legitimate
+  way to lower the release-ready expectation, `expectation.read_retirements` reads it and
+  `manifest/RETIREMENTS.md` specifies it — but no gate writes one, so a genuinely deprecated
+  hook would fail the expectation for ever. The producer is the feature-gate pattern applied to
+  retirement: Temporal for the multi-day human wait, an agent to investigate and draft, a human
+  to rule, landing in the manifest for the *next* port. Explicitly **not** a gate inside the
+  port: if retirement blocked a port, the fastest way past a red build would be to approve the
+  retirement.
 - `load_decoded_tree` still runs on the event loop inside the decode and build checkpoint
   Activities (residual 5% and 17% blocked on a real port, down from 82% and 62%). The gate
   stage, which was 100%, now derives in a thread. The primitive cannot be threaded at its own

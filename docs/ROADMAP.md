@@ -5,7 +5,9 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-07 (seventh pass: Instagram 441 ported for zero agent invocations and was
+Last updated 2026-08-08 (eighth pass: the release-ready count is now an *assertion* rather than a
+printout — `dfinsta_pipeline.expectation` derives what a port owes from the previous port's committed
+evidence and fails when a hook is lost. Seventh pass: Instagram 441 ported for zero agent invocations and was
 device-proved at 4 of 7 release-ready — and the session found the release gate had been verifying
 against a hard-coded DEX topology for three versions, and the signing env pointing at a
 superseded keystore that only the certificate pin caught).
@@ -571,9 +573,27 @@ Reordered 2026-08-03. The two items that stood here are done.
 4. ~~**Port 441 when it exists.**~~ **Done 2026-08-07.** 7/7 resolved, **0 agent invocations**,
    own assessment recorded, device-proved at **4 of 7 release-ready**. The third cost point reads
    `at_floor` rather than `falling` — 0 cannot fall — which is why the verdict gained that case.
-   What moves now is **selectivity, not the count**: the Reels margin went 5→1, 7→1, **4→1**,
-   NARROWING for the first time. That is the number to watch at 442.
-5. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
+   What moves now is **selectivity, not the count**: the Reels margin reads 5→1, 7→1, **4→1**.
+   Three points is not a trend — see `the-trend-baseline-starts-at-439`, a standing owner
+   instruction — so read the column, do not name the slope: `python -m dfinsta_pipeline.history`.
+   That is the number to watch at 442.
+5. ~~**Make a drop in the release-ready count fail loudly.**~~ **Done 2026-08-08**,
+   `dfinsta_pipeline.expectation`. The expectation is the set of hooks release-ready on N-1
+   minus any with a recorded retirement, **derived and never declared**: there is no target
+   number in this repo, because a declared one has a one-character repair that is
+   indistinguishable in a diff from a legitimate change. A set rather than a count, so the
+   output names the hook to go and look at, and so it survives the hook set changing size —
+   which it already has, 439 carrying 10 ids to 440's 7. Exit 3, deliberately not 1:
+   `final_report` already exits 1 for "incomplete", and incomplete is this project's normal
+   state. `tests/test_expectation_corpus.py` runs it over `manifest/` in the ordinary suite, so
+   it is not a fourth command nobody invokes.
+6. **Hook retirement as a recorded human decision** — the FEATURE-GATE pattern, and the next
+   thing to build. `manifest/RETIREMENTS.md` specifies the row and `expectation` already reads
+   it; what is missing is the durable gate that produces one. Temporal for the multi-day human
+   wait, an agent to investigate and *draft*, a human to rule, landing in the manifest for the
+   *next* port. **Not a gate inside the port**: if retirement blocked a port, the fastest way
+   past a red build would be to approve the retirement.
+7. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference — now an escalation path rather than the normal one, since 440 resolved all
    seven hooks with no proposals at all.
 

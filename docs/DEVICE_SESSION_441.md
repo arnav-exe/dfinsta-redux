@@ -63,6 +63,29 @@ Record every shape 440 holds, so 442 is not thin:
 4. Anything else cheap to capture. The cost of an extra shape is minutes; the cost
    of a missing one is a comparison 442 can never make.
 
+## After the session — the step that turns a measurement into a gate
+
+Recording claims is not the end of it. Once `manifest/runtime_evidence/<version>.jsonl` is
+committed alongside the static evidence the driver published, run:
+
+    python -m dfinsta_pipeline.expectation
+
+It derives what this port owed the last one — the set of hooks that were release-ready on N-1,
+minus any with a recorded retirement — and **exits 3 if one was lost**. There is no expected
+count anywhere to adjust; see `manifest/RETIREMENTS.md` for the only legitimate way to lower it.
+
+Read the reasons before the number. A `differential` verdict of `failed`/`regressed` is a real
+regression in this port. `inconclusive/no_current` means the hook was never measured, and the
+thing to fix is this checklist, not the hook — which is exactly why step 4 above says to record
+every shape.
+
+Newly release-ready hooks print as **UNCONFIRMED**, and that is not hedging: a hook cannot become
+release-ready in the port that fixes it, because `differential` needs a passing baseline to
+regress from. They become the next port's expectation, and the next port is what confirms them.
+
+`tests/test_expectation_corpus.py` runs the same sweep in the ordinary suite, so forgetting this
+step does not lose the check — it only delays it.
+
 ## Traps this session has hit before
 
 - **A subset build is not a usable app.** It removes the settings dialog, which is

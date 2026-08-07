@@ -85,6 +85,39 @@ class DisconnectionTests(unittest.TestCase):
         """
         self.assertEqual(importers_of("surface_diff"), set())
 
+    def test_nothing_produces_a_retirement_row(self):
+        """`retirements.jsonl` is read by the expectation and written by nobody.
+
+        A recorded retirement is the only legitimate way to lower the release-ready
+        expectation — `expectation.read_retirements` consumes it and
+        `manifest/RETIREMENTS.md` specifies the row — but no code path emits one.
+        Until something does, a genuinely deprecated hook fails the expectation for
+        ever and the only escape is to hand-write the row, which is precisely the
+        unreviewed edit the derivation exists to prevent.
+
+        This is the same both-ends disconnection the feature gate shipped three
+        times (`the-gates-rulings-have-no-consumer`,
+        `nothing-computes-a-stage-4a-assessment`,
+        `the-post-build-gate-cannot-be-satisfied`), caught this time on the day the
+        consumer was written rather than a fortnight later.
+
+        A *test* fixture writing one is not a producer, so `tests/` is excluded;
+        production code means `src/` and `tools/`. This failing means the
+        retirement gate landed: confirm it, update "Known open items", delete this.
+        """
+        writers = {
+            str(path.relative_to(ROOT))
+            for path in (*(ROOT / "src").rglob("*.py"), *(ROOT / "tools").rglob("*.py"))
+            if "retirements.jsonl" in path.read_text(encoding="utf-8")
+        }
+        # The reader is the control. An empty set here would mean the search
+        # itself broke — the string not being found anywhere at all reads
+        # identically to "nothing writes one", and only one of those is the fact
+        # being asserted.
+        self.assertIn("src/dfinsta_pipeline/expectation.py", writers)
+        self.assertEqual(writers, {"src/dfinsta_pipeline/expectation.py"}, sorted(writers))
+        self.assertFalse((ROOT / "manifest" / "retirements.jsonl").exists())
+
     def test_claims_py_still_has_no_production_importer(self):
         """The wedged-claim recovery tool is invoked by a human, never by code.
 
