@@ -1037,7 +1037,10 @@ class BuildCaseTests(RetirementTestCase):
         with self.assertRaises(RetirementError) as caught:
             self.build(CONTEXT, "439")
 
-        self.assertIn("not assessed on 439", str(caught.exception))
+        # The message moved with the ceiling: bounded at 439 the series holds only
+        # 439, which is not computable, so the hook has no standing at all rather
+        # than a standing that omits 439.
+        self.assertIn("no assessable evidence", str(caught.exception))
 
     def test_a_version_that_is_not_a_number_is_refused(self):
         self.ordinary_corpus()
@@ -1645,22 +1648,41 @@ class BindingTests(RetirementTestCase):
         """The realistic version, and the reason the binding exists at all.
 
         The case is raised on Monday against 441's standing, the human answers on
-        Tuesday, and 442's evidence lands in between. The standing in the case
+        Tuesday, and **441 is re-measured** in between. The standing in the case
         they read no longer describes the hook, so the answer is refused rather
         than applied to a picture nobody saw.
+
+        Re-measuring 441 and not porting 442, which is what this test used to do:
+        a `Standing` is now bounded at its own case's version, so a later port
+        deliberately does *not* move an earlier case. That property has its own
+        test; this one is about evidence changing underneath a reader.
         """
         raised = self.build(DISCOVER, "441")
         _, ruling = self.signed(raised)
 
-        self.port("442", {CONTEXT: triple(), DISCOVER: triple(runtime_probe="failed")},
-                  previous="441")
+        self.port("441", {CONTEXT: triple(), DISCOVER: triple()}, previous="440")
         rebuilt = self.build(DISCOVER, "441")
 
         self.assertNotEqual(case_sha256(rebuilt), case_sha256(raised))
-        self.assertEqual(rebuilt.standing.assessed_on, ("440", "441", "442"))
         with self.assertRaises(RetirementError):
             publish(rebuilt, ruling, root=self.tmp)
         self.assertEqual(self.rows(), [])
+
+    def test_a_later_port_does_not_move_an_earlier_case(self):
+        """A docket raised before the next port must survive it.
+
+        `Standing` used to describe the whole series, so porting 442 changed what
+        a 441 case said and a docket recorded on Monday could not be re-derived on
+        Thursday. It failed closed rather than admitting anything wrong, and a
+        gate answerable only until the next port is still a broken gate.
+        """
+        before = self.build(DISCOVER, "441")
+        self.port("442", {CONTEXT: triple(), DISCOVER: triple(runtime_probe="failed")},
+                  previous="441")
+
+        after = self.build(DISCOVER, "441")
+        self.assertEqual(case_sha256(before), case_sha256(after))
+        self.assertEqual(("440", "441"), after.standing.assessed_on)
 
     def test_a_ruling_for_the_same_hook_at_another_version_is_not_interchangeable(self):
         """Two honest cases, one honest ruling, and it belongs to only one of them."""

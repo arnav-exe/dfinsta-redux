@@ -4030,6 +4030,19 @@ async def admit_retirement_rulings_activity(
     """
 
     configured = runtime()
+    # The Workflow branches on this before invoking the Activity, so on the
+    # supported path it cannot arrive here as anything else. Checked anyway,
+    # because an Activity is reachable independently of the Workflow that
+    # normally calls it, and `validate_submission` deliberately does not judge
+    # the verdict — a `defer` handed straight to this function would otherwise be
+    # admitted as an approval and published as a retirement.
+    if admission.submission.decision.decision != "approve":
+        raise ApplicationError(
+            "Retirement rulings were not approved: the decision is "
+            f"{admission.submission.decision.decision!r}",
+            type="RetirementRulingsNotApproved",
+            non_retryable=True,
+        )
     _, request = _retirement_request(configured, admission.run_id)
     reference = admission.submission.rulings
     body = configured.store.read_blob(reference.sha256, reference.size)

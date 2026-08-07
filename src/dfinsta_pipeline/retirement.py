@@ -240,9 +240,20 @@ class Standing:
 
 
 def standings(
-    root: Path | str = ".", *, baseline: str = BASELINE_VERSION
+    root: Path | str = ".",
+    *,
+    baseline: str = BASELINE_VERSION,
+    ceiling: str | None = None,
 ) -> dict[str, Standing]:
     """Every hook's release-readiness across every assessable version.
+
+    `ceiling` stops the series at a version, and a case built from version N sets
+    it to N. Without it a `Standing` described the whole series including versions
+    *after* the one the case was about, so porting 442 silently changed what a
+    441 case said — and a docket recorded before that port could no longer be
+    re-derived after it, which is the one property the whole run-keyed design
+    exists to provide. It failed closed rather than admitting anything wrong, and
+    a gate that can only be answered before the next port is still a broken gate.
 
     Assembled from `expectation.port_report`, which is `final_report`, which is
     the `EvidenceLedger` — the same answer the release gate reads, reached the
@@ -252,6 +263,10 @@ def standings(
 
     root = Path(root)
     series = versions_with_evidence(root, baseline=baseline)
+    if ceiling is not None:
+        if not _NUMERIC.fullmatch(ceiling):
+            raise RetirementError(f"ceiling {ceiling!r} is not a version number")
+        series = [item for item in series if int(item) <= int(ceiling)]
     ready_by_version: dict[str, set[str]] = {}
     seen_by_version: dict[str, set[str]] = {}
     for index, version in enumerate(series):
@@ -310,7 +325,9 @@ def candidates(
         raise RetirementError(f"{version!r} is not a version number")
     retired = set(read_retirements(root))
     out = []
-    for standing in standings(root, baseline=baseline).values():
+    # Bounded at the version being asked about, so the answer does not change
+    # when a later port lands. See `standings`.
+    for standing in standings(root, baseline=baseline, ceiling=version).values():
         if standing.hook_id in retired:
             continue
         if version not in standing.assessed_on:
@@ -456,7 +473,7 @@ def build_case(
             f"{already.ruled_by} ({already.decision_id})"
         )
 
-    found = standings(root, baseline=baseline).get(hook_id)
+    found = standings(root, baseline=baseline, ceiling=version).get(hook_id)
     if found is None:
         raise RetirementError(
             f"{hook_id} has no assessable evidence on any version at or after "

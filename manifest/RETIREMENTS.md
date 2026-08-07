@@ -18,7 +18,8 @@ python -m dfinsta_pipeline.retirement_record --state-root <dir> raise --run-id r
 python -m dfinsta_pipeline.submission --state-root <dir> show retire-441
 python -m dfinsta_pipeline.submission --state-root <dir> submit retire-441 \
     --verdict approve --rationale "..." --rulings <json> --confirm <hash>
-python -m dfinsta_pipeline.retirement_record --state-root <dir> publish --run-id retire-441
+python -m dfinsta_pipeline.retirement_record --state-root <dir> publish \\
+    --run-id retire-441 --recorded-at <ISO8601>
 ```
 
 **The local path**, for a decision that does not need to outlast the session:

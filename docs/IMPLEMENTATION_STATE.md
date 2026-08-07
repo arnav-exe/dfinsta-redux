@@ -1087,6 +1087,37 @@ completed" — that was true of every disconnected gate this project has shipped
 the published row's `decision_id` is the *gate's* rather than one minted afterwards, that a
 timeout leaves every hook expected, and that a `keep` writes nothing.
 
+**Five more defects, from 53 out-of-tree mutations over the contract and record layers** (52
+caught; the survivor is a genuine equivalent mutant — a version guard whose message is
+byte-identical to the one the call below it already produces). Four were in `retirement_record`
+and every one of them was a promise its own docstrings made and its code did not keep: `main`
+did not catch the plain `ValueError` the ledger raises for an unrecorded run, so a mistyped run id
+was a traceback; `record` said "one error type out of this module" and let `FileNotFoundError`
+through for a missing inputs file; `record` validated neither `run_id` nor `allowed_actor` as
+identifiers, so a row could be filed durably under `"retire 441!"` and then never turned into a
+gate at all — answerable in a test, unanswerable in production, one module and one durable write
+too late.
+
+**The fourth is the one worth remembering.** `_evidence_digests` correctly bounds the operation key
+to evidence at or before the docket's version, and the docstring claims "a docket about 441 is not
+different because 442 was ported" — but every case embeds a `Standing` that `standings()` computed
+over the **whole** series. Porting 442 therefore changed what a 441 case said while its key stayed
+put, so a docket raised on Monday could not be re-derived on Thursday. It failed closed, and a gate
+answerable only until the next port is still a broken gate. `standings()` now takes a `ceiling`.
+
+Recording a retirement had the same shape one axis over — `candidates` excludes an already-retired
+hook, so the docket changed and the key did not — and `retired` is now part of the operation input.
+Between them those two fixes make the adopt-mismatch branch unreachable by data, which is why its
+test now forces it by patching the derivation: it guards against the derivation code changing under
+a recorded operation, and that is still worth guarding.
+
+Two smaller ones closed at the same time: a published row's `recorded_at` was reaching for a key
+the docket document does not have, so every row would have been stamped `admitted:<hex>` instead of
+a time — `publish_admitted` now takes `--recorded-at`, as `rulings.py` does, because this layer must
+not read the clock. And `admit_retirement_rulings_activity` now refuses a non-`approve` decision:
+the Workflow branches on it first, but an Activity is reachable independently of the Workflow that
+normally calls it, and `validate_submission` deliberately does not judge the verdict.
+
 **A defect the end-to-end test found on its first run, and it is the interesting one.**
 `standings()` skipped any version whose readiness was not computable — right for 439, which has no
 static evidence — and the `except` was wide enough to swallow a corpus that was *unreadable*. A

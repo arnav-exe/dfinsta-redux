@@ -51,8 +51,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .assessment import policy_revision as read_policy_revision
-from .contracts import ArtifactRef, canonical_json, canonical_sha256
-from .expectation import versions_with_evidence
+from .contracts import ID_PATTERN, ArtifactRef, canonical_json, canonical_sha256
+from .expectation import read_retirements, versions_with_evidence
 from .history import BASELINE_VERSION, _NUMERIC
 from .ledger import Ledger
 from .retirement import (
@@ -240,8 +240,17 @@ def operation_input(
     evidence: Mapping[str, str],
     investigations_sha256: str,
     policy_revision: str,
+    retired: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """What determines the docket. Everything, and nothing derived from it."""
+    """What determines the docket. Everything, and nothing derived from it.
+
+    `retired` is in here because `candidates` excludes hooks that already have a
+    retirement, so recording a retirement between two otherwise identical
+    recordings genuinely changes the docket. Without it the key would say "same
+    question" while the answer had a case fewer — the operation would adopt the
+    old reference and the mismatch guard would refuse a recording that was
+    entirely legitimate.
+    """
 
     return {
         "run_id": run_id,
@@ -250,6 +259,7 @@ def operation_input(
         "evidence": dict(sorted(evidence.items())),
         "investigations_sha256": investigations_sha256,
         "policy_revision": policy_revision,
+        "retired": sorted(retired),
     }
 
 
@@ -309,8 +319,30 @@ def _record(
     manifest = Path(manifest_path) if manifest_path else root / "manifest" / "hooks.json"
     state_root = Path(state_root)
 
-    manifest_bytes = manifest.read_bytes()
-    investigations_bytes = Path(investigations_path).read_bytes()
+    # Validated BEFORE anything durable is written. `derived_gate_id` refuses a
+    # run id that would not make a valid identifier, and it does so at gate-derivation
+    # time — one module and one durable write too late. A row filed under
+    # `"retire 441!"` resolves happily and then cannot be turned into a gate at
+    # all: answerable in a test, unanswerable in production, which is precisely
+    # the failure that keeps `phase-a-approval` unregistered.
+    for value, label in ((run_id, "run id"), (allowed_actor, "allowed actor")):
+        if not ID_PATTERN.fullmatch(value):
+            raise RecordError(
+                f"{label} {value!r} is not a valid identifier, so no gate could ever "
+                "be raised for it"
+            )
+
+    # Wrapped, because `record`'s own contract is one error type out of this
+    # module and `OSError` is not one of them. `assessment_record` wraps exactly
+    # these input reads for the same reason and deliberately leaves the *later*
+    # mid-write OSError bare; this module had the second half of that design and
+    # not the first, so a library caller got a raw `FileNotFoundError` for a
+    # mistyped path while the CLI happened to be safe.
+    try:
+        manifest_bytes = manifest.read_bytes()
+        investigations_bytes = Path(investigations_path).read_bytes()
+    except OSError as error:
+        raise RecordError(f"cannot read the docket's inputs: {error}") from error
     investigations = read_investigations(investigations_path)
     revision = read_policy_revision(manifest)
 
@@ -337,6 +369,7 @@ def _record(
         _evidence_digests(root, version, baseline),
         hashlib.sha256(investigations_bytes).hexdigest(),
         revision,
+        sorted(read_retirements(root)),
     )
     key = canonical_sha256({"kind": DOCKET_OPERATION_KIND, "input": payload})
     input_sha256 = canonical_sha256(payload)
@@ -460,6 +493,7 @@ def publish_admitted(
     state_root: Path | str,
     run_id: str,
     *,
+    recorded_at: str,
     root: Path | str = ".",
     path: Path | str | None = None,
 ) -> list[str]:
@@ -480,6 +514,8 @@ def publish_admitted(
     state_root = Path(state_root)
     ledger = Ledger(state_root / "ledger.sqlite3", read_only=True)
     store = ContentStore(state_root / "cas")
+    if not recorded_at.strip():
+        raise RecordError("publishing needs a timestamp; this layer must not read the clock")
     document, decision_id = admitted_rulings(ledger, store, run_id)
     recorded = resolve_with(ledger, store, run_id)
 
@@ -502,24 +538,18 @@ def publish_admitted(
             ruled_by=recorded.allowed_actor,
             case_sha256=item.case_sha256,
             decision_id=decision_id,
-            ruled_at=str(recorded.document.get("recorded_at") or "") or _now_from(document),
+            # Supplied by the caller, as `rulings.py --recorded-at` is and for the
+            # same reason: this layer must not read the clock, or a replay
+            # rewrites a line with a new time and no reader can order two records.
+            # The first version of this reached for `recorded.document["recorded_at"]`
+            # with a computed fallback — and a docket document has no such key, so
+            # the fallback was unconditional and every row would have been stamped
+            # `admitted:<hex>` rather than a time.
+            ruled_at=recorded_at,
         )
         publish(case, ruling, root=root, path=path, decision_id=decision_id)
         written.append(item.hook_id)
     return written
-
-
-def _now_from(document: RetirementRulingsV1) -> str:
-    """A stamp for a published row when the docket carries none.
-
-    Not a clock read. This layer must never read the clock — a replay would then
-    rewrite a line with a new time and a reader could not order two records — so
-    the fallback is derived from the document itself and is stable across
-    replays. It is a marker that the gate produced this row, not a wall time, and
-    it is deliberately ugly so nobody mistakes it for one.
-    """
-
-    return f"admitted:{document.sha256[:16]}"
 
 
 def raise_gate(
@@ -614,6 +644,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     publishing.add_argument("--run-id", required=True)
     publishing.add_argument("--retirements", type=Path)
+    publishing.add_argument(
+        "--recorded-at",
+        required=True,
+        help="ISO 8601 stamp for the published rows. Supplied, never read from the "
+        "clock here, so a re-run rewrites the line already on disk",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -633,7 +669,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "publish":
             retired = publish_admitted(
-                args.state_root, args.run_id, root=args.root, path=args.retirements
+                args.state_root,
+                args.run_id,
+                recorded_at=args.recorded_at,
+                root=args.root,
+                path=args.retirements,
             )
             if not retired:
                 print(
@@ -666,7 +706,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.document:
                 print(json.dumps(recorded.document, indent=2, sort_keys=True))
                 return 0
-    except (RecordError, OSError) as error:
+    # `ValueError` alongside the rest: `Ledger.recorded_retirement_docket_for_run`
+    # raises a plain one for a run that was never recorded, which is the most
+    # ordinary way this command is used wrongly — a typo in a run id — and it was
+    # the one that left as a traceback and exit 1 instead of `refused:` and exit 2.
+    # `assessment_record.main`, the model for this, catches `ValueError` too.
+    except (RecordError, ValueError, OSError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2
 

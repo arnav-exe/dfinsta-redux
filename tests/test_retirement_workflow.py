@@ -64,6 +64,8 @@ ALIVE = "set_app_context"
 TEST_DEPLOYMENT_VERSION = WorkerDeploymentVersion("dfinsta-test", "retirement-1")
 
 BUILD = "b" * 64
+#: Supplied to the publisher, never read from a clock here.
+STAMP = "2026-08-08T12:00:00+00:00"
 
 
 def _claim(hook: str, kind: str, version: str, verdict: str, detail: dict) -> str:
@@ -283,7 +285,7 @@ class RetirementGateChainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("completed", result.state)
         self.assertIsNotNone(result.rulings)
 
-        retired = retirement_record.publish_admitted(self.state, RUN_ID, root=self.root)
+        retired = retirement_record.publish_admitted(self.state, RUN_ID, recorded_at=STAMP, root=self.root)
         self.assertEqual([DEAD], retired)
 
         recorded = expectation.read_retirements(self.root)
@@ -314,7 +316,7 @@ class RetirementGateChainTests(unittest.IsolatedAsyncioTestCase):
             result = await handle.result()
 
         self.assertEqual("completed", result.state)
-        self.assertEqual([], retirement_record.publish_admitted(self.state, RUN_ID, root=self.root))
+        self.assertEqual([], retirement_record.publish_admitted(self.state, RUN_ID, recorded_at=STAMP, root=self.root))
         self.assertEqual({}, expectation.read_retirements(self.root))
 
     async def test_an_unanswered_gate_blocks_and_retires_nothing(self) -> None:
@@ -333,7 +335,7 @@ class RetirementGateChainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("blocked", result.state)
         self.assertIsNone(result.decision_id)
         with self.assertRaises(ValueError):
-            retirement_record.publish_admitted(self.state, RUN_ID, root=self.root)
+            retirement_record.publish_admitted(self.state, RUN_ID, recorded_at=STAMP, root=self.root)
         self.assertEqual({}, expectation.read_retirements(self.root))
 
     async def test_a_rejected_gate_retires_nothing(self) -> None:
@@ -348,7 +350,7 @@ class RetirementGateChainTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("rejected", result.state)
         with self.assertRaises(ValueError):
-            retirement_record.publish_admitted(self.state, RUN_ID, root=self.root)
+            retirement_record.publish_admitted(self.state, RUN_ID, recorded_at=STAMP, root=self.root)
 
     async def test_an_unauthorized_actor_is_refused(self) -> None:
         """Checked by the sandbox filter AND by the Activity, not by one of them."""
