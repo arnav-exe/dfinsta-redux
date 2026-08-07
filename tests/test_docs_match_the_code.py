@@ -131,6 +131,24 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
         found = offending_lines("docs/ROADMAP.md", "**Heartbeats (F4)")
         self.assertEqual([], found, "\n".join([""] + found))
 
+    def test_no_document_says_nothing_asserts_a_heartbeat(self) -> None:
+        """A design note's own test-gap list rotted, and an agent survey repeated it.
+
+        `WORKFLOW_REGISTRATION_DESIGN.md` listed "nothing anywhere asserts a
+        heartbeat" among the gaps a future slice would close. It was closed the
+        same week by `tests/test_phase_b_heartbeat.py`, and the list was not
+        updated — so a doc sweep citing that list reported a gap that had not
+        existed for days. Citing a document is not measuring the code.
+        """
+        heartbeat_tests = ROOT / "tests" / "test_phase_b_heartbeat.py"
+        self.assertTrue(heartbeat_tests.is_file())
+        self.assertIn("def test_", heartbeat_tests.read_text(encoding="utf-8"))
+
+        found = offending_lines(
+            "docs/WORKFLOW_REGISTRATION_DESIGN.md", "nothing anywhere asserts a heartbeat"
+        )
+        self.assertEqual([], found, "\n".join([""] + found))
+
     def test_no_document_claims_a_tracked_file_is_untracked(self) -> None:
         """`docs/FINDINGS.md` and `docs/adk_pipeline_design.md` are both tracked."""
 

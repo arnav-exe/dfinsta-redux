@@ -483,7 +483,7 @@ release removes the human check `claims.py` requires. The shape that preserves t
 defence is to keep terminality for exactly the case where the subprocess could not be proven
 dead — the `_clean_up` timeout — and release otherwise. Plus a workspace reaper (nothing removes
 stale attempt directories, and a build workspace holds two APKs and a decoded tree), and an
-update to `replay_workflow.py`'s retry-policy rationale, which currently argues from quarantine
+~~update to `replay_workflow.py`'s retry-policy rationale, which currently argues from quarantine~~ **— done 2026-08-05**; it now argues from `record_effect` being owner-fenced, and says so. Original text:
 being what makes attempt 2 fail closed.
 
 ## 3e — the liveness guard, **built** (2026-08-05; heading corrected 2026-08-08)
@@ -610,9 +610,9 @@ side of it; it adds no heartbeat and changes no ledger semantics. Landing it alo
 responsiveness, 0% to 93%, without opening the server-originated cancellation channel at all.
 Heartbeats still come last, and `DEFAULT_GRACEFUL_SHUTDOWN_SECONDS` must be raised with them.
 
-**Test gaps it would have to close**: `capture_decoded_tree_fd` has no direct unit test at all
+**Test gaps it would have to close** *(partly stale, corrected 2026-08-08 — `tests/test_phase_b_heartbeat.py` exists with 7 tests and guards the `activity.heartbeat()`-inside-`to_thread` trap)*: `capture_decoded_tree_fd` has no direct unit test at all
 (only fault-injection mocks); `_capture_decoded_tree_manifest` is named by no test; the four
-supervisors have one direct test between them; nothing anywhere asserts a heartbeat.
+supervisors have one direct test between them; ~~nothing anywhere asserts a heartbeat~~ **— closed 2026-08-05**.
 
 **A working precedent for the heartbeat itself, found 2026-08-05.** Phase A's `apply_activity`
 is the one Activity in the repo that calls `activity.heartbeat()`, and it does so **from the
