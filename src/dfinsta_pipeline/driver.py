@@ -303,6 +303,38 @@ def hook_symbol_map(
     }
 
 
+#: Where `static_verified` claims outlive their run directory. One file per
+#: version, mirroring `manifest/runtime_evidence/`; see the README there for why
+#: only one evidence kind lives in each.
+STATIC_EVIDENCE = REPOSITORY / "manifest" / "static_evidence"
+
+
+def publish_static_evidence(
+    claims: Sequence[EvidenceClaim], version: str, root: Path | None = None
+) -> Path:
+    """Append a run's `static_verified` claims to the durable per-version file.
+
+    Appended rather than rewritten, following `record_runtime.append` and the
+    ledger's own superseding rule -- a later claim wins, so a re-port adds rows
+    and what was asserted before stays on disk. Duplicate identical claims do not
+    change readiness; verified rather than assumed.
+
+    Only `static_verified` is published. The pre-apply kinds a run also produces
+    are re-derived from the decode every time and the pre-apply gate already
+    refuses to build without them, so persisting them would duplicate a fact
+    rather than preserve one.
+    """
+
+    directory = Path(root) if root is not None else STATIC_EVIDENCE
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{version}.jsonl"
+    with open(path, "a", encoding="utf-8") as handle:
+        for claim in claims:
+            if claim.kind is EvidenceKind.STATIC_VERIFIED:
+                handle.write(json.dumps(claim.to_dict(), sort_keys=True) + "\n")
+    return path
+
+
 def static_verified_claims(
     symbols: Mapping[str, list[list[str]]], verification: Mapping[str, Any]
 ) -> list[EvidenceClaim]:
@@ -1158,14 +1190,30 @@ def _run_stages(
         static_claims = static_verified_claims(
             hook_symbol_map(report, index, hooks), verification
         )
-        for claim in static_claims:
-            ledger.record(claim)
+        recorded = [ledger.record(claim) for claim in static_claims]
         passed = sum(1 for claim in static_claims if claim.verdict is Verdict.PASSED)
         artifacts["static_verified"] = f"{passed}/{len(static_claims)}"
         print(
             f"[build] static_verified: {passed} of {len(static_claims)} hook(s)",
             flush=True,
         )
+        # Published somewhere that survives the run directory.
+        #
+        # `static_verified` is one of the three kinds required after a build, and
+        # it used to be written ONLY to `<run>/evidence.jsonl` under gitignored
+        # `work/` -- so the artifact needed to answer "is this release-ready"
+        # lived exactly as long as a scratch directory that `reaper.py` exists to
+        # delete. Recomputed from committed data alone, 441 read 0 of 7; with the
+        # run directory present it read 4 of 7. Same gap `manifest/differentials`
+        # closed the day before, one evidence kind over.
+        #
+        # `recorded` and not `static_claims`: the ledger applies the run's
+        # attribution on the way through, so publishing the inputs would write
+        # unattributed rows and lose the join to version and build.
+        if attribution is not None:
+            published = publish_static_evidence(recorded, attribution.version)
+            artifacts["static_evidence"] = str(published)
+            print(f"[build] published static evidence to {published}", flush=True)
 
     outstanding = ledger.report("post_build")["escalations"]
     if outstanding:
