@@ -603,16 +603,30 @@ def main() -> None:
 
     destination = histories_directory()
     registered = {fixture.filename for fixture in FIXTURES}
-    digests: dict[str, str] = {}
+    # TWO PHASES, and the split is the whole point. Checking inside the write
+    # loop protected only the offending file: a leak planted in the fixture that
+    # sorts last was correctly refused *after* five of the seven had already been
+    # overwritten, leaving the corpus half-rewritten by a run that reported
+    # "refusing to write". A guard placed correctly and cancelled by its ordering
+    # is a failure this project has shipped before.
+    refusals: list[str] = []
     for filename, text in sorted(captured.items()):
         found = leaks(text)
         if found:
-            # Refused, not written. A leak is cheap here and permanent once
-            # committed, and "regenerate the corpus" is exactly the act this
-            # project must not learn to perform casually.
-            raise SystemExit(f"{filename}: refusing to write, leaked {sorted(set(found))}")
+            refusals.append(f"{filename}: leaked {sorted(set(found))}")
         if filename not in registered:
-            raise SystemExit(f"{filename}: add a Fixture row to tests/history_corpus.py first")
+            refusals.append(
+                f"{filename}: add a Fixture row to tests/history_corpus.py first"
+            )
+    if refusals:
+        # Every refusal, not the first. Regenerating is slow; discovering the
+        # second problem on the next run is a wasted ninety seconds.
+        raise SystemExit(
+            "refusing to write ANY fixture:\n  " + "\n  ".join(refusals)
+        )
+
+    digests: dict[str, str] = {}
+    for filename, text in sorted(captured.items()):
         # No trailing newline: `WorkflowHistory.to_json()` does not emit one, and
         # the fixture captured before this tool existed does not carry one.
         (destination / filename).write_text(text, encoding="utf-8")

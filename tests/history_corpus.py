@@ -187,10 +187,37 @@ _FORBIDDEN_PATTERNS = (
     # a leading slash, because a bare `tmpab12cd` in a payload is still a
     # reference to a directory that existed on one machine for one minute.
     re.compile(r"\btmp[a-z0-9_]{6,}"),
-    # Temporal's default identity, `pid@hostname`. The capture tool rewrites
-    # every identity field; this is what proves it, and it also catches an
-    # identity arriving somewhere new in a future SDK version.
-    re.compile(r"\b\d{2,}@[A-Za-z0-9._\-]+"),
+    # `user@host` in ANY shape, not just Temporal's `pid@hostname`. The pattern
+    # required a numeric prefix, so `sam@build07` scanned clean -- and the
+    # identity-field assertion that would have caught it only looks at fields
+    # named `identity`.
+    re.compile(r"\b[A-Za-z0-9._\-]+@[A-Za-z0-9][A-Za-z0-9._\-]*"),
+    # A home directory by shape rather than by owner. `~/` and `/data/users/x/`
+    # and `/srv/…/workspace/` all scanned clean, and the two values that WERE
+    # caught were caught by the literal "arnav" -- a guard that silently narrows
+    # the day the owner changes.
+    re.compile(r"~/[A-Za-z0-9._\-]"),
+    re.compile(r"/(?:home|Users|data/users|export/home)/[A-Za-z0-9._\-]+"),
+    re.compile(r"/run/user/\d+"),
+    re.compile(r"\buid=\d+"),
+    # An absolute path into a build or checkout root, which is what a CI capture
+    # would leak.
+    re.compile(r"/(?:srv|opt|build|workspace|jenkins)/[A-Za-z0-9._\-]+"),
+    # A bare hostname is not recognisable in general, so this catches the two
+    # shapes that actually appear: a dotted internal name, and a container id.
+    re.compile(r"\b[a-z0-9\-]+\.(?:corp|internal|local|lan)\b"),
+    # NO IPv4 pattern, and it was tried. Bounding each octet to 0-255 is not
+    # enough: an Instagram version string like `441.0.0.43.81` contains the
+    # perfectly valid dotted quad `0.0.43.81`, so the scan flags a version number
+    # this repository handles constantly. Same judgement as the hex case below —
+    # a scan that cries wolf on ordinary content is a scan somebody turns off,
+    # and an address in a replay History is a marginal leak vector next to that.
+    # NO bare-hex pattern. A container id is hex, and so is every digest this
+    # corpus legitimately carries — CAS URIs, build hashes, the fixtures' own
+    # pins. Adding one flagged all 8 fixtures on real content, and a leak scan
+    # that cries wolf on every hash is a leak scan nobody runs. A bare hostname
+    # is likewise unrecognisable in general; only the dotted internal form above
+    # is worth matching.
 )
 
 
@@ -209,7 +236,14 @@ def scannable_surface(history_json: str) -> str:
         try:
             bodies.append(base64.b64decode(blob[1], validate=True).decode("utf-8", "replace"))
         except ValueError:
-            continue
+            # The RAW blob, not `continue`. Dropping it removed the value from the
+            # search surface altogether, so a string that is base64-alphabet-legal
+            # but not valid base64 -- `/home/arnav/AI/dfinsta` is exactly that --
+            # was elided by the substitution above and then never added back, and
+            # `leaks()` returned clean. Unreadable is not absent; that conflation
+            # is this repository's most repeated defect, and here it silently
+            # shrank the very surface a leak would hide in.
+            bodies.append(blob[1])
     return "\n".join([elided, *bodies])
 
 

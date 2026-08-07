@@ -99,11 +99,16 @@ from tests.history_search import history_search_surface
 # recorded command is a scheduled Activity and the control's first command is
 # `CompleteWorkflowExecution`.
 #
-# The argument annotations are the real request types on purpose. The Replayer
-# decodes the recorded input before the run method is entered, so a control that
-# took `object` would still work but would stop saying which fixture it answers —
-# and a decode failure would then be indistinguishable from a nondeterminism it
-# was supposed to prove.
+# The argument annotations are the real request types, and they are load-bearing —
+# though not for the reason this comment gave until 2026-08-08, which was wrong on
+# both halves. The Replayer decodes the recorded input before the run method is
+# entered, and a control annotated `object` does **not** "still work": it fails
+# with `RuntimeError: … "Failed decoding arguments" … Unserializable type during
+# conversion: <class 'object'>`, so `test_every_fixture_rejects_an_incompatible_workflow`
+# goes red. Nor would such a failure be "indistinguishable from a nondeterminism"
+# — `assertRaises(NondeterminismError)` rejects a `RuntimeError` loudly, which is
+# the good outcome. The real reason to annotate precisely is simply that the
+# control cannot be constructed at all otherwise. Verified by mutation.
 
 
 @temporal_workflow.defn(name="PortRunWorkflow", versioning_behavior=VersioningBehavior.PINNED)

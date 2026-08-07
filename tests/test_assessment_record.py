@@ -149,7 +149,17 @@ def write_fake_index(
     """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    decode = str(directory.parent / "stock-430")
+    # A FIXED string, not the temp directory's real path. The decode path is
+    # written into `header.json`, hashed into the assessment artifact's
+    # `input_hashes`, carried in its `ArtifactRef` into `FeatureGateRequestV1`,
+    # and hashed into the gate subject — so an absolute `/tmp/tmpXXXX/...` made
+    # the feature gate's `request_sha256` different on every run. That is
+    # invisible to these tests, which never compare across runs, and it made the
+    # committed replay-History fixtures unreproducible: `capture_history_corpus`
+    # regenerated a different `subject_sha256` every time, so a deliberate
+    # re-capture could not be reviewed as a diff. `derive_feature_gate_request`
+    # is pure; its input was not.
+    decode = "/decode/stock-430"
     header = index_header(decode=decode, content_hash=content_hash, generated_at=generated_at)
     if header_content_hash is not ...:
         header["content_hash"] = header_content_hash
