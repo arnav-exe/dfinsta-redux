@@ -301,23 +301,82 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not signature["signature_schemes"].get(scheme, False):
                 raise ValueError(f"Signed APK is missing required {scheme} signature")
 
-        run(
-            [
-                sys.executable,
-                str(args.final_verifier),
-                str(signed),
-                str(args.stock_apk),
-                "--apktool-jar",
-                str(args.apktool_jar),
-                "--apksigner",
-                str(args.apksigner),
-                "--require-signature",
-                "--expected-certificate-sha256",
-                policy["expected_certificate_sha256"],
-                "--output",
-                str(staged_verification),
-            ]
+        with args.unsigned_verification_report.open(encoding="utf-8") as stream:
+            unsigned_verification = json.load(stream)
+
+        # What the UNSIGNED run proved, asserted again over the signed bytes.
+        #
+        # These two were missing until 2026-08-07 and the verifier fell back to
+        # `DEFAULT_HOST_HOOKS`, a hard-coded three-DEX map. It matched by
+        # coincidence on 430, 439 and 440 -- and it is a *weaker* map than the
+        # real one even there, naming `SettingsWrapper; onLongClick` where the run
+        # also proves a probe symbol per hook. Instagram 441 grafts FOUR DEX files
+        # because a host moved into `classes4`, so the default expected
+        # `classes4.dex` to be preserved byte-for-byte from stock, found it
+        # patched, and the release gate failed on a correct build.
+        #
+        # Derived from the unsigned report rather than taken as new arguments, so
+        # the post-signing check asserts exactly what the pre-signing check
+        # asserted. Two lists supplied separately are two lists that can differ.
+        # Refused rather than defaulted. A report that cannot say what it checked
+        # cannot be the basis for checking it again -- and defaulting is precisely
+        # how the gate came to re-verify 441 against 439's DEX topology.
+        missing = [
+            key
+            for key in ("custom_dex", "replaced_dex", "host_hooks")
+            if key not in unsigned_verification
+        ]
+        if missing:
+            raise ValueError(
+                "Unsigned verification report does not record what it checked "
+                f"({', '.join(missing)}); re-run the build verifier to produce one that does"
+            )
+
+        staged_host_hooks = temporary / "host-hooks.json"
+        staged_host_hooks.write_text(
+            json.dumps(
+                {
+                    dex: [symbol.split(" ", 1) for symbol in sorted(symbols)]
+                    for dex, symbols in unsigned_verification["host_hooks"].items()
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
         )
+        verifier_arguments = [
+            sys.executable,
+            str(args.final_verifier),
+            str(signed),
+            str(args.stock_apk),
+            "--apktool-jar",
+            str(args.apktool_jar),
+            "--apksigner",
+            str(args.apksigner),
+            "--require-signature",
+            "--expected-certificate-sha256",
+            policy["expected_certificate_sha256"],
+            "--custom-dex",
+            unsigned_verification["custom_dex"],
+            "--replaced-dex",
+            ",".join(unsigned_verification["replaced_dex"]),
+            "--host-hooks",
+            str(staged_host_hooks),
+            "--output",
+            str(staged_verification),
+        ]
+        # `null` means the unsigned run was not asked; `[]` means it was asked and
+        # named nothing, which `verify_build` refuses as a caller asking to prove
+        # nothing. Only a populated list is passed on, and the three states stay
+        # apart here exactly as they do there.
+        required_strings = unsigned_verification.get("required_strings")
+        if required_strings:
+            staged_required = temporary / "required-strings.json"
+            staged_required.write_text(
+                json.dumps(sorted(required_strings), indent=2), encoding="utf-8"
+            )
+            verifier_arguments += ["--required-strings", str(staged_required)]
+        run(verifier_arguments)
 
         with staged_verification.open(encoding="utf-8") as stream:
             final_verification = json.load(stream)

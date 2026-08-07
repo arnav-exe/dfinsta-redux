@@ -409,6 +409,18 @@ def main() -> None:
         "stock_apk": str(args.stock_apk),
         "stock_apk_sha256": sha256_file(args.stock_apk),
         "verifier_sha256": sha256_file(Path(__file__).resolve()),
+        # WHAT WAS CHECKED, not just the result of checking it.
+        #
+        # `--custom-dex` and `--replaced-dex` are build-specific facts with
+        # hard-coded defaults (`classes21.dex`, and a three-DEX list), and
+        # `finalize.py` passed neither -- so the post-signing gate silently
+        # re-verified against 439's topology. It matched by coincidence through
+        # 440 and broke on 441, which grafts four DEX files because a host moved
+        # into `classes4`. Recording them here is what lets the release gate
+        # derive them instead of guessing, so the signed bytes are checked
+        # against the same claims the unsigned bytes were.
+        "custom_dex": args.custom_dex,
+        "replaced_dex": sorted(n for n in args.replaced_dex.split(",") if n),
         **verify(
             args.built_apk,
             args.stock_apk,
