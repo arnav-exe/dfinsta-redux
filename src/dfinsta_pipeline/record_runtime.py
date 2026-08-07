@@ -42,7 +42,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from .evidence import EvidenceClaim
+from .evidence import Attribution, EvidenceClaim
 from .hook_manifest import Hook, load_manifest
 from .probes import (
     SURFACES,
@@ -73,14 +73,31 @@ class RecordError(RuntimeError):
     """Raised when a recording cannot be made from what is on hand."""
 
 
-def append(path: Path, claims: Sequence[EvidenceClaim]) -> None:
+def append(
+    path: Path,
+    claims: Sequence[EvidenceClaim],
+    attribution: Attribution | None = None,
+) -> None:
     """Append claims to an evidence JSONL. Never rewrites, never deduplicates.
 
     The ledger's superseding rule is "a later claim wins", so re-measuring is an
     append and the history of what was seen stays on disk.
+
+    ``attribution`` names the port these measurements are about. Added
+    2026-08-07: until then every device claim carried `hook_id` and nothing else,
+    so the version lived in the filename a human chose and **no runtime claim had
+    ever named the APK it was measured against**. That is the one join a device
+    probe most needs — `actor` says `device:P3227J000775`, which identifies the
+    phone and not the build. The driver gained this first; this is the other half.
+
+    A `runtime_probe` is post-build, so it may carry a build hash, and it should:
+    the operator knows exactly which APK is installed and can prove it by
+    comparing the pulled hash with the built one.
     """
     with open(path, "a", encoding="utf-8") as handle:
         for claim in claims:
+            if attribution is not None:
+                claim = attribution.apply(claim)
             handle.write(json.dumps(claim.to_dict(), sort_keys=True) + "\n")
 
 
@@ -223,6 +240,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--serial")
     parser.add_argument("--out", type=Path, required=True, help="append claims to this JSONL")
     parser.add_argument(
+        "--version",
+        help="the port these measurements are about, e.g. 441. Without it the "
+        "claims carry no version and a report cannot join them to a port",
+    )
+    parser.add_argument(
+        "--build-sha256",
+        help="the APK installed on the device. Verify it rather than assume it: "
+        "pull the installed package and compare with the built release",
+    )
+    parser.add_argument(
+        "--recorded-at",
+        help="timestamp for the claims; required with --version, because a claim "
+        "nothing can order in time is the gap this closes",
+    )
+    parser.add_argument(
         "--visit",
         action="append",
         default=[],
@@ -242,17 +274,28 @@ def main(argv: list[str] | None = None) -> int:
     device = AdbDevice(args.adb, args.serial)
     actor = f"device:{args.serial or 'default'}"
 
+    if args.version and not args.recorded_at:
+        raise SystemExit(
+            "error: --version needs --recorded-at; a claim nothing can order in "
+            "time is the gap this option exists to close"
+        )
+    attribution = (
+        Attribution(args.recorded_at, args.version, args.build_sha256)
+        if args.version
+        else None
+    )
+
     try:
         if args.mode == "identity":
             claims = identity_claims(device, hooks, actor, args.visit, args.dwell)
-            append(args.out, claims)
+            append(args.out, claims, attribution)
             for claim in claims:
                 print(f"{claim.hook_id:38s} {claim.verdict.value:13s} {claim.summary[:80]}")
             return 0
 
         if args.mode == "startup":
             claim = startup_claim(device, hooks, actor)
-            append(args.out, [claim])
+            append(args.out, [claim], attribution)
             print(f"{claim.hook_id:38s} {claim.verdict.value:13s} {claim.summary[:80]}")
             return 0
 
@@ -282,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
             have = sorted(store[hook.hook_id])
             print(f"\nhave {have}; move the toggle and measure the other state before a claim")
             return 0
-        append(args.out, [claim])
+        append(args.out, [claim], attribution)
         print(f"{claim.hook_id:38s} {claim.verdict.value:13s} {claim.summary[:80]}")
         return 0
     except (RecordError, ProbeNotTaken, OSError) as error:

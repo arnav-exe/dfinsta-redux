@@ -274,19 +274,60 @@ class CommittedLedgerTests(unittest.TestCase):
                 claim = EvidenceClaim.from_dict(data)
                 self.assertEqual(dumped(claim.to_dict()) + "\n", line)
 
-    def test_no_committed_claim_carries_a_version_or_a_build_hash(self):
-        """The control that makes the three tests above mean what they say.
+    #: Ledgers written before attribution existed. They are the control, and the
+    #: reason the round-trip tests above mean what they say: if the baselines had
+    #: been rewritten with attribution, every one would still pass while proving
+    #: that *attributed* claims round-trip, not that adding the fields left the
+    #: old ones alone.
+    #:
+    #: 441 is deliberately NOT here. It was captured on 2026-08-07 with
+    #: `record_runtime --version --build-sha256 --recorded-at` and is the first
+    #: runtime evidence in the project to name the APK it was measured against.
+    #: This list is the frontier between the two eras and is expected to stop
+    #: growing, not to shrink.
+    PRE_ATTRIBUTION_LEDGERS = frozenset({"439.jsonl", "440.jsonl"})
 
-        If the baselines had been rewritten with attribution, every round-trip
-        above would still pass — and would be proving that attributed claims
-        round-trip, not that adding the fields left the old ones alone. These
-        thirty are pre-change data and must stay that way to be worth testing.
+    def test_the_pre_attribution_baselines_are_still_unattributed(self):
+        """The control, now stated as a frontier rather than a universal.
+
+        It used to read "no committed claim carries a version", which was true
+        until the 441 device session and then failed nine times — correctly. A
+        control that asserts a state of the world has to be updated when the
+        world legitimately changes; the wrong repair is to delete it, because the
+        round-trip tests above need *some* pre-change data to be about.
         """
+        seen = set()
         for path, number, _, data in committed_rows():
+            if path.name not in self.PRE_ATTRIBUTION_LEDGERS:
+                continue
+            seen.add(path.name)
             with self.subTest(ledger=path.name, line=number):
                 self.assertNotIn("version", data)
                 self.assertNotIn("build_sha256", data)
                 self.assertEqual(set(data) - LEGACY_KEYS, set())
+        self.assertEqual(seen, set(self.PRE_ATTRIBUTION_LEDGERS), seen)
+
+    def test_the_441_evidence_is_attributed_and_names_its_build(self):
+        """The other side of the frontier, and the point of the whole change.
+
+        Until this session a `runtime_probe` named a device serial and no
+        artifact, so device evidence could not be joined to the APK it was
+        gathered against. Every 441 claim carries the version, a build hash and a
+        timestamp — and the hash is the one the APK pulled off the phone actually
+        hashed to.
+        """
+        rows = [
+            data
+            for path, _, _, data in committed_rows()
+            if path.name == "441.jsonl"
+        ]
+        self.assertTrue(rows, "441 evidence is missing")
+        for data in rows:
+            with self.subTest(hook=data["hook_id"], kind=data["kind"]):
+                self.assertEqual(data["version"], "441")
+                self.assertEqual(len(data["build_sha256"]), 64)
+                self.assertTrue(data["recorded_at"])
+        self.assertEqual(len({data["build_sha256"] for data in rows}), 1)
 
     def test_an_unattributed_claim_omits_both_keys_rather_than_recording_null(self):
         """Absent, not null. The distinction IS the compatibility guarantee.
