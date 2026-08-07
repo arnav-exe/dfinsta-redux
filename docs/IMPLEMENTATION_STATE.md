@@ -1126,6 +1126,49 @@ was skipped, and the module cheerfully reported "every assessed hook is release-
 the one module whose output is a list of hooks somebody may decide to stop expecting. Absent and
 unreadable are now different: a missing file is skipped, a broken one is a refusal.
 
+## Both gates can now be raised, and the live server taught three things
+
+2026-08-08. `assessment_record.raise_gate` and `retirement_record.raise_gate`. The feature gate had
+been registered, answerable and **started by nothing** since it was built: `start_workflow` for it
+existed only inside `tests/integration/`, so the one way to raise it in anger was to copy a line
+out of a test.
+
+    python -m dfinsta_pipeline.assessment_record  raise --run-id port-441 --build-id <id>
+    python -m dfinsta_pipeline.retirement_record  --state-root <dir> raise --run-id retire-441 --build-id <id>
+
+**Testing them against a real Temporal server found a defect the whole unit suite could not.**
+Three facts, each learned by a run failing:
+
+1. A `PINNED` workflow may only run on a worker with `use_worker_versioning=True`. A plain worker
+   fails every activation with *"versioning behavior cannot be specified without deployment
+   options being set with versioned mode"*.
+2. A versioned worker receives tasks **only for its deployment's current version**, and nothing in
+   this project sets one. Started with no override, the Workflow is accepted, shows as RUNNING in
+   the UI, and is picked up by nobody — every query then times out with no error naming the cause.
+   That is what the first draft of both starters did.
+3. Started *with* an override, the server refuses until a worker for that exact version has polled
+   the queue: *"Pinned version 'dfinsta-pipeline:<build>' is not present in task queue…"*. Raising
+   a gate straight after starting a worker is the normal order of operations, so this is a race a
+   human loses roughly every time.
+
+So the starters take `--build-id` and retry for 30 s on that one message. **Both integration
+harnesses already passed an override and already retried, and neither said why** — the knowledge
+existed as two lines of code nobody had a reason to read.
+
+**The whole chain then ran against `localhost:7233`**: `raise_gate` → the server reporting
+`HookRetirementRunWorkflow … RUNNING` → gate open → answered → `completed` → published → and
+`expectation` in force at 442, empty at 441, with the row carrying the gate's own `decision_id`.
+
+**One thing the in-process server does not reproduce**, worth knowing before trusting a green
+suite: `WorkflowEnvironment.start_time_skipping()` accepts a pinned start for a version no worker
+has ever polled. Point 3 above is unreachable there. `tests/test_feature_gate_starter.py` therefore
+*injects* that `RPCError` rather than provoking it, and says so — what is worth guaranteeing is
+this project's response to the refusal, not Temporal's enforcement of it. The starter tests
+otherwise run in the ordinary suite rather than as opt-in scripts, because the test environment
+exposes its address as `client.service_client.config.target_host` — which is exactly why the
+feature gate's missing starter went unnoticed for a fortnight: everything starter-shaped needed a
+live server and so was run by hand.
+
 ## The three hooks that have never passed a probe, re-derived on 441
 
 2026-08-07. They are the reason release-readiness caps at 4 of 7, and the recorded explanations
@@ -1863,11 +1906,6 @@ semantically, not bitwise, reproducible".
   340 and 430 both completed against a live Temporal server, driven by
   `tests/integration/test_registered_replay_harness.py`. Left in place because the sentence it
   replaces was true for three weeks and the list is read for what is *not* done.
-- **Nothing starts the feature gate.** `client.start_workflow(FeatureAssessmentRunWorkflow…)`
-  appears only in `tests/integration/`, so that gate is registered, answerable, and raisable by
-  hand alone. Found while wiring the retirement gate, which deliberately does not copy it —
-  `retirement_record.raise_gate` is a starter in `src/`. `test_open_items` fails when the feature
-  gate gets one.
 - `load_decoded_tree` still runs on the event loop inside the decode and build checkpoint
   Activities (residual 5% and 17% blocked on a real port, down from 82% and 62%). The gate
   stage, which was 100%, now derives in a thread. The primitive cannot be threaded at its own

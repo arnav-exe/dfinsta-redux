@@ -68,6 +68,7 @@ from .ledger import Ledger, assessment_identity
 from .store import ContentStore
 
 __all__ = [
+    "raise_gate",
     "RecordError",
     "RecordedAssessment",
     "ASSESSMENT_OPERATION_KIND",
@@ -438,6 +439,104 @@ def resolve(state_root: Path | str, run_id: str, *, read_only: bool = True) -> R
     )
 
 
+def raise_gate(
+    endpoint: str,
+    task_queue: str,
+    run_id: str,
+    *,
+    gate_timeout_seconds: int,
+    build_id: str = "",
+    deployment_name: str = "dfinsta-pipeline",
+    wait_for_worker_seconds: float = 30.0,
+) -> str:
+    """Start the Workflow that asks a human, and return its id.
+
+    **This gate was registered, answerable and started by nothing** from the day
+    it was built until 2026-08-08. `client.start_workflow(FeatureAssessmentRunWorkflow…)`
+    existed only inside `tests/integration/`, so the one way to raise it in
+    anger was to copy a line out of a test — the disconnection at the far end
+    from the three this project has recorded, where the *consumer* was missing.
+    A gate that can be answered but not asked is not a working gate.
+
+    Deliberately does not record the assessment for you. `record` is a separate
+    step with its own owner token and its own idempotency, and a starter that
+    quietly recorded first would make "raise the gate" mean two different amounts
+    of work depending on what was already on disk.
+
+    **`build_id` is not optional in practice, and finding that out took a real
+    server.** Both workflows here are `versioning_behavior=PINNED`, which a worker
+    may only run with `use_worker_versioning=True` — and a versioned worker is
+    dispatched tasks only for its deployment's *current* version, which nothing in
+    this project sets. Started without an override, the Workflow is accepted by
+    the server, appears in the UI, and is never picked up by any worker; every
+    query then times out with no error that names the cause. Both integration
+    harnesses already passed `PinnedVersioningOverride` and neither said why.
+
+    So pass the same `--build-id` the worker was started with. Omit it only if an
+    operator has set a current version out of band
+    (`temporal worker deployment set-current-version`), which is the other correct
+    configuration and the one that makes a rolling upgrade possible.
+
+    Imported lazily: `temporalio` is the only runtime dependency, and everything
+    else in this module must work with no server anywhere near it.
+    """
+
+    import asyncio
+    import time
+
+    from temporalio.client import Client
+    from temporalio.service import RPCError
+    from temporalio.common import PinnedVersioningOverride, WorkerDeploymentVersion
+
+    from .feature_gate import FeatureRunRequestV1
+    from .feature_workflow import FeatureAssessmentRunWorkflow
+
+    override = None
+    if build_id:
+        override = PinnedVersioningOverride(
+            WorkerDeploymentVersion(deployment_name, build_id)
+        )
+
+    async def _start() -> str:
+        client = await Client.connect(endpoint)
+        # Retried, because a pinned start is refused until a worker for that exact
+        # deployment version has polled the queue: *"Pinned version
+        # 'dfinsta-pipeline:<build>' is not present in task queue … of type
+        # 'Workflow'"*. Raising a gate right after starting a worker is the normal
+        # order of operations, so a bare failure here is a race a human loses
+        # roughly every time. Both integration harnesses already retried this and
+        # neither said why.
+        deadline = time.monotonic() + wait_for_worker_seconds
+        while True:
+            try:
+                handle = await client.start_workflow(
+                    FeatureAssessmentRunWorkflow.run,
+                    FeatureRunRequestV1(1, run_id, gate_timeout_seconds),
+                    # The run id IS the workflow id, as every gate here does it:
+                    # that is what lets `submission show <workflow_id>` reach the
+                    # right gate from the only identifier a human has.
+                    id=run_id,
+                    task_queue=task_queue,
+                    versioning_override=override,
+                )
+            except RPCError as error:
+                if "not present in task queue" not in str(error):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"no worker for {deployment_name}:{build_id} has polled "
+                        f"{task_queue!r} within {wait_for_worker_seconds}s, so a "
+                        "pinned start cannot be accepted. Start the worker with that "
+                        "--build-id first, or set a current deployment version and "
+                        "omit --build-id"
+                    ) from error
+                await asyncio.sleep(0.5)
+                continue
+            return handle.id
+
+    return asyncio.run(_start())
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -455,7 +554,47 @@ def main(argv: Sequence[str] | None = None) -> int:
     read.add_argument("--state-root", type=Path, required=True)
     read.add_argument("--run-id", required=True)
 
+    raising = sub.add_parser("raise", help="start the Workflow that asks a human")
+    raising.add_argument("--run-id", required=True)
+    raising.add_argument("--endpoint", default="localhost:7233")
+    raising.add_argument("--task-queue", default="dfinsta")
+    raising.add_argument(
+        "--build-id",
+        default="",
+        help="the --build-id the worker was started with. Without it the Workflow "
+        "is started, never dispatched, and every query times out — both workflows "
+        "are PINNED, and a versioned worker only receives tasks for its "
+        "deployment's current version. Omit only if that has been set out of band",
+    )
+    raising.add_argument("--deployment-name", default="dfinsta-pipeline")
+    raising.add_argument(
+        "--gate-timeout-seconds",
+        type=int,
+        default=7 * 24 * 3600,
+        help="how long the gate stays open. A week by default; an unanswered gate "
+        "ends `blocked`, which is never an implicit approval",
+    )
+
     args = parser.parse_args(argv)
+    if args.command == "raise":
+        try:
+            workflow_id = raise_gate(
+                args.endpoint,
+                args.task_queue,
+                args.run_id,
+                gate_timeout_seconds=args.gate_timeout_seconds,
+                build_id=args.build_id,
+                deployment_name=args.deployment_name,
+            )
+        except (RecordError, ValueError, OSError, RuntimeError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        print(f"raised {workflow_id}")
+        print(
+            f"Answer it with:  python -m dfinsta_pipeline.submission show {workflow_id}"
+        )
+        return 0
+
     try:
         if args.command == "record":
             recorded = record(

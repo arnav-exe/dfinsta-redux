@@ -558,6 +558,9 @@ def raise_gate(
     run_id: str,
     *,
     gate_timeout_seconds: int,
+    build_id: str = "",
+    deployment_name: str = "dfinsta-pipeline",
+    wait_for_worker_seconds: float = 30.0,
 ) -> str:
     """Start the Workflow that asks a human, and return its id. The starter.
 
@@ -568,29 +571,76 @@ def raise_gate(
     this gate complete and unraisable, which is the exact shape this project keeps
     shipping.
 
+    **`build_id` is not optional in practice, and finding that out took a real
+    server.** Both workflows here are `versioning_behavior=PINNED`, which a worker
+    may only run with `use_worker_versioning=True` — and a versioned worker is
+    dispatched tasks only for its deployment's *current* version, which nothing in
+    this project sets. Started without an override, the Workflow is accepted by
+    the server, appears in the UI, and is never picked up by any worker; every
+    query then times out with no error that names the cause. Both integration
+    harnesses already passed `PinnedVersioningOverride` and neither said why.
+
+    So pass the same `--build-id` the worker was started with. Omit it only if an
+    operator has set a current version out of band
+    (`temporal worker deployment set-current-version`), which is the other correct
+    configuration and the one that makes a rolling upgrade possible.
+
     Imported lazily: `temporalio` is the only runtime dependency and everything
     else in this module must work with no server anywhere near it.
     """
 
     import asyncio
+    import time
 
     from temporalio.client import Client
+    from temporalio.service import RPCError
+    from temporalio.common import PinnedVersioningOverride, WorkerDeploymentVersion
 
     from .retirement_gate import RetirementRunRequestV1
     from .retirement_workflow import HookRetirementRunWorkflow
 
+    override = None
+    if build_id:
+        override = PinnedVersioningOverride(
+            WorkerDeploymentVersion(deployment_name, build_id)
+        )
+
     async def _start() -> str:
         client = await Client.connect(endpoint)
-        handle = await client.start_workflow(
-            HookRetirementRunWorkflow.run,
-            RetirementRunRequestV1(1, run_id, gate_timeout_seconds),
-            # The run id IS the workflow id, as the other gates do it. That is
-            # what makes `submission show <workflow_id>` reach the right gate
-            # from the only identifier a human has.
-            id=run_id,
-            task_queue=task_queue,
-        )
-        return handle.id
+        # Retried, because a pinned start is refused until a worker for that exact
+        # deployment version has polled the queue: *"Pinned version
+        # 'dfinsta-pipeline:<build>' is not present in task queue … of type
+        # 'Workflow'"*. Raising a gate right after starting a worker is the normal
+        # order of operations, so a bare failure here is a race a human loses
+        # roughly every time. Both integration harnesses already retried this and
+        # neither said why.
+        deadline = time.monotonic() + wait_for_worker_seconds
+        while True:
+            try:
+                handle = await client.start_workflow(
+                    HookRetirementRunWorkflow.run,
+                    RetirementRunRequestV1(1, run_id, gate_timeout_seconds),
+                    # The run id IS the workflow id, as every gate here does it:
+                    # that is what lets `submission show <workflow_id>` reach the
+                    # right gate from the only identifier a human has.
+                    id=run_id,
+                    task_queue=task_queue,
+                    versioning_override=override,
+                )
+            except RPCError as error:
+                if "not present in task queue" not in str(error):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"no worker for {deployment_name}:{build_id} has polled "
+                        f"{task_queue!r} within {wait_for_worker_seconds}s, so a "
+                        "pinned start cannot be accepted. Start the worker with that "
+                        "--build-id first, or set a current deployment version and "
+                        "omit --build-id"
+                    ) from error
+                await asyncio.sleep(0.5)
+                continue
+            return handle.id
 
     return asyncio.run(_start())
 
@@ -631,6 +681,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     raising.add_argument("--endpoint", default="localhost:7233")
     raising.add_argument("--task-queue", default="dfinsta")
     raising.add_argument(
+        "--build-id",
+        default="",
+        help="the --build-id the worker was started with. Without it the Workflow "
+        "is started, never dispatched, and every query times out — both workflows "
+        "are PINNED, and a versioned worker only receives tasks for its "
+        "deployment's current version. Omit only if that has been set out of band",
+    )
+    raising.add_argument("--deployment-name", default="dfinsta-pipeline")
+    raising.add_argument(
         "--gate-timeout-seconds",
         type=int,
         default=7 * 24 * 3600,
@@ -659,6 +718,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.task_queue,
                 args.run_id,
                 gate_timeout_seconds=args.gate_timeout_seconds,
+                build_id=args.build_id,
+                deployment_name=args.deployment_name,
             )
             print(f"raised {workflow_id}")
             print(
