@@ -1004,6 +1004,26 @@ count. The file was deleted — 439 legitimately has no static evidence, because
 had no producer until 440, so `439 → 440` is now reported as NOT CHECKED rather than compared
 against fiction.
 
+**A fresh clone is now checked, not assumed.** `tests/test_reproducible_from_clone.py`
+extracts `git archive HEAD manifest` into a temp directory and rebuilds readiness from that
+alone, asserting 440 reads 2 of 7 and 441 reads 4 of 7 — the numbers a new machine gets, not the
+numbers this one happens to have on disk. A second test asserts every evidence file the
+expectation reads is `git ls-files`-tracked, which fails by *naming the file* where the first
+would only report a changed number. Falsified three ways: dirtying the working tree does not move
+the numbers (it reads HEAD), changing the pinned table fails, and an untracked
+`runtime_evidence/442.jsonl` is named. `docs/BOOTSTRAP.md` records what a machine move needs
+besides git and the APKs, and two tests check the parts of it that can rot — the pinned apktool
+filename against the driver's default, and the version list against the evidence series.
+
+The governing rule, from an owner constraint: **the APKs always exist, `work/` does not, so keep
+what cannot be recomputed and treat everything else as a cache.** `static_verified` is
+re-derivable from APK + code; `runtime_probe` and `differential` are not, because Instagram
+decides behaviour server-side and a 439 build installed today is measured against a current
+server. A blank-slate re-run from 439 therefore reaches 0 of 7 release-ready, permanently, and
+`manifest/` is the only copy of an unrepeatable measurement. That is also why no age-weighting or
+retention cutoff was built: decay is a property of the signal kind, not of elapsed versions —
+across the same 430→439 pair, `drawable_name` survived 98.8% and `drawable_id` 0.9%.
+
 **What is not built: nothing produces a retirement.** `manifest/RETIREMENTS.md` specifies the
 row and `expectation` reads it, but there is no gate that writes one, so today the only way past
 a drop is to fix the hook. That is the right default and the wrong end state — a genuinely
@@ -1335,7 +1355,7 @@ now takes `--custom-tree` and `--replace-dex`; defaults preserve 430.
 ```
 python        .venv/bin/python   (3.13; system python3 is 3.14 and unsupported)
 tests         PYTHONPATH=src .venv/bin/python -W error -m unittest discover -s tests
-              3037 tests, 1 expected skip
+              3138 tests, 1 expected skip
 tool suites   cd tools/<name>/tests && PYTHONPATH=<repo>/src:<repo> python -m unittest discover -s . -t .
               indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
               device_validation 22. Discovery from the repository root does NOT work:
