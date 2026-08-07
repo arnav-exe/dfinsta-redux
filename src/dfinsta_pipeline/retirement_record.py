@@ -52,7 +52,7 @@ from typing import Any, Mapping, Sequence
 
 from .assessment import policy_revision as read_policy_revision
 from .contracts import ID_PATTERN, ArtifactRef, canonical_json, canonical_sha256
-from .expectation import read_retirements, versions_with_evidence
+from .expectation import retirements_on_record, versions_with_evidence
 from .history import BASELINE_VERSION, _NUMERIC
 from .ledger import Ledger
 from .retirement import (
@@ -369,7 +369,10 @@ def _record(
         _evidence_digests(root, version, baseline),
         hashlib.sha256(investigations_bytes).hexdigest(),
         revision,
-        sorted(read_retirements(root)),
+        # `retirements_on_record`, not the raw file: a withdrawal changes what
+        # `candidates` returns, so it changes the docket — and a key that did not
+        # move would let two materially different dockets share an operation.
+        sorted(retirements_on_record(root)),
     )
     key = canonical_sha256({"kind": DOCKET_OPERATION_KIND, "input": payload})
     input_sha256 = canonical_sha256(payload)

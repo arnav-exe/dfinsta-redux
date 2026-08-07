@@ -84,6 +84,8 @@ __all__ = [
     "Comparison",
     "RETIREMENTS",
     "read_retirements",
+    "retirements_in_force",
+    "retirements_on_record",
     "evidence_files",
     "port_report",
     "versions_with_evidence",
@@ -252,21 +254,83 @@ def read_retirements(
 
 
 def retired_by(
-    version: str, retirements: dict[str, Retirement]
+    version: str,
+    retirements: dict[str, Retirement],
+    *,
+    withdrawn: dict[tuple[str, str], Any] | None = None,
 ) -> dict[str, Retirement]:
     """Those in force when reporting on `version`.
 
     Keyed on `effective_from`, so a retirement ruled for 442 does not reach back
     and excuse a hook that had already stopped passing on 441.
+
+    `withdrawn` maps `(original_decision_id, hook_id)` to a recorded reversal, and
+    removes the retirement from force. It is a **parameter rather than a read**
+    because whether a withdrawal applies is itself version-dependent, and this
+    function is handed a version. Callers should not assemble it by hand: use
+    `retirements_in_force`, which is the one place that reads both files.
     """
 
     if not _NUMERIC.fullmatch(version):
         raise ExpectationError(f"{version!r} is not a version number")
+    withdrawn = withdrawn or {}
     return {
         hook: item
         for hook, item in retirements.items()
         if int(item.effective_from) <= int(version)
+        and (item.decision_id, hook) not in withdrawn
     }
+
+
+def retirements_on_record(root: Path | str = ".") -> dict[str, Retirement]:
+    """Retirements that have not been withdrawn, at ANY version.
+
+    **A different question from `retirements_in_force`, and conflating them was a
+    real regression.** That one asks "was this hook retired *as of version N*" and
+    is what the expectation needs. This one asks "is there an outstanding
+    retirement decision for this hook at all", which is what `candidates`,
+    `build_case` and `publish` need: they are deciding whether to ask a human
+    again, not what a port owed.
+
+    Using the version-scoped reader for those broke them silently. A retirement
+    built from a case at version V always takes effect at V+1, so
+    `retirements_in_force(V)` can never contain it — and a hook that had just been
+    retired was offered for retirement all over again.
+    """
+
+    withdrawals = _withdrawn_retirements(root)
+    return {
+        hook: item
+        for hook, item in read_retirements(root).items()
+        if (item.decision_id, hook) not in withdrawals
+    }
+
+
+def _withdrawn_retirements(root: Path | str) -> dict[tuple[str, str], Any]:
+    from .reversal import withdrawn  # noqa: PLC0415
+
+    return withdrawn("retirement", root)
+
+
+def retirements_in_force(
+    version: str, root: Path | str = "."
+) -> dict[str, Retirement]:
+    """Retirements that actually apply at `version`, withdrawals honoured.
+
+    **One function, because two files decide this.** A caller that read
+    `read_retirements` alone would honour a retirement a human had already
+    withdrawn — and it would do so silently, which is the direction that keeps a
+    hook un-expected forever. Every consumer of "is this hook retired" goes
+    through here.
+    """
+
+    from .reversal import withdrawn_at  # noqa: PLC0415  (reversal imports nothing here)
+
+    return retired_by(
+        version,
+        read_retirements(root),
+        withdrawn=withdrawn_at(version, "retirement", root),
+    )
 
 
 def evidence_files(
@@ -436,8 +500,11 @@ def compare(
         )
 
     if retirements is None:
-        retirements = read_retirements(root)
-    in_force = retired_by(version, retirements)
+        # `retirements_in_force`, not `read_retirements`: a withdrawn retirement
+        # must stop excusing the hook, and that is version-dependent.
+        in_force = retirements_in_force(version, root)
+    else:
+        in_force = retired_by(version, retirements)
 
     before = port_report(root, previous, _predecessor(root, previous, baseline))
     # N's OWN evidence is assembled from N's TRUE predecessor, never from an
@@ -508,7 +575,17 @@ def sweep(
     """
 
     root = Path(root)
-    retirements = read_retirements(root)
+    # Parsed once, up front, and the result deliberately discarded. The *values*
+    # must not be hoisted — passing them to `compare` sends it down the branch
+    # that skips withdrawals, which made `expectation --version 446` and the
+    # default sweep give opposite answers from the same three files. But the
+    # *parse* must happen out here: inside the loop, a malformed retirements file
+    # raises `ExpectationError`, which the per-pair handler below treats as "this
+    # pair is mid-port, skip it", and a corrupt store reads as "nothing to check".
+    # That is `a-skip-for-absent-swallowed-unreadable` a second time, in the
+    # module where the lesson was written.
+    read_retirements(root)
+    _withdrawn_retirements(root)
     series = versions_with_evidence(root, baseline=baseline)
     comparisons: list[Comparison] = []
     skipped: list[tuple[str, str]] = []
@@ -520,7 +597,6 @@ def sweep(
                     version=version,
                     previous=previous,
                     baseline=baseline,
-                    retirements=retirements,
                 )
             )
         except ExpectationError as error:

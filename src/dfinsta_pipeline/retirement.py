@@ -74,6 +74,7 @@ from .contracts import canonical_sha256
 from .expectation import (
     RETIREMENTS,
     ExpectationError,
+    retirements_on_record,
     evidence_files,
     Retirement,
     port_report,
@@ -323,7 +324,10 @@ def candidates(
     root = Path(root)
     if not _NUMERIC.fullmatch(version):
         raise RetirementError(f"{version!r} is not a version number")
-    retired = set(read_retirements(root))
+    # `retirements_in_force`, not `read_retirements`: a hook whose retirement a
+    # human has withdrawn is a candidate again, and reading the raw file would
+    # keep it off the list for ever.
+    retired = set(retirements_on_record(root))
     out = []
     # Bounded at the version being asked about, so the answer does not change
     # when a later port lands. See `standings`.
@@ -466,7 +470,7 @@ def build_case(
             f"{hook_id} is not in the hook manifest. A hook that is already gone "
             "needs its evidence dealt with, not a retirement"
         )
-    already = read_retirements(root).get(hook_id)
+    already = retirements_on_record(root).get(hook_id)
     if already is not None:
         raise RetirementError(
             f"{hook_id} was already retired at {already.effective_from} by "
@@ -744,7 +748,15 @@ def publish(
 
     # `path=` wins over `root=` in the reader, so the check reads the file that is
     # about to be appended to and not a different one two directories up.
-    existing = read_retirements(root, path=location)
+    # Withdrawal-aware: a retirement a human has withdrawn must not block a fresh
+    # one. `REVERSALS.md` promises that withdrawing puts the question back on the
+    # table, and the raw reader made that promise unkeepable for retirements —
+    # the gate was walkable all the way to `publish` and then refused.
+    existing = (
+        retirements_on_record(root)
+        if path is None
+        else read_retirements(root, path=location)
+    )
     if case.hook_id in existing:
         raise RetirementError(
             f"{case.hook_id} already has a retirement at "
