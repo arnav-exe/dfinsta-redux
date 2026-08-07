@@ -847,6 +847,54 @@ kinds is what let the walkthrough run with no code change.
 Not yet automated: the device session needs a human three times (toggles on, off, on), and there
 is no CI.
 
+## The three hooks that have never passed a probe, re-derived on 441
+
+2026-08-07. They are the reason release-readiness caps at 4 of 7, and the recorded explanations
+were written against 439. Three of the four load-bearing claims had rotted.
+
+**They are not failing patches.** `replace_reels_homecoming_endpoint` and
+`replace_reels_discover_endpoint` are coverage for a Reels configuration this account is not
+routed into; `install_settings_long_click_actionbar` is a second Options affordance on the
+profile, not an alternative to the first. The hosts resolve mechanically on every version.
+
+**What was wrong, and it matters for how notes are written:**
+
+- **MobileConfig ids renumber every release.** The note named `0x810af400383ea5`; the same gate
+  is `0x810aed00383e0a` on 440 and `0x810ae100383dc6` on 441, twice in the host each time, same
+  polarity. **Grepping the old id returns zero and reads as "the gate was removed"** — a
+  confident false negative, and the first re-check made exactly that error. A second gate
+  (`0x810b9a007b4194` on 439) *is* genuinely gone on 441, so the homecoming branch is now two
+  conditions rather than three — strictly easier to reach.
+- **Those booleans were never the dominant gate.** Selection runs through a pre-check helper the
+  note omitted (441: `LX/02ou;->A00`) reading a string A/B experiment (`"test"`/`"control"`), two
+  further config strings, the per-user preference **`homecoming_has_ever_opted_out`**, and an SDK
+  floor. That is why the site never executes in any toggle state, and why flipping the named
+  booleans would not change it.
+- **"Two action-bar implementations, exactly one live" describes no version.** `LX/0ATZ` (legacy
+  `IgActionBar` controller) and `LX/0Ac5` (the `ProfileActionBar` binder) are different *layers*,
+  and `UserDetailFragment` constructs **both unconditionally** on 441 — verified at L33828 and
+  L40368 with no gate between them. The probe cannot attribute because two coexisting Options
+  affordances share one label string resource, not because of a runtime coin-flip. The
+  conclusion — do not credit either — stands; the reason was wrong.
+- **The purge marker does not single out the discover path.** `A0A` carries
+  `..._createStreamingRequestTask`, the same 2026-Q2 program. **The purge has slipped**: Q2 passed
+  with nothing removed, so the 2026-08-01 human KEEP decision was right, and its escalation
+  trigger is verified still armed on 441 (exactly one class carries all three Reels literals).
+
+**A fragility nobody had recorded.** The legacy action-bar anchor sits under
+`LX/0ATZ->A0P = canAccessSelfProfile OR NOT isOwnProfile`. That theme attribute is declared in
+`attrs.xml` and `public.xml` and **assigned in no theme** — verified — so it defaults true and the
+block runs. One theme entry setting it false would silently kill that hook on exactly the surface
+it targets.
+
+**The action-bar host is unchanged across 439/440/441**, method for method, only a label string id
+shifting. So if it never passes a probe, version drift in the host is not the cause.
+
+All three notes in `manifest/hooks.json` are corrected. See
+[[mobileconfig-ids-renumber-every-release]] for the general rule: record what a gate is *for* and
+how to re-find it — surrounding literals, preference keys, method letters, branch polarity — never
+the raw id.
+
 ## The 441 device session has a written plan
 
 [`docs/DEVICE_SESSION_441.md`](DEVICE_SESSION_441.md), written **before** the session so the
