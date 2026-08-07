@@ -850,6 +850,173 @@ def _feature_assessment_payload(
     return submission
 
 
+def _resolve_hook_retirement(run_id: str) -> DerivedSubject:
+    """Reproduce the retirement gate's subject from the ledger.
+
+    Same discipline as the other two resolvers, and it is the discipline rather
+    than the code that matters: this calls the *Activity's own* derivation
+    against a read-only runtime. A parallel implementation here could agree with
+    the admitting side while both were wrong, and a human would have signed a
+    number nobody independently reached.
+    """
+
+    from . import activities, retirement_record
+    from .retirement_gate import derive_retirement_gate_request
+
+    configured = activities.runtime()
+    recorded = retirement_record.resolve_with(
+        configured.ledger, configured.store, run_id
+    )
+    request = derive_retirement_gate_request(
+        recorded.run_id,
+        recorded.docket,
+        recorded.version,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.hook_ids,
+    )
+    return DerivedSubject(
+        run_id=request.run_id,
+        gate_id=request.gate_id,
+        subject_sha256=request.sha256,
+        admission_sha256=request.sha256,
+        prepared_sha256=request.sha256,
+        policy_revision=request.policy_revision,
+        allowed_actor=request.allowed_actor,
+    )
+
+
+def _retirement_rulings(detail: object, hooks: tuple[str, ...]) -> dict[str, tuple[str, str]]:
+    """The human's rulings, keyed by hook, refusing anything unexpected.
+
+    Iterates the **derived** hooks and looks each one up, never the other way
+    round — the same direction, and for the same reason, as `_feature_rulings`. A
+    file that renames, drops or invents a hook is refused by name before anything
+    is signed, and the emission order is the docket's rather than the file's, so
+    the document's digest cannot depend on how somebody ordered their editor.
+
+    Unlike the feature gate there is no silent verdict: every answer needs a
+    rationale, including `keep`. Going on carrying a hook that does not work is
+    also a decision, and the row this eventually writes is permanent.
+    """
+
+    from .retirement_gate import VERDICTS as HOOK_VERDICTS
+
+    if not isinstance(detail, dict):
+        raise SubmissionRefused(
+            "This gate needs a ruling for every hook in the docket: pass --rulings "
+            "with a JSON object mapping each hook id to "
+            '{"verdict": retire|keep|defer, "rationale": …}'
+        )
+    unknown = sorted(set(detail) - set(hooks))
+    if unknown:
+        raise SubmissionRefused(
+            f"Rulings name a hook this docket does not cover: {unknown[0]}"
+        )
+    out: dict[str, tuple[str, str]] = {}
+    for hook in hooks:
+        entry = detail.get(hook)
+        if entry is None:
+            # Refused, never defaulted to `keep`. A hook nobody mentioned is a
+            # hook nobody looked at, and reading that silence as "go on expecting
+            # it" would be the one decision this design must not make by accident.
+            raise SubmissionRefused(f"No ruling for hook {hook}")
+        if not isinstance(entry, dict):
+            raise SubmissionRefused(f"Ruling for {hook} must be an object")
+        verdict = entry.get("verdict")
+        rationale = entry.get("rationale", "")
+        if verdict not in HOOK_VERDICTS:
+            raise SubmissionRefused(
+                f"Ruling for {hook} has verdict {verdict!r}; expected one of "
+                f"{', '.join(HOOK_VERDICTS)}"
+            )
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise SubmissionRefused(
+                f"Ruling for {hook} has no rationale. Every verdict needs one here, "
+                "including `keep`"
+            )
+        out[hook] = (verdict, rationale)
+    return out
+
+
+def _hook_retirement_payload(
+    pending: "PendingGate", decision: GateDecision, answer: Answer
+) -> object:
+    """Build the rulings document, publish it to CAS, and wrap it with the decision.
+
+    Each ruling carries the digest of the **case** it answers, taken from the
+    recorded docket rather than from the human's file. A docket holds a case per
+    hook, and a ruling that named only a verdict could be matched to whichever
+    case happened to be iterated.
+
+    The last step is the point, as with the feature gate: this runs the admitting
+    side's own validator over its own submission and refuses here if it cannot
+    admit its own answer, rather than making a human's decision fail at a worker
+    where they cannot see why.
+    """
+
+    from . import activities, retirement_record
+    from .retirement import RetirementCase, case_sha256
+    from .retirement_gate import (
+        RULINGS_ARTIFACT_KIND,
+        RetirementGateSubmissionV1,
+        RetirementRulingsV1,
+        RetirementRulingV1,
+        derive_retirement_gate_request,
+        validate_submission,
+    )
+
+    configured = activities.runtime()
+    recorded = retirement_record.resolve_with(
+        configured.ledger, configured.store, pending.derived.run_id
+    )
+    request = derive_retirement_gate_request(
+        recorded.run_id,
+        recorded.docket,
+        recorded.version,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.hook_ids,
+    )
+    rulings = _retirement_rulings(answer.detail, recorded.hook_ids)
+    try:
+        cases = {
+            case["hook_id"]: case_sha256(RetirementCase.from_dict(case))
+            for case in recorded.document["cases"]
+        }
+        document = RetirementRulingsV1(
+            1,
+            recorded.docket.sha256,
+            recorded.version,
+            recorded.policy_revision,
+            tuple(
+                RetirementRulingV1(1, hook, *rulings[hook], cases[hook])
+                for hook in recorded.hook_ids
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        # Every refusal out of this client is a `SubmissionRefused`: the CLI turns
+        # that into "refused: …" and exit 2, while anything else is a traceback —
+        # and a gate client that teaches whoever is on call to skim tracebacks has
+        # undone the reason it exists.
+        raise SubmissionRefused(f"These rulings are not a valid answer: {error}") from error
+    body = canonical_json(document).encode("utf-8")
+    reference = configured.store.put_bytes(
+        kind=RULINGS_ARTIFACT_KIND,
+        data=body,
+        producer_operation_id=f"client-{document.sha256}",
+        input_hashes=(recorded.docket.sha256,),
+    )
+    try:
+        submission = RetirementGateSubmissionV1(1, decision, reference)
+        validate_submission(request, submission, document)
+    except (TypeError, ValueError) as error:
+        raise SubmissionRefused(
+            f"This client cannot admit its own answer, so it will not send it: {error}"
+        ) from error
+    return submission
+
+
 FEATURE_ASSESSMENT_GATE = GateKind(
     name="feature-assessment",
     update_name="submit_feature_dispositions",
@@ -880,7 +1047,22 @@ REPLAY_VERIFICATION_GATE = GateKind(
 #: holding a run id can reach the operation, load the exact `ArtifactRef` and
 #: read the candidate ids out of the pinned bytes. Registering it before that
 #: existed would have been the `phase-a-approval` mistake with a different name.
-GATE_KINDS: tuple[GateKind, ...] = (REPLAY_VERIFICATION_GATE, FEATURE_ASSESSMENT_GATE)
+HOOK_RETIREMENT_GATE = GateKind(
+    name="hook-retirement",
+    update_name="submit_retirement_rulings",
+    # The suffix is spelled out rather than imported from `retirement_gate`, as
+    # the other two are: importing it would make this predicate agree with the
+    # producer by construction, and agreeing by construction is not agreeing.
+    matches=lambda gate_id, run_id: gate_id == f"{run_id}-hook-retirement-gate",
+    resolve=_resolve_hook_retirement,
+    payload=_hook_retirement_payload,
+)
+
+GATE_KINDS: tuple[GateKind, ...] = (
+    REPLAY_VERIFICATION_GATE,
+    FEATURE_ASSESSMENT_GATE,
+    HOOK_RETIREMENT_GATE,
+)
 
 
 def select_gate_kind(

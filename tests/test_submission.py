@@ -53,6 +53,7 @@ from dfinsta_pipeline.submission import (
     IDEMPOTENCY_ID_PREFIX,
     IDENTITY_EXCLUDED_FIELDS,
     FEATURE_ASSESSMENT_GATE,
+    HOOK_RETIREMENT_GATE,
     REPLAY_VERIFICATION_GATE,
     VERDICTS,
     Answer,
@@ -1177,17 +1178,29 @@ class GateKindTests(unittest.TestCase):
             with self.subTest(gate_id=gate_id):
                 self.assertFalse(FEATURE_ASSESSMENT_GATE.matches(gate_id, RUN_ID))
 
-    def test_exactly_the_two_reproducible_gates_are_registered(self) -> None:
+    def test_exactly_the_reproducible_gates_are_registered(self) -> None:
         """Registering a kind is a decision, not an import side effect.
 
         The feature gate joined only once its subject became reproducible from a
         run id — `recorded_assessments_v1` is what made that true. Before that
         row existed, registering it would have been the `phase-a-approval`
-        mistake wearing a different name.
+        mistake wearing a different name. The hook-retirement gate joined on the
+        same terms and only then: `recorded_retirement_dockets_v1` is what lets
+        `_resolve_hook_retirement` reach a docket from a run id and nothing else.
+
+        `phase-a-approval` is still absent, and that absence is the point of this
+        assertion rather than an omission from it.
         """
         self.assertEqual(
-            GATE_KINDS, (REPLAY_VERIFICATION_GATE, FEATURE_ASSESSMENT_GATE)
+            GATE_KINDS,
+            (REPLAY_VERIFICATION_GATE, FEATURE_ASSESSMENT_GATE, HOOK_RETIREMENT_GATE),
         )
+        for kind in GATE_KINDS:
+            with self.subTest(gate=kind.name):
+                # A resolver is what makes a gate answerable; a kind registered
+                # without one would be selected and then fail at the human.
+                self.assertTrue(callable(kind.resolve), kind.name)
+                self.assertTrue(kind.update_name.startswith("submit_"), kind.name)
 
     def test_a_gate_kind_refuses_a_detail_it_cannot_send(self) -> None:
         """Dropping a detail would submit a bare verdict a human never gave."""

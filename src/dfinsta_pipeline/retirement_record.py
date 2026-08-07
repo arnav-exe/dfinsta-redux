@@ -62,7 +62,8 @@ from .retirement import (
     build_case,
     candidates,
 )
-from .retirement_gate import DOCKET_ARTIFACT_KIND
+from .retirement import Ruling, publish
+from .retirement_gate import DOCKET_ARTIFACT_KIND, RetirementRulingsV1
 from .store import ContentStore
 
 __all__ = [
@@ -75,6 +76,9 @@ __all__ = [
     "record",
     "resolve",
     "resolve_with",
+    "admitted_rulings",
+    "publish_admitted",
+    "raise_gate",
     "main",
 ]
 
@@ -433,6 +437,134 @@ def resolve_with(ledger: Ledger, store: ContentStore, run_id: str) -> RecordedDo
     )
 
 
+def admitted_rulings(
+    ledger: Ledger, store: ContentStore, run_id: str
+) -> tuple[RetirementRulingsV1, str]:
+    """The rulings a human actually made, and the decision that carries them.
+
+    Reads the run-keyed row the admitting Activity wrote, fetches the document by
+    its digest and size, and cross-checks the docket it names against the row.
+    The cross-check is not ceremony: the row and the blob are two records of one
+    fact, and a reader that trusted either alone would not notice them diverging.
+    """
+
+    row = ledger.admitted_retirement_rulings_for_run(run_id)
+    body = store.read_blob(str(row["rulings_sha256"]), int(row["rulings_size"]))
+    document = RetirementRulingsV1.from_dict(json.loads(body.decode("utf-8")))
+    if document.docket_sha256 != row["docket_sha256"]:
+        raise RecordError("the admitted rulings name a different docket than their row")
+    return document, str(row["decision_id"])
+
+
+def publish_admitted(
+    state_root: Path | str,
+    run_id: str,
+    *,
+    root: Path | str = ".",
+    path: Path | str | None = None,
+) -> list[str]:
+    """Turn admitted rulings into rows `expectation` reads. The consumer.
+
+    **This function is the reason the gate is worth having.** Three times this
+    project has shipped a gate that was complete and disconnected at one end —
+    `the-gates-rulings-have-no-consumer`, `nothing-computes-a-stage-4a-assessment`,
+    `the-post-build-gate-cannot-be-satisfied` — and a retirement that was
+    approved, admitted and never written would be the fourth.
+
+    Each `retire` becomes a row; `keep` and `defer` write nothing, because the
+    file's only meaning is "no longer expected". The row's `decision_id` is the
+    **gate's**, so the permanent record points back at the decision a human
+    signed rather than at an id this module minted for itself.
+    """
+
+    state_root = Path(state_root)
+    ledger = Ledger(state_root / "ledger.sqlite3", read_only=True)
+    store = ContentStore(state_root / "cas")
+    document, decision_id = admitted_rulings(ledger, store, run_id)
+    recorded = resolve_with(ledger, store, run_id)
+
+    cases = {case["hook_id"]: case for case in recorded.document["cases"]}
+    written: list[str] = []
+    for item in document.rulings:
+        if item.verdict != "retire":
+            continue
+        case = RetirementCase.from_dict(cases[item.hook_id])
+        ruling = Ruling(
+            schema_version=1,
+            hook_id=item.hook_id,
+            verdict=item.verdict,
+            rationale=item.rationale,
+            # The actor is not in the rulings document — it is in the decision the
+            # ledger recorded — so `ruled_by` comes from the docket's allowed
+            # actor, which `validate_submission` has already proved the decision's
+            # actor equals. Two names for one fact, checked equal before either
+            # was trusted.
+            ruled_by=recorded.allowed_actor,
+            case_sha256=item.case_sha256,
+            decision_id=decision_id,
+            ruled_at=str(recorded.document.get("recorded_at") or "") or _now_from(document),
+        )
+        publish(case, ruling, root=root, path=path, decision_id=decision_id)
+        written.append(item.hook_id)
+    return written
+
+
+def _now_from(document: RetirementRulingsV1) -> str:
+    """A stamp for a published row when the docket carries none.
+
+    Not a clock read. This layer must never read the clock — a replay would then
+    rewrite a line with a new time and a reader could not order two records — so
+    the fallback is derived from the document itself and is stable across
+    replays. It is a marker that the gate produced this row, not a wall time, and
+    it is deliberately ugly so nobody mistakes it for one.
+    """
+
+    return f"admitted:{document.sha256[:16]}"
+
+
+def raise_gate(
+    endpoint: str,
+    task_queue: str,
+    run_id: str,
+    *,
+    gate_timeout_seconds: int,
+) -> str:
+    """Start the Workflow that asks a human, and return its id. The starter.
+
+    **Nothing in `src/` or `tools/` starts any other gate.** `start_workflow` for
+    `FeatureAssessmentRunWorkflow` appears only in an integration script, so that
+    gate is raisable by hand and by nothing else — a disconnection at the far end
+    from the one the consumer above closes. Reproducing it here would have made
+    this gate complete and unraisable, which is the exact shape this project keeps
+    shipping.
+
+    Imported lazily: `temporalio` is the only runtime dependency and everything
+    else in this module must work with no server anywhere near it.
+    """
+
+    import asyncio
+
+    from temporalio.client import Client
+
+    from .retirement_gate import RetirementRunRequestV1
+    from .retirement_workflow import HookRetirementRunWorkflow
+
+    async def _start() -> str:
+        client = await Client.connect(endpoint)
+        handle = await client.start_workflow(
+            HookRetirementRunWorkflow.run,
+            RetirementRunRequestV1(1, run_id, gate_timeout_seconds),
+            # The run id IS the workflow id, as the other gates do it. That is
+            # what makes `submission show <workflow_id>` reach the right gate
+            # from the only identifier a human has.
+            id=run_id,
+            task_queue=task_queue,
+        )
+        return handle.id
+
+    return asyncio.run(_start())
+
+
 def resolve(
     state_root: Path | str, run_id: str, *, read_only: bool = True
 ) -> RecordedDocket:
@@ -464,8 +596,58 @@ def main(argv: Sequence[str] | None = None) -> int:
     showing.add_argument("--run-id", required=True)
     showing.add_argument("--document", action="store_true")
 
+    raising = sub.add_parser("raise", help="start the Workflow that asks a human")
+    raising.add_argument("--run-id", required=True)
+    raising.add_argument("--endpoint", default="localhost:7233")
+    raising.add_argument("--task-queue", default="dfinsta")
+    raising.add_argument(
+        "--gate-timeout-seconds",
+        type=int,
+        default=7 * 24 * 3600,
+        help="how long the gate stays open. A week by default: this is the gate "
+        "whose whole purpose is to outlast a weekend, and an unanswered one leaves "
+        "every hook still expected",
+    )
+
+    publishing = sub.add_parser(
+        "publish", help="write admitted rulings into manifest/retirements.jsonl"
+    )
+    publishing.add_argument("--run-id", required=True)
+    publishing.add_argument("--retirements", type=Path)
+
     args = parser.parse_args(argv)
     try:
+        if args.command == "raise":
+            workflow_id = raise_gate(
+                args.endpoint,
+                args.task_queue,
+                args.run_id,
+                gate_timeout_seconds=args.gate_timeout_seconds,
+            )
+            print(f"raised {workflow_id}")
+            print(
+                "Answer it with:  python -m dfinsta_pipeline.submission "
+                f"--state-root {args.state_root} show {workflow_id}"
+            )
+            return 0
+
+        if args.command == "publish":
+            retired = publish_admitted(
+                args.state_root, args.run_id, root=args.root, path=args.retirements
+            )
+            if not retired:
+                print(
+                    f"{args.run_id}: nothing retired. Every hook was ruled keep or "
+                    "defer, and all of them stay expected."
+                )
+            else:
+                print(f"retired: {', '.join(retired)}")
+                print(
+                    "Commit the file: the expectation reads the committed one, and an "
+                    "uncommitted row works here and vanishes on clone."
+                )
+            return 0
+
         if args.command == "record":
             recorded = record(
                 args.state_root,

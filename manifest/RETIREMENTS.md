@@ -5,8 +5,23 @@ No hook has been retired. `dfinsta_pipeline.expectation` reads its absence as
 "none recorded" and expects every hook that was release-ready on the previous
 version to be release-ready on this one.
 
-**Do not hand-write a row.** `dfinsta_pipeline.retirement` produces them, and
-going around it skips every check below:
+**Do not hand-write a row.** Two paths produce them, and going around either
+skips every check below.
+
+**The durable gate**, when the decision needs days and a record of who signed it:
+
+```
+python -m dfinsta_pipeline.retirement_record --state-root <dir> record \
+    --run-id retire-441 --version 441 --investigations <json> \
+    --allowed-actor <you> --owner-token <token>
+python -m dfinsta_pipeline.retirement_record --state-root <dir> raise --run-id retire-441
+python -m dfinsta_pipeline.submission --state-root <dir> show retire-441
+python -m dfinsta_pipeline.submission --state-root <dir> submit retire-441 \
+    --verdict approve --rationale "..." --rulings <json> --confirm <hash>
+python -m dfinsta_pipeline.retirement_record --state-root <dir> publish --run-id retire-441
+```
+
+**The local path**, for a decision that does not need to outlast the session:
 
 ```
 python -m dfinsta_pipeline.retirement candidates --version 441

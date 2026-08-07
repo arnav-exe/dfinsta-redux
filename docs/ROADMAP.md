@@ -595,10 +595,12 @@ Reordered 2026-08-03. The two items that stood here are done.
    after the case's, so a retirement cannot be backdated onto the port that exposed the drop.
    **Not a gate inside the port** — if retirement could unblock a red build, approving one would
    be the cheapest thing a tired person could do at the end of a long port.
-   *Remaining:* the **durable wait**. The feature gate is a Temporal Workflow because a human
-   decision takes days and must survive a worker restart; a retirement case is currently a file
-   somebody must remember to open. Tracked in "Known open items" with a test that fails when it
-   lands.
+   **The durable wait is built too**, so the gate is complete at both ends:
+   `HookRetirementRunWorkflow` (registered, `PINNED`), two Activities, `HOOK_RETIREMENT_GATE` in
+   `submission.GATE_KINDS`, `retirement_record.raise_gate` to start it and `publish_admitted` to
+   write the row `expectation` reads. Proven end to end against a real Temporal environment: the
+   assertion is that the *expectation* stops expecting the hook at 442 and still expects it at
+   441, not that the Workflow said "completed".
 7. Real k-proposer run for the two settings hooks, using the blind holdout as the prompt
    reference — now an escalation path rather than the normal one, since 440 resolved all
    seven hooks with no proposals at all.

@@ -1069,10 +1069,31 @@ zero. 439 has runtime evidence and no static evidence, and recording that as "no
 would mark every hook in the manifest as never-release-ready and turn the whole manifest into
 retirement candidates.
 
-**What is not built: the durable wait.** The feature gate is a Temporal Workflow precisely
-because a human decision takes days and must survive a worker restart. A retirement case is
-currently a file somebody has to remember to open — complete, and reached by nothing, one step
-along from the gap it closed. `tests/test_open_items.py` fails when that lands.
+**And the durable wait now exists too**, so the gate is complete at both ends.
+`HookRetirementRunWorkflow` (registered, `PINNED`) raises the question and waits — a week by
+default, because the point is to outlast a weekend — with `prepare_retirement_gate_activity` and
+`admit_retirement_rulings_activity` on the worker, `HOOK_RETIREMENT_GATE` in `submission.GATE_KINDS`
+so a human can answer it, `retirement_record.raise_gate` to start it and
+`retirement_record.publish_admitted` to write the row `expectation` reads.
+
+The subject is a **docket** — every open case at a version — not one case, so a human works
+through the list once instead of answering N gates and forgetting the last. `validate_submission`
+requires a ruling for every hook in it: a missing one is refused, never read as `keep`.
+
+`tests/test_retirement_workflow.py` runs the whole chain on a time-skipping Temporal environment
+with the **real** Activities, and its central assertion is deliberately not "the Workflow returned
+completed" — that was true of every disconnected gate this project has shipped. It asserts that
+`expectation.retired_by` stops expecting the hook at **442** and still expects it at **441**, that
+the published row's `decision_id` is the *gate's* rather than one minted afterwards, that a
+timeout leaves every hook expected, and that a `keep` writes nothing.
+
+**A defect the end-to-end test found on its first run, and it is the interesting one.**
+`standings()` skipped any version whose readiness was not computable — right for 439, which has no
+static evidence — and the `except` was wide enough to swallow a corpus that was *unreadable*. A
+fixture with the wrong `producer` on every runtime claim was rejected by the ledger, every version
+was skipped, and the module cheerfully reported "every assessed hook is release-ready at 441". In
+the one module whose output is a list of hooks somebody may decide to stop expecting. Absent and
+unreadable are now different: a missing file is skipped, a broken one is a refusal.
 
 ## The three hooks that have never passed a probe, re-derived on 441
 
@@ -1811,13 +1832,11 @@ semantically, not bitwise, reproducible".
   340 and 430 both completed against a live Temporal server, driven by
   `tests/integration/test_registered_replay_harness.py`. Left in place because the sentence it
   replaces was true for three weeks and the list is read for what is *not* done.
-- **A retirement can be ruled on, but nothing asks.** `dfinsta_pipeline.retirement` builds the
-  case, takes a human's ruling and appends the row `expectation` consumes — the producer gap is
-  closed and verified end to end. What is missing is the **durable wait**: the feature gate is a
-  Temporal Workflow precisely because a human decision takes days and must survive a worker
-  restart, and a retirement case is currently a file somebody must remember to open. Same
-  "complete and reached by nothing" shape, one step along, and `test_open_items` fails when it
-  closes.
+- **Nothing starts the feature gate.** `client.start_workflow(FeatureAssessmentRunWorkflow…)`
+  appears only in `tests/integration/`, so that gate is registered, answerable, and raisable by
+  hand alone. Found while wiring the retirement gate, which deliberately does not copy it —
+  `retirement_record.raise_gate` is a starter in `src/`. `test_open_items` fails when the feature
+  gate gets one.
 - `load_decoded_tree` still runs on the event loop inside the decode and build checkpoint
   Activities (residual 5% and 17% blocked on a real port, down from 82% and 62%). The gate
   stage, which was 100%, now derives in a thread. The primitive cannot be threaded at its own

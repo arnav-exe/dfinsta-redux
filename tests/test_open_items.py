@@ -85,33 +85,42 @@ class DisconnectionTests(unittest.TestCase):
         """
         self.assertEqual(importers_of("surface_diff"), set())
 
-    def test_no_durable_gate_raises_the_retirement_question(self):
-        """A human can rule on a retirement, but nothing *asks* them to.
+    def test_nothing_in_the_pipeline_starts_the_feature_gate(self):
+        """`FeatureAssessmentRunWorkflow` is registered and started by nobody.
 
-        `dfinsta_pipeline.retirement` closed the older gap — it builds a case,
-        takes a human's ruling and appends the row `expectation` consumes. What it
-        does not do is wait. The whole reason the feature gate is a Temporal
-        Workflow is that a human decision takes hours or days and must survive a
-        worker restart; today a retirement case is a file somebody has to remember
-        to look at, which is the same "complete and reached by nothing" shape one
-        step along.
+        Found while wiring the retirement gate: `client.start_workflow` for the
+        feature gate appears **only** in `tests/integration/`, so the gate is
+        raisable by hand and by nothing else. It is the disconnection at the far
+        end from the one the retirement consumer closes — a gate that can be
+        answered but not asked.
 
-        This failing means the durable gate landed: confirm it, update "Known open
-        items", and delete this.
+        The retirement gate deliberately does not reproduce it:
+        `retirement_record.raise_gate` is a starter in `src/`. This test exists so
+        the feature gate's gap is a failing assertion rather than a sentence in a
+        document nobody executes, and it is scoped to that gate alone.
+
+        Closing it means giving the feature gate a starter in `src/` or `tools/`.
+        Then confirm, update "Known open items", and delete this.
         """
-        defined = {
-            str(path.relative_to(ROOT))
-            for path in (ROOT / "src").rglob("*.py")
-            if "@workflow.defn" in path.read_text(encoding="utf-8")
-        }
-        # The existing workflows are the control: an empty set would mean the
-        # search broke, which reads identically to "no retirement workflow".
-        self.assertIn("src/dfinsta_pipeline/feature_workflow.py", defined)
-        self.assertNotIn("src/dfinsta_pipeline/retirement_workflow.py", defined)
-        self.assertNotIn(
-            "retirement",
-            (ROOT / "src/dfinsta_pipeline/worker.py").read_text(encoding="utf-8"),
-        )
+        # `<Class>.run` and not the bare class name: that is the form passed to
+        # `start_workflow`, and matching the name alone found this very file's
+        # prose about the gap — a search loose enough to hit a docstring reports
+        # the gap closed by the sentence describing it.
+        def starts(marker: str, *roots: Path) -> set[str]:
+            found = set()
+            for base in roots:
+                for path in base.rglob("*.py"):
+                    source = path.read_text(encoding="utf-8")
+                    if f"{marker}.run" in source and "start_workflow" in source:
+                        found.add(str(path.relative_to(ROOT)))
+            return found
+
+        starters = starts("FeatureAssessmentRunWorkflow", ROOT / "src", ROOT / "tools")
+        # The retirement starter is the control. Empty on both sides would mean
+        # the search is looking for the wrong thing.
+        retirement = starts("HookRetirementRunWorkflow", ROOT / "src")
+        self.assertEqual({"src/dfinsta_pipeline/retirement_record.py"}, retirement)
+        self.assertEqual(set(), starters)
 
     def test_claims_py_still_has_no_production_importer(self):
         """The wedged-claim recovery tool is invoked by a human, never by code.

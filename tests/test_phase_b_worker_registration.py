@@ -51,6 +51,12 @@ EXPECTED_REGISTERED = {
     "admit_replay_verification_grant_activity",
     "prepare_feature_gate_activity",
     "admit_feature_dispositions_activity",
+    # And the two retirement-gate Activities, when `HookRetirementRunWorkflow`
+    # did. Same reason a second time: `dfinsta_pipeline.retirement` could build a
+    # case and take a ruling at a command line, and nothing could *wait* — a
+    # decision that takes days needs something that survives a worker restart.
+    "prepare_retirement_gate_activity",
+    "admit_retirement_rulings_activity",
     *STAGE_WRAPPERS,
 }
 
@@ -84,7 +90,12 @@ class WorkerRegistrationTests(unittest.TestCase):
         names = {WorkflowDefinition.from_class(cls).name for cls in worker.REGISTERED_WORKFLOWS}
         self.assertEqual(
             names,
-            {"PortRunWorkflow", "ReplayRunWorkflow", "FeatureAssessmentRunWorkflow"},
+            {
+                "PortRunWorkflow",
+                "ReplayRunWorkflow",
+                "FeatureAssessmentRunWorkflow",
+                "HookRetirementRunWorkflow",
+            },
         )
         for cls in worker.REGISTERED_WORKFLOWS:
             definition = WorkflowDefinition.from_class(cls)

@@ -33,7 +33,7 @@ from .executor import (
     execute,
     process_not_reaped,
 )
-from . import assessment_record, replay_gate
+from . import assessment_record, replay_gate, retirement_record
 from .feature_gate import (
     FeatureAssessmentGateV1,
     FeatureDispositionsAdmissionV1,
@@ -42,6 +42,14 @@ from .feature_gate import (
     derive_feature_gate_request,
     validate_submission,
 )
+from .retirement_gate import (
+    HookRetirementGateV1,
+    RetirementRulingsAdmissionV1,
+    RetirementRulingsV1,
+    derive_retirement_gate,
+    derive_retirement_gate_request,
+)
+from .retirement_gate import validate_submission as validate_retirement_submission
 from .ledger import Ledger
 from .replay_contracts import (
     REPLAY_STAGES_WITHOUT_FRAMEWORK,
@@ -3962,6 +3970,95 @@ async def admit_feature_dispositions_activity(
             "dispositions_sha256": reference.sha256,
             "dispositions_size": reference.size,
             "assessment_sha256": document.assessment_sha256,
+            "policy_revision": document.policy_revision,
+        }
+    )
+    return reference
+
+
+def _retirement_request(configured: ActivityRuntime, run_id: str):
+    """The retirement gate subject, re-derived from the ledger for a run id.
+
+    One function, called by the preparing Activity and again by the admitting
+    one. The admitting side must not take the Workflow's copy of the subject —
+    that would make History the authority on what a human approved — so it
+    re-derives, and re-deriving through the *same* code is what makes the two
+    answers mean something. Two implementations agree only until one is edited.
+    """
+
+    recorded = retirement_record.resolve_with(configured.ledger, configured.store, run_id)
+    return recorded, derive_retirement_gate_request(
+        recorded.run_id,
+        recorded.docket,
+        recorded.version,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.hook_ids,
+    )
+
+
+@activity.defn
+async def prepare_retirement_gate_activity(run_id: str) -> HookRetirementGateV1:
+    """Publish only the hash of the retirement gate subject.
+
+    The docket — every open retirement case at a version, each carrying an
+    agent's investigation in prose — stays in the content store. What crosses
+    into History is six scalars, because History is permanent and replayable and
+    a docket is unbounded in the number of hooks it can hold.
+    """
+
+    configured = runtime()
+    _, request = _retirement_request(configured, run_id)
+    return derive_retirement_gate(request)
+
+
+@activity.defn
+async def admit_retirement_rulings_activity(
+    admission: RetirementRulingsAdmissionV1,
+) -> ArtifactRef:
+    """The authority. Re-derives, fetches, validates, and only then records.
+
+    Nothing here trusts the Workflow's copy of anything. The subject is
+    recomputed from the ledger, the rulings document is fetched by the reference
+    the human signed (which re-verifies its digest and size on read), and
+    `validate_submission` runs over the three together.
+
+    Refusals are `non_retryable`. A retry cannot make a wrong answer right, and
+    Temporal retrying a validation failure forever would wedge the run instead of
+    failing it — the same reason validating inside Workflow code must raise
+    `ApplicationError` and not a bare `ValueError`.
+    """
+
+    configured = runtime()
+    _, request = _retirement_request(configured, admission.run_id)
+    reference = admission.submission.rulings
+    body = configured.store.read_blob(reference.sha256, reference.size)
+    try:
+        document = RetirementRulingsV1.from_dict(json.loads(body.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ApplicationError(
+            f"Retirement rulings are unreadable: {error}",
+            type="RetirementRulingsUnreadable",
+            non_retryable=True,
+        ) from error
+    try:
+        validate_retirement_submission(request, admission.submission, document)
+    except ValueError as error:
+        raise ApplicationError(
+            f"Retirement rulings refused: {error}",
+            type="RetirementRulingsRefused",
+            non_retryable=True,
+        ) from error
+
+    configured.ledger.record_decision(admission.submission.decision)
+    configured.ledger.record_admitted_retirement_rulings(
+        {
+            "run_id": admission.run_id,
+            "decision_id": admission.submission.decision.decision_id,
+            "rulings_sha256": reference.sha256,
+            "rulings_size": reference.size,
+            "docket_sha256": document.docket_sha256,
+            "version": document.version,
             "policy_revision": document.policy_revision,
         }
     )

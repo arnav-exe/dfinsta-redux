@@ -74,6 +74,7 @@ from .contracts import canonical_sha256
 from .expectation import (
     RETIREMENTS,
     ExpectationError,
+    evidence_files,
     Retirement,
     port_report,
     read_retirements,
@@ -255,16 +256,29 @@ def standings(
     seen_by_version: dict[str, set[str]] = {}
     for index, version in enumerate(series):
         previous = series[index - 1] if index else None
+        # Absent and unreadable are different facts, and conflating them is how a
+        # corrupt corpus reads as a quiet one. A version whose evidence file does
+        # not exist is skipped: 439 has runtime evidence and no static evidence,
+        # because `static_verified` had no producer until 440, so its readiness is
+        # unknowable rather than zero — recording it as zero would make every hook
+        # look like it had been failing since the start of the series and turn the
+        # whole manifest into retirement candidates.
+        #
+        # A file that exists and cannot be read is a REFUSAL. This was found the
+        # only way it could be: a test corpus with the wrong `producer` on every
+        # runtime claim was rejected by the ledger, every version was skipped, and
+        # the result was the cheerful "every assessed hook is release-ready".
+        # Silence that under-requires, in the module whose output is a list of
+        # hooks somebody may decide to stop expecting.
+        missing = [
+            path for path in evidence_files(root, version, previous) if not path.is_file()
+        ]
         try:
             report = port_report(root, version, previous)
         except ExpectationError:
-            # Not computable is not "no hook passed". 439 has runtime evidence and
-            # no static evidence, because `static_verified` had no producer until
-            # 440, so its readiness is unknowable rather than zero. Recording it
-            # as zero would make every hook look like it had been failing since
-            # the start of the series and turn the whole manifest into retirement
-            # candidates.
-            continue
+            if missing:
+                continue
+            raise
         ready_by_version[version] = set(report.ready)
         seen_by_version[version] = set(report.hooks)
 
@@ -541,7 +555,9 @@ def _decision_id(
     return f"{verdict}-{case.hook_id}-{digest[:12]}"
 
 
-def validate_ruling(case: RetirementCase, ruling: Ruling) -> None:
+def validate_ruling(
+    case: RetirementCase, ruling: Ruling, *, decision_id: str | None = None
+) -> None:
     """Everything that must hold before a ruling may be published.
 
     Called by `rule()` when the ruling is made **and** by `publish()` before
@@ -605,7 +621,13 @@ def validate_ruling(case: RetirementCase, ruling: Ruling) -> None:
     # the id mismatch is a symptom while the stale subject is the cause — running
     # this first reported "decision id is not this answer's" for a case somebody
     # had edited, which is true and sends the reader to the wrong file.
-    expected_id = _decision_id(
+    # `decision_id=` is supplied by exactly one caller: the consumer of an
+    # ADMITTED gate ruling, which reads the id out of the ledger row the admitting
+    # Activity wrote. That id is content-derived too — `submission.decision_identity`
+    # computes it — just by a different function, and it is the durable link back
+    # to the decision a human signed. It is not caller-chosen: a caller who could
+    # pass any string here would reopen the hole this check closed.
+    expected_id = decision_id or _decision_id(
         case,
         verdict=ruling.verdict,
         rationale=ruling.rationale,
@@ -670,6 +692,7 @@ def publish(
     *,
     root: Path | str = ".",
     path: Path | str | None = None,
+    decision_id: str | None = None,
 ) -> Path | None:
     """Append the retirement row, if the verdict was to retire.
 
@@ -683,7 +706,7 @@ def publish(
     rows of fixture data into the committed evidence corpus that way.
     """
 
-    validate_ruling(case, ruling)
+    validate_ruling(case, ruling, decision_id=decision_id)
     if ruling.verdict != "retire":
         return None
 
