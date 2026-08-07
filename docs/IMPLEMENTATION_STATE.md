@@ -1,6 +1,6 @@
 # Pipeline Implementation State
 
-Resume point as of 2026-08-05, branch `port-430`. Suite: **2936 tests**, one expected skip,
+Resume point as of 2026-08-05, branch `port-430`. Suite: **2942 tests**, one expected skip,
 plus six green tool suites (indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
 device_validation 22).
 
@@ -342,12 +342,13 @@ name silently stopped patching anything and failed loudly.
 instead of restating them, so harness and Workflow cannot drift. The grant and gate ids had
 been restated inline and pinned by nothing at all.
 
-**Still open, and genuinely needing the real 340/430 run**: non-destructive cancellation
-*within* the window (it rewrites a reviewed invariant), heartbeats, and the F2 extraction. One
-ordering constraint is now load-bearing: **heartbeats must come last**, because heartbeating is
-what opens the channel for server-originated cancellation — a workflow cancel, a timeout, or a
-transient network failure while recording one — and every one lands in the handler that
-quarantines.
+~~**Still open, and genuinely needing the real 340/430 run**: non-destructive cancellation
+*within* the window, heartbeats, and the F2 extraction.~~ **All three closed 2026-08-05**, in
+that order and each measured before the next was attempted. The ordering constraint recorded
+here was real and was honoured — heartbeats came last, because heartbeating is what opens the
+channel for server-originated cancellation, and until cancellation stopped quarantining, every
+one of those landed in the handler that destroyed the run. See
+`docs/WORKFLOW_REGISTRATION_DESIGN.md` §3d-§3j.
 
 **A terminal case outside all four**: once the verification grant is admitted, its five
 `UNIQUE` columns plus the gate validator's timestamp window make that gate unrepeatable, so a
@@ -1032,7 +1033,7 @@ now takes `--custom-tree` and `--replace-dex`; defaults preserve 430.
 ```
 python        .venv/bin/python   (3.13; system python3 is 3.14 and unsupported)
 tests         PYTHONPATH=src .venv/bin/python -W error -m unittest discover -s tests
-              2936 tests, 1 expected skip
+              2942 tests, 1 expected skip
 tool suites   cd tools/<name>/tests && PYTHONPATH=<repo>/src:<repo> python -m unittest discover -s . -t .
               indexer 46, resolver 8, port_430 45, reconstruction 15, release 6,
               device_validation 22. Discovery from the repository root does NOT work:
@@ -1152,8 +1153,9 @@ now pinned: `test_phase_b_verification_grant`'s identity collision and
   `--source-root`, `--executor-path SHA256=PATH` and `--attempts-root`.
 - **A running stage blocks the worker's event loop**, so a query — and therefore a heartbeat —
   cannot be served while a stage runs. This contradicts §3b-corrected's argument that F4 is
-  cheap. **Still open**: F4 now needs the synchronous tree capture moved off the loop first, or
-  measured heartbeat gaps the size of a full capture.
+  cheap. ~~**Still open**: F4 needs the synchronous tree capture moved off the loop first.~~
+  **Closed 2026-08-05**: the walks moved into threads, then heartbeats landed. Measured on 430,
+  21% → 91% query availability.
 
 **3. ~~Stage 3 has the same disconnection stage 4a had.~~ Re-derived and split, 2026-08-04.**
 Both halves of the original sentence were true and they were about **different modules**. It
@@ -1336,10 +1338,10 @@ wrong.**
   second artifact would have every claim individually true and describe no APK that ever
   existed.
 
-**Still open, and a design call rather than a fix**: `differential` claims have no durable home.
-`manifest/runtime_evidence/README.md` forbids filing them beside the per-version baselines, for
-a good reason — the next comparison would read a previous comparison's output as though it were
-a measurement. A sibling location avoids that. Regenerating 439→440 today gives **2 passing
+~~**Still open, and a design call rather than a fix**: `differential` claims have no durable
+home.~~ **Closed 2026-08-06**: `manifest/differentials/<baseline>-<current>.jsonl`, with a
+README stating why they cannot sit beside the per-version baselines — the next comparison would
+read a previous comparison's output as though it were a measurement. 439→440 gives **2 passing
 claims**, `set_app_context` and `tigon_url_block`; the other five are `shapes_disjoint` against
 439's thin baseline.
 
@@ -1430,9 +1432,14 @@ semantically, not bitwise, reproducible".
   need one entry per site.
 - An over-count of a marker reports "partially applied", which matches the applier's
   wording but is inaccurate; both counts are in the message.
-- `Resolution.smali_path` is declared and never populated.
-- `RESERVED_CAPTURE_NAMES` restates the regex lookahead and has no runtime consumer; a
-  test binds them so they cannot drift.
+- ~~`Resolution.smali_path` is declared and never populated.~~ **Stale, corrected 2026-08-07**:
+  `resolve.py` populates it at three sites (`:690`, `:783`, `:822`) and `:195` serialises it.
+- ~~`RESERVED_CAPTURE_NAMES` restates the regex lookahead and has no runtime consumer.~~
+  **Stale, corrected 2026-08-07 — and it was wrong in both halves.** `CAPTURE_NAME` is
+  `[a-z_][a-z0-9_]*\Z` with no lookahead at all, and it *matches* both `init` and `clinit`, so
+  the frozenset rejects names the regex accepts and is load-bearing rather than a restatement.
+  It gained a runtime consumer in `0b944ea` (`SuppliedCapture.__post_init__`,
+  `hook_manifest.py:366`) and the note was never updated.
 - The `type` kind accepts object and primitive arrays but not every exotic descriptor.
 - ~~The registered `ReplayRunWorkflow` has never executed a real port.~~ **Closed 2026-08-04**:
   340 and 430 both completed against a live Temporal server, driven by
