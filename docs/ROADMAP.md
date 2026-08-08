@@ -5,7 +5,11 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-08 (ninth pass: the first real feature-gate ruling — six endpoints blocked on
+Last updated 2026-08-08 (tenth pass: `feed/timeline_stream/` is the first of the six ruled
+endpoints to gain a guard in `throwIfBlocked`, and the first to be measured on device — it is
+verified in the DEX and **fires zero times**, proven against a positive control. The same work
+found that the gate ruling had made the next build unverifiable: `required_build_strings` required
+every declared block rather than every enforced one, and had no tests at all. Ninth pass: the first real feature-gate ruling — six endpoints blocked on
 the record — plus a reversal mechanism, a per-hook roster, a proposal engine for withdrawals, a
 replay-History corpus covering all four registered workflows, and the shared gate clauses
 extracted into `gate_contract.py`. Eighth pass: the release-ready count is now an *assertion* rather than a

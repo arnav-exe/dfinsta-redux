@@ -89,6 +89,7 @@ from dfinsta_pipeline.rulings import (
     existing_preference_keys,
     guarded_endpoints,
     read_store,
+    required_build_strings,
     suppressed_candidates,
     audit,
     describe_audit,
@@ -122,7 +123,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REAL_SOURCE = ROOT / "dfinsta_source_439/newCode/com/dfinstagram/hooks.smali"
 REAL_MANIFEST = ROOT / "manifest/hooks.json"
 
-#: The six endpoint literals `throwIfBlocked` actually tests, read off the smali
+#: The seven endpoint literals `throwIfBlocked` actually tests, read off the smali
 #: by hand. Written out rather than derived, so this pins the app's behaviour
 #: instead of re-deriving it with the function under test.
 GUARDED = (
@@ -131,6 +132,7 @@ GUARDED = (
     "/discover/topical_explore",
     "/feed/reels_tray/",
     "/feed/timeline/",
+    "/feed/timeline_stream/",
     "/profile_ads/get_profile_ads/",
 )
 
@@ -158,14 +160,17 @@ RECORDED_AT = "2026-08-04T09:00:00Z"
 #: "does the manifest already cover it" and "does the app already test it" —
 #: can be varied one at a time against the fixture manifest below.
 #:
-#:   * :data:`UNGUARDED_GAP` — declared by neither. The real 439 candidate:
-#:     `/feed/timeline/` does NOT cover `feed/timeline_stream/`, because the
-#:     trailing slash is part of the rule, which is exactly why it is a gap.
+#:   * :data:`UNGUARDED_GAP` — declared by neither. A real 441 candidate, and
+#:     the containment rule is why it is a gap: `/feed/reels_tray/` does not
+#:     cover `feed/reels_media_stream/` in either direction. This was
+#:     `feed/timeline_stream/` until 2026-08-08, when that endpoint became the
+#:     first of the six ruled that day to gain a guard — so it must be replaced
+#:     again, not deleted, as each of the remaining five is written.
 #:   * :data:`GUARDED_GAP` — not in the fixture manifest, but `throwIfBlocked`
 #:     tests it, so a ruling on it is a manifest addition and NOT custom code.
 #:   * :data:`COVERED_GAP` — covered by the fixture manifest's `/feed/timeline/`
 #:     under the containment rule `assessment.is_blocked` uses.
-UNGUARDED_GAP = "feed/timeline_stream/"
+UNGUARDED_GAP = "feed/reels_media_stream/"
 GUARDED_GAP = "profile_ads/get_profile_ads/"
 COVERED_GAP = "feed/timeline/"
 
@@ -969,6 +974,7 @@ class OperationKeyTests(RulingTestCase):
 #: `throwIfBlocked`. Six endpoints entered this state on 2026-08-08 when the
 #: owner ruled `block` on every candidate Instagram 441 exposed; they leave it
 #: one at a time as the guard is written, and this tuple shrinks to `()` again.
+#: `feed/timeline_stream/` left it the same day, the first of the six.
 #: Pinned rather than computed, so the app work stays visible: an empty
 #: expectation would have quietly accepted a manifest that promises six blocks
 #: the app does not make.
@@ -978,7 +984,6 @@ DECLARED_NOT_YET_ENFORCED = (
     "feed/reels_media/",
     "feed/reels_media_stream/",
     "feed/text_post_app_timeline",
-    "feed/timeline_stream/",
 )
 
 
@@ -1024,13 +1029,25 @@ class EnforcementTests(RulingTestCase):
 .end method
 """
 
+    def declared_uri_rules(self, manifest_path: Path) -> tuple[str, ...]:
+        """The url-block hook's URI-path deps, read the way the module reads them.
+
+        Spelled out here rather than imported so the invariant below compares two
+        independent derivations of "declared" instead of one function with itself.
+        """
+        from dfinsta_pipeline.assessment import looks_like_uri_rule
+
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        entry = next(h for h in data["hooks"] if h["hook_id"] == "tigon_url_block")
+        return tuple(dep for dep in entry["semantic_deps"] if looks_like_uri_rule(dep))
+
     def decoy(self, body: str = "") -> Path:
         path = self.tmp / "decoy" / "hooks.smali"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body or self.DECOY_SOURCE, encoding="utf-8")
         return path
 
-    def test_guarded_endpoints_returns_the_six_literals_the_app_tests(self):
+    def test_guarded_endpoints_returns_the_seven_literals_the_app_tests(self):
         """Scoped to `throwIfBlocked`, so a literal elsewhere is not a guard.
 
         The control is the decoy source: a path constant sits in the rewriting
@@ -1192,15 +1209,15 @@ class EnforcementTests(RulingTestCase):
         declared_only, undeclared = audit(REAL_MANIFEST, REAL_SOURCE)
         # The second half is the one this test is named for and it stays empty:
         # the app must never guard an endpoint the manifest does not record. The
-        # first half is the six the owner ruled `block` on 2026-08-08, which the
-        # app has yet to implement.
+        # first half is the five of the six the owner ruled `block` on 2026-08-08
+        # that the app has yet to implement.
         self.assertEqual(sorted(declared_only), sorted(DECLARED_NOT_YET_ENFORCED))
         self.assertEqual((), undeclared)
         without_declared, without_undeclared = audit(without, REAL_SOURCE)
         self.assertEqual(sorted(without_declared), sorted(DECLARED_NOT_YET_ENFORCED))
         self.assertEqual(("/clips/discover",), without_undeclared)
-        # No longer "agree in both directions": six endpoints are declared and not
-        # yet guarded, so the audit correctly reports a disagreement. What this
+        # No longer "agree in both directions": five endpoints are declared and
+        # not yet guarded, so the audit correctly reports a disagreement. What this
         # test still pins is that the *undeclared* direction is clean — the app
         # must never guard something the manifest does not record.
         agreed = describe_audit(*audit(REAL_MANIFEST, REAL_SOURCE))
@@ -1208,6 +1225,111 @@ class EnforcementTests(RulingTestCase):
         reported = describe_audit(*audit(without, REAL_SOURCE))
         self.assertIn("/clips/discover", reported)
         self.assertIn("NOT declared in any hook", reported)
+
+    def test_required_build_strings_is_the_declared_blocks_the_app_enforces(self):
+        """What an artifact can be held to, which is not what the manifest claims.
+
+        This function had no test at all until the subtraction was added, and the
+        function it feeds is a gate. It returned every declared URI rule, so the
+        six rulings recorded on 2026-08-08 became six strings the built DEX was
+        required to contain — five of which no source file mentions. The next 441
+        port failed post-build verification with a correct APK on disk.
+        """
+        self.require_real_source()
+        if not REAL_MANIFEST.is_file():
+            self.skipTest(f"manifest not present: {REAL_MANIFEST}")
+
+        required = required_build_strings(REAL_MANIFEST, REAL_SOURCE)
+        # Nothing unenforced is required. The regression, stated as a property.
+        self.assertEqual(
+            [], sorted(set(required) & set(DECLARED_NOT_YET_ENFORCED))
+        )
+        # And the positive control, so this cannot pass by requiring nothing:
+        # the endpoint that changed sides on 2026-08-08 is required, and so are
+        # the six the guard has always tested.
+        self.assertIn("feed/timeline_stream/", required)
+        self.assertEqual(7, len(required))
+
+        # The invariant that keeps the two answers from drifting: every declared
+        # URI rule is either required of the build or reported by the audit, and
+        # never both, and never neither.
+        declared = self.declared_uri_rules(REAL_MANIFEST)
+        unenforced = unenforced_endpoints(REAL_MANIFEST, REAL_SOURCE)
+        self.assertEqual(sorted(declared), sorted(set(required) | set(unenforced)))
+        self.assertEqual([], sorted(set(required) & set(unenforced)))
+
+    def test_a_declared_block_the_app_does_not_test_is_not_required_of_the_build(self):
+        """One manifest, both kinds of dep, so neither half can pass by accident.
+
+        A build cannot be asked to prove a decision nobody has implemented. The
+        guarded literal must still be required, or the fix would have been to
+        stop checking anything — which is the absence-as-a-pass this module
+        refuses everywhere else.
+        """
+        self.require_real_source()
+        mixed = self.write_manifest(
+            [
+                hook_entry(
+                    "tigon_url_block",
+                    "url_block",
+                    [
+                        "/feed/timeline/",  # enforced
+                        UNGUARDED_GAP,  # declared only
+                        # Not a URI-path rule; belongs to neither answer.
+                        "Landroid/app/Application;->onCreate()V",
+                    ],
+                )
+            ]
+        )
+        self.assertEqual(
+            ("/feed/timeline/",), required_build_strings(mixed, REAL_SOURCE)
+        )
+        self.assertEqual((UNGUARDED_GAP,), unenforced_endpoints(mixed, REAL_SOURCE))
+
+    def test_required_build_strings_refuses_when_the_app_enforces_none_of_them(self):
+        """An empty requirement makes the verifier's check pass vacuously.
+
+        The same refusal the no-url-block-hook case already made, at the other
+        end: a manifest can now be well-formed, name exactly one blocker, and
+        still leave nothing to require. Returning `()` there would hand the
+        verifier a check that cannot fail.
+        """
+        self.require_real_source()
+        nothing_enforced = self.write_manifest(
+            [hook_entry("tigon_url_block", "url_block", [UNGUARDED_GAP])]
+        )
+        with self.assertRaises(RulingError) as caught:
+            required_build_strings(nothing_enforced, REAL_SOURCE)
+        message = str(caught.exception)
+        self.assertIn("declares 1 URI-path blocks", message)
+        self.assertIn("enforces none of them", message)
+        self.assertIn("not the same as a build having nothing to prove", message)
+
+        # The control: add one endpoint the app does test and it returns.
+        self.assertEqual(
+            ("/feed/timeline/",),
+            required_build_strings(
+                self.write_manifest(
+                    [hook_entry("tigon_url_block", "url_block", [UNGUARDED_GAP, "/feed/timeline/"])]
+                ),
+                REAL_SOURCE,
+            ),
+        )
+
+    def test_required_build_strings_refuses_an_ambiguous_manifest(self):
+        """Two url-block hooks or none: there is no one set to require."""
+        self.require_real_source()
+        for label, hooks in {
+            "two": [
+                hook_entry("tigon_url_block", "url_block", ["/feed/timeline/"]),
+                hook_entry("second_url_block", "url_block", ["/feed/timeline/"]),
+            ],
+            "zero": [hook_entry("replace_reels", "endpoint_replace", ["/feed/timeline/"])],
+        }.items():
+            with self.subTest(hooks=label):
+                with self.assertRaises(RulingError) as caught:
+                    required_build_strings(self.write_manifest(hooks), REAL_SOURCE)
+                self.assertIn("pass vacuously", str(caught.exception))
 
     def test_unenforced_endpoints_refuses_an_ambiguous_manifest_rather_than_reading_clean(self):
         """An unanswerable question must not be answered with the clean answer.

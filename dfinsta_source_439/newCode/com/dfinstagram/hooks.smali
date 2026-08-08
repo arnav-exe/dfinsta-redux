@@ -44,8 +44,22 @@
 
     move-result v2
 
+    if-nez v2, :cond_feed_setting
+
+    # contains, not endsWith like the literal above it. Instagram's own matcher
+    # over the seven continuous-feed paths (LX/02nZ, read through LX/03g2->A11
+    # on 441) is an indexOf >= 0, so the app does not itself assume the path
+    # ends at the literal. Nothing else contains this substring, so the looser
+    # test costs nothing and the tighter one risks a rule that never fires.
+    const-string v1, "/feed/timeline_stream/"
+
+    invoke-virtual {v0, v1}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+
+    move-result v2
+
     if-eqz v2, :cond_explore
 
+    :cond_feed_setting
     const-string v1, "disable_feed"
 
     invoke-static {v1}, Lcom/dfinstagram/dfinstagram;->getBoolTrueEz(Ljava/lang/String;)Z

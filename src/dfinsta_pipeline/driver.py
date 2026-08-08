@@ -1134,15 +1134,38 @@ def _run_stages(
     # DEX. Derived here because the manifest is a per-run fact and `verify_build`
     # refuses to pin one for itself. Without this the decide machine could record
     # a block that the execute machine never proved shipped.
-    from .rulings import RulingError, required_build_strings  # noqa: PLC0415
+    from .rulings import (  # noqa: PLC0415
+        DEFAULT_SOURCE_PATH,
+        RulingError,
+        required_build_strings,
+        unenforced_endpoints,
+    )
 
+    manifest_path = REPOSITORY / "manifest" / "hooks.json"
+    source_path = REPOSITORY / DEFAULT_SOURCE_PATH
     try:
-        required = required_build_strings(REPOSITORY / "manifest" / "hooks.json")
+        required = required_build_strings(manifest_path, source_path)
+        # What the manifest declares blocked and the app does not yet test. It is
+        # deliberately NOT required of the build — see `required_build_strings` —
+        # but it must not therefore go unsaid. `rulings --audit` is the only other
+        # thing that reports it and nothing runs it, so before this the state was
+        # visible only to a human who thought to ask. Reported in both forms: the
+        # line an operator reads and the file a script can gate on.
+        unenforced = unenforced_endpoints(manifest_path, source_path)
     except RulingError as error:
         raise DriverError(f"cannot derive the build's required strings: {error}") from error
     paths.required_strings.write_text(
         json.dumps(list(required), indent=2) + "\n", encoding="utf-8"
     )
+    unenforced_path = paths.required_strings.with_name("unenforced-endpoints.json")
+    unenforced_path.write_text(json.dumps(list(unenforced), indent=2) + "\n", encoding="utf-8")
+    artifacts["unenforced_endpoints"] = str(unenforced_path)
+    if unenforced:
+        print(
+            f"[build] {len(unenforced)} endpoint(s) declared blocked and NOT enforced by "
+            f"throwIfBlocked, so not required of this build: {', '.join(unenforced)}",
+            flush=True,
+        )
     artifacts["custom_tree"] = custom_tree
     artifacts["replace_dex"] = ",".join(replace_dex)
     artifacts["host_hooks"] = str(paths.host_hooks)

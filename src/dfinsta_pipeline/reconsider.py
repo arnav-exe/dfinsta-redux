@@ -30,12 +30,15 @@ not run is indistinguishable from a rule that found nothing.
 the version its retirement took effect. The hook is working and the project has
 stopped expecting it.
 
-**Not a rule: "declared blocked and not yet enforced".** Every one of the six
-endpoints ruled on 2026-08-08 is in exactly that state, and they are not suspect
+**Not a rule: "declared blocked and not yet enforced".** Five of the six
+endpoints ruled on 2026-08-08 are in exactly that state, and they are not suspect
 — they are *outstanding implementation work*, which `rulings --audit` already
 owns and already exits 1 for. Firing here as well would mean the gate's first
-run proposed reconsidering six decisions taken the day before, and a gate whose
-opening move is a false alarm is one nobody answers twice.
+run proposed reconsidering decisions taken the day before, and a gate whose
+opening move is a false alarm is one nobody answers twice. (The sixth,
+`feed/timeline_stream/`, gained its guard the same day and so is a live subject
+of `block_inert` — it stays out of the report because its hook executes, which
+is the rule working rather than skipping.)
 
 ===============================================================================
   WHY IT NAMES THE DECISION, NOT JUST THE SUBJECT

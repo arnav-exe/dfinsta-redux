@@ -412,10 +412,11 @@ def undeclared_endpoints(
     a declaration filed under a rewriting hook is still a declaration and
     reporting it would be a false positive.
 
-    Run over the shipped tree today this returns `('/clips/discover',)`, which is
-    a real defect and not a rounding error. `throwIfBlocked` tests six endpoints;
-    `tigon_url_block.semantic_deps` lists five. The nearest thing anywhere in the
-    manifest is `replace_reels_discover_endpoint`'s `clips/discover/`, and
+    Run over the shipped tree this returns `()`. It did not always: when it was
+    written it returned `('/clips/discover',)`, a real defect and not a rounding
+    error — `throwIfBlocked` tested six endpoints and
+    `tigon_url_block.semantic_deps` listed five. The nearest thing anywhere in
+    the manifest was `replace_reels_discover_endpoint`'s `clips/discover/`, and
     containment fails in both directions — `/clips/discover` is not inside
     `clips/discover/` because of the trailing slash, and `clips/discover/` is not
     inside `/clips/discover` because of the leading one. `assessment.is_blocked`
@@ -788,6 +789,7 @@ def apply(
 
 def required_build_strings(
     manifest_path: Path | str = DEFAULT_MANIFEST_PATH,
+    source_path: Path | str = DEFAULT_SOURCE_PATH,
 ) -> tuple[str, ...]:
     """The endpoint literals a build must carry for its rulings to have landed.
 
@@ -798,6 +800,22 @@ def required_build_strings(
     bytes inside DFInsta's own DEX — measured on the shipped 440 release, all six
     present in `classes21.dex`.
 
+    **Declared MINUS unenforced, and that subtraction is load-bearing.** A ruling
+    puts an endpoint in `semantic_deps` the moment a human blocks it, which is
+    before anybody writes the guard; the literal is then in the manifest and in
+    no source file, so it cannot be in the DEX and requiring it fails a build for
+    something that is not a build defect. Measured: the six endpoints ruled on
+    2026-08-08 made the next 441 port fail its post-build verification on five
+    strings, with a correct APK on disk — the first build after that ruling, and
+    nothing between the two could have caught it.
+
+    The two questions stay separate rather than merged. "Does the app enforce
+    what the manifest declares?" is source-level and belongs to
+    :func:`unenforced_endpoints`, which `rulings --audit` exits 1 for. "Did the
+    build carry what the app enforces?" is this, and it is the only one an
+    artifact can answer. Subtracting here does not hide the first question — it
+    stops the second from reporting the first's answer as a build failure.
+
     Only the url-block hook's deps, for the same reason `unenforced_endpoints`
     restricts itself: a rewriting hook's literals name an endpoint it replaces,
     and the replacement is what reaches the DEX, not the original.
@@ -805,7 +823,9 @@ def required_build_strings(
     Refuses rather than returning `()` when there is no single url-block hook,
     because a caller that gets an empty tuple would pass it to a verifier which
     would then prove nothing — the same absence-as-a-pass this module refuses
-    everywhere else.
+    everywhere else. It refuses on an empty *result* too: a manifest whose every
+    declared block is unenforced is a manifest that can require nothing, and a
+    verifier handed nothing proves nothing.
     """
     from .assessment import looks_like_uri_rule  # noqa: PLC0415
 
@@ -818,9 +838,22 @@ def required_build_strings(
             "requirement would make the verifier's check pass vacuously."
         )
     entry = next(h for h in data["hooks"] if h.get("hook_id") == hook_id)
-    return tuple(
+    declared = tuple(
         dep for dep in entry.get("semantic_deps") or () if looks_like_uri_rule(dep)
     )
+    # Through `unenforced_endpoints` rather than re-deriving the containment
+    # comparison, so the set this requires and the set the audit reports can
+    # never drift apart: they are one subtraction of one function's output.
+    unenforced = set(unenforced_endpoints(manifest_path, source_path))
+    required = tuple(dep for dep in declared if dep not in unenforced)
+    if not required:
+        raise RulingError(
+            f"{manifest_path} declares {len(declared)} URI-path blocks and "
+            f"{source_path} enforces none of them, so there is no literal a build can "
+            "be required to carry. This is not the same as a build having nothing to "
+            "prove — it is a manifest whose every block is still unwritten."
+        )
+    return required
 
 
 def audit(

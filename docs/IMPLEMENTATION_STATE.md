@@ -1194,13 +1194,122 @@ live server and so was run by hand.
 `submit` → `rulings --apply`. Six endpoints from 441 blocked on the record, `manifest/rulings.jsonl`
 created, `semantic_deps` 6 → 12. `rulings --audit` now exits 1 and says why: *the manifest records
 a decision the app does not implement*. `tests/test_rulings.py::DECLARED_NOT_YET_ENFORCED` pins
-the six so the list shrinks as guards are written.
+the list so it shrinks visibly as guards are written; it is **five** as of 2026-08-08, below.
 
 **What the reversal gate still cannot do, and why that decides the order of work.** Its triggers
-have no possible input: every block is declared-and-unenforced, no endpoint has vanished, no
-retirement exists. So the next step is `throwIfBlocked` for one endpoint, not the gate — a gate
+had no possible input: every block was declared-and-unenforced, no endpoint has vanished, no
+retirement exists. So the next step was `throwIfBlocked` for one endpoint, not the gate — a gate
 that ships unable to be raised about anything cannot be exercised in anger, and seam defects
-found only on first real use are this pipeline's most repeated failure.
+found only on first real use are this pipeline's most repeated failure. **The first guard is now
+written** (next section), so `block_inert` has one live subject.
+
+## The first of the six ruled endpoints gains a guard
+
+2026-08-08. `feed/timeline_stream/` is now tested by `throwIfBlocked`, under `disable_feed`.
+`rulings --audit` went from six unenforced to five, and it still exits 1 — five decisions the
+app does not yet implement.
+
+**Every load-bearing fact was re-measured rather than carried over from the ruling's rationale.**
+
+- The endpoint appears **exactly once in the whole 441 decode**, in `LX/02nZ` — a class whose
+  `<clinit>` builds a seven-element list and does nothing else. The seven are the continuous-feed
+  api paths, bare, with no leading slash and no `/api/v1/` prefix.
+- Its one consumer is `LX/03hm`, the Tigon layer that calls `startRequest`. It reads
+  `URI.getPath()` and tests each literal with `LX/03g2->A11`, which is `indexOf(…) >= 0` —
+  **containment, not `endsWith`**. So Instagram itself does not assume the path ends at the
+  literal, and the guard uses `contains` where its sibling `/feed/timeline/` uses `endsWith`.
+  The looser test costs nothing (nothing else contains this substring) and the tighter one
+  risks a rule that never fires, which is the failure this project has shipped most often.
+- The toggle is an existing key, not a new one. `throwIfBlocked` reads five — `disable_feed`,
+  `disable_explore`, `disable_reels`, `disable_stories`, `disable_adds` — and `timeline_stream`
+  is a transport variant of the feed, not a distinct user-facing feature. A `disable_feed_stream`
+  would let a user disable the feed and still receive it.
+- **The hook that enforces it executes.** `tigon_url_block` ran on 439, 440 and 441 and is
+  release-ready on 440 and 441 (`python -m dfinsta_pipeline.roster`). A rule added to a hook that
+  never runs would be inert by construction, so this was checked before the rule was written and
+  not after.
+
+**Shape.** The two feed literals converge on one toggle lookup and then the throw, which is the
+idiom the reels rule has always used for `/api/v1/clips/homecoming/` and `/clips/discover`. So the
+guard is still five rules and five toggles; what changed is that a second rule now matches two
+literals. `manifest/hooks.json`'s probe note records that, because it means a re-measurement of
+the probe's canonical counts is **not** comparable to the 439 numbers written beside it.
+
+**Verified before the suite ran**, because a smali error surfaces only at build time otherwise:
+assembled with the same apktool 2.9.3 the real build uses, then disassembled back and read. The
+round trip shows both feed literals branching to the shared `disable_feed` check and on to the
+throw.
+
+**Six tests failed, and all six were right to.** They pinned "all six ruled endpoints are declared
+and not yet enforced" — the premise that justifies `reconsider` omitting a fourth rule. That
+premise is now false for one endpoint, so the attribution test was rewritten to assert the
+**split** rather than the equality: which endpoints are held silent because they are unenforced,
+and which by the separate fact that their hook runs. `UNGUARDED_GAP`, the fixture standing for
+"declared by neither", had to move to `feed/reels_media_stream/` — and will have to move again
+with each remaining guard, which is noted where it is defined.
+
+## The guard is real, verified in the DEX, and fires zero times
+
+2026-08-08, device session on 441. **`feed/timeline_stream/` is never requested** by this account
+on the feed or explore surfaces. The mechanism around it fired 54 times in the same session.
+
+**The whole-log differential could not show this, and nearly showed the opposite.** Four runs of
+the old build against four of the new, identical scripted interaction: `FEED_NOT_LOADING` went
+19/20/21 → 18/17/18/17. That reads as an effect until `STORY_NOT_LOADING` — a category the change
+cannot touch — is seen to fall by the same proportion (13/14/14 → 12/11/12/9). The drift was
+session state. The unrelated category was a free negative control and is the only reason a −2.5
+FEED movement was not written up as a result.
+
+**What answered it was a diagnostic build.** One rule, its own throw, its own message:
+`"Blocked by DFInsta setting [DIAG-timeline_stream]"`. The message *contains* the canonical
+string, so the build is a strict superset — every existing grep and canonical count keeps working
+and one new grep answers the new question. Zero hits on a short arm, zero on a 22-scroll session.
+
+**And a zero needed a positive control**, because this project has shipped four unreachable
+patches. The same branch was rebuilt pointing at `/feed/reels_tray/`, a literal the app
+demonstrably requests, placed above the stories rule so it wins. It fired 12 times. Only then is
+the zero a measurement rather than a dead branch.
+
+**The first control build failed verification** — swapping the literal dropped
+`feed/timeline_stream/` from the DEX and `required_build_strings` requires it. That is the check
+added the same day, working. The control keeps the real literal and gives the diagnostic branch a
+second way in.
+
+**Keep the guard.** The endpoint is in `LX/02nZ` on 441 and the app matches it against
+`URI.getPath()`, so this account is simply not routed to it — the same reason the three
+never-executing hooks were kept on 2026-08-01. It costs one `contains` and closes the path the
+moment the routing changes. What this does establish is that *declared → guarded* is not
+*guarded → effective*, and only a device session separates them. Each of the remaining five
+deserves the same treatment before anyone claims the blocks do anything;
+`delivery/background_prefetch` is the one to do next, being the owner's actual hypothesis.
+
+**A correction to the shipped probe note.** It said a per-feature contrast "would need a
+path-scoped signal, which this log line does not provide". It does. Instagram wraps every blocked
+request in an `IgFunctionalErrorEvent` whose line immediately above the exception names the
+failing feature, so `grep -B1` attributes a block with no toggle manipulation at all. The
+2026-08-01 measurements in that note were all made the expensive way.
+
+## A gate ruling broke the next build, and the function had no tests
+
+`required_build_strings` returned every URI-looking `semantic_deps` entry and handed it to the
+verifier as "must appear in DFInsta's own DEX". A ruling lands in the manifest the moment a human
+decides — before anybody writes the guard — so five of the six ruled on 2026-08-08 were literals
+in the manifest and in no source file. **The first 441 port after that ruling failed post-build
+verification on five strings with a correct, fully verified APK on disk.** The decide machine
+could break the execute machine, one release behind, and nothing between the two could catch it.
+
+Fixed as `declared MINUS unenforced`, routed through `unenforced_endpoints` rather than
+re-deriving the containment test, so what a build requires and what the audit reports cannot
+drift. It refuses on an empty result as well as on an ambiguous manifest.
+
+**It had zero tests.** Four added; five mutations all caught, including reverting the subtraction
+(3 tests), inverting it (3), and returning `()` instead of refusing (1).
+
+The two questions stay separate: *does the app enforce what the manifest declares* belongs to
+`rulings --audit`, and *did the build carry what the app enforces* is the only one an artifact can
+answer. But nothing runs the audit, so the driver now writes `unenforced-endpoints.json` and
+prints the count on every build — both forms, because the machine-readable view being the quiet
+one is a defect class this repo has shipped three times.
 
 ## The three hooks that have never passed a probe, re-derived on 441
 
