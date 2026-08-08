@@ -21,6 +21,7 @@ false sentence be *marked*, never that it be deleted.
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -71,8 +72,6 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
                 "PortRunWorkflow",
                 "ReplayRunWorkflow",
                 "FeatureAssessmentRunWorkflow",
-                "HookRetirementRunWorkflow",
-                "ReversalRunWorkflow",
             },
             registered,
             "the premise of this test changed; re-read the rules below before editing",
@@ -179,6 +178,77 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
         self.assertEqual({"anchored_patches.json": 7, "endpoint_replacements.json": 30}, counts)
         self.assertEqual([], offending_lines("AGENTS.md", "38 idempotent host operations"))
 
+
+
+class DocsNameOnlyModulesThatExistTests(unittest.TestCase):
+    """A document that names a deleted module is rot a reader can act on.
+
+    Nine modules were deleted on 2026-08-08 and the sweep that found the stale
+    references afterwards was done by hand. The harm is specific: `docs/` carried
+    runnable command lines for modules that no longer import, and `README.md`
+    linked a file that no longer existed. Both are the kind of thing a reader
+    trusts precisely because it looks executable.
+
+    Derived, not listed: every `dfinsta_pipeline.<name>` a document mentions must
+    be a module that exists. No deny-list to keep in step with the source, and it
+    keeps working for the next deletion without being edited.
+
+    `docs/history/` is deliberately excluded — those documents describe a
+    superseded design and naming its modules is what they are FOR. Their own
+    README says nothing in them is authoritative.
+    """
+
+    MODULE = re.compile(r"dfinsta_pipeline[./]([a-z_][a-z0-9_]*)")
+
+    def documents(self):
+        return [
+            path
+            for path in sorted(ROOT.glob("docs/*.md")) + [ROOT / "README.md"]
+            if path.is_file()
+        ]
+
+    def test_every_module_a_current_document_names_still_exists(self):
+        missing: dict[str, list[str]] = {}
+        named = 0
+        for document in self.documents():
+            for match in self.MODULE.finditer(document.read_text(encoding="utf-8")):
+                name = match.group(1)
+                named += 1
+                if not (ROOT / "src" / "dfinsta_pipeline" / f"{name}.py").is_file():
+                    missing.setdefault(name, []).append(document.name)
+        self.assertEqual(
+            {}, missing,
+            "a current document names a module that no longer exists; either the "
+            "document is stale or it belongs in docs/history/",
+        )
+        # Not vacuous: a regex that matched nothing would also report no misses.
+        self.assertGreater(named, 5, "the module reference pattern matched almost nothing")
+
+    def test_the_check_would_catch_a_deleted_module(self):
+        """The control. Without it the assertion above cannot be shown to work."""
+        missing = [
+            name
+            for name in ("reconsider", "reversal_gate", "guards")
+            if not (ROOT / "src" / "dfinsta_pipeline" / f"{name}.py").is_file()
+        ]
+        self.assertEqual(["reconsider", "reversal_gate"], missing)
+
+    def test_history_is_excluded_and_does_name_deleted_modules(self):
+        """Both halves: the exclusion is real, and it is load-bearing rather than tidy."""
+        history = sorted((ROOT / "docs" / "history").glob("*.md"))
+        self.assertTrue(history, "docs/history/ is empty; the exclusion protects nothing")
+        self.assertNotIn(
+            "history", {path.parent.name for path in self.documents()}
+        )
+        stale = {
+            name
+            for path in history
+            for name in self.MODULE.findall(path.read_text(encoding="utf-8"))
+            if not (ROOT / "src" / "dfinsta_pipeline" / f"{name}.py").is_file()
+        }
+        self.assertTrue(
+            stale, "no archived document names a deleted module, so excluding them proves nothing"
+        )
 
 if __name__ == "__main__":
     unittest.main()

@@ -91,7 +91,22 @@ has to be "would this session have seen it if it happened?".
 It is also bounded by the account and by server-side configuration — a
 MobileConfig flag picking the other implementation is how a statically perfect
 430 settings hook came to be dead at runtime. This module records what a phone
-did. It does not decide anything, and nothing here withdraws a block.
+did. It does not decide anything, and nothing here changes a block.
+
+===============================================================================
+  AND THE ONE QUESTION IT ANSWERS ABOUT BLOCKS
+===============================================================================
+
+:func:`blocked_and_never_observed` intersects the manifest's own blocked
+literals with :func:`never_observed`. It is the surviving half of a deleted
+module: `reconsider` asked the same question in order to *propose withdrawing*
+a block, through a reversal gate that in its whole life recorded none. That
+whole layer went on 2026-08-08, because the project stopped deciding early on a
+name in a class and correcting afterwards, and started exploring on the phone
+first. The question outlived the machinery — "we block this and the app has
+never once asked for it" is exactly what a decision made on measurement wants to
+know — so it lives here, beside the measurement, and answers rather than
+proposes.
 """
 
 from __future__ import annotations
@@ -122,6 +137,8 @@ __all__ = [
     "read",
     "evidential",
     "never_observed",
+    "blocked_endpoints",
+    "blocked_and_never_observed",
     "summary",
     "render",
     "main",
@@ -196,9 +213,9 @@ def parse(text: str) -> dict[str, int]:
 def _stamp(value: str) -> str:
     """An ISO 8601 timestamp with a UTC offset, stripped. Refuses anything else.
 
-    Parsed rather than checked for emptiness, following `reversal_record._stamp`
-    and for the reason that found: `--recorded-at banana` exited 0 and wrote into
-    an append-only file nothing ever deletes from. `Z` is accepted and not
+    Parsed rather than checked for emptiness, for the reason a sibling record
+    store found the hard way: `--recorded-at banana` exited 0 and wrote into an
+    append-only file nothing ever deletes from. `Z` is accepted and not
     rewritten — what a human typed is what gets recorded, and
     `datetime.fromisoformat` reads both spellings back.
     """
@@ -241,7 +258,7 @@ class ObservationSession:
     build_sha256: str
     #: Supplied, never read from the clock here — as everywhere else in this repo.
     #: **Parsed**, with a required UTC offset, and stored stripped. Not merely
-    #: checked for emptiness: `reversal` was checked that way and
+    #: checked for emptiness: a sibling record store was checked that way and
     #: `--recorded-at banana` exited 0 into an append-only file nothing ever
     #: deletes from. A naive stamp cannot be ordered against one written on
     #: another machine, which is the whole point of two sessions being comparable.
@@ -287,7 +304,7 @@ class ObservationSession:
         # Stored stripped, and the stripped value is what `to_dict` writes.
         # Validating `value.strip()` and then recording `value` put the padding
         # into a permanent record in a form the next read refuses — the same
-        # defect, found in `reversal_record._stamp`.
+        # defect a sibling record store shipped and this one inherited the fix for.
         object.__setattr__(self, "recorded_at", _stamp(self.recorded_at))
         object.__setattr__(self, "watched", tuple(self.watched))
         if not self.watched:
@@ -616,6 +633,63 @@ def never_observed(
     return tuple(sorted(watched - seen))
 
 
+def blocked_endpoints(root: Path | str = ".") -> tuple[str, ...]:
+    """Every path literal the generated guard tests, from the manifest.
+
+    The *manifest's* rules and not the app source's `throwIfBlocked`, though
+    `rulings.guarded_endpoints` reads the latter and would answer a very similar
+    question. Two reasons. The manifest is committed and always present, while a
+    decoded source tree is not — and a question about what this repository
+    currently blocks should not become unanswerable on a machine that has not
+    decoded an APK. And the manifest literal is the *same string* the observe
+    build watches: `guards` renders both from `url_block_rules`, so the join
+    below needs no spelling rule and cannot acquire one that is subtly wrong.
+    A leading slash going unnormalised is how an entire grouping went invisible
+    on 440, and the fix here is to have nothing to normalise.
+
+    Refuses through `ObservationError` rather than leaking `GuardError`: this
+    module has one refusal channel and its callers catch one exception.
+    """
+
+    from .guards import GuardError, rules_from_manifest  # noqa: PLC0415
+
+    manifest = Path(root) / "manifest" / "hooks.json"
+    try:
+        rules = rules_from_manifest(manifest)
+    except (GuardError, OSError, json.JSONDecodeError) as error:
+        raise ObservationError(f"{manifest}: {error}") from error
+    return tuple(sorted({literal.text for rule in rules for literal in rule.literals}))
+
+
+def blocked_and_never_observed(
+    version: str, root: Path | str = ".", *, path: Path | str | None = None
+) -> tuple[str, ...]:
+    """Of the endpoints this repository blocks, which `version` never requested.
+
+    The one question worth carrying over from the deleted `reconsider` module,
+    whose `block_never_observed` rule asked it in order to propose *withdrawing*
+    a block. Nothing withdraws anything now — the project decides late, on
+    measurement, rather than deciding early and correcting afterwards — so this
+    is a measurement and not a proposal. A path that is blocked and never once
+    requested is a fact about this phone and these surfaces; what to do about it
+    is a human's business.
+
+    **Refuses whenever `never_observed` refuses, and deliberately does not
+    soften it.** An empty tuple here is the honest answer to "every blocked path
+    was seen at least once", so returning one because nothing was measured would
+    report "we know nothing" in the words of "nothing is wrong". That is the
+    absence-as-a-pass this module exists to refuse; see the docstring above.
+
+    **Bounded by the watch list as well as by the surfaces.** A blocked endpoint
+    no session was watching cannot appear here, and its silence means nothing —
+    `summary` warns by name when the manifest blocks something the evidence never
+    watched, because otherwise this answer is quietly incomplete.
+    """
+
+    unseen = set(never_observed(version, root, path=path))
+    return tuple(literal for literal in blocked_endpoints(root) if literal in unseen)
+
+
 # ------------------------------------------------------------------ reporting
 
 
@@ -671,6 +745,35 @@ def summary(version: str, root: Path | str = ".") -> dict[str, Any]:
         unseen = []
         refusal = str(error)
 
+    # Its own refusal string, not a reuse of the one above. This can fail for a
+    # reason `never_observed` cannot — an unreadable manifest, or one declaring
+    # no block at all — and a reader told "all sessions are vacuous" when the
+    # real fault is a missing `url_block_rules` would repair the wrong thing.
+    try:
+        blocked_unseen: list[str] = list(blocked_and_never_observed(version, root))
+        blocked_refusal = ""
+    except ObservationError as error:
+        blocked_unseen = []
+        blocked_refusal = str(error)
+
+    # A blocked endpoint no session was watching is not evidence of anything, and
+    # it is absent from the answer above in exactly the way a finding is. Named,
+    # because the reader's question about a short list is "is that all of them?".
+    if not blocked_refusal and usable:
+        watched: set[str] = set()
+        for item in usable:
+            watched.update(item.watched)
+        try:
+            unwatched = [item for item in blocked_endpoints(root) if item not in watched]
+        except ObservationError:  # pragma: no cover - blocked_refusal covers it
+            unwatched = []
+        if unwatched:
+            warnings.append(
+                f"{len(unwatched)} blocked endpoint(s) were not in any evidential "
+                "session's watch list, so nothing here says anything about them: "
+                + ", ".join(unwatched)
+            )
+
     return {
         "schema_version": SCHEMA_VERSION,
         "version": version,
@@ -683,6 +786,8 @@ def summary(version: str, root: Path | str = ".") -> dict[str, Any]:
         # Present in the machine form whenever the human form would print it, and
         # never only in one of them.
         "never_observed_refused": refusal,
+        "blocked_never_observed": blocked_unseen,
+        "blocked_never_observed_refused": blocked_refusal,
         "warnings": warnings,
     }
 
@@ -709,6 +814,20 @@ def render(report: Mapping[str, Any]) -> str:
     else:
         lines += ["  Every watched path was observed at least once.", ""]
 
+    if report["blocked_never_observed_refused"]:
+        lines += ["  BLOCKED AND NEVER OBSERVED: refused", "",
+                  f"    {report['blocked_never_observed_refused']}", ""]
+    elif report["blocked_never_observed"]:
+        lines.append(
+            f"  BLOCKED AND NEVER OBSERVED ({len(report['blocked_never_observed'])})"
+        )
+        lines.append("")
+        for literal in report["blocked_never_observed"]:
+            lines.append(f"    {literal}")
+        lines.append("")
+    else:
+        lines += ["  Every blocked path this manifest declares was observed.", ""]
+
     if report["observed"]:
         lines.append("  OBSERVED")
         lines.append("")
@@ -726,10 +845,13 @@ def render(report: Mapping[str, Any]) -> str:
         lines.append("")
 
     lines.append(
-        "  This measures; it does not decide. `reconsider` turns a never-observed "
-        "block into a"
+        "  This measures; it does not decide. A blocked path that was never once "
+        "requested is a"
     )
-    lines.append("  question for a human, and only a human withdraws one.")
+    lines.append(
+        "  fact about this phone and these surfaces — what to do about it is a "
+        "human's to decide."
+    )
     return "\n".join(lines)
 
 
@@ -812,8 +934,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             print(f"recorded in {written}")
             print(
-                "Commit it: the report and `reconsider` read the committed files, and "
-                "an uncommitted row works here and vanishes on clone."
+                "Commit it: the report reads the committed files, and an uncommitted "
+                "row works here and vanishes on clone."
             )
             return 0
 

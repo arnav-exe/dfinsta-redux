@@ -1,8 +1,11 @@
 """The open-item record, made falsifiable.
 
-`docs/IMPLEMENTATION_STATE.md` carries two lists of things that are not done —
-"Loose ends, written down so they are not rediscovered" and "Known open items".
-Both are read by whoever picks the project up, and both are trusted.
+`docs/ROADMAP.md` carries the list of things that are not done, and it is read by
+whoever picks the project up, and it is trusted. (Until 2026-08-08 that list lived
+in `docs/IMPLEMENTATION_STATE.md`, now archived under `docs/history/`. `RecordShapeTests`
+lived here to stop a struck-through item quietly un-striking in that document; it was
+removed with the document, and the new roadmap uses `- [x]` checkboxes, whose shape a
+reader cannot misread the way prose can.)
 
 **On 2026-08-07 an audit found five of them stale.** Three said work was open that
 had been finished two days earlier (non-destructive cancellation, the F4
@@ -26,7 +29,7 @@ the one thing this project reliably notices.
 
 **These tests are meant to be deleted.** A failure here is good news: read the
 docstring, confirm the gap really closed, update
-`docs/IMPLEMENTATION_STATE.md`, and remove the test. Do not "fix" one by
+`docs/ROADMAP.md`, and remove the test. Do not "fix" one by
 loosening it — that re-hides the very thing it exists to surface.
 
 Not everything is checkable this way. "The `type` kind accepts object and
@@ -41,7 +44,6 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE = ROOT / "docs" / "IMPLEMENTATION_STATE.md"
 
 
 def importers_of(module: str) -> set[str]:
@@ -195,31 +197,6 @@ class LoopBlockingTests(unittest.TestCase):
         # The gate stage is the control: it used to be here and was moved, so an
         # empty set above would mean the walk broke rather than the work finished.
         self.assertNotIn("prepare_replay_verification_gate_activity", on_the_loop)
-
-
-class RecordShapeTests(unittest.TestCase):
-    """The record itself, so a struck-through item cannot quietly un-strike."""
-
-    def test_every_closed_marker_stays_struck_through(self):
-        """A closed item keeps `~~…~~`, so the list reads by shape as well as prose.
-
-        Five markers were found stale on 2026-08-07 — three announcing work
-        finished two days earlier, one of them finished the previous afternoon.
-        Struck-through text is how a reader skims past what is done; an item that
-        loses its markers reads as open again.
-        """
-        text = STATE.read_text(encoding="utf-8")
-        for closed in (
-            "non-destructive cancellation",
-            "F4 needs the synchronous tree capture",
-            "`differential` claims have no durable\nhome",
-            "`Resolution.smali_path` is declared and never populated.",
-            "`RESERVED_CAPTURE_NAMES` restates the regex lookahead",
-        ):
-            with self.subTest(item=closed[:40]):
-                index = text.find(closed)
-                self.assertNotEqual(index, -1, f"marker text vanished: {closed[:40]}")
-                self.assertIn("~~", text[max(0, index - 120) : index + 20])
 
 
 if __name__ == "__main__":

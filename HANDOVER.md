@@ -9,8 +9,8 @@ section 6, whose "exact continuation point" is one of them.
 
 1. **The replay chain IS registered.** Nine statements here say it is deliberately not
    (`:34`, `:49`, `:59`, `:399`, `:404-415`, `:553`, `:596-600`). Registration landed 2026-07-31,
-   and there are now four registered workflows — `PortRunWorkflow`, `ReplayRunWorkflow`,
-   `FeatureAssessmentRunWorkflow`, `HookRetirementRunWorkflow` — with 340 and 430 both completed
+   and there are now three registered workflows — `PortRunWorkflow`, `ReplayRunWorkflow`,
+   `FeatureAssessmentRunWorkflow` — with 340 and 430 both completed
    through `ReplayRunWorkflow` against a live server on 2026-08-04. **An agent following the
    continuation point in section 6 would redo finished work.**
 2. **`docs/FINDINGS.md` and `docs/adk_pipeline_design.md` are tracked**, not untracked

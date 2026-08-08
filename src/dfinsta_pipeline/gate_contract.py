@@ -1,8 +1,10 @@
 """The clauses every gate's authority must check, in one place.
 
-There are four durable human gates in this pipeline — replay verification, the
-feature assessment, hook retirement, and the reversal of a recorded decision.
-Each has its own `validate_submission`, and the first six clauses of each are
+There are two durable human gates in this pipeline — replay verification and the
+feature assessment. There were four until 2026-08-08, when hook retirement and
+the reversal of a recorded decision went with the rest of the
+decide-early-then-correct layer, neither ever having been answered. Each gate has
+its own `validate_submission`, and the first six clauses of each are
 character-for-character the same:
 
 1. the submitted artifact holds exactly this document (digest, then size);
@@ -18,6 +20,11 @@ field must be present — is genuinely per-gate and stays there.
 ===============================================================================
   WHY THIS EXISTS RATHER THAN A FOURTH COPY
 ===============================================================================
+
+(The heading is the argument as it was made, when there were four gates and this
+module was written instead of a fourth copy of the clauses. Two of the four have
+since been deleted; the argument is what put the clauses in one place, and the
+reason it is right does not depend on the count.)
 
 `the-authority-checked-less-than-the-filter` records what happened when one of
 these clauses was missing from one gate: `validate_submission` never compared the
@@ -41,7 +48,7 @@ thing being approved, which is what every gate here exists to prevent.
 **It raises `ValueError`, not a gate-specific error.** Each gate wraps its own
 refusal type around this; the Activities that call it convert to a non-retryable
 `ApplicationError`. A shared module that invented its own exception type would
-force three gates to catch something none of them names.
+force every gate to catch something none of them names.
 """
 
 from __future__ import annotations

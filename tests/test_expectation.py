@@ -3,9 +3,9 @@
 `final_report` counts what a port can be shown to have achieved and `history`
 prints that count beside the previous versions'. Neither *fails* when it falls.
 This module makes the one assertion the other two refuse — every hook that was
-release-ready on N-1 is release-ready on N, unless a human recorded a retirement
-— so what has to be tested is not "does it add up" but the handful of ways an
-assertion like this stops asserting anything.
+release-ready on N-1 is release-ready on N — so what has to be tested is not
+"does it add up" but the handful of ways an assertion like this stops asserting
+anything.
 
 The properties pinned here are the ones where being wrong is invisible:
 
@@ -16,14 +16,21 @@ emptiness is the finding rather than a quieter version of the same one. The two
 are asserted against each other in the same fixtures, because "it printed a
 warning" is satisfied by a module that prints the same warning for both.
 
-**The bar can only be lowered two ways.** :class:`RetirementParsingTests`,
-:class:`ReadRetirementsTests` and :class:`RetirementsInForceTests`. Every refusal
-in `Retirement.from_dict` is a lock on the one escape hatch, so each is exercised
-separately rather than as "a bad row is refused": a retirement that parses with a
-missing rationale, or one signed by an agent, is a lowered bar with no author.
-`effective_from` gating and the earliest-wins rule are the two that decide
-*which* ports a retirement excuses, and both are directional — a rule that
-excused too much would look identical on a corpus with one retirement in it.
+**The bar cannot be lowered at all.** There used to be one escape hatch — a
+recorded *retirement* naming a human and a reason — with three test classes
+locking every refusal in its parser, because a lowered bar with no author was
+the failure the whole module existed to prevent. On 2026-08-08 the escape hatch
+was deleted along with the rest of the decision-correction layer, having been
+used zero times. What is left to assert is that nothing quietly grew back:
+:class:`DropTests` pins that the rendering tells a reader there is no way down,
+which is the sentence somebody would have to edit before re-adding one.
+
+**A hook's readiness across the whole series is one answer, not two.**
+:class:`StandingTests`. `standings` moved here from the deleted `retirement`
+module; `roster` is its consumer. The distinction it exists for is the one
+`dropped_at` cannot express alone — a hook that never passed and a hook still
+passing both have no drop version, and they are opposite situations — so every
+test asserts `never_release_ready` beside `dropped_at()`.
 
 **It must not compare across a gap.** :class:`PredecessorTests`. The predecessor
 is the version immediately before N in the series, not the newest one that
@@ -70,21 +77,12 @@ repository, each against a fresh copy, with the unmutated copy passing first as
 the control and again at the end. Every one was caught. The bracketed number is
 how many distinct tests in this file failed.
 
-Lowering the bar:
-
-* `read_retirements` keeps the LATEST `effective_from` rather than the earliest
-  [2] → :class:`ReadRetirementsTests`
-* `retired_by` filters `effective_from >= version` [4], and drops the filter
-  entirely [2] → :class:`RetirementsInForceTests`, :class:`SweepTests`
-* `Retirement.from_dict` accepts `ruled_by: agent` [2], accepts a missing field
-  [3] → :class:`RetirementParsingTests`, :class:`ReadRetirementsTests`
-* a malformed retirements line is skipped instead of refused [2], a blank line
-  is parsed as a row [1], the `record` envelope is not unwrapped [2] →
-  :class:`ReadRetirementsTests`
-* the expectation is `before.ready` without subtracting the retirements [1] →
-  :class:`RetirementsInForceTests`
-* `retired_still_passing` collapses into `retired` [1] →
-  :class:`RetirementsInForceTests`
+**Eleven of those thirty-five are gone with the code they mutated.** They were
+the "lowering the bar" group — the retirement parser, the `effective_from`
+gating, the earliest-wins rule — and this note stands in for them rather than
+the count being quietly restated, because a mutation figure that shrinks without
+saying why reads as a weakened suite. The remaining twenty-four are below and
+were re-run against this file after the removal.
 
 Not failing what should fail:
 
@@ -115,9 +113,8 @@ Reading the wrong evidence:
   [1] → :class:`VersionsWithEvidenceTests`
 * `port_report` returns an empty report instead of raising [5] →
   :class:`CompareRefusalTests`, :class:`SweepTests`
-* the version guard is dropped from `compare` [1] and from `retired_by` [1],
-  and `main` stops catching `ValueError` [1] → :class:`CompareRefusalTests`,
-  :class:`RetirementsInForceTests`, :class:`CliTests`
+* the version guard is dropped from `compare` [1] and `main` stops catching
+  `ValueError` [1] → :class:`CompareRefusalTests`, :class:`CliTests`
 
 ===============================================================================
   KNOWN DEFECTS
@@ -135,10 +132,10 @@ today and reports an *unexpected success* the moment one is fixed.
    gives — "a pair nobody checked is never mistaken for a pair that passed" — and
    the machine-readable form a release script would consume has no such block and
    no such field.
-2. A retirements row that parses as JSON but is not an object (`null`, a list, a
-   bare number, or `{"record": null}`) is an `AttributeError` from
-   `row.get("record", row)`, not a refusal naming the file and the line. It
-   escapes `sweep`, and `main` does not catch it either.
+
+(A second defect was recorded here — a retirements row that parsed as JSON but
+was not an object raised `AttributeError` rather than refusing by line. It was
+fixed, and both it and the file it was about are now deleted.)
 """
 
 from __future__ import annotations
@@ -158,13 +155,12 @@ from dfinsta_pipeline.expectation import (
     EXIT_REFUSED,
     Comparison,
     ExpectationError,
-    Retirement,
+    Standing,
     Verdict,
     compare,
     evidence_files,
-    read_retirements,
     render,
-    retired_by,
+    standings,
     sweep,
     versions_with_evidence,
 )
@@ -179,6 +175,7 @@ CONTEXT = "set_app_context"
 TIGON = "tigon_url_block"
 SETTINGS = "install_settings_long_click"
 REELS = "replace_reels_stream_endpoint"
+DISCOVER = "replace_reels_discover_endpoint"
 
 DEVICE = "device:P3227J000775"
 VERIFIER = "tools/verify/verify_build.py"
@@ -245,28 +242,6 @@ def triple(**overrides: str | None) -> dict[str, str]:
     }
     kinds.update(overrides)
     return {kind: verdict for kind, verdict in kinds.items() if verdict is not None}
-
-
-def retirement_row(
-    hook_id: str = REELS,
-    effective_from: str = "441",
-    *,
-    wrapped: bool = False,
-    **overrides: Any,
-) -> dict[str, Any]:
-    """A well-formed retirement, in the shape `manifest/RETIREMENTS.md` documents."""
-
-    record: dict[str, Any] = {
-        "schema_version": 1,
-        "hook_id": hook_id,
-        "effective_from": effective_from,
-        "decision_id": f"retire-2026-08-08-{hook_id}",
-        "ruled_by": "human",
-        "rationale": "Instagram removed the surface; the anchor matches a dead path.",
-        "recorded_at": "2026-08-08T00:00:00Z",
-    }
-    record.update(overrides)
-    return {"kind": "retirement", "record": record} if wrapped else record
 
 
 class ExpectationTestCase(unittest.TestCase):
@@ -356,17 +331,6 @@ class ExpectationTestCase(unittest.TestCase):
         self.baseline_port()
         self.port("440", dict(on_440), previous="439")
         self.port("441", dict(on_441), previous="440")
-
-    def retirements(self, *rows: Mapping[str, Any] | str) -> Path:
-        """`manifest/retirements.jsonl`; a plain string is written as a raw line."""
-
-        text = "".join(
-            (row if isinstance(row, str) else json.dumps(row, sort_keys=True)) + "\n"
-            for row in rows
-        )
-        path = self.manifest / "retirements.jsonl"
-        path.write_text(text, encoding="utf-8")
-        return path
 
     # -------------------------------------------------------------- shortcuts
 
@@ -509,9 +473,9 @@ class DropTests(ExpectationTestCase):
         """What a human sees. The count alone is the failure this module fixes.
 
         Three things have to be in the output: which hook, why, and the fact that
-        the only legitimate way to lower the bar is a recorded retirement. The
-        last one matters because the obvious repair for a red gate is to edit the
-        gate.
+        there is no way to lower the bar at all. The last one matters because the
+        obvious repair for a red gate is to edit the gate — and the recorded
+        retirement that used to be the honest answer no longer exists.
         """
         self.two_ports(
             {CONTEXT: triple(), TIGON: triple()},
@@ -523,7 +487,7 @@ class DropTests(ExpectationTestCase):
         self.assertIn("*** 1 HOOK(S) DROPPED ***", text)
         self.assertIn(f"✗ {CONTEXT}", text)
         self.assertNotIn(f"✗ {TIGON}", text)
-        self.assertIn("record a retirement in manifest/retirements.jsonl", text)
+        self.assertIn("There is no way to lower the bar", text)
         self.assertNotIn("Expectation met", text)
 
     def test_a_dropped_hook_survives_the_json_round_trip_with_its_reasons(self):
@@ -743,438 +707,6 @@ class HeldAndGainedTests(ExpectationTestCase):
         self.assertIn(SETTINGS, owed.expected)
         self.assertEqual(owed.dropped, (SETTINGS,))
         self.assertFalse(owed.met)
-
-
-# ============================================================ parsing a retirement
-
-
-class RetirementParsingTests(unittest.TestCase):
-    """Every refusal in `Retirement.from_dict`, one at a time.
-
-    This is the only escape hatch in the module, and the failure it exists to
-    prevent is a quiet edit that lowers the bar. So each lock is tested
-    separately rather than as "a bad row is refused": a row that parses with an
-    empty rationale is a lowered bar with no author, and it would not look like a
-    malformed row to anybody reviewing the diff.
-    """
-
-    REQUIRED = ("hook_id", "effective_from", "decision_id", "ruled_by", "rationale")
-
-    def test_a_complete_row_parses_and_keeps_every_field(self):
-        """The positive control. Without it every refusal below is satisfied by a
-        `from_dict` that refuses everything.
-        """
-        item = Retirement.from_dict(retirement_row(SETTINGS, "442"))
-
-        self.assertEqual(item.hook_id, SETTINGS)
-        self.assertEqual(item.effective_from, "442")
-        self.assertEqual(item.ruled_by, "human")
-        self.assertEqual(item.decision_id, f"retire-2026-08-08-{SETTINGS}")
-        self.assertTrue(item.rationale)
-        self.assertEqual(item.recorded_at, "2026-08-08T00:00:00Z")
-
-    def test_the_row_round_trips_through_to_dict(self):
-        """`to_dict` is how a drafting tool would write one, so the two must agree."""
-        original = Retirement.from_dict(retirement_row(SETTINGS, "442"))
-
-        self.assertEqual(original, Retirement.from_dict(original.to_dict()))
-        self.assertEqual(original.to_dict()["schema_version"], 1)
-
-    def test_each_required_field_is_refused_when_absent(self):
-        """Five fields, five subtests, and the message names the one that is missing.
-
-        A single "row is malformed" for any of them would be true and useless:
-        the author of the row is the person who has to fix it, and they are
-        looking at a file with one line in it.
-        """
-        for field in self.REQUIRED:
-            with self.subTest(missing=field):
-                row = retirement_row()
-                del row[field]
-
-                with self.assertRaises(ExpectationError) as caught:
-                    Retirement.from_dict(row)
-
-                self.assertIn(field, str(caught.exception))
-                self.assertIn("who ruled and why", str(caught.exception))
-
-    def test_each_required_field_is_refused_when_only_whitespace(self):
-        """A blank is the shape a half-finished row takes, and it parses as JSON.
-
-        `"rationale": "  "` is what a drafting tool leaves behind, and it is
-        exactly as much of an author as no field at all.
-        """
-        for field in self.REQUIRED:
-            with self.subTest(blank=field):
-                with self.assertRaises(ExpectationError) as caught:
-                    Retirement.from_dict(retirement_row(**{field: "   "}))
-
-                self.assertIn(field, str(caught.exception))
-
-    def test_more_than_one_missing_field_is_reported_in_one_message(self):
-        """So a reader fixes the row once rather than three times."""
-        row = retirement_row()
-        del row["ruled_by"]
-        del row["rationale"]
-
-        with self.assertRaises(ExpectationError) as caught:
-            Retirement.from_dict(row)
-
-        self.assertIn("ruled_by", str(caught.exception))
-        self.assertIn("rationale", str(caught.exception))
-
-    def test_recorded_at_is_the_one_optional_field(self):
-        """It is bookkeeping, not authority. Absent means the drafter had no clock.
-
-        Required-ness is the mechanism here, so which fields are *not* required
-        has to be pinned too — otherwise the rule drifts by someone adding a
-        field to the loop and nobody noticing which side of the line it is on.
-        """
-        row = retirement_row()
-        del row["recorded_at"]
-
-        self.assertEqual(Retirement.from_dict(row).recorded_at, "")
-
-    def test_ruled_by_agent_is_refused_in_any_casing(self):
-        """The lock on the whole design of the decision gate.
-
-        An agent investigates a hook that stopped passing and drafts the case for
-        retiring it. If the proposer could also *sign* it, the cheapest route past
-        a red build would be for the thing being measured to rule that the
-        measurement no longer applies — so a comparison that missed `AGENT` or
-        ` agent ` would be no lock at all.
-        """
-        for spelling in ("agent", "Agent", "AGENT", "  agent  ", "aGeNt"):
-            with self.subTest(ruled_by=spelling):
-                with self.assertRaises(ExpectationError) as caught:
-                    Retirement.from_dict(retirement_row(ruled_by=spelling))
-
-                self.assertIn("ruled_by is 'agent'", str(caught.exception))
-                self.assertIn("a human", str(caught.exception))
-
-    def test_a_named_agent_is_not_the_forbidden_word(self):
-        """The control for the rule above, and the reason it is equality not `in`.
-
-        A human whose handle contains the word — or a `ruled_by` of
-        `human-via-agent-draft` — is a person who ruled. Broadening the check to a
-        substring would refuse legitimate rows and the refusal would look like a
-        parse error.
-        """
-        item = Retirement.from_dict(retirement_row(ruled_by="human-via-agent-draft"))
-
-        self.assertEqual(item.ruled_by, "human-via-agent-draft")
-
-    def test_a_non_numeric_effective_from_is_refused(self):
-        """It is compared with `int()` in two places; a word there is a crash later.
-
-        `retired_by` and the earliest-wins rule both call `int()` on this value,
-        so a row spelling it `v442` or `442-rc1` would take down the reader that
-        is supposed to be reporting on it.
-        """
-        for value in ("v442", "442-rc1", "next", "44.2", ""):
-            with self.subTest(effective_from=value):
-                with self.assertRaises(ExpectationError):
-                    Retirement.from_dict(retirement_row(effective_from=value))
-
-    def test_an_unsupported_schema_version_is_refused_rather_than_guessed_at(self):
-        """A row from a newer writer must not be read with today's field meanings."""
-        for value in (None, 0, 2, "1"):
-            with self.subTest(schema_version=value):
-                row = retirement_row()
-                row["schema_version"] = value
-
-                with self.assertRaises(ExpectationError) as caught:
-                    Retirement.from_dict(row)
-
-                self.assertIn("unsupported retirement schema", str(caught.exception))
-
-
-# ============================================================ reading the file
-
-
-class ReadRetirementsTests(ExpectationTestCase):
-    """The file as a whole: absent, malformed, wrapped, and contradicting itself.
-
-    A missing file is the state today and is not an error. A file that exists and
-    cannot be parsed **is** one — the one thing worse than no retirement record
-    is one that is silently skipped, because a skipped row reads as "this hook
-    was never retired" and the port then fails for a reason nobody can act on.
-    """
-
-    def test_no_file_means_none_recorded_which_is_todays_state(self):
-        self.assertEqual(read_retirements(self.tmp), {})
-
-    def test_a_directory_with_no_manifest_at_all_is_also_none_recorded(self):
-        """`read_retirements` is called on every `compare`, including on trees that
-        have never had the file. It must not need one to exist.
-        """
-        self.assertEqual(read_retirements(self.tmp / "nowhere"), {})
-
-    def test_a_row_is_read_with_or_without_the_record_envelope(self):
-        """The tree holds both shapes — `agent_cost.jsonl` wraps, the evidence files
-        do not — so a reader that handled one would drop half a file depending on
-        which tool wrote it.
-        """
-        self.retirements(
-            retirement_row(SETTINGS, "441", wrapped=True),
-            retirement_row(REELS, "442", wrapped=False),
-        )
-
-        found = read_retirements(self.tmp)
-
-        self.assertEqual(sorted(found), sorted([REELS, SETTINGS]))
-        self.assertEqual(found[SETTINGS].effective_from, "441")
-        self.assertEqual(found[REELS].effective_from, "442")
-
-    def test_the_earliest_effective_from_wins_whichever_order_the_rows_are_in(self):
-        """The ledger's usual rule is "a later claim supersedes", and it is wrong here.
-
-        Appending a second row for the same hook with a later `effective_from`
-        would *un-retire* it for the versions in between, turning a permanent
-        record into an editable one. Both file orders are asserted because a
-        reader that simply kept the first row it saw passes half of this.
-        """
-        self.retirements(
-            retirement_row(SETTINGS, "441", decision_id="first"),
-            retirement_row(SETTINGS, "445", decision_id="second"),
-        )
-        earliest_first = read_retirements(self.tmp)[SETTINGS]
-
-        self.retirements(
-            retirement_row(SETTINGS, "445", decision_id="second"),
-            retirement_row(SETTINGS, "441", decision_id="first"),
-        )
-        latest_first = read_retirements(self.tmp)[SETTINGS]
-
-        self.assertEqual(earliest_first.effective_from, "441")
-        self.assertEqual(latest_first.effective_from, "441")
-        self.assertEqual(earliest_first.decision_id, "first")
-        self.assertEqual(latest_first.decision_id, "first")
-
-    def test_earliest_is_compared_as_a_number_and_not_as_a_string(self):
-        """`"1000" < "441"` as text. The same trap the series sort carries.
-
-        A retirement ruled for 1000 must not beat one ruled for 441 by sorting
-        first, because the winner is the row that takes effect *earlier*.
-        """
-        self.retirements(
-            retirement_row(SETTINGS, "1000", decision_id="later"),
-            retirement_row(SETTINGS, "441", decision_id="earlier"),
-        )
-
-        self.assertEqual(read_retirements(self.tmp)[SETTINGS].decision_id, "earlier")
-
-    def test_a_malformed_line_names_the_file_and_the_line_number(self):
-        """Refused, not skipped, and locatable. A JSONL file is edited by hand."""
-        path = self.retirements(
-            retirement_row(SETTINGS, "441"),
-            "{not json at all",
-        )
-
-        with self.assertRaises(ExpectationError) as caught:
-            read_retirements(self.tmp)
-
-        self.assertIn(str(path), str(caught.exception))
-        self.assertIn(":2:", str(caught.exception))
-
-    def test_a_row_that_fails_the_schema_is_reported_at_its_own_line(self):
-        """The other way to be malformed: valid JSON, invalid retirement.
-
-        The line number has to survive `from_dict`'s refusal being re-raised, or
-        the author is told a rationale is missing from a file with eleven rows in
-        it.
-        """
-        self.retirements(
-            retirement_row(SETTINGS, "441"),
-            retirement_row(REELS, "442"),
-            retirement_row(TIGON, "443", ruled_by="agent"),
-        )
-
-        with self.assertRaises(ExpectationError) as caught:
-            read_retirements(self.tmp)
-
-        self.assertIn(":3:", str(caught.exception))
-        self.assertIn("ruled_by is 'agent'", str(caught.exception))
-
-    def test_a_blank_line_is_not_a_malformed_one(self):
-        """Trailing newlines and hand-editing leave them; they are not a record."""
-        self.retirements("", retirement_row(SETTINGS, "441"), "   ", "")
-
-        self.assertEqual(sorted(read_retirements(self.tmp)), [SETTINGS])
-
-    def test_an_explicit_path_overrides_the_conventional_location(self):
-        """`path=` exists so a gate can read a proposed file before it is committed."""
-        elsewhere = self.tmp / "draft.jsonl"
-        elsewhere.write_text(
-            json.dumps(retirement_row(REELS, "442")) + "\n", encoding="utf-8"
-        )
-
-        self.assertEqual(read_retirements(self.tmp), {})
-        self.assertEqual(sorted(read_retirements(self.tmp, path=elsewhere)), [REELS])
-
-
-# ========================================================== retirements in force
-
-
-class RetirementsInForceTests(ExpectationTestCase):
-    """Which ports a retirement excuses, and which it must not reach back into.
-
-    `effective_from` is the first version that stops expecting the hook. A
-    retirement ruled for 442 does not excuse a hook that had already stopped
-    passing on 441 — that port's failure stays on the record — and getting this
-    direction wrong is the difference between a permanent record and a way to
-    retroactively pass a port that failed.
-    """
-
-    def retire(self, hook_id: str, effective_from: str) -> dict[str, Retirement]:
-        return {hook_id: Retirement.from_dict(retirement_row(hook_id, effective_from))}
-
-    def test_a_retirement_for_a_later_version_does_not_excuse_this_ones_drop(self):
-        """The direction that matters. 442's ruling, 441's failure.
-
-        Without the `effective_from` gate a retirement recorded after the fact
-        would silently repair the history — and the whole value of the record is
-        that it is append-only and cannot.
-        """
-        self.two_ports({CONTEXT: triple()}, {CONTEXT: triple(differential="failed")})
-
-        comparison = self.compare(
-            version="441", retirements=self.retire(CONTEXT, "442")
-        )
-
-        self.assertEqual(comparison.dropped, (CONTEXT,))
-        self.assertFalse(comparison.met)
-        self.assertEqual(self.states(comparison), {CONTEXT: "dropped"})
-
-    def test_a_retirement_effective_this_version_does_excuse_the_drop(self):
-        """The positive control for the test above, one version apart.
-
-        The two fixtures differ by a single character in `effective_from`, which
-        is the smallest possible statement that the gate is the thing deciding.
-        """
-        self.two_ports({CONTEXT: triple()}, {CONTEXT: triple(differential="failed")})
-
-        comparison = self.compare(
-            version="441", retirements=self.retire(CONTEXT, "441")
-        )
-
-        self.assertEqual(comparison.dropped, ())
-        self.assertTrue(comparison.met)
-        self.assertEqual(self.states(comparison), {CONTEXT: "retired"})
-
-    def test_a_retirement_from_an_earlier_version_is_still_in_force(self):
-        """It says "stop expecting this from 440 on", not "for 440 only"."""
-        self.two_ports({CONTEXT: triple()}, {CONTEXT: triple(differential="failed")})
-
-        comparison = self.compare(
-            version="441", retirements=self.retire(CONTEXT, "440")
-        )
-
-        self.assertTrue(comparison.met)
-        self.assertEqual(self.states(comparison), {CONTEXT: "retired"})
-
-    def test_retired_by_selects_on_the_number_and_not_the_string(self):
-        """Called directly, because `441 <= 1000` and `"441" <= "1000"` disagree.
-
-        A three-digit corpus orders correctly by accident; the module says
-        `int()` and this is what requires it to keep saying so.
-        """
-        recorded = {
-            **self.retire(CONTEXT, "441"),
-            **self.retire(TIGON, "1000"),
-        }
-
-        self.assertEqual(sorted(retired_by("441", recorded)), [CONTEXT])
-        self.assertEqual(sorted(retired_by("1000", recorded)), sorted([CONTEXT, TIGON]))
-
-    def test_retired_by_refuses_a_version_that_is_not_a_number(self):
-        with self.assertRaises(ExpectationError) as caught:
-            retired_by("441-rc1", self.retire(CONTEXT, "441"))
-
-        self.assertIn("441-rc1", str(caught.exception))
-
-    def test_a_retired_hook_that_still_passes_is_reported_as_still_passing(self):
-        """Not an error, but worth a human seeing.
-
-        The case for retiring a hook was probably made when it was not passing,
-        so a retired hook that works again is a decision that may want revisiting.
-        Reporting it either way is the point: a module that only mentioned retired
-        hooks when they failed would hide the interesting half.
-        """
-        self.two_ports({CONTEXT: triple()}, {CONTEXT: triple()})
-
-        comparison = self.compare(
-            version="441", retirements=self.retire(CONTEXT, "441")
-        )
-        text = render(comparison)
-
-        self.assertEqual(self.states(comparison), {CONTEXT: "retired_still_passing"})
-        self.assertEqual(comparison.held, ())
-        self.assertEqual(comparison.gained, ())
-        self.assertTrue(comparison.met)
-        self.assertIn("STILL PASSING", text)
-
-    def test_a_retired_hook_is_removed_from_the_expectation_itself(self):
-        """Not just from the failure list. The reported expectation is the ask.
-
-        A reader comparing "expected 2" against "actually 1" needs the 2 to
-        already have the retirement taken out of it, or the numbers argue with
-        the verdicts printed under them.
-        """
-        self.two_ports(
-            {CONTEXT: triple(), TIGON: triple()},
-            {CONTEXT: triple(), TIGON: triple(differential="failed")},
-        )
-
-        comparison = self.compare(version="441", retirements=self.retire(TIGON, "441"))
-
-        self.assertEqual(comparison.expected, (CONTEXT,))
-        self.assertNotIn(TIGON, comparison.expected)
-        self.assertIn("expected release-ready   1", render(comparison))
-
-    def test_the_rendering_names_who_ruled_the_decision_and_the_reason(self):
-        """The record is the mechanism; printing only "retired" would waste it.
-
-        Someone reading a port report should be able to see the argument for the
-        lowered bar without going to find the file.
-        """
-        self.two_ports({CONTEXT: triple()}, {CONTEXT: triple(differential="failed")})
-
-        text = render(self.compare(version="441", retirements=self.retire(CONTEXT, "441")))
-
-        self.assertIn("Retired, so not expected (1):", text)
-        self.assertIn("human ruled at 441", text)
-        self.assertIn(f"retire-2026-08-08-{CONTEXT}", text)
-        self.assertIn("the anchor matches a dead path", text)
-
-    def test_a_retirement_excuses_a_vanished_hook_too(self):
-        """Removing a hook from the manifest is the case a retirement is written for.
-
-        The retirement and the deletion belong in the same commit, and this is
-        the assertion that the two together are a clean port rather than a loud
-        failure with a note attached.
-        """
-        self.two_ports({CONTEXT: triple(), TIGON: triple()}, {CONTEXT: triple()})
-
-        comparison = self.compare(version="441", retirements=self.retire(TIGON, "441"))
-
-        self.assertTrue(comparison.met)
-        self.assertEqual(self.states(comparison), {CONTEXT: "held", TIGON: "retired"})
-
-    def test_the_retirements_are_read_off_disk_when_the_caller_supplies_none(self):
-        """`compare(root, version=…)` with no `retirements=` is the command line's path.
-
-        Every other test in this class injects the dict, so without this one the
-        file could stop being read at all and nothing here would notice.
-        """
-        self.two_ports({CONTEXT: triple()}, {CONTEXT: triple(differential="failed")})
-        self.retirements(retirement_row(CONTEXT, "441", wrapped=True))
-
-        self.assertTrue(self.compare(version="441").met)
-        self.assertEqual(self.run_main("--version", "441")[0], EXIT_MET)
-
-
-# ======================================================== choosing a predecessor
 
 
 class PredecessorTests(ExpectationTestCase):
@@ -1550,20 +1082,6 @@ class SweepTests(ExpectationTestCase):
 
         self.assertEqual(self.sweep(), ([], []))
 
-    def test_the_sweep_reads_the_retirements_once_and_applies_them_everywhere(self):
-        """Two pairs, one file. A retirement is a property of the record, not of a run."""
-        self.baseline_port()
-        self.port("440", {CONTEXT: triple(), TIGON: triple()}, previous="439")
-        self.port("441", {CONTEXT: triple(), TIGON: triple(differential="failed")},
-                  previous="440")
-        self.retirements(retirement_row(TIGON, "440"))
-
-        comparisons, skipped = self.sweep()
-
-        self.assertEqual(skipped, [])
-        self.assertTrue(all(c.met for c in comparisons))
-        self.assertEqual(self.states(comparisons[-1])[TIGON], "retired")
-
     def test_the_baseline_moves_which_pairs_the_sweep_makes(self):
         """A floor that only ever excluded the same versions could be a coincidence."""
         self.two_ports({CONTEXT: triple()}, {CONTEXT: triple()})
@@ -1787,34 +1305,6 @@ class CliTests(ExpectationTestCase):
         self.assertIn("EXPECTATION  440 → 441", stdout)
         self.assertNotIn("439 → 440", stdout)
 
-    def test_a_malformed_retirements_file_refuses_the_run_rather_than_ignoring_it(self):
-        """A skipped row reads as "this hook was never retired".
-
-        The port would then fail for a reason nobody can act on — the record says
-        it was retired and the tool says it was not.
-        """
-        self.two_ports({CONTEXT: triple()}, {CONTEXT: triple()})
-        self.retirements("{oh dear")
-
-        code, _, stderr = self.run_main()
-
-        self.assertEqual(code, EXIT_REFUSED)
-        self.assertIn("retirements.jsonl:1:", stderr)
-
-
-# ================================================================ known defects
-
-
-class FixedDefectTests(ExpectationTestCase):
-    """Two defects found by writing this file, both fixed the same day.
-
-    They were pinned as `expectedFailure` first, which is why they read as
-    assertions about the module's own docstrings rather than about its code: each
-    one is a promise the prose made and the implementation did not keep. Kept as
-    ordinary tests now, because a fix without a test is a fix until the next
-    refactor.
-    """
-
     def test_the_json_form_reports_the_pairs_it_could_not_check(self):
         """`--json` prints the comparisons and silently drops `skipped`.
 
@@ -1838,23 +1328,217 @@ class FixedDefectTests(ExpectationTestCase):
         self.assertEqual(text_code, code)
         self.assertIn("440 -> 441", raw)
 
-    def test_a_retirements_row_that_is_not_an_object_is_refused_by_line(self):
-        """`row.get("record", row)` on a JSON scalar is an `AttributeError`.
 
-        `read_retirements` refuses an unparseable line with a path and a line
-        number, and a row that parses to `null`, to a list or to a number got
-        neither — it escaped as `AttributeError`, which `sweep` does not skip on
-        and `main` does not catch, so the tool left as a traceback. The same two
-        ways of being malformed, one of them findable; `history` had this exact
-        gap and closed it, and this was the third module to ship it.
+class StandingTests(ExpectationTestCase):
+    """One hook's release-readiness across the series, and the version that was
+    never readable at all.
+
+    Moved here from `tests/test_retirement.py` when `retirement` was deleted and
+    `standings` came to this module; `roster` is the consumer. The distinction
+    this class exists for is the one `Standing` documents and `dropped_at` cannot
+    express on its own: a hook that never passed and a hook that is still passing
+    both have no drop version, and they are opposite situations. Every test here
+    asserts `never_release_ready` alongside `dropped_at()` for that reason.
+    """
+
+    def baseline_port(self) -> None:
+        """439 as it really is: runtime evidence, no static file, no readiness.
+
+        Overrides `ExpectationTestCase.baseline_port`, which writes a static file
+        and so makes 439 *assessed*. That is right for `compare`, which only
+        needs 439 in the series, and wrong here: the first test below turns on
+        439 being in the series and in neither of a standing's tuples, because
+        `static_verified` had no producer until 440.
         """
-        self.two_ports({CONTEXT: triple()}, {CONTEXT: triple()})
-        self.retirements(retirement_row(CONTEXT, "441"), "null")
 
-        with self.assertRaises(ExpectationError) as caught:
-            read_retirements(self.tmp)
+        self.port("439", {CONTEXT: {"runtime_probe": "passed"}}, static_file=False)
 
-        self.assertIn(":2:", str(caught.exception))
+    def ordinary_corpus(self) -> None:
+        """Two hooks holding, one that has never passed. 441's real shape, smaller."""
+
+        self.two_ports(
+            {
+                CONTEXT: triple(),
+                TIGON: triple(),
+                DISCOVER: triple(runtime_probe="inconclusive"),
+            },
+            {
+                CONTEXT: triple(),
+                TIGON: triple(),
+                DISCOVER: triple(runtime_probe="inconclusive"),
+            },
+        )
+
+    def standings(self, **kwargs: Any) -> dict[str, Standing]:
+        return standings(self.tmp, **kwargs)
+
+    def test_a_version_whose_evidence_cannot_be_read_is_absent_and_not_zero(self):
+        """439 is in the series and in neither tuple. The failure is silent.
+
+        `static_verified` had no producer until 440, so 439's readiness is
+        unknowable rather than nil. Recorded as "assessed, nothing passed", every
+        hook in the manifest acquires a version on which it failed, the oldest
+        one in the series — which makes a hook that has worked since 440 read as
+        having been broken from the start, so every hook in the manifest looks
+        like something that stopped working.
+        """
+        self.ordinary_corpus()
+
+        found = self.standings()
+
+        self.assertIn("439", versions_with_evidence(self.tmp))
+        self.assertEqual(found[CONTEXT].assessed_on, ("440", "441"))
+        self.assertEqual(found[CONTEXT].release_ready_on, ("440", "441"))
+        self.assertFalse(found[CONTEXT].never_release_ready)
+        self.assertIsNone(found[CONTEXT].dropped_at())
+
+    def test_a_hook_that_has_never_passed_is_marked_so_and_has_no_drop_version(self):
+        """A hook that has never worked, and the reason `dropped_at` is not enough.
+
+        Three of the seven real hooks are in this state. `dropped_at()` is None
+        here for the opposite reason it is None for a hook that still works, so
+        both are asserted in the same corpus.
+        """
+        self.ordinary_corpus()
+
+        dormant = self.standings()[DISCOVER]
+        working = self.standings()[CONTEXT]
+
+        self.assertEqual(dormant.release_ready_on, ())
+        self.assertEqual(dormant.assessed_on, ("440", "441"))
+        self.assertTrue(dormant.never_release_ready)
+        self.assertIsNone(dormant.dropped_at())
+        self.assertIsNone(dormant.last_release_ready)
+        self.assertIsNone(working.dropped_at())
+        self.assertFalse(working.never_release_ready)
+
+    def test_dropped_at_is_the_first_assessed_version_after_the_last_good_one(self):
+        """Not the last one. A regression is dated where it started.
+
+        The hook fails on 441 and on 442, and the answer is 441: a reader
+        deciding whether this is a regression or a dormancy needs the version to
+        go and look at, and the newest failing version is the one they are
+        already looking at.
+        """
+        self.baseline_port()
+        self.port("440", {CONTEXT: triple(), TIGON: triple()}, previous="439")
+        self.port(
+            "441", {CONTEXT: triple(), TIGON: triple(differential="failed")},
+            previous="440",
+        )
+        self.port(
+            "442", {CONTEXT: triple(), TIGON: triple(runtime_probe="failed")},
+            previous="441",
+        )
+
+        standing = self.standings()[TIGON]
+
+        self.assertEqual(standing.release_ready_on, ("440",))
+        self.assertEqual(standing.assessed_on, ("440", "441", "442"))
+        self.assertEqual(standing.last_release_ready, "440")
+        self.assertEqual(standing.dropped_at(), "441")
+        self.assertFalse(standing.never_release_ready)
+
+    def test_the_version_after_the_last_good_one_is_chosen_by_number(self):
+        """`"1000" > "441"` is false as text. Today's three-digit arc hides it.
+
+        Constructed directly rather than from a corpus, because the discriminating
+        input is a four-digit version and a fixture that reached one would be
+        asserting the series sort at the same time.
+        """
+        standing = Standing(TIGON, release_ready_on=("441",), assessed_on=("441", "1000"))
+
+        self.assertEqual(standing.dropped_at(), "1000")
+
+    def test_a_hook_absent_from_a_versions_evidence_is_absent_from_the_standing(self):
+        """Assessed means "this version had something to say about this hook".
+
+        A hook that vanished from 441's corpus is not a hook 441 found wanting,
+        and the standing must not claim it was looked at.
+        """
+        self.two_ports({CONTEXT: triple(), TIGON: triple()}, {CONTEXT: triple()})
+
+        found = self.standings()
+
+        self.assertEqual(found[TIGON].assessed_on, ("440",))
+        self.assertEqual(found[TIGON].release_ready_on, ("440",))
+        self.assertIsNone(found[TIGON].dropped_at())
+        self.assertEqual(found[CONTEXT].assessed_on, ("440", "441"))
+
+    def test_assessed_is_not_the_same_as_release_ready(self):
+        """The whole file rests on this: a red hook is measured, not missing."""
+        self.two_ports(
+            {CONTEXT: triple(), TIGON: triple()},
+            {CONTEXT: triple(), TIGON: triple(static_verified="failed")},
+        )
+
+        standing = self.standings()[TIGON]
+
+        self.assertIn("441", standing.assessed_on)
+        self.assertNotIn("441", standing.release_ready_on)
+
+    def test_a_tree_where_no_version_can_be_read_has_no_standings_at_all(self):
+        """Empty, and not "every hook has never been release-ready".
+
+        The difference decides whether a fresh checkout with one half-published
+        port reports every hook in the manifest as broken.
+        """
+        self.baseline_port()
+
+        self.assertEqual(self.standings(), {})
+
+    def test_the_standing_serialises_its_derived_answers(self):
+        """`to_dict` must carry the reading, not just the two raw tuples.
+
+        The derived fields used to be signed as bytes inside a retirement case,
+        which is why they are serialised at all. That consumer is gone; what
+        remains is that a machine-readable standing must not be quieter than the
+        object — the recurring defect in this repository.
+        """
+        self.ordinary_corpus()
+
+        payload = self.standings()[DISCOVER].to_dict()
+
+        self.assertEqual(payload["hook_id"], DISCOVER)
+        self.assertEqual(payload["release_ready_on"], [])
+        self.assertEqual(payload["assessed_on"], ["440", "441"])
+        self.assertTrue(payload["never_release_ready"])
+        self.assertIsNone(payload["last_release_ready"])
+        self.assertIsNone(payload["dropped_at"])
+
+    def test_the_baseline_moves_the_window_a_standing_is_computed_over(self):
+        """A floor that only ever excluded the same version could be a coincidence.
+
+        With 441 as the floor the series is one version long, so 441 has no
+        differential pair to be read against and nothing is release-ready — the
+        same reason 439 establishes the bar rather than meeting it. The point
+        here is that the window moved, and both halves of the standing move with
+        it.
+        """
+        self.ordinary_corpus()
+
+        default = self.standings()[CONTEXT]
+        raised = self.standings(baseline="441")[CONTEXT]
+
+        self.assertEqual(default.assessed_on, ("440", "441"))
+        self.assertEqual(default.release_ready_on, ("440", "441"))
+        self.assertEqual(raised.assessed_on, ("441",))
+        self.assertEqual(raised.release_ready_on, ())
+
+    def test_readiness_comes_from_the_same_report_the_release_gate_reads(self):
+        """Not a second derivation, which would agree until one of them was edited.
+
+        Asserted by removing a required kind rather than by inspecting the call:
+        readiness is exactly "all three post-build kinds passed", so a hook whose
+        differential was never recorded is not release-ready however green the
+        other two are.
+        """
+        self.two_ports({CONTEXT: triple()}, {CONTEXT: triple(differential=None)})
+
+        standing = self.standings()[CONTEXT]
+
+        self.assertEqual(standing.release_ready_on, ("440",))
+        self.assertEqual(standing.assessed_on, ("440", "441"))
 
 
 if __name__ == "__main__":

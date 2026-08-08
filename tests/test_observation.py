@@ -36,6 +36,8 @@ from dfinsta_pipeline.observation import (
     ObservationError,
     ObservationSession,
     append,
+    blocked_and_never_observed,
+    blocked_endpoints,
     evidential,
     main,
     never_observed,
@@ -281,9 +283,9 @@ class SessionTests(unittest.TestCase):
     def test_an_unparseable_timestamp_is_refused(self) -> None:
         """Parsed, not checked for emptiness.
 
-        `reversal` checked every other field that way and `--recorded-at banana`
-        exited 0 into `manifest/reversals.jsonl`, which nothing ever deletes from.
-        This store has the same contract.
+        A sibling record store checked every other field that way, and
+        `--recorded-at banana` exited 0 into an append-only file nothing ever
+        deletes from. This store has the same contract.
         """
         for stamp in ("banana", "2026-08-09", "09/08/2026 10:00", "2026-13-01T00:00:00Z"):
             with self.subTest(stamp=stamp):
@@ -633,6 +635,168 @@ class NeverObservedTests(RootedTestCase):
 # ===========================================================================
 
 
+class BlockedAndNeverObservedTests(RootedTestCase):
+    """The surviving half of the deleted `reconsider.block_never_observed` rule.
+
+    It asked which currently-blocked endpoints a version never once requested,
+    in order to propose *withdrawing* the block through a reversal gate. The gate
+    is gone; the question is not. What has to hold is that it stays a
+    measurement — same refusal discipline as `never_observed`, and no claim about
+    a path nothing was watching.
+    """
+
+    def manifest(self, *literals: str, hook_id: str = "tigon_url_block") -> Path:
+        """`manifest/hooks.json` in the shape `guards.rules_from_manifest` reads.
+
+        Written in the real shape rather than monkeypatched, so a change to the
+        manifest key or the rule schema fails here rather than passing against a
+        stub of a format nobody uses.
+        """
+
+        path = self.root / "manifest" / "hooks.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "hooks": [{
+                    "hook_id": hook_id,
+                    "strategy": "url_block",
+                    "url_block_rules": [
+                        {
+                            "literals": [{"text": text, "match": "contains"}],
+                            "toggles": ["disable_feed"],
+                        }
+                        for text in literals
+                    ],
+                }],
+            }),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_blocked_path_never_requested_is_reported(self) -> None:
+        self.manifest("/feed/timeline/", "/feed/reels_tray/")
+        append(session("s1", counts={"/feed/timeline/": 7}), root=self.root)
+
+        self.assertEqual(
+            ("/feed/reels_tray/",), blocked_and_never_observed("441", self.root)
+        )
+
+    def test_an_unblocked_path_never_requested_is_not_reported(self) -> None:
+        """The discriminating case, and the reason this is not `never_observed`.
+
+        `/feed/reels_tray/` was watched and never seen, so `never_observed` names
+        it — correctly. Nothing blocks it, so there is no decision to hold up
+        against the measurement, and naming it here would turn a watch list into
+        a claim about what the project blocks.
+        """
+        self.manifest("/feed/timeline/")
+        append(session("s1", counts={"/feed/timeline/": 7}), root=self.root)
+
+        self.assertIn("/feed/reels_tray/", never_observed("441", self.root))
+        self.assertEqual((), blocked_and_never_observed("441", self.root))
+
+    def test_a_blocked_path_that_was_requested_is_not_reported(self) -> None:
+        """The positive control: `()` must be reachable from a real corpus."""
+        self.manifest("/feed/timeline/", "/feed/reels_tray/")
+        append(
+            session("s1", counts={"/feed/timeline/": 1, "/feed/reels_tray/": 2}),
+            root=self.root,
+        )
+
+        self.assertEqual((), blocked_and_never_observed("441", self.root))
+
+    def test_a_blocked_path_nobody_watched_is_absent_rather_than_reported(self) -> None:
+        """Silence about it is about the watch list, not about the app.
+
+        Absent from the answer *and* named in the report's warnings — see
+        :class:`ReportTests`. An endpoint no build was looking for produces
+        exactly the same zero as one the app never asks for.
+        """
+        self.manifest("/feed/timeline/", "/never/watched/")
+        append(session("s1", counts={"/feed/timeline/": 7}), root=self.root)
+
+        self.assertNotIn("/never/watched/", blocked_and_never_observed("441", self.root))
+
+    def test_it_refuses_when_no_session_is_evidence_rather_than_answering_empty(self):
+        """Inherited from `never_observed`, and deliberately not softened.
+
+        `()` is what this returns when every blocked path was seen, so returning
+        it here would report "we measured nothing" in the words of "nothing is
+        wrong". The refusal must survive the intersection.
+        """
+        self.manifest("/feed/timeline/")
+        append(session("s1", counts={}), root=self.root)
+
+        with self.assertRaises(ObservationError) as caught:
+            blocked_and_never_observed("441", self.root)
+        self.assertIn("vacuous", str(caught.exception))
+
+    def test_no_evidence_at_all_refuses_too(self) -> None:
+        self.manifest("/feed/timeline/")
+        with self.assertRaises(ObservationError) as caught:
+            blocked_and_never_observed("441", self.root)
+        self.assertIn("no observation evidence", str(caught.exception))
+
+    def test_an_unreadable_manifest_refuses_through_this_modules_error(self) -> None:
+        """One refusal channel. A `GuardError` escaping would miss every handler."""
+        append(session("s1", counts={"/feed/timeline/": 1}), root=self.root)
+
+        with self.assertRaises(ObservationError):
+            blocked_and_never_observed("441", self.root)
+
+        path = self.root / "manifest" / "hooks.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        with self.assertRaises(ObservationError) as caught:
+            blocked_and_never_observed("441", self.root)
+        self.assertIn("hooks.json", str(caught.exception))
+
+    def test_a_manifest_declaring_no_block_refuses_rather_than_answering_empty(self):
+        """"Nothing is blocked" and "every block was observed" are not one answer."""
+        self.manifest()
+        append(session("s1", counts={"/feed/timeline/": 1}), root=self.root)
+
+        with self.assertRaises(ObservationError) as caught:
+            blocked_endpoints(self.root)
+        self.assertIn("url_block_rules", str(caught.exception))
+
+    def test_the_literals_join_verbatim_with_the_watch_list(self) -> None:
+        """No spelling rule, because both sides are rendered from the same field.
+
+        A leading slash going unnormalised is how an entire grouping went
+        invisible on 440. The defence here is having nothing to normalise, and
+        this pins it: a manifest literal that differs only by its leading slash
+        does NOT match a watched one, which is what makes the sameness load
+        bearing rather than incidental.
+        """
+        self.manifest("feed/timeline_stream/")
+        append(
+            session(
+                "s1",
+                watched=("/feed/timeline/", "/feed/timeline_stream/"),
+                counts={"/feed/timeline/": 1},
+            ),
+            root=self.root,
+        )
+
+        self.assertEqual(("feed/timeline_stream/",), blocked_endpoints(self.root))
+        self.assertEqual((), blocked_and_never_observed("441", self.root))
+
+    def test_the_answer_is_scoped_to_the_root_it_was_given(self) -> None:
+        """Both halves — the store and the manifest — or `--root` is half-scoped."""
+        self.manifest("/feed/timeline/", "/feed/reels_tray/")
+        append(session("s1", counts={"/feed/timeline/": 7}), root=self.root)
+
+        previous = os.getcwd()
+        os.chdir(REPOSITORY)
+        self.addCleanup(os.chdir, previous)
+
+        self.assertEqual(
+            ("/feed/reels_tray/",), blocked_and_never_observed("441", self.root)
+        )
+
+
 class ReportTests(RootedTestCase):
     def run_main(self, argv: list[str]) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -652,6 +816,56 @@ class ReportTests(RootedTestCase):
         self.assertEqual(2, report["session_count"])
         self.assertEqual(1, report["evidential_session_count"])
         self.assertEqual(["v1"], report["vacuous_session_ids"])
+
+    def test_the_report_carries_the_blocked_answer_and_its_own_refusal(self) -> None:
+        """A second field with a second refusal string, not a reuse of the first.
+
+        This can fail where `never_observed` succeeds — an unreadable manifest, or
+        one declaring no block — and a reader told "all sessions are vacuous" when
+        the real fault is a missing `url_block_rules` repairs the wrong thing.
+        """
+        self.corpus()
+
+        without = summary("441", self.root)
+
+        self.assertEqual([], without["blocked_never_observed"])
+        self.assertIn("hooks.json", without["blocked_never_observed_refused"])
+        # The control: the sibling field answered on the same corpus, so the
+        # refusal above is about the manifest and not about the evidence.
+        self.assertEqual(["/feed/reels_tray/"], without["never_observed"])
+        self.assertEqual("", without["never_observed_refused"])
+
+        BlockedAndNeverObservedTests.manifest(self, "/feed/reels_tray/")
+        with_manifest = summary("441", self.root)
+
+        self.assertEqual(["/feed/reels_tray/"], with_manifest["blocked_never_observed"])
+        self.assertEqual("", with_manifest["blocked_never_observed_refused"])
+
+    def test_a_blocked_endpoint_nobody_watched_is_named_in_the_warnings(self) -> None:
+        """Otherwise the answer above is quietly incomplete.
+
+        A blocked path absent from every watch list produces the same zero as one
+        the app never requests, and it is excluded from the finding. A reader
+        asking "is that all of them?" has to be told.
+        """
+        self.corpus()
+        BlockedAndNeverObservedTests.manifest(self, "/feed/reels_tray/", "/never/watched/")
+
+        report = summary("441", self.root)
+
+        self.assertEqual(["/feed/reels_tray/"], report["blocked_never_observed"])
+        named = [w for w in report["warnings"] if "/never/watched/" in w]
+        self.assertEqual(1, len(named), report["warnings"])
+        self.assertNotIn("/feed/reels_tray/", named[0])
+
+    def test_no_warning_names_a_blocked_endpoint_that_was_watched(self) -> None:
+        """The control for the test above: the warning must be able to be absent."""
+        self.corpus()
+        BlockedAndNeverObservedTests.manifest(self, "/feed/reels_tray/")
+
+        report = summary("441", self.root)
+
+        self.assertEqual([], [w for w in report["warnings"] if "watch list" in w])
 
     def test_the_json_form_carries_every_warning_the_text_form_carries(self) -> None:
         """The recurring defect, from the other direction.
@@ -682,9 +896,12 @@ class ReportTests(RootedTestCase):
         "WARNINGS",
         "Every watched path was observed at least once.",
         "WATCHED AND NEVER OBSERVED: refused",
-        "This measures; it does not decide. `reconsider` turns a never-observed "
-        "block into a",
-        "question for a human, and only a human withdraws one.",
+        "BLOCKED AND NEVER OBSERVED: refused",
+        "Every blocked path this manifest declares was observed.",
+        "This measures; it does not decide. A blocked path that was never once "
+        "requested is a",
+        "fact about this phone and these surfaces — what to do about it is a "
+        "human's to decide.",
     })
 
     def test_no_line_of_the_human_form_is_missing_from_the_machine_form(self) -> None:

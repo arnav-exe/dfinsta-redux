@@ -51,18 +51,11 @@ EXPECTED_REGISTERED = {
     "admit_replay_verification_grant_activity",
     "prepare_feature_gate_activity",
     "admit_feature_dispositions_activity",
-    # And the two retirement-gate Activities, when `HookRetirementRunWorkflow`
-    # did. Same reason a second time: `dfinsta_pipeline.retirement` could build a
-    # case and take a ruling at a command line, and nothing could *wait* — a
-    # decision that takes days needs something that survives a worker restart.
-    "prepare_retirement_gate_activity",
-    "admit_retirement_rulings_activity",
-    # And the two reversal-gate Activities, when `ReversalRunWorkflow` did. Same
-    # reason a third time: `reconsider` could say which recorded decisions no
-    # longer match the evidence and `reversal` could record a withdrawal at a
-    # command line, and nothing put the one in front of a human as the other.
-    "prepare_reversal_gate_activity",
-    "admit_reversal_rulings_activity",
+    # The four hook-retirement and reversal gate Activities sat here until
+    # 2026-08-08, when the decision-correction layer was deleted whole. Neither
+    # gate had ever been answered, and both were registered for a design the
+    # project has left: decide late on measurement rather than decide early and
+    # correct afterwards.
     *STAGE_WRAPPERS,
 }
 
@@ -100,8 +93,6 @@ class WorkerRegistrationTests(unittest.TestCase):
                 "PortRunWorkflow",
                 "ReplayRunWorkflow",
                 "FeatureAssessmentRunWorkflow",
-                "HookRetirementRunWorkflow",
-                "ReversalRunWorkflow",
             },
         )
         for cls in worker.REGISTERED_WORKFLOWS:

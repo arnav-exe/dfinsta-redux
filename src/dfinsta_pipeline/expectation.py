@@ -10,8 +10,7 @@ If 442 reads 3 of 7 the report is equally calm about it.
 
 So this is the assertion the other two deliberately refuse to make —
 
-    every hook that was release-ready on N-1 is release-ready on N,
-    unless a human recorded a decision to retire it.
+    every hook that was release-ready on N-1 is release-ready on N.
 
 ===============================================================================
   DERIVED, NEVER DECLARED
@@ -22,8 +21,18 @@ line, and adding one would undo the point. A declared expectation has exactly on
 repair when it fails, it takes one character, and it is indistinguishable in a
 diff from a legitimate change: edit 4 to 3. The expectation is instead recomputed
 from the previous version's committed evidence every time it is asked for, which
-leaves precisely two ways to lower it — make a hook pass again, or record a
-retirement that names a human and a reason.
+leaves exactly one way to lower it: make the hook pass again.
+
+**There is deliberately no escape hatch, and that is a change.** Until
+2026-08-08 a human could record a *retirement* — a permanent row naming who ruled
+and why — and the expectation would stop demanding that hook. That machinery was
+removed with the rest of the decide-early-then-correct layer, having recorded
+zero retirements in its entire life. So a hook that genuinely must stop being
+expected has to leave `manifest/hooks.json` along with its evidence, and until it
+does this module keeps reporting it as dropped. That is louder than the old
+answer and it is meant to be: a bar that can be lowered by one line of JSON is
+the failure this file exists to prevent, and re-admitting one under a new name
+would be the same failure wearing it.
 
 **A set, not a number.** `4 -> 3` says a port got worse. `set_app_context is no
 longer release-ready` says which thing to go and look at, and the two are not the
@@ -79,17 +88,13 @@ from .history import BASELINE_VERSION, HistoryError, _NUMERIC
 
 __all__ = [
     "ExpectationError",
-    "Retirement",
+    "Standing",
     "Verdict",
     "Comparison",
-    "RETIREMENTS",
-    "read_retirements",
-    "retirements_in_force",
-    "retirements_on_record",
     "evidence_files",
     "port_report",
+    "standings",
     "versions_with_evidence",
-    "retired_by",
     "compare",
     "sweep",
     "render",
@@ -102,9 +107,6 @@ class ExpectationError(RuntimeError):
     """Raised when an expectation cannot honestly be derived or checked."""
 
 
-#: Where a recorded retirement lives. Append-only; see the directory README.
-RETIREMENTS = Path("manifest") / "retirements.jsonl"
-
 #: Exit codes. `1` is deliberately NOT used: `final_report` already exits 1 for
 #: "incomplete", and incomplete is this project's *normal* state -- three hooks
 #: have never passed a runtime probe on any version, so 441's honest best is 4 of
@@ -114,223 +116,6 @@ RETIREMENTS = Path("manifest") / "retirements.jsonl"
 EXIT_MET = 0
 EXIT_REFUSED = 2
 EXIT_DROPPED = 3
-
-
-def _blank(value: Any) -> bool:
-    """Absent, null, or whitespace — and NOT merely falsy.
-
-    `not (value or "")` reads a JSON `0` as missing. No field is numeric today,
-    but `effective_from` is a version number that a producer could reasonably
-    write unquoted, and "your retirement is missing effective_from" would be a
-    lie about a row that has one.
-    """
-
-    return value is None or not str(value).strip()
-
-
-@dataclass(frozen=True)
-class Retirement:
-    """A human's recorded decision to stop expecting a hook.
-
-    Every field is required, and that is the mechanism rather than the paperwork.
-    The failure this whole module exists to prevent is a quiet edit that lowers
-    the bar, so the one escape hatch is made expensive: retiring a hook costs a
-    permanent row naming who ruled, which decision it was, and why.
-    """
-
-    hook_id: str
-    effective_from: str
-    decision_id: str
-    ruled_by: str
-    rationale: str
-    recorded_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema_version": 1,
-            "hook_id": self.hook_id,
-            "effective_from": self.effective_from,
-            "decision_id": self.decision_id,
-            "ruled_by": self.ruled_by,
-            "rationale": self.rationale,
-            "recorded_at": self.recorded_at,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Retirement":
-        if data.get("schema_version") != 1:
-            raise ExpectationError(
-                f"unsupported retirement schema {data.get('schema_version')!r}"
-            )
-        missing = [
-            key
-            for key in ("hook_id", "effective_from", "decision_id", "ruled_by", "rationale")
-            if _blank(data.get(key))
-        ]
-        if missing:
-            raise ExpectationError(
-                f"retirement is missing {', '.join(missing)}. A retirement that does "
-                "not say who ruled and why is a lowered bar with no author"
-            )
-        # Only a human retires a hook. An agent may investigate and draft one --
-        # that is the whole design of the decision gate -- but if a proposer could
-        # also *sign* it, the cheapest way past a red build would be for the thing
-        # being measured to rule that the measurement no longer applies.
-        if str(data["ruled_by"]).strip().lower() == "agent":
-            raise ExpectationError(
-                f"{data['hook_id']}: ruled_by is 'agent'. A hook is retired by a "
-                "human; an agent drafts the case for it"
-            )
-        if not _NUMERIC.fullmatch(str(data["effective_from"])):
-            raise ExpectationError(
-                f"{data['hook_id']}: effective_from "
-                f"{data['effective_from']!r} is not a version number"
-            )
-        return cls(
-            hook_id=str(data["hook_id"]),
-            effective_from=str(data["effective_from"]),
-            decision_id=str(data["decision_id"]),
-            ruled_by=str(data["ruled_by"]),
-            rationale=str(data["rationale"]),
-            recorded_at=str(data.get("recorded_at") or ""),
-        )
-
-
-def read_retirements(
-    root: Path | str = ".", *, path: Path | str | None = None
-) -> dict[str, Retirement]:
-    """Every recorded retirement, keyed by hook.
-
-    A missing file means none have been recorded, which is the state today and is
-    not an error. A file that exists and cannot be parsed **is** an error: the one
-    thing worse than no retirement record is one that is silently skipped, because
-    then a malformed row reads as "this hook was never retired" and the port fails
-    for a reason nobody can act on.
-    """
-
-    location = Path(path) if path is not None else Path(root) / RETIREMENTS
-    if not location.is_file():
-        return {}
-    out: dict[str, Retirement] = {}
-    for number, line in enumerate(
-        location.read_text(encoding="utf-8").splitlines(), 1
-    ):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise ExpectationError(f"{location}:{number}: {error}") from error
-        # Type-checked before `.get`. `json.loads("null")`, `"3"` and `"[1, 2]"`
-        # all parse, so the line above cannot refuse them, and `.get` on the
-        # result raised a bare `AttributeError` — which `sweep` does not treat as
-        # a skip and `main` does not catch, so the tool left as a traceback. Two
-        # ways for a row to be malformed and only one of them findable. `history`
-        # closed this exact gap in `_rows`/`_field`; this is the third module to
-        # ship it.
-        if not isinstance(row, dict):
-            raise ExpectationError(
-                f"{location}:{number}: expected a JSON object, got "
-                f"{type(row).__name__}"
-            )
-        record = row.get("record", row)
-        if not isinstance(record, dict):
-            raise ExpectationError(
-                f"{location}:{number}: 'record' is {type(record).__name__}, not an "
-                "object"
-            )
-        try:
-            retirement = Retirement.from_dict(record)
-        except ExpectationError as error:
-            raise ExpectationError(f"{location}:{number}: {error}") from error
-        seen = out.get(retirement.hook_id)
-        # EARLIEST wins, not latest. The ledger's usual rule is "a later claim
-        # supersedes", and it is wrong here: appending a second row for the same
-        # hook with a later `effective_from` would *un-retire* it for the versions
-        # in between and turn a permanent record into an editable one.
-        if seen is None or int(retirement.effective_from) < int(seen.effective_from):
-            out[retirement.hook_id] = retirement
-    return out
-
-
-def retired_by(
-    version: str,
-    retirements: dict[str, Retirement],
-    *,
-    withdrawn: dict[tuple[str, str], Any] | None = None,
-) -> dict[str, Retirement]:
-    """Those in force when reporting on `version`.
-
-    Keyed on `effective_from`, so a retirement ruled for 442 does not reach back
-    and excuse a hook that had already stopped passing on 441.
-
-    `withdrawn` maps `(original_decision_id, hook_id)` to a recorded reversal, and
-    removes the retirement from force. It is a **parameter rather than a read**
-    because whether a withdrawal applies is itself version-dependent, and this
-    function is handed a version. Callers should not assemble it by hand: use
-    `retirements_in_force`, which is the one place that reads both files.
-    """
-
-    if not _NUMERIC.fullmatch(version):
-        raise ExpectationError(f"{version!r} is not a version number")
-    withdrawn = withdrawn or {}
-    return {
-        hook: item
-        for hook, item in retirements.items()
-        if int(item.effective_from) <= int(version)
-        and (item.decision_id, hook) not in withdrawn
-    }
-
-
-def retirements_on_record(root: Path | str = ".") -> dict[str, Retirement]:
-    """Retirements that have not been withdrawn, at ANY version.
-
-    **A different question from `retirements_in_force`, and conflating them was a
-    real regression.** That one asks "was this hook retired *as of version N*" and
-    is what the expectation needs. This one asks "is there an outstanding
-    retirement decision for this hook at all", which is what `candidates`,
-    `build_case` and `publish` need: they are deciding whether to ask a human
-    again, not what a port owed.
-
-    Using the version-scoped reader for those broke them silently. A retirement
-    built from a case at version V always takes effect at V+1, so
-    `retirements_in_force(V)` can never contain it — and a hook that had just been
-    retired was offered for retirement all over again.
-    """
-
-    withdrawals = _withdrawn_retirements(root)
-    return {
-        hook: item
-        for hook, item in read_retirements(root).items()
-        if (item.decision_id, hook) not in withdrawals
-    }
-
-
-def _withdrawn_retirements(root: Path | str) -> dict[tuple[str, str], Any]:
-    from .reversal import withdrawn  # noqa: PLC0415
-
-    return withdrawn("retirement", root)
-
-
-def retirements_in_force(
-    version: str, root: Path | str = "."
-) -> dict[str, Retirement]:
-    """Retirements that actually apply at `version`, withdrawals honoured.
-
-    **One function, because two files decide this.** A caller that read
-    `read_retirements` alone would honour a retirement a human had already
-    withdrawn — and it would do so silently, which is the direction that keeps a
-    hook un-expected forever. Every consumer of "is this hook retired" goes
-    through here.
-    """
-
-    from .reversal import withdrawn_at  # noqa: PLC0415  (reversal imports nothing here)
-
-    return retired_by(
-        version,
-        read_retirements(root),
-        withdrawn=withdrawn_at(version, "retirement", root),
-    )
 
 
 def evidence_files(
@@ -395,16 +180,131 @@ def port_report(root: Path | str, version: str, previous: str | None) -> PortRep
 
 
 @dataclass(frozen=True)
+class Standing:
+    """One hook's release-readiness across the whole series.
+
+    The record a human needs in order to tell a regression from a dormancy. It
+    lived in `retirement` until that module was deleted, and it is here because
+    every line of it is assembled from this module's own readers — `roster` is
+    the consumer, and the per-hook view of readiness is the same question
+    `compare` asks between two versions rather than a separate one.
+    """
+
+    hook_id: str
+    #: Versions where every required post-build kind passed, in release order.
+    release_ready_on: tuple[str, ...]
+    #: Versions whose evidence could be read at all, in release order. A version
+    #: absent from BOTH tuples was never computable — 439 has no static evidence,
+    #: so no hook has a standing there, and reading that as a failure would make
+    #: every hook look permanently broken.
+    assessed_on: tuple[str, ...]
+
+    @property
+    def never_release_ready(self) -> bool:
+        return not self.release_ready_on
+
+    @property
+    def last_release_ready(self) -> str | None:
+        return self.release_ready_on[-1] if self.release_ready_on else None
+
+    def dropped_at(self) -> str | None:
+        """The first assessed version after the last good one, or None.
+
+        `None` covers both "still passing" and "never passed", which are opposite
+        situations — read `never_release_ready` alongside it rather than treating
+        a null here as good news.
+        """
+
+        last = self.last_release_ready
+        if last is None:
+            return None
+        after = [v for v in self.assessed_on if int(v) > int(last)]
+        return after[0] if after else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hook_id": self.hook_id,
+            "release_ready_on": list(self.release_ready_on),
+            "assessed_on": list(self.assessed_on),
+            "never_release_ready": self.never_release_ready,
+            "last_release_ready": self.last_release_ready,
+            "dropped_at": self.dropped_at(),
+        }
+
+
+def standings(
+    root: Path | str = ".",
+    *,
+    baseline: str = BASELINE_VERSION,
+) -> dict[str, Standing]:
+    """Every hook's release-readiness across every assessable version.
+
+    Assembled from `port_report`, which is `final_report`, which is the
+    `EvidenceLedger` — the same answer the release gate reads, reached the same
+    way. A second derivation of readiness here would agree with the first until
+    one of them was edited.
+
+    There used to be a `ceiling` beside `baseline`, capping the series so that a
+    *retirement case* built at version N could still be re-derived after N+1 was
+    ported. `retirement` is deleted, nothing else ever passed it, and a parameter
+    with no caller is a branch no test can reach — so it went with its reason
+    rather than being kept in case somebody wants it. `baseline` remains and is
+    used: `roster` passes it.
+    """
+
+    root = Path(root)
+    series = versions_with_evidence(root, baseline=baseline)
+    ready_by_version: dict[str, set[str]] = {}
+    seen_by_version: dict[str, set[str]] = {}
+    for index, version in enumerate(series):
+        previous = series[index - 1] if index else None
+        # Absent and unreadable are different facts, and conflating them is how a
+        # corrupt corpus reads as a quiet one. A version whose evidence file does
+        # not exist is skipped: 439 has runtime evidence and no static evidence,
+        # because `static_verified` had no producer until 440, so its readiness is
+        # unknowable rather than zero — recording it as zero would make every hook
+        # look like it had been failing since the start of the series.
+        #
+        # A file that exists and cannot be read is a REFUSAL. This was found the
+        # only way it could be: a test corpus with the wrong `producer` on every
+        # runtime claim was rejected by the ledger, every version was skipped, and
+        # the result was the cheerful "every assessed hook is release-ready".
+        missing = [
+            path for path in evidence_files(root, version, previous) if not path.is_file()
+        ]
+        try:
+            report = port_report(root, version, previous)
+        except ExpectationError:
+            if missing:
+                continue
+            raise
+        ready_by_version[version] = set(report.ready)
+        seen_by_version[version] = set(report.hooks)
+
+    out: dict[str, Standing] = {}
+    for hook in sorted({h for hooks in seen_by_version.values() for h in hooks}):
+        out[hook] = Standing(
+            hook_id=hook,
+            release_ready_on=tuple(
+                v for v in series if hook in ready_by_version.get(v, ())
+            ),
+            assessed_on=tuple(v for v in series if hook in seen_by_version.get(v, ())),
+        )
+    return out
+
+
+@dataclass(frozen=True)
 class Verdict:
     """One hook's fate between two ports."""
 
     hook_id: str
-    #: `held`, `dropped`, `gained`, `retired` or `retired_still_passing`.
+    #: `held`, `dropped` or `gained`. There is no `retired` state: the recorded
+    #: retirement that used to produce one was deleted along with the rest of the
+    #: decision-correction layer, and nothing else excuses a hook from the bar.
     state: str
     #: Why the ledger escalated it on this version, when it did. Empty for a hook
     #: that has no claim at all -- and that emptiness is itself the finding.
     reasons: tuple[str, ...] = ()
-    retirement: Retirement | None = None
 
     @property
     def vanished(self) -> bool:
@@ -418,7 +318,6 @@ class Verdict:
             "state": self.state,
             "reasons": list(self.reasons),
             "vanished": self.vanished,
-            "retirement": self.retirement.to_dict() if self.retirement else None,
         }
 
 
@@ -472,7 +371,6 @@ def compare(
     version: str,
     previous: str | None = None,
     baseline: str = BASELINE_VERSION,
-    retirements: dict[str, Retirement] | None = None,
 ) -> Comparison:
     """Derive `version`'s expectation from its predecessor and check it."""
 
@@ -499,13 +397,6 @@ def compare(
             "a drop"
         )
 
-    if retirements is None:
-        # `retirements_in_force`, not `read_retirements`: a withdrawn retirement
-        # must stop excusing the hook, and that is version-dependent.
-        in_force = retirements_in_force(version, root)
-    else:
-        in_force = retired_by(version, retirements)
-
     before = port_report(root, previous, _predecessor(root, previous, baseline))
     # N's OWN evidence is assembled from N's TRUE predecessor, never from an
     # overridden one. A differential file is named for the pair it spans, so
@@ -516,7 +407,10 @@ def compare(
     # to measure against; it does not choose what this port measured.
     now = port_report(root, version, _predecessor(root, version, baseline))
 
-    expected = set(before.ready) - set(in_force)
+    # Every hook that was ready, with nothing subtracted. This used to remove the
+    # retirements in force at `version`; there are no longer any such records, and
+    # the docstring says why re-admitting them would undo the module.
+    expected = set(before.ready)
     actual = set(now.ready)
     reasons = {
         item["hook_id"]: tuple(item.get("reasons", ()))
@@ -525,14 +419,7 @@ def compare(
 
     verdicts: list[Verdict] = []
     for hook in sorted(set(before.ready) | actual):
-        retirement = in_force.get(hook)
-        if retirement is not None:
-            # Reported either way. A hook retired while it is still passing is not
-            # an error, but it is worth a human seeing: the case for retiring it
-            # was probably made when it was not.
-            state = "retired_still_passing" if hook in actual else "retired"
-            verdicts.append(Verdict(hook, state, reasons.get(hook, ()), retirement))
-        elif hook in expected and hook in actual:
+        if hook in expected and hook in actual:
             verdicts.append(Verdict(hook, "held"))
         elif hook in expected:
             verdicts.append(Verdict(hook, "dropped", reasons.get(hook, ())))
@@ -575,17 +462,6 @@ def sweep(
     """
 
     root = Path(root)
-    # Parsed once, up front, and the result deliberately discarded. The *values*
-    # must not be hoisted — passing them to `compare` sends it down the branch
-    # that skips withdrawals, which made `expectation --version 446` and the
-    # default sweep give opposite answers from the same three files. But the
-    # *parse* must happen out here: inside the loop, a malformed retirements file
-    # raises `ExpectationError`, which the per-pair handler below treats as "this
-    # pair is mid-port, skip it", and a corrupt store reads as "nothing to check".
-    # That is `a-skip-for-absent-swallowed-unreadable` a second time, in the
-    # module where the lesson was written.
-    read_retirements(root)
-    _withdrawn_retirements(root)
     series = versions_with_evidence(root, baseline=baseline)
     comparisons: list[Comparison] = []
     skipped: list[tuple[str, str]] = []
@@ -653,13 +529,14 @@ def render(comparison: Comparison) -> str:
         lines.append("  thing to fix is the device session, not the hook.")
         lines.append("")
         lines.append(
-            "  To lower the bar legitimately, record a retirement in "
-            f"{RETIREMENTS} — naming a human,"
+            "  There is no way to lower the bar. The expectation is derived from "
+            "the previous port's"
         )
         lines.append(
-            "  a decision and a reason. There is deliberately no other way; the "
-            "expectation is derived."
+            "  own evidence every time it is asked for, so the only thing that "
+            "clears this is the hook"
         )
+        lines.append("  passing again.")
     else:
         lines.append(
             f"  Expectation met — all {len(comparison.expected)} hook(s) that were "
@@ -667,20 +544,6 @@ def render(comparison: Comparison) -> str:
         )
         for hook in comparison.held:
             lines.append(f"    ✓ {hook}")
-
-    retired = [v for v in comparison.verdicts if v.state.startswith("retired")]
-    if retired:
-        lines.append("")
-        lines.append(f"  Retired, so not expected ({len(retired)}):")
-        for verdict in retired:
-            item = verdict.retirement
-            assert item is not None
-            note = " — STILL PASSING" if verdict.state == "retired_still_passing" else ""
-            lines.append(f"    · {verdict.hook_id}{note}")
-            lines.append(
-                f"        {item.ruled_by} ruled at {item.effective_from} "
-                f"({item.decision_id}): {item.rationale}"
-            )
 
     if comparison.gained:
         lines.append("")

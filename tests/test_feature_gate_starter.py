@@ -27,14 +27,14 @@ import unittest
 
 from temporalio.testing import WorkflowEnvironment
 
-from dfinsta_pipeline import assessment_record, retirement_record
+from dfinsta_pipeline import assessment_record
 
 RUN_ID = "port-441-assessment"
 TASK_QUEUE = "starter-tests"
 
 
 class StarterTests(unittest.IsolatedAsyncioTestCase):
-    """Both starters, against a real server, with no worker running.
+    """The starter, against a real server, with no worker running.
 
     No worker on purpose. A starter's job ends when the Workflow is enqueued with
     the right type, id and argument; whether the first Activity then succeeds is
@@ -66,15 +66,7 @@ class StarterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("FeatureAssessmentRunWorkflow", description.workflow_type)
         self.assertEqual(TASK_QUEUE, description.task_queue)
 
-    async def test_the_retirement_starter_enqueues_the_right_workflow(self) -> None:
-        workflow_id = await self.start(retirement_record.raise_gate, "retire-441")
-
-        self.assertEqual("retire-441", workflow_id)
-        description = await self.described(workflow_id)
-        self.assertEqual("HookRetirementRunWorkflow", description.workflow_type)
-        self.assertEqual(TASK_QUEUE, description.task_queue)
-
-    async def test_the_workflow_id_is_the_run_id_for_both(self) -> None:
+    async def test_the_workflow_id_is_the_run_id(self) -> None:
         """The property `submission show <workflow_id>` depends on.
 
         A human answering a gate has one identifier: the run id. If a starter
@@ -83,12 +75,10 @@ class StarterTests(unittest.IsolatedAsyncioTestCase):
         every unit test would still pass.
         """
 
-        for starter, run_id in (
-            (assessment_record.raise_gate, "port-442-assessment"),
-            (retirement_record.raise_gate, "retire-442"),
-        ):
-            with self.subTest(starter=starter.__module__):
-                self.assertEqual(run_id, await self.start(starter, run_id))
+        self.assertEqual(
+            "port-442-assessment",
+            await self.start(assessment_record.raise_gate, "port-442-assessment"),
+        )
 
     async def test_starting_the_same_run_twice_is_refused(self) -> None:
         """Temporal refuses a duplicate workflow id, and that is the behaviour wanted.
@@ -99,16 +89,16 @@ class StarterTests(unittest.IsolatedAsyncioTestCase):
         would silently take the protection away.
         """
 
-        await self.start(retirement_record.raise_gate, "retire-443")
+        await self.start(assessment_record.raise_gate, "port-443-assessment")
         with self.assertRaises(Exception) as caught:
-            await self.start(retirement_record.raise_gate, "retire-443")
+            await self.start(assessment_record.raise_gate, "port-443-assessment")
         self.assertIn("already", str(caught.exception).lower())
 
 
 class PinnedStartTests(unittest.IsolatedAsyncioTestCase):
     """What a pinned start needs, learned from a real server rather than a doc.
 
-    Both workflows are `versioning_behavior=PINNED`, and the consequences only
+    The workflow is `versioning_behavior=PINNED`, and the consequences only
     appear against a server:
 
     1. A `PINNED` workflow may only run on a worker with
@@ -121,8 +111,8 @@ class PinnedStartTests(unittest.IsolatedAsyncioTestCase):
     3. Started **with** an override, the server refuses until a worker for that
        exact version has polled the queue.
 
-    The first two are why `build_id` exists on the starters; the third is why they
-    retry. Both integration harnesses already passed an override and already
+    The first two are why `build_id` exists on the starter; the third is why it
+    retries. Both integration harnesses already passed an override and already
     retried, and neither said why — so the knowledge existed only as two lines of
     code nobody had a reason to read.
     """
@@ -174,10 +164,10 @@ class PinnedStartTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RuntimeError) as caught:
             await asyncio.to_thread(
-                retirement_record.raise_gate,
+                assessment_record.raise_gate,
                 self.endpoint,
                 "queue-with-no-worker",
-                "retire-unwatched",
+                "port-unwatched-assessment",
                 gate_timeout_seconds=600,
                 build_id="never-started",
                 wait_for_worker_seconds=1.0,
@@ -212,10 +202,10 @@ class PinnedStartTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RPCError):
             await asyncio.to_thread(
-                retirement_record.raise_gate,
+                assessment_record.raise_gate,
                 self.endpoint,
                 "q",
-                "retire-broken",
+                "port-broken-assessment",
                 gate_timeout_seconds=600,
                 build_id="b",
                 wait_for_worker_seconds=30.0,
@@ -230,13 +220,13 @@ class PinnedStartTests(unittest.IsolatedAsyncioTestCase):
         the wrong one for anybody who has not, which is what the flag's help says.
         """
         workflow_id = await asyncio.to_thread(
-            retirement_record.raise_gate,
+            assessment_record.raise_gate,
             self.endpoint,
             "queue-with-no-worker",
-            "retire-unpinned",
+            "port-unpinned-assessment",
             gate_timeout_seconds=600,
         )
-        self.assertEqual("retire-unpinned", workflow_id)
+        self.assertEqual("port-unpinned-assessment", workflow_id)
 
 
 if __name__ == "__main__":

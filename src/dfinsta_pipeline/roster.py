@@ -34,9 +34,9 @@ re-litigated because nothing is being asked.
 ===============================================================================
 
 **It computes no verdicts of its own.** Release-readiness comes from
-`retirement.standings`, which is `expectation`, which is `final_report`, which is
-the `EvidenceLedger` — the same answer the release gate reads, reached the same
-way. A second opinion here would agree with the first until one was edited.
+`expectation.standings`, which is `final_report`, which is the `EvidenceLedger` —
+the same answer the release gate reads, reached the same way. A second opinion
+here would agree with the first until one was edited.
 
 **It separates "did not run" from "was not measured".** A hook with no runtime
 claim on a version is `—`; a hook measured and silent is `·`; a hook that ran is
@@ -62,13 +62,10 @@ from typing import Any, Iterable, Sequence
 
 from .expectation import (
     ExpectationError,
-    Retirement,
-    retirements_on_record,
+    standings,
     versions_with_evidence,
 )
 from .history import BASELINE_VERSION
-from .reversal import ReversalError
-from .retirement import RetirementError, standings
 
 __all__ = [
     "RosterError",
@@ -104,7 +101,6 @@ class HookLife:
     #: From the evidence ledger, via `standings`.
     release_ready_on: tuple[str, ...]
     assessed_on: tuple[str, ...]
-    retirement: Retirement | None = None
     #: A written decision found in the manifest, if any.
     note: str = ""
 
@@ -124,9 +120,14 @@ class HookLife:
         not a defect — it can be dormant by server config, which is exactly why
         three of them are deliberately kept. A hook that has never run *and* has
         no recorded reason is a decision nobody can find.
+
+        A third exemption used to sit here: a hook with a recorded *retirement*
+        was decided by definition. That record no longer exists — a hook is
+        active or it is not in the manifest — so `status` and `note` are all
+        there is, and a dormant hook has to carry its reasoning in writing.
         """
 
-        return self.never_ran and not self.note and self.retirement is None
+        return self.never_ran and not self.note
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -139,7 +140,6 @@ class HookLife:
             "release_ready_on": list(self.release_ready_on),
             "assessed_on": list(self.assessed_on),
             "last_ran": self.last_ran,
-            "retirement": self.retirement.to_dict() if self.retirement else None,
             "note": self.note,
             "dormant_and_undecided": self.dormant_and_undecided,
         }
@@ -237,16 +237,14 @@ def roster(
 
     try:
         standing = standings(root, baseline=baseline)
-    except (RetirementError, ExpectationError) as error:
+    except ExpectationError as error:
         raise RosterError(str(error)) from error
     ran = _runtime(root, versions)
-    retired = retirements_on_record(root)
 
     hooks = manifest.get("hooks") if isinstance(manifest, dict) else None
     if not isinstance(hooks, list):
-        # `reversal.plan_unblock` closed exactly this and said why: a manifest
-        # with no `hooks` produced a bare `KeyError` and exit 1 where the contract
-        # is `refused:` and exit 2.
+        # Checked rather than indexed: a manifest with no `hooks` produced a bare
+        # `KeyError` and exit 1 where the contract is `refused:` and exit 2.
         raise RosterError(f"{manifest_path} has no 'hooks' array")
 
     lives: list[HookLife] = []
@@ -266,7 +264,6 @@ def roster(
                 measured_on=tuple(v for v in versions if v in measured),
                 release_ready_on=found.release_ready_on if found else (),
                 assessed_on=found.assessed_on if found else (),
-                retirement=retired.get(hook),
                 note=_decision_note(entry),
             )
         )
@@ -325,16 +322,15 @@ def render(lives: Iterable[HookLife], versions: Sequence[str]) -> str:
         lines.append(f"    {life.hook_id}  [{life.tier}]")
         lines.append(f"        {life.intent}")
 
-    retired = [life for life in lives if life.retirement]
-    if retired:
-        lines += ["", "  retired"]
-        for life in retired:
-            item = life.retirement
-            assert item is not None
-            lines.append(
-                f"    {life.hook_id} — from {item.effective_from}, {item.ruled_by}: "
-                f"{item.rationale}"
-            )
+    inactive = [life for life in lives if life.status != "active"]
+    if inactive:
+        # From the manifest's own `status`, which is the only remaining word for
+        # a hook the project has stopped carrying. Printed rather than filtered:
+        # a hook nobody expects any more is exactly the row a reader needs to see
+        # beside its evidence, not one hidden from the table.
+        lines += ["", "  not active"]
+        for life in inactive:
+            lines.append(f"    {life.hook_id} — status {life.status}")
 
     decided = [life for life in lives if life.note]
     if decided:
@@ -405,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             text = render(lives, versions)
-    except (RosterError, ExpectationError, ReversalError, ValueError, OSError) as error:
+    except (RosterError, ExpectationError, ValueError, OSError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2
     print(text)

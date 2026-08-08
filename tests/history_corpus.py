@@ -113,26 +113,6 @@ FIXTURES = (
         "corpus-feature-open",
         "fbd9e420e690a673dba3c10ac3e2c27ee9fa1e2bcf958809b2f5f6a6bfc6a2bf",
     ),
-    Fixture(
-        "retirement_gate_completed_v1.json",
-        "corpus-retirement-completed",
-        "97a1aec84cb8e125cf99de9890b4587138ad007539a2cf33213c7b6a5b6f98f3",
-    ),
-    Fixture(
-        "retirement_gate_open_v1.json",
-        "corpus-retirement-open",
-        "7645582f0c07c40a1beaa37a87c14813d3f8c43328ca5a26ec902814a6f447cc",
-    ),
-    Fixture(
-        "reversal_gate_completed_v1.json",
-        "corpus-reversal-completed",
-        "7c521f238ef6ec51e2314d9c536a96d6855959f62e956f2a55a66a63a2443ad0",
-    ),
-    Fixture(
-        "reversal_gate_open_v1.json",
-        "corpus-reversal-open",
-        "a30a005261a3414db66dde472aae031bfb0bb4d33d343b4b29908d9d8a927661",
-    ),
 )
 
 

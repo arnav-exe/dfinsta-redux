@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -68,23 +67,14 @@ from temporalio.common import (  # noqa: E402
 from temporalio.testing import WorkflowEnvironment  # noqa: E402
 from temporalio.worker import Worker, WorkerDeploymentConfig  # noqa: E402
 
-from dfinsta_pipeline import (  # noqa: E402
-    activities,
-    assessment_record,
-    retirement_record,
-    reversal_record,
-)
+from dfinsta_pipeline import activities, assessment_record  # noqa: E402
 from dfinsta_pipeline.activities import (  # noqa: E402
     admit_activity,
     admit_feature_dispositions_activity,
-    admit_retirement_rulings_activity,
-    admit_reversal_rulings_activity,
     apply_activity,
     configure_runtime,
     prepare_activity,
     prepare_feature_gate_activity,
-    prepare_retirement_gate_activity,
-    prepare_reversal_gate_activity,
     record_decision_activity,
     runtime,
 )
@@ -99,25 +89,6 @@ from dfinsta_pipeline.feature_gate import (  # noqa: E402
 from dfinsta_pipeline.feature_workflow import FeatureAssessmentRunWorkflow  # noqa: E402
 from dfinsta_pipeline.replay_contracts import REPLAY_STAGE_ORDER  # noqa: E402
 from dfinsta_pipeline.replay_workflow import ReplayRunWorkflow  # noqa: E402
-from dfinsta_pipeline.retirement import RetirementCase, case_sha256  # noqa: E402
-from dfinsta_pipeline.retirement_gate import (  # noqa: E402
-    RULINGS_ARTIFACT_KIND,
-    RetirementGateSubmissionV1,
-    RetirementRulingsV1,
-    RetirementRulingV1,
-    RetirementRunRequestV1,
-)
-from dfinsta_pipeline.retirement_workflow import HookRetirementRunWorkflow  # noqa: E402
-from dfinsta_pipeline.reversal_gate import (  # noqa: E402
-    RULINGS_ARTIFACT_KIND as REVERSAL_RULINGS_ARTIFACT_KIND,
-)
-from dfinsta_pipeline.reversal_gate import (  # noqa: E402
-    ReversalGateSubmissionV1,
-    ReversalRulingsV1,
-    ReversalRulingV1,
-    ReversalRunRequestV1,
-)
-from dfinsta_pipeline.reversal_workflow import ReversalRunWorkflow  # noqa: E402
 from dfinsta_pipeline.workflow import PortRunWorkflow  # noqa: E402
 
 from tests.history_corpus import CAPTURE_IDENTITY, FIXTURES, histories_directory, leaks  # noqa: E402
@@ -129,8 +100,6 @@ from tests.test_phase_b_replay_workflow import (  # noqa: E402
     replay_request,
     verification_decision,
 )
-from tests.test_retirement_workflow import ALIVE, DEAD, _claim  # noqa: E402
-from tests.test_reversal_record import write_reversal_fixture  # noqa: E402
 
 
 #: One deployment version for the whole corpus. It lands in History and is not
@@ -152,10 +121,6 @@ RATIONALE = "fixture: recorded for the replay-History corpus"
 #: A week. Long enough that the open fixtures record the multi-day wait the gates
 #: exist for, and inside every contract's ceiling.
 GATE_TIMEOUT_SECONDS = 7 * 24 * 60 * 60
-
-#: The three versions the retirement fixture's evidence spans, mirroring
-#: `tests/test_retirement_workflow.py`.
-RETIREMENT_VERSION = "441"
 
 
 def _task_queue(run_id: str) -> str:
@@ -410,245 +375,6 @@ async def _capture_feature(
         return await _history_json(handle)
 
 
-# ------------------------------------------------------------ retirement gate
-
-
-def _write_retirement_evidence(root: Path) -> Path:
-    """The manifest and evidence `tests/test_retirement_workflow.py` stands up.
-
-    `_claim` is imported from that module rather than restated, so a change to
-    what a claim row looks like breaks the capture instead of producing a docket
-    describing evidence the ledger would no longer accept. ALIVE is release-ready
-    on both versions; DEAD is measured and never passes, which is what makes it a
-    retirement candidate rather than a regression.
-    """
-
-    manifest = root / "manifest"
-    for name in ("static_evidence", "runtime_evidence", "differentials"):
-        (manifest / name).mkdir(parents=True, exist_ok=True)
-    (manifest / "hooks.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "policy_revision": "2026-08-01",
-                "hooks": [
-                    {
-                        "hook_id": ALIVE,
-                        "intent": "set the app context",
-                        "tier": "robust",
-                        "status": "active",
-                    },
-                    {
-                        "hook_id": DEAD,
-                        "intent": "block the discover endpoint",
-                        "tier": "fragile",
-                        "status": "active",
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    for version in ("440", RETIREMENT_VERSION):
-        (manifest / "static_evidence" / f"{version}.jsonl").write_text(
-            "\n".join(
-                _claim(
-                    hook,
-                    "static_verified",
-                    version,
-                    "passed",
-                    {"attribution": "sole", "build_verification_passed": True},
-                )
-                for hook in (ALIVE, DEAD)
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        (manifest / "runtime_evidence" / f"{version}.jsonl").write_text(
-            "\n".join(
-                [
-                    _claim(ALIVE, "runtime_probe", version, "passed", {"hooks_that_ran": [ALIVE]}),
-                    _claim(DEAD, "runtime_probe", version, "inconclusive", {"hooks_that_ran": []}),
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-    (manifest / "differentials" / f"440-{RETIREMENT_VERSION}.jsonl").write_text(
-        "\n".join(
-            [
-                _claim(ALIVE, "differential", RETIREMENT_VERSION, "passed",
-                       {"baseline_version": "440"}),
-                _claim(DEAD, "differential", RETIREMENT_VERSION, "inconclusive",
-                       {"baseline_version": "440", "reason": "baseline_not_a_pass"}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    investigations = root / "investigations.json"
-    investigations.write_text(
-        json.dumps(
-            {
-                DEAD: {
-                    "investigated_by": "claude-opus-5",
-                    "summary": "Instagram removed the discover surface in 441.",
-                    "findings": ["the anchor now matches a dead code path"],
-                    "recommendation": "retire",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    return investigations
-
-
-def _record_docket(state: Path, root: Path, investigations: Path, run_id: str):
-    return retirement_record.record(
-        state,
-        run_id=run_id,
-        version=RETIREMENT_VERSION,
-        investigations_path=investigations,
-        allowed_actor=ACTOR,
-        owner_token=f"corpus-owner-{run_id}",
-        root=root,
-    )
-
-
-async def _capture_retirement(
-    environment: WorkflowEnvironment, run_id: str, recorded, *, approve: bool
-) -> str:
-    task_queue = _task_queue(run_id)
-    async with _worker(
-        environment.client,
-        task_queue,
-        [HookRetirementRunWorkflow],
-        [prepare_retirement_gate_activity, admit_retirement_rulings_activity],
-    ):
-        handle = await environment.client.start_workflow(
-            HookRetirementRunWorkflow.run,
-            RetirementRunRequestV1(1, run_id, GATE_TIMEOUT_SECONDS),
-            id=run_id,
-            task_queue=task_queue,
-            versioning_override=PinnedVersioningOverride(CORPUS_DEPLOYMENT_VERSION),
-        )
-        status = await _wait_for_state(
-            environment, handle, HookRetirementRunWorkflow.status, "awaiting-retirement-rulings"
-        )
-        if not approve:
-            return await _history_json(handle)
-
-        cases = {
-            case["hook_id"]: case_sha256(RetirementCase.from_dict(case))
-            for case in recorded.document["cases"]
-        }
-        document = RetirementRulingsV1(
-            1,
-            recorded.docket.sha256,
-            recorded.version,
-            recorded.policy_revision,
-            tuple(
-                RetirementRulingV1(1, hook, "retire", RATIONALE, cases[hook])
-                for hook in recorded.hook_ids
-            ),
-        )
-        reference = runtime().store.put_bytes(
-            kind=RULINGS_ARTIFACT_KIND,
-            data=canonical_json(document.to_dict()).encode("utf-8"),
-            producer_operation_id=f"client-{document.sha256}",
-            input_hashes=(recorded.docket.sha256,),
-        )
-        await handle.execute_update(
-            HookRetirementRunWorkflow.submit_retirement_rulings,
-            RetirementGateSubmissionV1(
-                1, _decision(status.gate, decision_id="corpus-retirement-approval"), reference
-            ),
-        )
-        await handle.result()
-        return await _history_json(handle)
-
-
-# --------------------------------------------------------------- reversal gate
-
-
-def _record_reversal_docket(state: Path, root: Path, run_id: str):
-    """`tests/test_reversal_record.py`'s fixture, in its own repository root.
-
-    Its own root because `_write_retirement_evidence` already owns `root/manifest`
-    and the two describe different manifests. The *state* root is shared: two run
-    ids, two rows, one ledger — which is the arrangement production has.
-
-    `actor=ACTOR` rather than the fixture's default: the docket carries the name
-    of whoever ruled the retirement it questions, and a committed fixture should
-    name neither a person nor a machine. The docket itself never crosses into
-    History, so this is belt as well as braces.
-
-    No index, so the docket carries `block_endpoint_absent`'s skip in
-    `rules_not_run` — which is the half of a sweep's result that is not a finding,
-    and the half most worth having a committed example of.
-    """
-
-    repository = root / f"reversal-{run_id}"
-    write_reversal_fixture(repository, actor=ACTOR)
-    return reversal_record.record(
-        state,
-        run_id=run_id,
-        version="441",
-        allowed_actor=ACTOR,
-        owner_token=f"corpus-owner-{run_id}",
-        root=repository,
-    )
-
-
-async def _capture_reversal(
-    environment: WorkflowEnvironment, run_id: str, recorded, *, approve: bool
-) -> str:
-    task_queue = _task_queue(run_id)
-    async with _worker(
-        environment.client,
-        task_queue,
-        [ReversalRunWorkflow],
-        [prepare_reversal_gate_activity, admit_reversal_rulings_activity],
-    ):
-        handle = await environment.client.start_workflow(
-            ReversalRunWorkflow.run,
-            ReversalRunRequestV1(1, run_id, GATE_TIMEOUT_SECONDS),
-            id=run_id,
-            task_queue=task_queue,
-            versioning_override=PinnedVersioningOverride(CORPUS_DEPLOYMENT_VERSION),
-        )
-        status = await _wait_for_state(
-            environment, handle, ReversalRunWorkflow.status, "awaiting-reversal-rulings"
-        )
-        if not approve:
-            return await _history_json(handle)
-
-        document = ReversalRulingsV1(
-            1,
-            recorded.docket.sha256,
-            recorded.version,
-            recorded.policy_revision,
-            tuple(
-                ReversalRulingV1(1, item.item_id, "withdraw", RATIONALE, item.item_sha256)
-                for item in recorded.items
-            ),
-        )
-        reference = runtime().store.put_bytes(
-            kind=REVERSAL_RULINGS_ARTIFACT_KIND,
-            data=canonical_json(document.to_dict()).encode("utf-8"),
-            producer_operation_id=f"client-{document.sha256}",
-            input_hashes=(recorded.docket.sha256,),
-        )
-        await handle.execute_update(
-            ReversalRunWorkflow.submit_reversal_rulings,
-            ReversalGateSubmissionV1(
-                1, _decision(status.gate, decision_id="corpus-reversal-approval"), reference
-            ),
-        )
-        await handle.result()
-        return await _history_json(handle)
-
-
 # ------------------------------------------------------------------- the run
 
 
@@ -656,17 +382,12 @@ async def capture_all(root: Path) -> dict[str, str]:
     """Every fixture, keyed by filename. One state root, one server, one process."""
 
     state = root / "state"
-    investigations = _write_retirement_evidence(root)
 
     # Recorded before `configure_runtime`, exactly as the behavioural tests do
     # it: the producers create the ledger, and the Activities then open the one
     # that is already there.
     feature_completed = _record_assessment(state, root, "corpus-feature-completed")
     feature_open = _record_assessment(state, root, "corpus-feature-open")
-    retirement_completed = _record_docket(state, root, investigations, "corpus-retirement-completed")
-    retirement_open = _record_docket(state, root, investigations, "corpus-retirement-open")
-    reversal_completed = _record_reversal_docket(state, root, "corpus-reversal-completed")
-    reversal_open = _record_reversal_docket(state, root, "corpus-reversal-open")
     configure_runtime(state)
 
     environment = await WorkflowEnvironment.start_time_skipping(identity=CAPTURE_IDENTITY)
@@ -684,18 +405,6 @@ async def capture_all(root: Path) -> dict[str, str]:
             ),
             "feature_gate_open_v1.json": await _capture_feature(
                 environment, "corpus-feature-open", feature_open, approve=False
-            ),
-            "retirement_gate_completed_v1.json": await _capture_retirement(
-                environment, "corpus-retirement-completed", retirement_completed, approve=True
-            ),
-            "retirement_gate_open_v1.json": await _capture_retirement(
-                environment, "corpus-retirement-open", retirement_open, approve=False
-            ),
-            "reversal_gate_completed_v1.json": await _capture_reversal(
-                environment, "corpus-reversal-completed", reversal_completed, approve=True
-            ),
-            "reversal_gate_open_v1.json": await _capture_reversal(
-                environment, "corpus-reversal-open", reversal_open, approve=False
             ),
         }
     finally:

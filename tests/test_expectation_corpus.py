@@ -90,8 +90,9 @@ class CommittedCorpusTests(unittest.TestCase):
                     "Run `python -m dfinsta_pipeline.expectation` for the reasons. A "
                     "differential verdict of failed/regressed is a real regression; "
                     "inconclusive/no_current means the hook was not measured and the "
-                    "device session is what to fix. To lower the bar legitimately, "
-                    "record a retirement -- see manifest/RETIREMENTS.md.",
+                    "device session is what to fix. There is no way to lower the bar: "
+                    "the expectation is derived from the previous port's own evidence, "
+                    "so only the hook passing again clears this.",
                 ]
             ),
         )
@@ -146,16 +147,6 @@ class CommittedCorpusTests(unittest.TestCase):
             "wrote into the committed corpus, or a hook was removed and its "
             "evidence left behind",
         )
-
-    def test_no_retirement_is_recorded_yet(self) -> None:
-        """Pins today's state so the first one is a deliberate, reviewed change.
-
-        Not a rule against retiring hooks -- it is a rule against a retirement
-        arriving unnoticed. Deleting this test is the intended way past it, in the
-        same commit as the row and the reasoning.
-        """
-
-        self.assertEqual({}, expectation.read_retirements(REPOSITORY))
 
 
 if __name__ == "__main__":

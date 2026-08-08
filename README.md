@@ -76,7 +76,6 @@ PYTHONPATH=src .venv/bin/python -m dfinsta_pipeline.driver apks/<stock>.apk \
 | [`docs/IMPLEMENTATION_STATE.md`](docs/IMPLEMENTATION_STATE.md) | The detailed resume record, including "Loose ends" and "Known open items" — both kept honest by `tests/test_open_items.py`. |
 | [`pipeline_flowchart.md`](pipeline_flowchart.md) | The eleven stages and the state of each. |
 | [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) | Moving to another machine; what can and cannot be re-derived. |
-| [`manifest/RETIREMENTS.md`](manifest/RETIREMENTS.md) | The only legitimate way to lower the release-ready bar, and why it is deliberately expensive. |
 
 ## What this deliberately does not claim
 

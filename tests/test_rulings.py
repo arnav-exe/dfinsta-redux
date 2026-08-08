@@ -982,8 +982,13 @@ class OperationKeyTests(RulingTestCase):
 #: one at a time as the guard is written, and this tuple shrinks to `()` again.
 #: Five left it the same day. The one that remains is the one that CANNOT leave:
 #: `delivery/background_prefetch` is a no-op logger's marker name, not a request
-#: path, so no guard could ever test it — see the reversal record. When that
-#: ruling is withdrawn this becomes `()` and both halves of the audit agree.
+#: path, so no guard could ever test it. There is no longer a mechanism that
+#: retracts a ruling — the reversal gate that would have done it was deleted on
+#: 2026-08-08 with the rest of the decision-correction layer, having recorded
+#: none — so this tuple becomes `()` only when a human takes the ruling and the
+#: `semantic_deps` entry back out by hand. `observation` measures the same
+#: endpoint from the other side: it is watched on 441 and was never once
+#: requested, which is the evidence that the name was never a path.
 #: Pinned rather than computed, so the app work stays visible: an empty
 #: expectation would have quietly accepted a manifest that promises six blocks
 #: the app does not make.

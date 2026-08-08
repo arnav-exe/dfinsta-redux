@@ -22,7 +22,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dfinsta_pipeline.expectation import ExpectationError
 from dfinsta_pipeline.roster import (
     RAN,
     SILENT,
@@ -194,21 +193,33 @@ class DecisionTests(RosterTestCase):
         self.assertFalse(by_id["dormant_noted"].dormant_and_undecided)
         self.assertTrue(by_id["dormant_silent"].dormant_and_undecided)
 
-    def test_a_retirement_settles_a_hook_even_with_no_note(self) -> None:
-        self.write_manifest([self.hook("gone")])
+    def test_a_hook_that_is_not_active_is_shown_as_such_and_still_listed(self) -> None:
+        """`status` is the only remaining word for a hook we have stopped carrying.
+
+        It replaced a recorded `retirement`, which used to answer this and was
+        deleted with the rest of the decision-correction layer. The row is
+        printed rather than filtered out — a hook nobody expects any more is
+        exactly the one a reader needs to see beside its evidence — and it does
+        NOT suppress `dormant_and_undecided`, because a status word is not a
+        written reason.
+        """
+        self.write_manifest([self.hook("gone", status="removed")])
         self.runtime("440", [claim("gone", "runtime_probe", "440", "inconclusive")])
-        (self.manifest / "retirements.jsonl").write_text(
-            json.dumps({
-                "schema_version": 1, "hook_id": "gone", "effective_from": "441",
-                "decision_id": "retire-1", "ruled_by": "arnav",
-                "rationale": "Surface removed.", "recorded_at": "2026-08-08T00:00:00Z",
-            }) + "\n",
-            encoding="utf-8",
-        )
+
         life = roster(self.tmp)[0][0]
-        self.assertIsNotNone(life.retirement)
-        self.assertFalse(life.dormant_and_undecided)
-        self.assertIn("retired", render(*roster(self.tmp)))
+        text = render(*roster(self.tmp))
+
+        self.assertEqual("removed", life.status)
+        self.assertTrue(life.dormant_and_undecided)
+        self.assertIn("not active", text)
+        self.assertIn("gone — status removed", text)
+
+    def test_an_active_hook_produces_no_not_active_section(self) -> None:
+        """The control for the test above: the section must be able to be absent."""
+        self.write_manifest([self.hook("here")])
+        self.runtime("440", [claim("here", "runtime_probe", "440", "passed")])
+
+        self.assertNotIn("not active", render(*roster(self.tmp)))
 
 
 class RefusalTests(RosterTestCase):
@@ -469,10 +480,11 @@ class RanOnTests(RosterTestCase):
 class DormantAndUndecidedHalvesTests(unittest.TestCase):
     """Each conjunct on its own, without a corpus in the way.
 
-    `dormant_and_undecided` is the only opinion this view holds, and it is three
-    conditions ANDed. Asserting it through `roster()` alone leaves a corpus able
-    to satisfy two of them by accident, so the truth table is checked directly on
-    the object and then confirmed end to end.
+    `dormant_and_undecided` is the only opinion this view holds, and it is two
+    conditions ANDed — it was three until the recorded `retirement` that formed
+    the third was deleted. Asserting it through `roster()` alone leaves a corpus
+    able to satisfy one of them by accident, so the truth table is checked
+    directly on the object and then confirmed end to end.
     """
 
     def life(self, **extra) -> HookLife:
@@ -483,25 +495,24 @@ class DormantAndUndecidedHalvesTests(unittest.TestCase):
         base.update(extra)
         return HookLife(**base)
 
-    def test_all_three_conditions_are_required(self) -> None:
-        from dfinsta_pipeline.expectation import Retirement
-
-        retirement = Retirement("h", "441", "d", "arnav", "why", "2026-08-08T00:00:00Z")
+    def test_both_conditions_are_required(self) -> None:
         self.assertTrue(self.life().dormant_and_undecided)
         # never_ran fails
         self.assertFalse(self.life(ran_on=("440",)).dormant_and_undecided)
         # note present
         self.assertFalse(self.life(note="DECISION: KEEP.").dormant_and_undecided)
-        # retirement present
-        self.assertFalse(self.life(retirement=retirement).dormant_and_undecided)
-        # and each pair, so no single condition can carry the answer alone
+        # and both together, so neither condition can carry the answer alone
         self.assertFalse(
             self.life(ran_on=("440",), note="DECISION: KEEP.").dormant_and_undecided
         )
-        self.assertFalse(self.life(ran_on=("440",), retirement=retirement).dormant_and_undecided)
-        self.assertFalse(
-            self.life(note="DECISION: KEEP.", retirement=retirement).dormant_and_undecided
-        )
+
+    def test_a_status_word_does_not_stand_in_for_a_written_reason(self) -> None:
+        """The exemption a recorded retirement used to give, deliberately not restored.
+
+        `status` says the project has stopped carrying the hook; it does not say
+        why, and `dormant_and_undecided` is about a decision nobody can find.
+        """
+        self.assertTrue(self.life(status="removed").dormant_and_undecided)
 
     def test_never_ran_is_not_inverted(self) -> None:
         self.assertTrue(self.life(ran_on=()).never_ran)
@@ -515,69 +526,6 @@ class DormantAndUndecidedHalvesTests(unittest.TestCase):
         self.assertEqual([], payload["ran_on"])
         self.assertEqual(["440"], payload["measured_on"])
         self.assertIsNone(payload["last_ran"])
-        self.assertIsNone(payload["retirement"])
-
-
-class WithdrawnRetirementTests(RosterTestCase):
-    def test_a_withdrawn_retirement_stops_settling_the_hook(self) -> None:
-        """`roster` reads `retirements_on_record`, not the raw file.
-
-        Reading `manifest/retirements.jsonl` directly would keep a hook marked
-        retired after a human recorded the withdrawal, and — because a
-        retirement suppresses `dormant_and_undecided` — would silently keep a
-        hook with no written reason off the one list this view produces.
-        `REVERSALS.md` promises that withdrawing puts the question back.
-        """
-        self.write_manifest([self.hook("gone")])
-        self.runtime("440", [claim("gone", "runtime_probe", "440", "inconclusive")])
-        (self.manifest / "retirements.jsonl").write_text(
-            json.dumps({
-                "schema_version": 1, "hook_id": "gone", "effective_from": "441",
-                "decision_id": "retire-1", "ruled_by": "arnav",
-                "rationale": "Surface removed.", "recorded_at": "2026-08-08T00:00:00Z",
-            }) + "\n",
-            encoding="utf-8",
-        )
-        before = roster(self.tmp)[0][0]
-        self.assertIsNotNone(before.retirement)
-        self.assertFalse(before.dormant_and_undecided)
-
-        (self.manifest / "reversals.jsonl").write_text(
-            json.dumps({
-                "schema_version": 1, "withdraws": "retirement", "subject": "gone",
-                "original_decision_id": "retire-1", "decision_id": "withdraw-1",
-                "ruled_by": "arnav", "rationale": "It came back.",
-                "recorded_at": "2026-08-09T00:00:00Z", "effective_from": "442",
-            }) + "\n",
-            encoding="utf-8",
-        )
-        after = roster(self.tmp)[0][0]
-        self.assertIsNone(after.retirement)
-        self.assertTrue(after.dormant_and_undecided)
-        self.assertNotIn("  retired", render(*roster(self.tmp)))
-
-    def test_a_withdrawal_of_a_different_decision_does_not_reach_this_one(self) -> None:
-        """Keyed on `(original_decision_id, hook)`, so a near miss must not match."""
-        self.write_manifest([self.hook("gone")])
-        self.runtime("440", [claim("gone", "runtime_probe", "440", "inconclusive")])
-        (self.manifest / "retirements.jsonl").write_text(
-            json.dumps({
-                "schema_version": 1, "hook_id": "gone", "effective_from": "441",
-                "decision_id": "retire-1", "ruled_by": "arnav",
-                "rationale": "Surface removed.", "recorded_at": "2026-08-08T00:00:00Z",
-            }) + "\n",
-            encoding="utf-8",
-        )
-        (self.manifest / "reversals.jsonl").write_text(
-            json.dumps({
-                "schema_version": 1, "withdraws": "retirement", "subject": "gone",
-                "original_decision_id": "retire-SOMETHING-ELSE", "decision_id": "withdraw-1",
-                "ruled_by": "arnav", "rationale": "Wrong decision.",
-                "recorded_at": "2026-08-09T00:00:00Z", "effective_from": "442",
-            }) + "\n",
-            encoding="utf-8",
-        )
-        self.assertIsNotNone(roster(self.tmp)[0][0].retirement)
 
 
 class NoteDepthTests(RosterTestCase):
@@ -661,14 +609,6 @@ class ScopingTests(RosterTestCase):
         (manifest / "runtime_evidence" / "998.jsonl").write_text(
             claim("DECOY", "runtime_probe", "998", "passed") + "\n", encoding="utf-8"
         )
-        (manifest / "retirements.jsonl").write_text(
-            json.dumps({
-                "schema_version": 1, "hook_id": "a", "effective_from": "440",
-                "decision_id": "decoy-retire", "ruled_by": "nobody",
-                "rationale": "read from the wrong root", "recorded_at": "2026-01-01T00:00:00Z",
-            }) + "\n",
-            encoding="utf-8",
-        )
         return decoy
 
     def test_the_answer_does_not_change_with_the_process_directory(self) -> None:
@@ -688,7 +628,6 @@ class ScopingTests(RosterTestCase):
         )
         self.assertEqual(["a"], [life.hook_id for life in there[0]])
         self.assertEqual(["440"], list(there[1]))
-        self.assertIsNone(there[0][0].retirement)
 
     def test_the_decoy_is_a_real_control(self) -> None:
         """The test above proves nothing unless the decoy is readable as a root."""
@@ -767,33 +706,6 @@ class MoreRefusalTests(RosterTestCase):
         )
         self.assertEqual(("440",), roster(self.tmp)[0][0].ran_on)
 
-    def test_a_corrupt_retirements_file_is_refused_by_line_not_skipped(self) -> None:
-        """A skipped malformed row reads as "this hook was never retired"."""
-        self.write_manifest([self.hook("a")])
-        self.runtime("440", [claim("a", "runtime_probe", "440", "passed")])
-        self.positive_control()
-        (self.manifest / "retirements.jsonl").write_text("\nnot json\n", encoding="utf-8")
-        with self.assertRaises(ExpectationError) as caught:
-            roster(self.tmp)
-        self.assertIn("retirements.jsonl:2:", str(caught.exception))
-        self.assertEqual(2, self.main(["--root", str(self.tmp)]))
-
-    def test_a_retirement_missing_its_author_is_refused_by_line(self) -> None:
-        self.write_manifest([self.hook("a")])
-        self.runtime("440", [claim("a", "runtime_probe", "440", "passed")])
-        (self.manifest / "retirements.jsonl").write_text(
-            json.dumps({
-                "schema_version": 1, "hook_id": "a", "effective_from": "441",
-                "decision_id": "d", "rationale": "why",
-            }) + "\n",
-            encoding="utf-8",
-        )
-        with self.assertRaises(ExpectationError) as caught:
-            roster(self.tmp)
-        self.assertIn("retirements.jsonl:1:", str(caught.exception))
-        self.assertIn("ruled_by", str(caught.exception))
-        self.assertEqual(2, self.main(["--root", str(self.tmp)]))
-
     def test_every_cli_exit_code(self) -> None:
         self.write_manifest([self.hook("a")])
         # No evidence at all: refusal, not an empty table.
@@ -860,7 +772,7 @@ class JsonFormTests(RosterTestCase):
         for item in hooks:
             self.assertEqual(
                 {"hook_id", "intent", "tier", "status", "ran_on", "measured_on",
-                 "release_ready_on", "assessed_on", "last_ran", "retirement", "note",
+                 "release_ready_on", "assessed_on", "last_ran", "note",
                  "dormant_and_undecided"},
                 set(item),
             )
