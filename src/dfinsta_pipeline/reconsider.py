@@ -58,6 +58,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .expectation import ExpectationError, retirements_on_record
+from .reversal import ReversalError
 from .history import BASELINE_VERSION, _NUMERIC
 from .roster import HookLife, RosterError, roster
 
@@ -149,7 +150,10 @@ def reconsiderations(
 
     try:
         lives, _ = roster(root, baseline=baseline)
-    except (RosterError, ExpectationError) as error:
+    # `ReversalError` too: `retirements_on_record` reaches `reversal.read_reversals`,
+    # so a corrupt `reversals.jsonl` left a traceback from both CLIs while the
+    # parallel `retirements.jsonl` path refused cleanly.
+    except (RosterError, ExpectationError, ReversalError) as error:
         raise ReconsiderError(str(error)) from error
     by_id = {life.hook_id: life for life in lives}
 
@@ -157,11 +161,18 @@ def reconsiderations(
 
     from .rulings import read_store, unenforced_endpoints  # noqa: PLC0415
 
+    from .rulings import BLOCKING_VERDICTS  # noqa: PLC0415
+
     rulings = read_store(root / "manifest" / "rulings.jsonl")
+    # `BLOCKING_VERDICTS`, not `== "block"`. `offer_toggle` also writes the
+    # endpoint into `semantic_deps` and also needs a `throwIfBlocked` guard, so an
+    # inert `offer_toggle` block was invisible here while an identical `block`
+    # reported. The feature policy makes `offer_toggle` the expected shape for
+    # anything addictive, so that was the case about to become common.
     blocked_by_ruling = {
         ruling.candidate_id.split(":", 1)[-1]: ruling
         for ruling in rulings
-        if ruling.verdict == "block"
+        if ruling.verdict in BLOCKING_VERDICTS
     }
 
     found: list[Reconsideration] = []
@@ -225,17 +236,27 @@ def reconsiderations(
             "still exist in the app was not checked"
         )
     else:
-        from .hook_index import HookIndex  # noqa: PLC0415
+        from .hook_index import HookIndex, IndexUnusable  # noqa: PLC0415
 
         index_dir = Path(index_dir)
+        # `HookIndex.load`, not the constructor. Building it directly skipped
+        # every shape check `load` exists for — `hook_index` says so in as many
+        # words: "Valid JSON of the wrong shape is still malformed. Without this
+        # the first `.get` raises AttributeError past every handler."
         try:
-            index = HookIndex(
-                Path("<admitted>"),
-                json.loads((index_dir / "header.json").read_text(encoding="utf-8")),
-                json.loads((index_dir / "api_surface.json").read_text(encoding="utf-8")),
-            )
-        except (OSError, json.JSONDecodeError, KeyError) as error:
+            index = HookIndex.load(index_dir)
+        except (OSError, json.JSONDecodeError, KeyError, IndexUnusable, ValueError) as error:
             raise ReconsiderError(f"{index_dir}: {error}") from error
+        # Which decode this index was built from, carried into the evidence. The
+        # rule cannot verify the index matches `version` — nothing here holds the
+        # decode to compare against — and obfuscated descriptors are recycled
+        # between versions, so a mismatched index would let this rule state
+        # confidently that a live surface is gone. Naming the decode is what lets
+        # a human catch that; claiming to have checked it would be worse.
+        # Carried into each finding's evidence rather than into `rules_not_run`:
+        # the rule DID run, and a caveat is not a skip. Mixing them made supplying
+        # an index fail to remove the skip it was supplied to remove.
+        built_from = index.header.get("decode_path", "an unrecorded decode")
         for endpoint, ruling in sorted(blocked_by_ruling.items()):
             # Every slash spelling, because the manifest normalises a leading
             # slash that the index keeps — reading only one spelling is how an
@@ -243,6 +264,7 @@ def reconsiderations(
             spellings = {endpoint, f"/{endpoint}", endpoint.rstrip("/"), f"/{endpoint.rstrip('/')}"}
             if any(index.descriptors_with_literal(s) for s in spellings):
                 continue
+
             found.append(
                 Reconsideration(
                     kind="block",
@@ -256,6 +278,15 @@ def reconsiderations(
                     evidence=(
                         f"ruled block on {ruling.recorded_at or 'an unrecorded date'}",
                         f"searched {index_dir} for: {', '.join(sorted(spellings))}",
+                        # Both caveats, on every finding, because neither can be
+                        # resolved from the index alone.
+                        f"that index was built from {built_from}; nothing here proves "
+                        f"it is {version}'s decode, and obfuscated descriptors are "
+                        "recycled between versions",
+                        "an empty index result is AMBIGUOUS — it can mean no class "
+                        "holds the literal, or that the literal was never a candidate "
+                        "for indexing. `hook_index` says the difference needs a scan "
+                        "of the decode. CONFIRM AGAINST THE DECODE before withdrawing",
                     ),
                 )
             )
@@ -340,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         found, not_run = reconsiderations(
             args.root, version=args.version, baseline=args.baseline, index_dir=args.index
         )
-    except (ReconsiderError, ExpectationError, ValueError, OSError) as error:
+    except (ReconsiderError, ExpectationError, ReversalError, ValueError, OSError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2
     if args.json:

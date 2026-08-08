@@ -67,6 +67,7 @@ from .expectation import (
     versions_with_evidence,
 )
 from .history import BASELINE_VERSION
+from .reversal import ReversalError
 from .retirement import RetirementError, standings
 
 __all__ = [
@@ -189,11 +190,26 @@ def _runtime(root: Path, versions: Sequence[str]) -> dict[str, dict[str, bool]]:
                 row = json.loads(line)
             except json.JSONDecodeError as error:
                 raise RosterError(f"{path}:{number}: {error}") from error
+            if not isinstance(row, dict):
+                raise RosterError(
+                    f"{path}:{number}: expected a JSON object, got {type(row).__name__}"
+                )
             record = row.get("record", row)
+            if not isinstance(record, dict):
+                raise RosterError(
+                    f"{path}:{number}: 'record' is {type(record).__name__}, not an object"
+                )
             try:
                 hook, verdict = record["hook_id"], record["verdict"]
-            except (KeyError, TypeError) as error:
+            except KeyError as error:
                 raise RosterError(f"{path}:{number}: claim has no hook_id/verdict") from error
+            # `runtime_probe` ONLY. This read every row in the file, so a
+            # `differential` claim with `verdict: "passed"` would have counted as
+            # the hook executing — `presence-is-not-execution` with the evidence
+            # kind ignored. Latent today because these files carry one kind, and
+            # one clause away from not being.
+            if record.get("kind") != "runtime_probe":
+                continue
             # `or` and not `=`: a hook measured twice on one version ran if ANY
             # claim passed. The ledger's retry guard is what judges whether
             # re-measuring until green was legitimate; that is not this view's
@@ -226,8 +242,17 @@ def roster(
     ran = _runtime(root, versions)
     retired = retirements_on_record(root)
 
+    hooks = manifest.get("hooks") if isinstance(manifest, dict) else None
+    if not isinstance(hooks, list):
+        # `reversal.plan_unblock` closed exactly this and said why: a manifest
+        # with no `hooks` produced a bare `KeyError` and exit 1 where the contract
+        # is `refused:` and exit 2.
+        raise RosterError(f"{manifest_path} has no 'hooks' array")
+
     lives: list[HookLife] = []
-    for entry in manifest["hooks"]:
+    for entry in hooks:
+        if not isinstance(entry, dict) or "hook_id" not in entry:
+            raise RosterError(f"{manifest_path}: a hook entry has no hook_id")
         hook = entry["hook_id"]
         measured = ran.get(hook, {})
         found = standing.get(hook)
@@ -256,6 +281,12 @@ def render(lives: Iterable[HookLife], versions: Sequence[str]) -> str:
         # as a fact about the project.
         raise RosterError("no hooks to render")
 
+    versions = list(versions)
+    if not versions:
+        # `render` is in `__all__`, so this is reachable from outside `main`,
+        # where `roster()` refuses first. `versions[0]` below would be an
+        # IndexError, which is outside every caught tuple.
+        raise RosterError("no versions to render")
     width = max(len(life.hook_id) for life in lives) + 2
     lines = [
         f"HOOK ROSTER   {versions[0]} → {versions[-1]}",
@@ -354,12 +385,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         lives, versions = roster(args.root, baseline=args.baseline)
-        text = (
-            json.dumps([life.to_dict() for life in lives], indent=2)
-            if args.json
-            else render(lives, versions)
-        )
-    except (RosterError, ExpectationError, ValueError, OSError) as error:
+        if args.json:
+            # An OBJECT carrying `versions`, and `render` called first so the JSON
+            # path refuses whatever the human path refuses. Two defects in one
+            # line before: an empty roster printed `[]` and exited 0 while the
+            # table refused with exit 2, and dropping `versions` left a consumer
+            # unable to tell `—` (never measured) from `·` (measured, silent) —
+            # the exact three-way distinction this module exists for, reduced to
+            # two in the form a script gates on. Third time this project has
+            # shipped a machine-readable view quieter than its human one.
+            render(lives, versions)
+            text = json.dumps(
+                {
+                    "schema_version": 1,
+                    "versions": list(versions),
+                    "hooks": [life.to_dict() for life in lives],
+                },
+                indent=2,
+            )
+        else:
+            text = render(lives, versions)
+    except (RosterError, ExpectationError, ReversalError, ValueError, OSError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2
     print(text)
