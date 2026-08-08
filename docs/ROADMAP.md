@@ -5,7 +5,10 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-08 (eighth pass: the release-ready count is now an *assertion* rather than a
+Last updated 2026-08-08 (ninth pass: the first real feature-gate ruling — six endpoints blocked on
+the record — plus a reversal mechanism, a per-hook roster, a proposal engine for withdrawals, a
+replay-History corpus covering all four registered workflows, and the shared gate clauses
+extracted into `gate_contract.py`. Eighth pass: the release-ready count is now an *assertion* rather than a
 printout — `dfinsta_pipeline.expectation` derives what a port owes from the previous port's committed
 evidence and fails when a hook is lost. Seventh pass: Instagram 441 ported for zero agent invocations and was
 device-proved at 4 of 7 release-ready — and the session found the release gate had been verifying

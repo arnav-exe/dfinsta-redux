@@ -1169,6 +1169,39 @@ exposes its address as `client.service_client.config.target_host` — which is e
 feature gate's missing starter went unnoticed for a fortnight: everything starter-shaped needed a
 live server and so was run by hand.
 
+## The reversal story, end to end, and the one thing it still cannot do
+
+2026-08-08. Four modules, in the order they were built, each useful alone:
+
+* **`reversal.py`** — a recorded decision's way back. Two one-way doors existed: a `block` (whose
+  endpoint then stops being a *candidate*, so the gate can never raise it again) and a retirement
+  (earliest-`effective_from` wins, so appending cannot un-retire). One mechanism for both, keyed
+  on `(original_decision_id, subject)` because one gate decision covers a whole docket.
+  `manifest/REVERSALS.md`.
+* **`roster.py`** — the per-hook view. Every hook, when it last executed, which versions it was
+  release-ready on, and any recorded decision. A three-way cell keeps *nobody measured* (`—`)
+  distinct from *measured and silent* (`·`). It immediately surfaced that of the three hooks the
+  owner decided to keep on 2026-08-01, **only one carries that decision in the manifest**.
+* **`reconsider.py`** — which recorded decisions no longer match the evidence. Three rules, and a
+  fourth deliberately omitted: "declared blocked and not yet enforced" would have proposed
+  reconsidering all six endpoints ruled the day before, which is outstanding work rather than a
+  suspect decision. Always exits 0 — a proposal must never fail a port.
+* **`gate_contract.py`** — the six clauses every gate's authority shares, extracted when a third
+  gate was about to copy them a third time.
+
+**The first real feature-gate ruling went through the whole chain** against the live server:
+`assessment_record record` → `raise` → `submission show` (subject re-derived independently) →
+`submit` → `rulings --apply`. Six endpoints from 441 blocked on the record, `manifest/rulings.jsonl`
+created, `semantic_deps` 6 → 12. `rulings --audit` now exits 1 and says why: *the manifest records
+a decision the app does not implement*. `tests/test_rulings.py::DECLARED_NOT_YET_ENFORCED` pins
+the six so the list shrinks as guards are written.
+
+**What the reversal gate still cannot do, and why that decides the order of work.** Its triggers
+have no possible input: every block is declared-and-unenforced, no endpoint has vanished, no
+retirement exists. So the next step is `throwIfBlocked` for one endpoint, not the gate — a gate
+that ships unable to be raised about anything cannot be exercised in anger, and seam defects
+found only on first real use are this pipeline's most repeated failure.
+
 ## The three hooks that have never passed a probe, re-derived on 441
 
 2026-08-07. They are the reason release-readiness caps at 4 of 7, and the recorded explanations
