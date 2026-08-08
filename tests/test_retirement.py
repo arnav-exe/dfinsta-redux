@@ -26,6 +26,7 @@ from tests.test_expectation import ExpectationTestCase, triple
 from dfinsta_pipeline.expectation import compare
 from dfinsta_pipeline.retirement import (
     KINDS,
+    RULERS,
     latest_ported,
     Retirement,
     RetirementError,
@@ -39,7 +40,7 @@ from dfinsta_pipeline.retirement import (
 )
 
 
-def record(hook="settings_hook", *, kind="retire", at="441", by="arnav", why="surface removed"):
+def record(hook="settings_hook", *, kind="retire", at="441", by="human", why="surface removed"):
     """One decision, with `effective_from` derived the way the module derives it."""
     return Retirement(
         kind=kind, hook_id=hook, effective_from=str(int(at) + 1), decided_at=at,
@@ -62,20 +63,32 @@ class TheRulesWorthKeepingTests(RetirementTestCase):
                 with self.assertRaises(RetirementError) as caught:
                     Retirement(
                         kind="retire", hook_id="h", effective_from=effective, decided_at="441",
-                        ruled_by="arnav", rationale="x", recorded_at="t",
+                        ruled_by="human", rationale="x", recorded_at="t",
                     )
                 self.assertIn("derived, never supplied", str(caught.exception))
         # The control: the one value that is allowed.
         self.assertEqual("442", record(at="441").effective_from)
 
-    def test_an_agent_may_not_rule(self):
-        """The thing being measured must not rule that the measurement no longer applies."""
-        for name in ("agent", "AGENT", " Agent "):
+    def test_only_an_allowlisted_ruler_may_close_a_case(self):
+        """A denylist has to anticipate every name a machine might be given.
+
+        This held exactly one banned word — `agent` — until an adversarial pass
+        pointed out that `claude`, `assistant`, `AI`, `bot`, `ci` and `automation`
+        all sailed through it. An allowlist only has to name what is permitted and
+        fails closed on everything nobody thought of, which is most of the names
+        that will exist by the time it matters.
+        """
+        for name in ("agent", "AGENT", " Agent ", "claude", "assistant", "AI",
+                     "bot", "ci", "automation", "agent-2", "arnav", ""):
             with self.subTest(ruled_by=name):
                 with self.assertRaises(RetirementError) as caught:
                     record(by=name)
-                self.assertIn("may assemble every fact", str(caught.exception))
-        self.assertEqual("arnav", record(by="arnav").ruled_by)
+                self.assertIn("allowlist", str(caught.exception))
+        # The control, and it is case- and whitespace-insensitive.
+        for name in ("human", "HUMAN", "  Human  "):
+            with self.subTest(ruled_by=name):
+                self.assertEqual(name, record(by=name).ruled_by)
+        self.assertEqual(("human",), RULERS)
 
     def test_a_decision_must_carry_who_why_and_when(self):
         for field, value in (("by", "   "), ("why", ""), ):
@@ -84,7 +97,7 @@ class TheRulesWorthKeepingTests(RetirementTestCase):
                     record(**{field: value})
         with self.assertRaises(RetirementError):
             Retirement(kind="retire", hook_id="h", effective_from="442", decided_at="441",
-                       ruled_by="arnav", rationale="x", recorded_at="  ")
+                       ruled_by="human", rationale="x", recorded_at="  ")
         with self.assertRaises(RetirementError):
             record(hook="  ")
 
@@ -265,7 +278,7 @@ class RenderAndCliTests(RetirementTestCase):
         """
         code = main([
             "--root", str(self.tmp), "retire", "--hook", "h",
-            "--ruled-by", "arnav", "--rationale", "x", "--recorded-at", "t",
+            "--ruled-by", "human", "--rationale", "x", "--recorded-at", "t",
         ])
         self.assertEqual(2, code)
         self.assertEqual((), read(self.tmp))
@@ -281,7 +294,7 @@ class RenderAndCliTests(RetirementTestCase):
             with self.subTest(flag=flag):
                 with self.assertRaises(SystemExit):
                     main(["--root", str(self.tmp), "retire", "--hook", "h", flag, "440",
-                          "--ruled-by", "arnav", "--rationale", "x", "--recorded-at", "t"])
+                          "--ruled-by", "human", "--rationale", "x", "--recorded-at", "t"])
 
     def test_the_cli_refuses_an_agent_with_exit_two(self):
         code = main([

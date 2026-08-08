@@ -45,9 +45,17 @@ port — and it would reliably be approved exactly when the evidence for it is
 weakest. Landing a version late costs nothing real: a hook that should be retired
 is not urgent, because the thing it patched is already not working.
 
-**An agent may assemble every fact and still not rule.** `ruled_by` refuses
-`agent`, because the thing being measured must not get to rule that the
-measurement no longer applies.
+**An agent may assemble every fact and still not rule.** `ruled_by` is checked
+against an **allowlist**, not against a list of forbidden words. It held one
+denied token — `agent` — until an adversarial pass pointed out that `claude`,
+`assistant`, `AI`, `bot`, `ci` and `automation` all sailed through. A denylist
+has to anticipate every name a machine might be given; an allowlist only has to
+name what is permitted, and it fails closed on everything nobody thought of.
+
+The allowlist is `("human",)` — one value, and it is a *category* rather than a
+person on purpose. The field exists to answer one question, "did a machine decide
+this?", and for that `human` carries exactly as much as a name would while
+needing no roster to keep in step with who is working on the project.
 
 ===============================================================================
   UN-RETIREMENT IS A ROW, NOT AN EDIT
@@ -88,6 +96,7 @@ from typing import Any, Iterable, Sequence
 __all__ = [
     "KINDS",
     "RETIREMENTS",
+    "RULERS",
     "Retirement",
     "RetirementError",
     "append",
@@ -106,6 +115,11 @@ class RetirementError(Exception):
 #: `retire` stops the expectation demanding a hook; `unretire` starts it again.
 #: Both are rows. There is no third kind and no delete.
 KINDS = ("retire", "unretire")
+
+#: Who may close a case. An allowlist, so an unanticipated name fails closed. One
+#: entry, and it names a *category* rather than a person: the only question this
+#: field answers is "did a machine decide this?".
+RULERS = ("human",)
 
 RETIREMENTS = Path("manifest") / "retirements.jsonl"
 
@@ -161,14 +175,16 @@ class Retirement:
             raise RetirementError(f"unknown kind {self.kind!r}; expected one of {', '.join(KINDS)}")
         if not self.hook_id.strip():
             raise RetirementError("a retirement must name a hook")
-        ruled_by = self.ruled_by.strip()
-        if not ruled_by:
-            raise RetirementError("a retirement must name who ruled")
-        if ruled_by.lower() == "agent":
+        ruled_by = self.ruled_by.strip().lower()
+        if ruled_by not in RULERS:
             raise RetirementError(
-                "ruled_by 'agent' is refused. An agent may assemble every fact in the "
-                "case and still not close it: the thing being measured must not get to "
-                "rule that the measurement no longer applies."
+                f"ruled_by {self.ruled_by!r} is not permitted; expected one of "
+                f"{', '.join(RULERS)}. This is an allowlist and not a list of banned "
+                "words: a denylist would have to anticipate every name a machine might "
+                "be given, and 'agent' alone let through claude, assistant, AI, bot and "
+                "ci. An agent may assemble every fact in the case and still not close "
+                "it, because the thing being measured must not rule that the measurement "
+                "no longer applies."
             )
         if not self.rationale.strip():
             raise RetirementError("a retirement must say why; the record is read by people")
@@ -406,7 +422,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # No --version, and deliberately none. It used to be here, and it made the
         # backdating rule a formality: typing the previous version cleared the port
         # in front of you. The version is read from the tree.
-        rule.add_argument("--ruled-by", required=True, help="a person; 'agent' is refused")
+        rule.add_argument(
+            "--ruled-by", required=True,
+            help=f"who closed the case; an allowlist, currently {', '.join(RULERS)}",
+        )
         rule.add_argument("--rationale", required=True)
         rule.add_argument("--recorded-at", required=True, help="ISO 8601; never read from a clock")
 
