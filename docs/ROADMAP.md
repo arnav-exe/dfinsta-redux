@@ -47,7 +47,9 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
 - [x] **Hook retirement rebuilt small** (`retirement.py`, ~330 lines against the 6247 that
       were deleted). `expectation`'s ratchet has exactly one release again: an append-only
       row naming who ruled and why, with `effective_from` derived so it cannot be backdated
-      onto the port that exposed the drop, and `ruled_by: agent` refused. **Un-retirement is
+      onto the port that exposed the drop — derived from the tree, not from a flag, after
+      an adversarial pass showed the flag made the rule a formality — and `ruled_by` checked
+      against an allowlist rather than one banned word. **Un-retirement is
       another row, never an edit**, so a surface Instagram brings back is expected again
       without the record losing the fact that it was once doubted — `retirement show` prints
       the whole history, and `returned()` reports a retired hook that has started passing
