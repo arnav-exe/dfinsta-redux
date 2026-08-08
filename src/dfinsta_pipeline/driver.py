@@ -629,12 +629,20 @@ def compose_patch_source(
     custom_code: Path,
     operations: Sequence[Mapping[str, Any]],
     hooks: Sequence[Hook] = (),
+    observe: bool = False,
 ) -> None:
     """Write the exact patch source `build.py` consumes.
 
     The custom classes are version-independent DFInsta code and are copied as-is;
     only the resolved operations differ per version, which is the whole point of
     the manifest.
+
+    `observe=True` produces a **measurement build**: `throwIfBlocked` gains a pass
+    that logs every watched path before deciding anything, and the class that logs
+    is written alongside. It changes nothing the app receives — the guard's own
+    rules are byte-identical — so an observing build blocks exactly what a shipped
+    one blocks and additionally says what it saw. It is not shipped, because a
+    shipped APK should carry neither the class nor the log tag.
     """
     if destination.exists():
         raise DriverError(f"refusing to overwrite {destination}")
@@ -646,6 +654,32 @@ def compose_patch_source(
         # Generated per run from the manifest, so the hook list and the probe
         # methods cannot drift apart.
         write_probe_class(hooks, destination / "newCode")
+    if observe:
+        from .guards import (  # noqa: PLC0415
+            METHOD_NAME,
+            render_method,
+            rules_from_manifest,
+            watch_from_manifest,
+            watched_literals,
+            write_observe_class,
+        )
+
+        # Rendered from the same declaration the shipped guard is rendered from,
+        # so a measurement build can never be watching one set of paths while the
+        # build it is meant to inform blocks another.
+        manifest_file = REPOSITORY / "manifest" / "hooks.json"
+        rules = rules_from_manifest(manifest_file)
+        watched = watched_literals(rules, watch_from_manifest(manifest_file))
+        guard = destination / "newCode" / "com" / "dfinstagram" / "hooks.smali"
+        text = guard.read_text(encoding="utf-8")
+        start = re.search(rf"^\.method .*{METHOD_NAME}\(", text, re.M).start()
+        end = text.index(".end method", start) + len(".end method\n")
+        guard.write_text(
+            text[:start] + render_method(rules, observe=watched) + text[end:],
+            encoding="utf-8",
+        )
+        write_observe_class(destination / "newCode")
+        print(f"[observe] measurement build watching {len(watched)} paths", flush=True)
     (destination / "patches").mkdir()
     (destination / "patches" / "anchored_patches.json").write_text(
         json.dumps({"version": 1, "operations": list(operations)}, indent=1) + "\n",
@@ -763,6 +797,7 @@ def port(
     apktool: Path,
     framework_apk: Path | None,
     custom_code: Path,
+    observe: bool = False,
     proposals: Mapping[str, Sequence[str]] | None = None,
     full_proposals: Path | None = None,
     refutations: Path | None = None,
@@ -811,6 +846,7 @@ def port(
             apktool=apktool,
             framework_apk=framework_apk,
             custom_code=custom_code,
+            observe=observe,
             proposals=proposals,
             full_proposals=full_proposals,
             refutations=refutations,
@@ -884,6 +920,7 @@ def _run_stages(
     apktool: Path,
     framework_apk: Path | None,
     custom_code: Path,
+    observe: bool = False,
     proposals: Mapping[str, Sequence[str]] | None = None,
     full_proposals: Path | None = None,
     refutations: Path | None = None,
@@ -1114,7 +1151,7 @@ def _run_stages(
         accepted_proposal = assessments[hook_id].accepted
         assert accepted_proposal is not None
         operations.append(accepted_proposal.as_operation(by_id[hook_id]))
-    compose_patch_source(paths.patch_source, custom_code, operations, hooks)
+    compose_patch_source(paths.patch_source, custom_code, operations, hooks, observe=observe)
     artifacts["patch_source"] = str(paths.patch_source)
     if stop_after == "compose":
         return RunResult("compose", report=report, artifacts=artifacts)
@@ -1438,6 +1475,15 @@ def main(argv: list[str] | None = None) -> int:
         "--rulings", type=Path, default=None, help="ruling store; default manifest/rulings.jsonl"
     )
     parser.add_argument(
+        "--observe",
+        action="store_true",
+        help="produce a MEASUREMENT build: throwIfBlocked logs every watched path "
+        "before deciding, so a device session can say which endpoints are actually "
+        "requested. The guard's own rules are unchanged, so it blocks exactly what a "
+        "shipped build blocks. Never ship one -- it carries a log tag a shipped APK "
+        "should not.",
+    )
+    parser.add_argument(
         "--skip-evidence-gate",
         action="store_true",
         help=(
@@ -1570,6 +1616,7 @@ def main(argv: list[str] | None = None) -> int:
             apktool=args.apktool,
             framework_apk=args.framework_apk,
             custom_code=args.custom_code,
+            observe=args.observe,
             proposals=load_host_proposals(args.proposals),
             full_proposals=args.full_proposals,
             refutations=args.refutations,

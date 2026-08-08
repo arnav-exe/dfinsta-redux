@@ -210,6 +210,13 @@
           ],
           "note": "Threads content in the Instagram feed. Confirmed a real request path: LX/03hm,\nthe Tigon layer that matches literals against URI.getPath()."
         }
+      ],
+      "observe_watch": [
+        "delivery/background_prefetch",
+        "delivery/reels_cache",
+        "/feed/text_post_app_timeline_priming/",
+        "/feed/injected_reels_media_www/",
+        "/clips/discover/stream/"
       ]
     },
     {

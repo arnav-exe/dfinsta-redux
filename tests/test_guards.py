@@ -23,6 +23,12 @@ from pathlib import Path
 
 from dfinsta_pipeline.guards import (
     BLOCK_MESSAGE,
+    OBSERVE_CLASS_PATH,
+    OBSERVE_DESCRIPTOR,
+    OBSERVE_TAG,
+    watch_from_manifest,
+    watched_literals,
+    write_observe_class,
     GuardError,
     Literal,
     Rule,
@@ -270,3 +276,136 @@ class DiagnosticTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _rules_span(method: str) -> tuple[str, ...]:
+    """The block rules only, with the preamble and any observation pass removed.
+
+    Needed because `normalise` numbers labels by first appearance, so an
+    observation pass shifts every label after it — a renumbering, not a change.
+    Cutting both methods at the point the rules begin and normalising each span
+    independently compares the rules themselves, jump targets included.
+    """
+    marker = ":cond_observed_"
+    if marker in method:
+        cut = method.rindex(marker)
+        cut = method.index("\n", cut) + 1
+    else:
+        cut = method.rindex("if-eqz v0, :cond_return")
+        cut = method.index("\n", cut) + 1
+    return normalise(method[cut:])
+
+
+class ObserveModeTests(unittest.TestCase):
+    """A measurement build learns what the app asks for without changing it.
+
+    The pipeline ruled `block` on six endpoints in one sitting; one fires zero
+    times and one is not a request path at all. Observation exists so the human
+    at the gate sees behaviour instead of a string found in a class.
+    """
+
+    def test_an_observing_build_blocks_exactly_what_a_shipped_one_blocks(self):
+        """The property everything else rests on, as a subsequence check.
+
+        If observation could alter a single instruction of the guard, then every
+        measurement taken with it would be a measurement of a different app —
+        and the numbers would be quoted about the shipped one.
+        """
+        rules = DEVICE_PROVED_RULES
+        shipped = render_method(rules)
+        observing = render_method(rules, observe=watched_literals(rules))
+        self.assertEqual(
+            _rules_span(shipped),
+            _rules_span(observing),
+            "observation changed the guard's own rules",
+        )
+        # Not vacuous, in both directions: the spans are real, and the whole
+        # methods genuinely differ.
+        self.assertGreater(len(_rules_span(shipped)), 40)
+        self.assertNotEqual(normalise(shipped), normalise(observing))
+
+    def test_the_span_comparison_would_catch_a_changed_rule(self):
+        """The control for the test above, which is otherwise unfalsifiable."""
+        rules = list(DEVICE_PROVED_RULES)
+        shipped = render_method(rules)
+        rules[3] = Rule((Literal("/feed/reels_tray/", "contains"),), ("disable_stories",))
+        tampered = render_method(rules, observe=watched_literals(tuple(rules)))
+        self.assertNotEqual(_rules_span(shipped), _rules_span(tampered))
+
+    def test_observation_runs_before_any_rule_can_throw(self):
+        """Order is behaviour: a blocked path throws, and a throw ends the method.
+
+        Observing after the rules would silently report zero for exactly the
+        paths that are working — the ones killed before they could be counted.
+        """
+        out = render_method(DEVICE_PROVED_RULES, observe=("/feed/timeline/",))
+        self.assertLess(
+            out.index(f"{OBSERVE_DESCRIPTOR}->seen"),
+            out.index("if-nez v2, :cond_block"),
+        )
+
+    def test_every_watched_path_is_reported_exactly_once(self):
+        watched = ("/a/", "/b/", "/c/")
+        out = render_method(DEVICE_PROVED_RULES, observe=watched)
+        self.assertEqual(len(watched), out.count(f"{OBSERVE_DESCRIPTOR}->seen"))
+        for literal in watched:
+            self.assertIn(f'const-string v1, "{literal}"', out)
+
+    def test_watched_literals_is_blocked_paths_then_extras_without_duplicates(self):
+        watched = watched_literals(DEVICE_PROVED_RULES, ("/new/", "/feed/timeline/"))
+        self.assertEqual("/feed/timeline/", watched[0])
+        self.assertIn("/new/", watched)
+        self.assertEqual(len(set(watched)), len(watched), "a path must not be watched twice")
+        # A blocked path repeated as an extra must not appear twice — that would
+        # double every count for it and make one endpoint look busier than it is.
+        self.assertEqual(1, watched.count("/feed/timeline/"))
+
+    def test_the_shipped_form_carries_no_observation_at_all(self):
+        """No class reference, no log tag. A shipped APK must not announce itself."""
+        out = render_method(DEVICE_PROVED_RULES)
+        self.assertNotIn(OBSERVE_DESCRIPTOR, out)
+        self.assertNotIn(OBSERVE_TAG, out)
+
+    def test_the_observe_class_logs_and_never_throws(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        written = write_observe_class(Path(tmp.name))
+        self.assertEqual(Path(tmp.name) / OBSERVE_CLASS_PATH, written)
+        body = written.read_text(encoding="utf-8")
+        self.assertIn(f'const-string v0, "{OBSERVE_TAG}"', body)
+        self.assertIn("Landroid/util/Log;->i(", body)
+        # It must never throw: observation that changed what the app receives
+        # would not be observation. Asserted over CODE only — the class's own
+        # comment explains why it never throws, and a rule this blunt should
+        # keep its bluntness and have the prose moved out of its way rather than
+        # be softened into one that could miss a real `throw`.
+        code = "\n".join(
+            line for line in body.splitlines() if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn("throw", code)
+        self.assertNotIn("IOException", code)
+        self.assertIn("IOException", body, "the reason must still be written down")
+
+    def test_an_absent_watch_list_is_coherent_but_an_absent_hook_is_not(self):
+        """Empty means "watch only what is blocked"; a missing hook is a mistake."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "m.json"
+        path.write_text(json.dumps({"hooks": [{"hook_id": "tigon_url_block"}]}), encoding="utf-8")
+        self.assertEqual((), watch_from_manifest(path))
+
+        path.write_text(json.dumps({"hooks": []}), encoding="utf-8")
+        with self.assertRaises(GuardError):
+            watch_from_manifest(path)
+
+    def test_the_shipped_manifest_watches_the_endpoint_it_needs_to_disprove(self):
+        """`delivery/background_prefetch` is watched precisely because it should never appear.
+
+        It was ruled `block` on 2026-08-08 and is a no-op logger's marker name,
+        not a request path. Watching it turns that from a reading of one call
+        site into evidence: never observed, while its neighbours are observed
+        constantly, is a fact a withdrawal can cite.
+        """
+        if not REAL_MANIFEST.is_file():
+            self.skipTest("manifest not present")
+        self.assertIn("delivery/background_prefetch", watch_from_manifest(REAL_MANIFEST))
