@@ -123,14 +123,20 @@ ROOT = Path(__file__).resolve().parents[1]
 REAL_SOURCE = ROOT / "dfinsta_source_439/newCode/com/dfinstagram/hooks.smali"
 REAL_MANIFEST = ROOT / "manifest/hooks.json"
 
-#: The seven endpoint literals `throwIfBlocked` actually tests, read off the smali
+#: The 11 endpoint literals `throwIfBlocked` actually tests, read off the smali.
+#: Generated from `manifest/hooks.json` since 2026-08-08, so this also pins that the
+#: generator's output and the declaration have not drifted
 #: by hand. Written out rather than derived, so this pins the app's behaviour
 #: instead of re-deriving it with the function under test.
 GUARDED = (
     "/api/v1/clips/homecoming/",
     "/clips/discover",
     "/discover/topical_explore",
+    "/feed/injected_reels_media/",
+    "/feed/reels_media/",
+    "/feed/reels_media_stream/",
     "/feed/reels_tray/",
+    "/feed/text_post_app_timeline/",
     "/feed/timeline/",
     "/feed/timeline_stream/",
     "/profile_ads/get_profile_ads/",
@@ -160,17 +166,17 @@ RECORDED_AT = "2026-08-04T09:00:00Z"
 #: "does the manifest already cover it" and "does the app already test it" —
 #: can be varied one at a time against the fixture manifest below.
 #:
-#:   * :data:`UNGUARDED_GAP` — declared by neither. A real 441 candidate, and
-#:     the containment rule is why it is a gap: `/feed/reels_tray/` does not
-#:     cover `feed/reels_media_stream/` in either direction. This was
-#:     `feed/timeline_stream/` until 2026-08-08, when that endpoint became the
-#:     first of the six ruled that day to gain a guard — so it must be replaced
-#:     again, not deleted, as each of the remaining five is written.
+#:   * :data:`UNGUARDED_GAP` — declared by neither, and it has had to move twice
+#:     as guards were written (`feed/timeline_stream/`, then
+#:     `feed/reels_media_stream/`). It is now a real 441 path that nobody has
+#:     ruled on, chosen because the containment rule genuinely leaves it out:
+#:     the guard tests `/feed/text_post_app_timeline/` and the priming variant
+#:     has an underscore where that has a slash, so neither contains the other.
 #:   * :data:`GUARDED_GAP` — not in the fixture manifest, but `throwIfBlocked`
 #:     tests it, so a ruling on it is a manifest addition and NOT custom code.
 #:   * :data:`COVERED_GAP` — covered by the fixture manifest's `/feed/timeline/`
 #:     under the containment rule `assessment.is_blocked` uses.
-UNGUARDED_GAP = "feed/reels_media_stream/"
+UNGUARDED_GAP = "feed/text_post_app_timeline_priming/"
 GUARDED_GAP = "profile_ads/get_profile_ads/"
 COVERED_GAP = "feed/timeline/"
 
@@ -974,16 +980,15 @@ class OperationKeyTests(RulingTestCase):
 #: `throwIfBlocked`. Six endpoints entered this state on 2026-08-08 when the
 #: owner ruled `block` on every candidate Instagram 441 exposed; they leave it
 #: one at a time as the guard is written, and this tuple shrinks to `()` again.
-#: `feed/timeline_stream/` left it the same day, the first of the six.
+#: Five left it the same day. The one that remains is the one that CANNOT leave:
+#: `delivery/background_prefetch` is a no-op logger's marker name, not a request
+#: path, so no guard could ever test it — see the reversal record. When that
+#: ruling is withdrawn this becomes `()` and both halves of the audit agree.
 #: Pinned rather than computed, so the app work stays visible: an empty
 #: expectation would have quietly accepted a manifest that promises six blocks
 #: the app does not make.
 DECLARED_NOT_YET_ENFORCED = (
     "delivery/background_prefetch",
-    "feed/injected_reels_media/",
-    "feed/reels_media/",
-    "feed/reels_media_stream/",
-    "feed/text_post_app_timeline",
 )
 
 
@@ -1047,7 +1052,7 @@ class EnforcementTests(RulingTestCase):
         path.write_text(body or self.DECOY_SOURCE, encoding="utf-8")
         return path
 
-    def test_guarded_endpoints_returns_the_seven_literals_the_app_tests(self):
+    def test_guarded_endpoints_returns_every_literal_the_app_tests(self):
         """Scoped to `throwIfBlocked`, so a literal elsewhere is not a guard.
 
         The control is the decoy source: a path constant sits in the rewriting
@@ -1209,15 +1214,15 @@ class EnforcementTests(RulingTestCase):
         declared_only, undeclared = audit(REAL_MANIFEST, REAL_SOURCE)
         # The second half is the one this test is named for and it stays empty:
         # the app must never guard an endpoint the manifest does not record. The
-        # first half is the five of the six the owner ruled `block` on 2026-08-08
-        # that the app has yet to implement.
+        # first half is what the owner ruled `block` on 2026-08-08 that the app has
+        # yet to implement — one endpoint, and it is the one that never can be.
         self.assertEqual(sorted(declared_only), sorted(DECLARED_NOT_YET_ENFORCED))
         self.assertEqual((), undeclared)
         without_declared, without_undeclared = audit(without, REAL_SOURCE)
         self.assertEqual(sorted(without_declared), sorted(DECLARED_NOT_YET_ENFORCED))
         self.assertEqual(("/clips/discover",), without_undeclared)
-        # No longer "agree in both directions": five endpoints are declared and
-        # not yet guarded, so the audit correctly reports a disagreement. What this
+        # No longer "agree in both directions": one endpoint is declared and not
+        # guarded, so the audit correctly reports a disagreement. What this
         # test still pins is that the *undeclared* direction is clean — the app
         # must never guard something the manifest does not record.
         agreed = describe_audit(*audit(REAL_MANIFEST, REAL_SOURCE))
@@ -1248,7 +1253,7 @@ class EnforcementTests(RulingTestCase):
         # the endpoint that changed sides on 2026-08-08 is required, and so are
         # the six the guard has always tested.
         self.assertIn("feed/timeline_stream/", required)
-        self.assertEqual(7, len(required))
+        self.assertEqual(11, len(required))
 
         # The invariant that keeps the two answers from drifting: every declared
         # URI rule is either required of the build or reported by the audit, and

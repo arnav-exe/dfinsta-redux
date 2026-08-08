@@ -5,7 +5,11 @@
 priority order in `HANDOVER.md` section 6. Those are retained as history; when they
 disagree with this file, this file wins. Do not start a fourth list.
 
-Last updated 2026-08-08 (tenth pass: `feed/timeline_stream/` is the first of the six ruled
+Last updated 2026-08-08 (eleventh pass: `throwIfBlocked` is now GENERATED from
+`manifest/hooks.json` by `src/dfinsta_pipeline/guards.py`, proven against the exact method
+measured firing on the phone; four more guards written, leaving one endpoint unenforced — and it
+turns out that one is a no-op logger's marker name rather than a request path, so it cannot be
+guarded and must be withdrawn at the reversal gate. Tenth pass: `feed/timeline_stream/` is the first of the six ruled
 endpoints to gain a guard in `throwIfBlocked`, and the first to be measured on device — it is
 verified in the DEX and **fires zero times**, proven against a positive control. The same work
 found that the gate ruling had made the next build unverifiable: `required_build_strings` required

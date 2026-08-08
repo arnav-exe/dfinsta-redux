@@ -98,6 +98,118 @@
       "status": "active",
       "intent_constraints": [
         "a blocked request must fail the way a normal network failure fails, not crash the app"
+      ],
+      "url_block_rules": [
+        {
+          "literals": [
+            {
+              "text": "/feed/timeline/",
+              "match": "endswith"
+            },
+            {
+              "text": "/feed/timeline_stream/",
+              "match": "contains"
+            }
+          ],
+          "toggles": [
+            "disable_feed"
+          ],
+          "note": "timeline_stream uses contains, not endsWith like its sibling. Instagram's own\nmatcher over the seven continuous-feed paths (LX/02nZ, read through\nLX/03g2->A11 on 441) is an indexOf >= 0, so the app does not itself assume\nthe path ends at the literal. Device-measured 2026-08-08: never requested."
+        },
+        {
+          "literals": [
+            {
+              "text": "/discover/topical_explore",
+              "match": "contains"
+            }
+          ],
+          "toggles": [
+            "disable_explore"
+          ]
+        },
+        {
+          "literals": [
+            {
+              "text": "/api/v1/clips/homecoming/",
+              "match": "endswith"
+            },
+            {
+              "text": "/clips/discover",
+              "match": "contains"
+            }
+          ],
+          "toggles": [
+            "disable_reels"
+          ]
+        },
+        {
+          "literals": [
+            {
+              "text": "/feed/reels_tray/",
+              "match": "endswith"
+            }
+          ],
+          "toggles": [
+            "disable_stories"
+          ]
+        },
+        {
+          "literals": [
+            {
+              "text": "/profile_ads/get_profile_ads/",
+              "match": "endswith"
+            }
+          ],
+          "toggles": [
+            "disable_adds"
+          ]
+        },
+        {
+          "literals": [
+            {
+              "text": "/feed/injected_reels_media/",
+              "match": "contains"
+            }
+          ],
+          "toggles": [
+            "disable_reels"
+          ],
+          "note": "Reels injected into the timeline. disable_reels, not disable_feed: someone who\nturns Reels off but keeps the feed still wants these gone."
+        },
+        {
+          "literals": [
+            {
+              "text": "/feed/reels_media/",
+              "match": "contains"
+            }
+          ],
+          "toggles": [
+            "disable_reels"
+          ]
+        },
+        {
+          "literals": [
+            {
+              "text": "/feed/reels_media_stream/",
+              "match": "contains"
+            }
+          ],
+          "toggles": [
+            "disable_reels"
+          ]
+        },
+        {
+          "literals": [
+            {
+              "text": "/feed/text_post_app_timeline/",
+              "match": "contains"
+            }
+          ],
+          "toggles": [
+            "disable_feed"
+          ],
+          "note": "Threads content in the Instagram feed. Confirmed a real request path: LX/03hm,\nthe Tigon layer that matches literals against URI.getPath()."
+        }
       ]
     },
     {

@@ -1248,6 +1248,68 @@ and which by the separate fact that their hook runs. `UNGUARDED_GAP`, the fixtur
 "declared by neither", had to move to `feed/reels_media_stream/` — and will have to move again
 with each remaining guard, which is noted where it is defined.
 
+## `throwIfBlocked` is generated now, and one ruled endpoint cannot be
+
+2026-08-08, second pass. Four more guards written, and the method that holds them is no longer
+hand-authored: `src/dfinsta_pipeline/guards.py` renders it from `url_block_rules` in
+`manifest/hooks.json`. The audit went from six unenforced to **one**.
+
+**Why deterministic and not an agent.** A guard carries exactly three facts — the path text,
+`endsWith` or `contains`, and which toggle switches it — and the eleven instructions around them
+are identical every time. That is a template, not a judgement, and the project already made this
+move once when hook resolution went from agent-proposed to `by_anchor`.
+
+**But the generator must be able to refuse, and the very first batch proved why.** Every guard
+before today was *paths → ONE toggle*. `delivery/background_prefetch` serves the feed and Reels
+both, so it needed an any-of form the template did not have. A generator without a refusal path
+would have had to guess inside a method that fails live network requests. It now refuses on: no
+rules, no toggle, an unknown match kind, a key that is not a preference, a repeated toggle, a
+manifest with no declaration, a file with two `throwIfBlocked`, and **an earlier rule that would
+swallow a later one under a different toggle** — order is behaviour here, since the first match
+decides and a broad `contains` above a narrow path silently retires the narrow path's toggle.
+
+**How the generator is known to be correct.** Not by comparing against text it wrote itself.
+`tests/fixtures/throw_if_blocked_device_proved.smali` is the exact five-rule method that was
+built, signed, installed and **measured firing on the phone** earlier the same day, and the first
+test asserts the generator reproduces it instruction for instruction. The comparison runs through
+`normalise`, which replaces label names with their positions — the assembler discards label text
+and baksmali renumbers it, so comparing raw text would make a rename read as a behaviour change
+and bury a real one in the noise. Both directions are controlled: a rename must not fail, an
+`endsWith`→`contains` must.
+
+**A diagnostic mode exists and must never ship.** It gives each rule its own throw carrying its
+own message, so one grep says which rule fired. Every diagnostic message *contains* the canonical
+`Blocked by DFInsta setting`, making such a build a strict superset — existing greps, probes and
+canonical counts keep working untouched. It is not shipped because Instagram files our
+`IOException` into its own error event, so a per-rule vocabulary would tell Meta which rules a
+modified client carries. Owner decision, 2026-08-08, asserted by a test rather than left to review.
+
+### `delivery/background_prefetch` is not an endpoint
+
+It appears **exactly once in the whole 441 decode**, at `LX/01qe:6023`, passed as an event name to
+`LX/04mq;->A0C(String, String, int)` beside `seconds_since_last_bg_prefetch` and `bg_prefetch_uuid`
+— and `LX/04mq` is a **no-op stub** whose every method is `return-void`. The sibling literal
+`delivery/reels_cache` is the same family. `throwIfBlocked` tests `URI.getPath()`, so this string
+can never be in a path and **a guard for it would be inert by construction**.
+
+Two things it exposes:
+
+- **The indexer admits a marker as an api_path.** It is one of the 3830 entries in
+  `index/api_surface.json`; the heuristic accepts anything shaped `word/word` and nothing checks
+  the literal is ever *used* as a URI. That is how a logging marker reached a human gate dressed
+  as an endpoint.
+- **The ruling's rationale was wrong, and it was mine.** It said "In `LX/01qe` on 441, a
+  three-literal class whose other two members are already blocked". `LX/01qe` is a 6000-line
+  class; those literals are at lines 504/508 and are unrelated to line 6023. A tool's grouping was
+  read as a curated list without opening the file.
+
+The concern behind the ruling is very likely already met: background prefetch requests the *same*
+paths, and the guards are path-based rather than context-based, so a background request blocks
+exactly as a foreground one does. Blocks are observed within milliseconds of a cold start.
+
+**This is the reversal gate's first real case** — a recorded `block` that cannot be implemented.
+It must be withdrawn through the gate, not quietly dropped.
+
 ## The guard is real, verified in the DEX, and fires zero times
 
 2026-08-08, device session on 441. **`feed/timeline_stream/` is never requested** by this account

@@ -6,13 +6,15 @@ never decides, so its exit code is always 0 — a non-zero exit would fail a por
 because a human has not yet answered a question, which is the "approve your way
 past a red build" pressure the whole design avoids.
 
-The property most worth defending is the one that is *absent*. Five of the six
-endpoints ruled on 2026-08-08 are declared-blocked and not yet enforced, and none
-of them is suspect — they are outstanding implementation work, which
-`rulings --audit` already owns. A rule firing on them would make the feature's
-first run a false alarm about decisions taken the day before. The sixth,
-`feed/timeline_stream/`, gained its guard the same day and is silent for the
-other reason: the hook that enforces it runs.
+The property most worth defending is the one that is *absent*. Of the six
+endpoints ruled on 2026-08-08, five gained guards the same day and are silent
+because the hook that enforces them runs. The sixth,
+`delivery/background_prefetch`, is declared-blocked and unenforced — and not
+suspect: it is a no-op logger's marker name rather than a request path, so no
+guard could ever test it. That is outstanding *withdrawal* work, which the
+reversal gate owns, and `rulings --audit` already exits 1 for it. A rule firing
+here as well would make the feature's first run a false alarm about a decision
+taken the day before.
 """
 
 from __future__ import annotations
@@ -214,9 +216,8 @@ class CommittedCorpusTests(unittest.TestCase):
     def test_nothing_recorded_here_has_stopped_matching(self) -> None:
         """Today's real state, and the reasons the six fresh blocks are silent.
 
-        Five are declared-blocked and not yet enforced: outstanding work, not a
-        suspect decision, and `rulings --audit` already exits 1 for it. The sixth
-        is enforced, and is silent only because its hook runs. This asserting
+        Five are enforced and silent only because their hook runs. The sixth is
+        declared and unenforceable, which `rulings --audit` owns. This asserting
         empty is what proves the omitted rule stayed omitted;
         `CommittedCorpusAttributionTests` is what keeps it from being vacuous.
         """
@@ -326,7 +327,7 @@ class TheOmittedRuleTests(EnforcementTestCase):
         `guarded` is in `throwIfBlocked` and its hook never runs — a block that
         exists and cannot be doing anything, which is `block_inert`.
         `unguarded` is ruled and declared and the app does not test it — the
-        state five of the six endpoints ruled on 2026-08-08 are in. It is outstanding
+        state one of the six endpoints ruled on 2026-08-08 is in. It is outstanding
         implementation work, `rulings --audit` already exits 1 for it, and a
         second alarm here would make this feature's first run a false alarm
         about decisions taken the day before.
@@ -482,12 +483,12 @@ class CommittedCorpusAttributionTests(unittest.TestCase):
         """Reason one, and the exact population it still covers.
 
         Until 2026-08-08 every ruled endpoint was unenforced and this reason
-        covered all six on its own. `feed/timeline_stream/` then gained a guard,
-        so it is now held silent by reason two alone — which is precisely the
-        "would keep passing if either disappeared" this class exists to prevent.
-        Asserting the split rather than the equality is what keeps the shrinking
-        visible: as each remaining guard is written the endpoint moves from one
-        side to the other, and both sides are named here.
+        covered all six on its own. Five then gained guards, so they are held
+        silent by reason two alone — which is precisely the "would keep passing
+        if either disappeared" this class exists to prevent. Asserting the split
+        rather than the equality is what keeps it visible: an endpoint moves from
+        one side to the other as its guard is written, and both sides are named
+        here. The one that remains cannot move, because it is not a request path.
         """
         from dfinsta_pipeline.rulings import (
             DEFAULT_SOURCE_PATH,
@@ -507,18 +508,27 @@ class CommittedCorpusAttributionTests(unittest.TestCase):
         # Every unenforced endpoint is one that was ruled: the audit must never
         # report a gap this class has not accounted for.
         self.assertEqual([], sorted(set(unenforced) - set(ruled)))
-        self.assertEqual(["feed/timeline_stream/"], sorted(set(ruled) - set(unenforced)))
+        self.assertEqual(["delivery/background_prefetch"], unenforced)
+        self.assertEqual(
+            [
+                "feed/injected_reels_media/",
+                "feed/reels_media/",
+                "feed/reels_media_stream/",
+                "feed/text_post_app_timeline",
+                "feed/timeline_stream/",
+            ],
+            sorted(set(ruled) - set(unenforced)),
+        )
 
     def test_the_hook_that_would_be_judged_does_execute(self) -> None:
         """The second, independent reason the report is empty.
 
         `block_inert` only fires on a hook that has never run, and it fires only
-        on an *enforced* block. `feed/timeline_stream/` is enforced as of
-        2026-08-08, so this is now the only thing keeping it out of the report —
-        and every further guard written moves another endpoint under this
-        assertion alone. If `tigon_url_block` ever stops executing, those become
-        the exact population the skip protects, which is when the skip earns its
-        keep and when this assertion should fail and be looked at.
+        on an *enforced* block. Five endpoints became enforced on 2026-08-08, so
+        this is now the only thing keeping them out of the report. If
+        `tigon_url_block` ever stops executing they become the exact population
+        the skip protects, which is when the skip earns its keep and when this
+        assertion should fail and be looked at.
         """
         from dfinsta_pipeline.roster import roster as read_roster
 
