@@ -84,6 +84,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .final_report import PortReport, ReportError, build_report, read_claims
+from .retirement import RetirementError, retired_at
 from .history import BASELINE_VERSION, HistoryError, _NUMERIC
 
 __all__ = [
@@ -298,9 +299,10 @@ class Verdict:
     """One hook's fate between two ports."""
 
     hook_id: str
-    #: `held`, `dropped` or `gained`. There is no `retired` state: the recorded
-    #: retirement that used to produce one was deleted along with the rest of the
-    #: decision-correction layer, and nothing else excuses a hook from the bar.
+    #: `held`, `dropped`, `gained` or `retired`. `retired` is the only one that is
+    #: a decision rather than a measurement: a human recorded that the project
+    #: stops expecting this hook. Without it a retired hook that still passes reads
+    #: as `gained` and the report congratulates the port on a hook it gave up on.
     state: str
     #: Why the ledger escalated it on this version, when it did. Empty for a hook
     #: that has no claim at all -- and that emptiness is itself the finding.
@@ -413,8 +415,6 @@ def compare(
     # retirement cannot be backdated onto the port that exposed the drop, and an
     # agent may not rule. Un-retirement is another row, so a hook Instagram brings
     # back is expected again without the retirement being erased.
-    from .retirement import retired_at  # noqa: PLC0415
-
     expected = set(before.ready) - set(retired_at(version, root))
     actual = set(now.ready)
     reasons = {
@@ -422,9 +422,17 @@ def compare(
         for item in now.escalations
     }
 
+    retired = set(retired_at(version, root))
     verdicts: list[Verdict] = []
     for hook in sorted(set(before.ready) | actual):
-        if hook in expected and hook in actual:
+        if hook in retired and hook in before.ready:
+            # Retired FIRST, or a hook that was ready before and is still ready
+            # falls through to `gained` and gets announced as "newly
+            # release-ready" on the very port that stopped expecting it. It is
+            # neither held nor gained: the project gave it up, and saying so is
+            # the whole reason the state exists.
+            verdicts.append(Verdict(hook, "retired"))
+        elif hook in expected and hook in actual:
             verdicts.append(Verdict(hook, "held"))
         elif hook in expected:
             verdicts.append(Verdict(hook, "dropped", reasons.get(hook, ())))
@@ -534,8 +542,8 @@ def render(comparison: Comparison) -> str:
         lines.append("  thing to fix is the device session, not the hook.")
         lines.append("")
         lines.append(
-            "  There is no way to lower the bar. The expectation is derived from "
-            "the previous port's"
+            "  The bar comes down ONLY through a recorded retirement. It is otherwise "
+            "derived from the previous port's"
         )
         lines.append(
             "  own evidence every time it is asked for, so the only thing that "
@@ -651,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
     # passes the regex and raises `ValueError` from the comparison. `OSError` is
     # an unreadable manifest directory, from the glob. Both left as tracebacks;
     # see `a-refusal-channel-is-only-a-channel-if-everything-uses-it`.
-    except (ExpectationError, HistoryError, ValueError, OSError) as error:
+    except (ExpectationError, HistoryError, RetirementError, ValueError, OSError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return EXIT_REFUSED
 

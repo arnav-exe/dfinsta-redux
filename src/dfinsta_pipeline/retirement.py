@@ -24,10 +24,19 @@ that were actually load-bearing were kept.
   THE TWO RULES WORTH KEEPING
 ===============================================================================
 
-**`effective_from` is derived, never supplied.** It is always the version *after*
-the one the decision was taken at. A retirement that could name its own effective
-version could be backdated onto the very port that exposed the drop, which is
-"approve your way out of a red build" wearing a date. There is no flag for it.
+**`effective_from` is derived from the tree, never supplied.** It is the version
+after the newest one with committed evidence — `versions_with_evidence(root)[-1] + 1`.
+Nothing on the command line names it, and nothing names the version it is computed
+from either.
+
+That second half is the part this module got wrong on its first day. It used to
+derive `effective_from` from a `--version` argument, which made the rule
+syntactic: standing at a red 441 build you could type `--version 440`, get
+`effective_from 441`, and clear the very port that exposed the drop. Exit 0, no
+warning, and every other rule still satisfied — the derivation checked out, the
+ruler was a human, the rationale was there. A relation between two fields the
+same person supplies in the same command protects nobody. **Ask what the operator
+controls, not whether the arithmetic is right.**
 
 The same reasoning is why this is not a gate inside a port and cannot unblock
 one. If a red build could be turned green by approving a retirement, approving a
@@ -83,6 +92,7 @@ __all__ = [
     "RetirementError",
     "append",
     "history",
+    "latest_ported",
     "read",
     "retired_at",
     "returned",
@@ -107,6 +117,26 @@ def _version(value: str, field: str) -> str:
     if not _NUMERIC.fullmatch(str(value).strip()):
         raise RetirementError(f"{field} {value!r} is not a version number")
     return str(value).strip()
+
+
+def latest_ported(root: Path | str = ".") -> str:
+    """The newest version with committed evidence — what a decision is taken AT.
+
+    Read from the tree so no operator supplies it. Lazy import because
+    `expectation` imports this module back to subtract retirements.
+    """
+    from .expectation import ExpectationError, versions_with_evidence  # noqa: PLC0415
+
+    try:
+        series = versions_with_evidence(root)
+    except ExpectationError as error:
+        raise RetirementError(f"cannot tell which version this is being decided at: {error}") from error
+    if not series:
+        raise RetirementError(
+            f"{Path(root)} has no committed evidence, so there is no version to decide at. "
+            "A retirement is always taken at the newest port and takes effect after it."
+        )
+    return series[-1]
 
 
 @dataclass(frozen=True)
@@ -270,7 +300,15 @@ def retired_at(
     """
     version = _version(version, "version")
     out: set[str] = set()
-    for item in read(root) if records is None else records:
+    # Sorted by when each decision takes effect, not by where it sits in the
+    # file. `read` re-checks the derivation because hand-editing is the threat
+    # model, and it does not check ordering — two individually valid rows written
+    # out of order would otherwise fold to the wrong answer. Stable, so file
+    # order still breaks ties.
+    ordered = sorted(
+        read(root) if records is None else records, key=lambda item: int(item.effective_from)
+    )
+    for item in ordered:
         if int(item.effective_from) > int(version):
             continue
         if item.kind == "retire":
@@ -300,7 +338,7 @@ def returned(version: str, root: Path | str = ".") -> tuple[str, ...]:
         # unreadable store.
         raise RetirementError(
             f"{path} does not exist, so whether a retired hook is working again was "
-            "never measured at {version}. That is not the same as none having come back."
+            f"never measured at {version}. That is not the same as none having come back."
         )
     back: set[str] = set()
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -330,9 +368,18 @@ def render(version: str, root: Path | str = ".") -> str:
         verb = "RETIRED  " if item.kind == "retire" else "UN-RETIRED"
         lines.append(
             f"    {verb} {item.hook_id}  effective {item.effective_from}  "
-            f"by {item.ruled_by}  ({item.rationale})"
+            f"decided at {item.decided_at}  by {item.ruled_by}  "
+            f"on {item.recorded_at}  ({item.rationale})"
         )
-    came_back = returned(version, root)
+    try:
+        came_back = returned(version, root)
+    except RetirementError as error:
+        # The record is the thing this command exists to print. `returned` refuses
+        # when nothing measured whether a retired hook is working again, and that
+        # refusal is right — but letting it out of here threw away the whole
+        # history and printed only the error, which made `show` useless from the
+        # first retirement onward.
+        return "\n".join(lines + ["", f"  could not check for returns: {error}"])
     if came_back:
         lines += [
             "",
@@ -349,15 +396,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     show = sub.add_parser("show", help="the whole record, and what is retired now")
-    show.add_argument("--version", required=True)
+    show.add_argument(
+        "--version", help="which version to report as of; defaults to the newest ported"
+    )
 
     for kind in KINDS:
         rule = sub.add_parser(kind, help=f"record a {kind} decision")
         rule.add_argument("--hook", required=True)
-        rule.add_argument(
-            "--version", required=True,
-            help="the version this is being decided AT; effective_from is the next one",
-        )
+        # No --version, and deliberately none. It used to be here, and it made the
+        # backdating rule a formality: typing the previous version cleared the port
+        # in front of you. The version is read from the tree.
         rule.add_argument("--ruled-by", required=True, help="a person; 'agent' is refused")
         rule.add_argument("--rationale", required=True)
         rule.add_argument("--recorded-at", required=True, help="ISO 8601; never read from a clock")
@@ -365,9 +413,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "show":
-            print(render(args.version, args.root))
+            print(render(args.version or latest_ported(args.root), args.root))
             return 0
-        decided = _version(args.version, "--version")
+        decided = latest_ported(args.root)
         record = Retirement(
             kind=args.command,
             hook_id=args.hook,

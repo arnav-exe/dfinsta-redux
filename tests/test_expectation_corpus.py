@@ -90,9 +90,11 @@ class CommittedCorpusTests(unittest.TestCase):
                     "Run `python -m dfinsta_pipeline.expectation` for the reasons. A "
                     "differential verdict of failed/regressed is a real regression; "
                     "inconclusive/no_current means the hook was not measured and the "
-                    "device session is what to fix. There is no way to lower the bar: "
-                    "the expectation is derived from the previous port's own evidence, "
-                    "so only the hook passing again clears this.",
+                    "device session is what to fix. The bar comes down only through a "
+                    "recorded retirement (`python -m dfinsta_pipeline.retirement retire`), "
+                    "which takes effect at the NEXT version and so cannot clear this port; "
+                    "otherwise the expectation is derived from the previous port's own "
+                    "evidence and only the hook passing again clears it.",
                 ]
             ),
         )

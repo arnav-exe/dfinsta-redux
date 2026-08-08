@@ -16,14 +16,14 @@ emptiness is the finding rather than a quieter version of the same one. The two
 are asserted against each other in the same fixtures, because "it printed a
 warning" is satisfied by a module that prints the same warning for both.
 
-**The bar cannot be lowered at all.** There used to be one escape hatch — a
-recorded *retirement* naming a human and a reason — with three test classes
-locking every refusal in its parser, because a lowered bar with no author was
-the failure the whole module existed to prevent. On 2026-08-08 the escape hatch
-was deleted along with the rest of the decision-correction layer, having been
-used zero times. What is left to assert is that nothing quietly grew back:
-:class:`DropTests` pins that the rendering tells a reader there is no way down,
-which is the sentence somebody would have to edit before re-adding one.
+**The bar comes down exactly one way.** There is one escape hatch — a
+recorded *retirement* naming a human and a reason, and it is the only one. It
+was deleted on 2026-08-08 with the rest of the decision-correction layer and
+rebuilt small the same day, because a ratchet with no release is a trap: when
+Instagram removes a surface the hook can never pass again. What these tests
+assert is that no *second* way down grows quietly — a lowered bar with no author
+is the failure this module exists to prevent, and `tests/test_retirement.py`
+owns the refusals in the one authored path.
 
 **A hook's readiness across the whole series is one answer, not two.**
 :class:`StandingTests`. `standings` moved here from the deleted `retirement`
@@ -473,7 +473,7 @@ class DropTests(ExpectationTestCase):
         """What a human sees. The count alone is the failure this module fixes.
 
         Three things have to be in the output: which hook, why, and the fact that
-        there is no way to lower the bar at all. The last one matters because the
+        the bar comes down only through a recorded retirement. The last one matters because the
         obvious repair for a red gate is to edit the gate — and the recorded
         retirement that used to be the honest answer no longer exists.
         """
@@ -487,7 +487,7 @@ class DropTests(ExpectationTestCase):
         self.assertIn("*** 1 HOOK(S) DROPPED ***", text)
         self.assertIn(f"✗ {CONTEXT}", text)
         self.assertNotIn(f"✗ {TIGON}", text)
-        self.assertIn("There is no way to lower the bar", text)
+        self.assertIn("ONLY through a recorded retirement", text)
         self.assertNotIn("Expectation met", text)
 
     def test_a_dropped_hook_survives_the_json_round_trip_with_its_reasons(self):
