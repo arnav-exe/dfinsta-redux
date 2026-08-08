@@ -878,7 +878,7 @@ class ValidateSubmissionTests(ValidateSubmissionFixture):
 
     def test_a_rulings_reference_whose_digest_is_not_the_documents_is_refused(self) -> None:
         self.refuses(
-            "does not match its reference digest",
+            "does not hold this document",
             submitted=RetirementGateSubmissionV1(
                 1, decision(subject=self.request.sha256), rulings_ref(sha256=OTHER_DIGEST)
             ),
@@ -887,7 +887,7 @@ class ValidateSubmissionTests(ValidateSubmissionFixture):
     def test_a_rulings_reference_whose_size_is_not_the_documents_is_refused(self) -> None:
         body = canonical_json(self.rulings.to_dict()).encode("utf-8")
         self.refuses(
-            "does not match its reference size",
+            "size does not match this document",
             submitted=RetirementGateSubmissionV1(
                 1, decision(subject=self.request.sha256), rulings_ref(size=len(body) + 1)
             ),
@@ -904,7 +904,7 @@ class ValidateSubmissionTests(ValidateSubmissionFixture):
             canonical_json(other.to_dict()), canonical_json(self.rulings.to_dict())
         )
         self.refuses(
-            "does not match its reference digest",
+            "does not hold this document",
             submitted=RetirementGateSubmissionV1(
                 1, decision(subject=self.request.sha256), rulings_ref(other)
             ),
@@ -923,16 +923,16 @@ class ValidateSubmissionTests(ValidateSubmissionFixture):
         for field in ("subject_sha256", "admission_sha256", "prepared_sha256"):
             with self.subTest(field=field):
                 self.refuses(
-                    "does not bind this retirement subject",
+                    "does not bind the derived gate request",
                     submitted=self.submission_for(**{field: OTHER_DIGEST}),
                 )
 
     def test_a_decision_naming_another_run_is_refused(self) -> None:
-        self.refuses("does not bind this gate", submitted=self.submission_for(run_id=OTHER_RUN_ID))
+        self.refuses("does not bind the gate request", submitted=self.submission_for(run_id=OTHER_RUN_ID))
 
     def test_a_decision_naming_another_gate_is_refused(self) -> None:
         self.refuses(
-            "does not bind this gate",
+            "does not bind the gate request",
             submitted=self.submission_for(gate_id=f"{OTHER_RUN_ID}{GATE_ID_SUFFIX}"),
         )
 
@@ -982,7 +982,7 @@ class ValidateSubmissionTests(ValidateSubmissionFixture):
         moved = request(docket=self.docket, version="442")
         self.assertNotEqual(moved.sha256, self.request.sha256)
         self.refuses(
-            "does not bind this retirement subject",
+            "does not bind the derived gate request",
             submitted=self.submission_for(),
             subject=moved,
         )

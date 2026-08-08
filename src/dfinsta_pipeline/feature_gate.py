@@ -46,6 +46,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .gate_contract import bind_decision, bind_document
 from .contracts import (
     ID_PATTERN,
     SHA256_PATTERN,
@@ -586,40 +587,20 @@ def validate_submission(
     # The caller fetched and decoded the dispositions document; nothing so far
     # ties it to the reference the human signed. Canonical bytes make that a
     # hash comparison rather than a matter of trust.
-    body = canonical_json(dispositions).encode("utf-8")
-    artifact = submission.dispositions
-    if hashlib.sha256(body).hexdigest() != artifact.sha256:
-        raise ValueError("Submitted dispositions artifact does not hold this document")
-    if len(body) != artifact.size:
-        raise ValueError("Submitted dispositions artifact size does not match this document")
-
-    decision = submission.decision
-    # ALL THREE hash fields, not just the subject. The Workflow binds all three
-    # to the request hash and its validator checks all three -- but that
-    # validator runs in a sandbox and is a filter, not the authority. Checking
-    # only the subject here meant a wrongly-bound decision that reached this
-    # function by any other route was admitted, and the replay gate's admitting
-    # side has always required all three.
-    if decision.subject_sha256 != request.sha256:
-        raise ValueError("Decision subject does not bind the derived gate request")
-    if decision.admission_sha256 != request.sha256:
-        raise ValueError("Decision admission hash does not bind the derived gate request")
-    if decision.prepared_sha256 != request.sha256:
-        raise ValueError("Decision prepared hash does not bind the derived gate request")
-    if decision.run_id != request.run_id:
-        raise ValueError("Decision run does not bind the gate request")
-    if decision.gate_id != request.gate_id:
-        raise ValueError("Decision gate does not bind the gate request")
-    # `allowed_actor` is inside the derived bytes precisely so that the admitting
-    # side can verify it independently -- and nothing here was doing so, which
-    # left the sandbox validator as the *only* enforcement of who may answer.
-    # `_validate_decision` and the verification grant both compare it; this gate
-    # was the exception, against its own request's docstring.
-    if decision.actor != request.allowed_actor:
-        raise ValueError("Decision actor is not the gate's allowed actor")
-    if decision.policy_revision != request.policy_revision:
-        raise ValueError("Decision policy does not bind the gate request")
-
+    # The six clauses every gate's authority shares now live in `gate_contract`,
+    # so a fix reaches all of them. This gate is where the lesson was learned:
+    # `allowed_actor` was inside the derived bytes precisely so the admitting side
+    # could verify it, and nothing here did — leaving the sandbox validator as the
+    # only enforcement of who may answer.
+    bind_document(dispositions, submission.dispositions, label="dispositions")
+    bind_decision(
+        submission.decision,
+        subject_sha256=request.sha256,
+        run_id=request.run_id,
+        gate_id=request.gate_id,
+        policy_revision=request.policy_revision,
+        allowed_actor=request.allowed_actor,
+    )
     # A stale approval cannot authorise changed bytes, said from the response
     # side: these verdicts are about the assessment the request pins, or they
     # are about something the human never saw.

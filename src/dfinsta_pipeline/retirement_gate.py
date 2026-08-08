@@ -52,6 +52,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .gate_contract import bind_decision, bind_document
 from .contracts import (
     ID_PATTERN,
     SHA256_PATTERN,
@@ -653,33 +654,21 @@ def validate_submission(
     if type(rulings) is not RetirementRulingsV1:
         raise RetirementGateError("Expected a RetirementRulingsV1")
 
-    body = canonical_json(rulings.to_dict()).encode("utf-8")
-    if hashlib.sha256(body).hexdigest() != submission.rulings.sha256:
-        raise RetirementGateError("Rulings document does not match its reference digest")
-    if len(body) != submission.rulings.size:
-        raise RetirementGateError("Rulings document does not match its reference size")
-
-    decision = submission.decision
-    subject = request.sha256
-    # All three, not just `subject_sha256`. The Workflow sets all three to the
-    # request hash and its validator checks all three; when this project last
-    # left two of them to the filter alone, a decision with the right subject and
-    # a wrong admission hash was admitted.
-    if (
-        decision.subject_sha256 != subject
-        or decision.admission_sha256 != subject
-        or decision.prepared_sha256 != subject
-    ):
-        raise RetirementGateError("Decision does not bind this retirement subject")
-    if decision.run_id != request.run_id or decision.gate_id != request.gate_id:
-        raise RetirementGateError("Decision does not bind this gate")
-    if decision.policy_revision != request.policy_revision:
-        raise RetirementGateError("Decision was made under a different policy revision")
-    # Checked HERE and not only in the sandbox. `allowed_actor` is inside the
-    # derived bytes precisely so this layer can verify it without trusting
-    # anything carried through History.
-    if decision.actor != request.allowed_actor:
-        raise RetirementGateError("Decision actor is not authorized for this gate")
+    # The six clauses every gate's authority shares live in `gate_contract`, so a
+    # fix reaches all of them. See that module for why three copies of a security
+    # check is how one gets fixed and two do not.
+    try:
+        bind_document(rulings.to_dict(), submission.rulings, label="rulings")
+        bind_decision(
+            submission.decision,
+            subject_sha256=request.sha256,
+            run_id=request.run_id,
+            gate_id=request.gate_id,
+            policy_revision=request.policy_revision,
+            allowed_actor=request.allowed_actor,
+        )
+    except ValueError as error:
+        raise RetirementGateError(str(error)) from error
 
     if rulings.docket_sha256 != request.docket.sha256:
         raise RetirementGateError("Rulings answer a different docket")

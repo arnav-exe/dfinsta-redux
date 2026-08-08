@@ -257,10 +257,34 @@ class DeriveFeatureGateRequestTests(GateTestCase):
         self.assertEqual(observed, expected)
 
     def test_module_depends_only_on_the_shared_contracts(self) -> None:
-        """Every in-package import is `.contracts`, so no sibling can smuggle state in."""
+        """Every in-package import is a pure contract module, transitively.
+
+        `.gate_contract` joined on 2026-08-08, when the six clauses every gate's
+        authority shares were extracted so a fix reaches all of them instead of
+        one. It is allowed here **only because it is pure itself** — which this
+        test now checks rather than assumes, because a shared module that grew a
+        filesystem read would smuggle state into three gates at once instead of
+        one.
+        """
         source = Path(feature_gate.__file__).read_text(encoding="utf-8")
         relative = [line for line in source.splitlines() if line.startswith("from .")]
-        self.assertEqual(relative, ["from .contracts import ("])
+        self.assertEqual(
+            relative,
+            [
+                "from .gate_contract import bind_decision, bind_document",
+                "from .contracts import (",
+            ],
+        )
+
+        from dfinsta_pipeline import gate_contract
+
+        shared = Path(gate_contract.__file__).read_text(encoding="utf-8")
+        self.assertEqual(
+            [line for line in shared.splitlines() if line.startswith("from .")],
+            ["from .contracts import ArtifactRef, GateDecision, canonical_json"],
+        )
+        for forbidden in ("open(", "Path(", "datetime", "os.", "random"):
+            self.assertNotIn(forbidden, shared, f"gate_contract reached for {forbidden}")
 
     def test_nothing_in_the_module_reads_a_clock_or_a_filesystem(self) -> None:
         """Timestamps arrive from the caller; a clock read breaks Temporal replay."""
