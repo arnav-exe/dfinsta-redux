@@ -44,6 +44,14 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
 - [x] **Observation store**, version-keyed, refusing rather than answering when no session
       is evidence.
 - [x] **The correction layer deleted.** Suite 3876 → 3317.
+- [x] **Hook retirement rebuilt small** (`retirement.py`, ~330 lines against the 6247 that
+      were deleted). `expectation`'s ratchet has exactly one release again: an append-only
+      row naming who ruled and why, with `effective_from` derived so it cannot be backdated
+      onto the port that exposed the drop, and `ruled_by: agent` refused. **Un-retirement is
+      another row, never an edit**, so a surface Instagram brings back is expected again
+      without the record losing the fact that it was once doubted — `retirement show` prints
+      the whole history, and `returned()` reports a retired hook that has started passing
+      probes again. It reports; it never rules.
 - [ ] **Record the toggle state in `ObservationSession`.** The protocol turns on all-off
       versus one-toggle-on and the committed record cannot express which. Measured
       2026-08-08: with blocks on, `/feed/injected_reels_media/` observed 0 times; with
@@ -58,10 +66,9 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
 
 ## Open ends that are nobody's bug
 
-- **A recorded `block` cannot now be retired.** With the reversal gate gone there is no
-  mechanism. The new approach avoids *creating* bad rulings and says nothing about the six
-  that exist. `delivery/background_prefetch` is the live example.
-- **`expectation` is unconditional.** A hook that legitimately dies fails it for ever. The
-  escape hatch was retirement, which is gone. Deliberately loud rather than papered over.
+- **A recorded `block` on an endpoint cannot be retired.** With the reversal gate gone
+  there is no mechanism. The new approach avoids *creating* bad rulings and says nothing
+  about the six that exist. `delivery/background_prefetch` is the live example, and it is
+  the one thing the exploration protocol does not reach backwards to fix.
 - **Grouping is still human judgement**, better informed. Nothing derives a toggle mapping
   from measurement automatically.

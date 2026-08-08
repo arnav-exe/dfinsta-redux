@@ -23,16 +23,16 @@ diff from a legitimate change: edit 4 to 3. The expectation is instead recompute
 from the previous version's committed evidence every time it is asked for, which
 leaves exactly one way to lower it: make the hook pass again.
 
-**There is deliberately no escape hatch, and that is a change.** Until
-2026-08-08 a human could record a *retirement* — a permanent row naming who ruled
-and why — and the expectation would stop demanding that hook. That machinery was
-removed with the rest of the decide-early-then-correct layer, having recorded
-zero retirements in its entire life. So a hook that genuinely must stop being
-expected has to leave `manifest/hooks.json` along with its evidence, and until it
-does this module keeps reporting it as dropped. That is louder than the old
-answer and it is meant to be: a bar that can be lowered by one line of JSON is
-the failure this file exists to prevent, and re-admitting one under a new name
-would be the same failure wearing it.
+**There is exactly one escape hatch and it is a recorded human decision.** A
+ratchet with no release is a trap: when Instagram genuinely removes a surface,
+the hook that patched it can never pass again and would fail this check for ever.
+So `retirement` subtracts a hook from the expectation — but only through an
+append-only row naming who ruled and why, with `effective_from` derived rather
+than supplied so it cannot be backdated onto the port that exposed the drop, and
+with `ruled_by: agent` refused. Un-retirement is another row, never an edit, so a
+surface Instagram brings back is expected again without the record losing the
+fact that it was once doubted. What is still refused is the thing this file
+exists to prevent: a bar lowered by editing one number in one line of JSON.
 
 **A set, not a number.** `4 -> 3` says a port got worse. `set_app_context is no
 longer release-ready` says which thing to go and look at, and the two are not the
@@ -407,10 +407,15 @@ def compare(
     # to measure against; it does not choose what this port measured.
     now = port_report(root, version, _predecessor(root, version, baseline))
 
-    # Every hook that was ready, with nothing subtracted. This used to remove the
-    # retirements in force at `version`; there are no longer any such records, and
-    # the docstring says why re-admitting them would undo the module.
-    expected = set(before.ready)
+    # Every hook that was ready, minus the ones a human has recorded a retirement
+    # for. That subtraction is the ONLY way the bar comes down, and `retirement`
+    # is where the rules that make it safe live: `effective_from` is derived so a
+    # retirement cannot be backdated onto the port that exposed the drop, and an
+    # agent may not rule. Un-retirement is another row, so a hook Instagram brings
+    # back is expected again without the retirement being erased.
+    from .retirement import retired_at  # noqa: PLC0415
+
+    expected = set(before.ready) - set(retired_at(version, root))
     actual = set(now.ready)
     reasons = {
         item["hook_id"]: tuple(item.get("reasons", ()))
