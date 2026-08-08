@@ -3,12 +3,12 @@
 `tests/test_phase_a_history_corpus.py` did this for `PortRunWorkflow` and stated
 the reason: a test that generates the History it replays in the same process can
 only confirm that a Workflow agrees with itself. Three of the four registered
-Workflows had no committed History at all, and all four are
+Workflows had no committed History at all, and every registered Workflow is
 `versioning_behavior=PINNED` — so a change to `ReplayRunWorkflow`,
-`FeatureAssessmentRunWorkflow` or `HookRetirementRunWorkflow` could break replay
-of runs that were already durably recorded and nothing in this repository would
-notice. A worker restarted after such a deploy fails the *resumed* run, days into
-a human wait.
+`FeatureAssessmentRunWorkflow`, `HookRetirementRunWorkflow` or
+`ReversalRunWorkflow` could break replay of runs that were already durably
+recorded and nothing in this repository would notice. A worker restarted after
+such a deploy fails the *resumed* run, days into a human wait.
 
 Everything here is derived rather than listed. The Workflow a fixture covers is
 read out of the fixture's own `WorkflowExecutionStarted` event; the set of
@@ -78,6 +78,7 @@ from dfinsta_pipeline.contracts import RunSpec
 from dfinsta_pipeline.feature_gate import FeatureRunRequestV1
 from dfinsta_pipeline.replay_contracts import ReplayRunRequestV1
 from dfinsta_pipeline.retirement_gate import RetirementRunRequestV1
+from dfinsta_pipeline.reversal_gate import ReversalRunRequestV1
 from tests.history_corpus import (
     FIXTURES,
     Fixture,
@@ -143,15 +144,25 @@ class IncompatibleHookRetirementRunWorkflow:
         return request.run_id
 
 
+@temporal_workflow.defn(
+    name="ReversalRunWorkflow", versioning_behavior=VersioningBehavior.PINNED
+)
+class IncompatibleReversalRunWorkflow:
+    @temporal_workflow.run
+    async def run(self, request: ReversalRunRequestV1) -> str:
+        return request.run_id
+
+
 #: Keyed by Workflow *type name*, which is what a History records and what a
 #: Replayer matches on. `test_a_control_exists_for_every_registered_workflow`
-#: asserts these keys are exactly the registered names, so a fifth Workflow
+#: asserts these keys are exactly the registered names, so a sixth Workflow
 #: cannot arrive with a fixture and no control.
 CONTROLS = {
     "PortRunWorkflow": IncompatiblePortRunWorkflow,
     "ReplayRunWorkflow": IncompatibleReplayRunWorkflow,
     "FeatureAssessmentRunWorkflow": IncompatibleFeatureAssessmentRunWorkflow,
     "HookRetirementRunWorkflow": IncompatibleHookRetirementRunWorkflow,
+    "ReversalRunWorkflow": IncompatibleReversalRunWorkflow,
 }
 
 

@@ -32,6 +32,8 @@ WRITE_METHOD_NAMES = (
     "record_admitted_dispositions",
     "record_retirement_docket_authority",
     "record_admitted_retirement_rulings",
+    "record_reversal_docket_authority",
+    "record_admitted_reversal_rulings",
 )
 
 # `__init__` runs the schema statements and is the one method allowed to write
@@ -338,6 +340,37 @@ class ReadOnlyLedgerWriteGuardTests(ReadOnlyLedgerFixture):
                         "rulings_size": 42,
                         "docket_sha256": "c" * 64,
                         "version": "442",
+                        "policy_revision": "2026-08-01",
+                    },
+                ),
+                {},
+            ),
+            # And the reversal gate's two. The submission client resolves this
+            # gate's subject through a read-only ledger, so these are the methods
+            # a client must be structurally unable to reach.
+            "record_reversal_docket_authority": (
+                (
+                    {
+                        "run_id": "run-1",
+                        "operation_key": "a" * 64,
+                        "input_sha256": "b" * 64,
+                        "docket_sha256": "c" * 64,
+                        "version": "441",
+                        "policy_revision": "2026-08-01",
+                        "allowed_actor": "someone",
+                    },
+                ),
+                {},
+            ),
+            "record_admitted_reversal_rulings": (
+                (
+                    {
+                        "run_id": "run-1",
+                        "decision_id": "decision-1",
+                        "rulings_sha256": "f" * 64,
+                        "rulings_size": 42,
+                        "docket_sha256": "c" * 64,
+                        "version": "441",
                         "policy_revision": "2026-08-01",
                     },
                 ),

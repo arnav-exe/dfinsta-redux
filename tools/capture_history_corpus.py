@@ -68,16 +68,23 @@ from temporalio.common import (  # noqa: E402
 from temporalio.testing import WorkflowEnvironment  # noqa: E402
 from temporalio.worker import Worker, WorkerDeploymentConfig  # noqa: E402
 
-from dfinsta_pipeline import activities, assessment_record, retirement_record  # noqa: E402
+from dfinsta_pipeline import (  # noqa: E402
+    activities,
+    assessment_record,
+    retirement_record,
+    reversal_record,
+)
 from dfinsta_pipeline.activities import (  # noqa: E402
     admit_activity,
     admit_feature_dispositions_activity,
     admit_retirement_rulings_activity,
+    admit_reversal_rulings_activity,
     apply_activity,
     configure_runtime,
     prepare_activity,
     prepare_feature_gate_activity,
     prepare_retirement_gate_activity,
+    prepare_reversal_gate_activity,
     record_decision_activity,
     runtime,
 )
@@ -101,6 +108,16 @@ from dfinsta_pipeline.retirement_gate import (  # noqa: E402
     RetirementRunRequestV1,
 )
 from dfinsta_pipeline.retirement_workflow import HookRetirementRunWorkflow  # noqa: E402
+from dfinsta_pipeline.reversal_gate import (  # noqa: E402
+    RULINGS_ARTIFACT_KIND as REVERSAL_RULINGS_ARTIFACT_KIND,
+)
+from dfinsta_pipeline.reversal_gate import (  # noqa: E402
+    ReversalGateSubmissionV1,
+    ReversalRulingsV1,
+    ReversalRulingV1,
+    ReversalRunRequestV1,
+)
+from dfinsta_pipeline.reversal_workflow import ReversalRunWorkflow  # noqa: E402
 from dfinsta_pipeline.workflow import PortRunWorkflow  # noqa: E402
 
 from tests.history_corpus import CAPTURE_IDENTITY, FIXTURES, histories_directory, leaks  # noqa: E402
@@ -113,6 +130,7 @@ from tests.test_phase_b_replay_workflow import (  # noqa: E402
     verification_decision,
 )
 from tests.test_retirement_workflow import ALIVE, DEAD, _claim  # noqa: E402
+from tests.test_reversal_record import write_reversal_fixture  # noqa: E402
 
 
 #: One deployment version for the whole corpus. It lands in History and is not
@@ -550,6 +568,87 @@ async def _capture_retirement(
         return await _history_json(handle)
 
 
+# --------------------------------------------------------------- reversal gate
+
+
+def _record_reversal_docket(state: Path, root: Path, run_id: str):
+    """`tests/test_reversal_record.py`'s fixture, in its own repository root.
+
+    Its own root because `_write_retirement_evidence` already owns `root/manifest`
+    and the two describe different manifests. The *state* root is shared: two run
+    ids, two rows, one ledger — which is the arrangement production has.
+
+    `actor=ACTOR` rather than the fixture's default: the docket carries the name
+    of whoever ruled the retirement it questions, and a committed fixture should
+    name neither a person nor a machine. The docket itself never crosses into
+    History, so this is belt as well as braces.
+
+    No index, so the docket carries `block_endpoint_absent`'s skip in
+    `rules_not_run` — which is the half of a sweep's result that is not a finding,
+    and the half most worth having a committed example of.
+    """
+
+    repository = root / f"reversal-{run_id}"
+    write_reversal_fixture(repository, actor=ACTOR)
+    return reversal_record.record(
+        state,
+        run_id=run_id,
+        version="441",
+        allowed_actor=ACTOR,
+        owner_token=f"corpus-owner-{run_id}",
+        root=repository,
+    )
+
+
+async def _capture_reversal(
+    environment: WorkflowEnvironment, run_id: str, recorded, *, approve: bool
+) -> str:
+    task_queue = _task_queue(run_id)
+    async with _worker(
+        environment.client,
+        task_queue,
+        [ReversalRunWorkflow],
+        [prepare_reversal_gate_activity, admit_reversal_rulings_activity],
+    ):
+        handle = await environment.client.start_workflow(
+            ReversalRunWorkflow.run,
+            ReversalRunRequestV1(1, run_id, GATE_TIMEOUT_SECONDS),
+            id=run_id,
+            task_queue=task_queue,
+            versioning_override=PinnedVersioningOverride(CORPUS_DEPLOYMENT_VERSION),
+        )
+        status = await _wait_for_state(
+            environment, handle, ReversalRunWorkflow.status, "awaiting-reversal-rulings"
+        )
+        if not approve:
+            return await _history_json(handle)
+
+        document = ReversalRulingsV1(
+            1,
+            recorded.docket.sha256,
+            recorded.version,
+            recorded.policy_revision,
+            tuple(
+                ReversalRulingV1(1, item.item_id, "withdraw", RATIONALE, item.item_sha256)
+                for item in recorded.items
+            ),
+        )
+        reference = runtime().store.put_bytes(
+            kind=REVERSAL_RULINGS_ARTIFACT_KIND,
+            data=canonical_json(document.to_dict()).encode("utf-8"),
+            producer_operation_id=f"client-{document.sha256}",
+            input_hashes=(recorded.docket.sha256,),
+        )
+        await handle.execute_update(
+            ReversalRunWorkflow.submit_reversal_rulings,
+            ReversalGateSubmissionV1(
+                1, _decision(status.gate, decision_id="corpus-reversal-approval"), reference
+            ),
+        )
+        await handle.result()
+        return await _history_json(handle)
+
+
 # ------------------------------------------------------------------- the run
 
 
@@ -566,6 +665,8 @@ async def capture_all(root: Path) -> dict[str, str]:
     feature_open = _record_assessment(state, root, "corpus-feature-open")
     retirement_completed = _record_docket(state, root, investigations, "corpus-retirement-completed")
     retirement_open = _record_docket(state, root, investigations, "corpus-retirement-open")
+    reversal_completed = _record_reversal_docket(state, root, "corpus-reversal-completed")
+    reversal_open = _record_reversal_docket(state, root, "corpus-reversal-open")
     configure_runtime(state)
 
     environment = await WorkflowEnvironment.start_time_skipping(identity=CAPTURE_IDENTITY)
@@ -589,6 +690,12 @@ async def capture_all(root: Path) -> dict[str, str]:
             ),
             "retirement_gate_open_v1.json": await _capture_retirement(
                 environment, "corpus-retirement-open", retirement_open, approve=False
+            ),
+            "reversal_gate_completed_v1.json": await _capture_reversal(
+                environment, "corpus-reversal-completed", reversal_completed, approve=True
+            ),
+            "reversal_gate_open_v1.json": await _capture_reversal(
+                environment, "corpus-reversal-open", reversal_open, approve=False
             ),
         }
     finally:

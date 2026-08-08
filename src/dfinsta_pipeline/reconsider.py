@@ -26,6 +26,16 @@ app. Needs an index for the version, so it is skipped rather than guessed when
 one is not supplied — and the skip is reported, because a rule that quietly did
 not run is indistinguishable from a rule that found nothing.
 
+**`block_never_observed`** — the app was *watching* this endpoint on a real
+device and never once saw it requested. Stage 4 judges an endpoint from its name
+in a class of names, and on 2026-08-08 that produced one ruling on a path that
+fires zero times and one on `delivery/background_prefetch`, which is not a
+request path at all but a no-op logger's marker name. Both looked exactly like
+the four good rulings beside them. `observation.never_observed` is the
+measurement that tells them apart, and it refuses rather than answering when no
+session is evidence — so this rule reports itself skipped instead of reading a
+missing measurement as a finding.
+
 **`retirement_returned`** — a retired hook has passed a runtime probe at or after
 the version its retirement took effect. The hook is working and the project has
 stopped expecting it.
@@ -39,6 +49,16 @@ opening move is a false alarm is one nobody answers twice. (The sixth,
 `feed/timeline_stream/`, gained its guard the same day and so is a live subject
 of `block_inert` — it stays out of the report because its hook executes, which
 is the rule working rather than skipping.)
+
+**And `block_never_observed` must not re-create it.** The two are one word apart
+in English and opposite in what they rest on: the omitted rule fires on the
+*absence of an implementation*, this one on *evidence of non-occurrence*. The
+difference is enforced rather than described — this rule skips exactly the
+endpoints `unenforced_endpoints` names, the same set `block_inert` skips, so an
+endpoint with no guard cannot reach it however its watch list was written. That
+matters because a watch list is a claim by the build about what it was watching,
+and `delivery/background_prefetch` inside one would otherwise put the day-old
+decision the omission protects straight back in front of a human.
 
 ===============================================================================
   WHY IT NAMES THE DECISION, NOT JUST THE SUBJECT
@@ -61,6 +81,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .expectation import ExpectationError, retirements_on_record
+from .observation import ObservationError
 from .reversal import ReversalError
 from .history import BASELINE_VERSION, _NUMERIC
 from .roster import HookLife, RosterError, roster
@@ -81,7 +102,12 @@ class ReconsiderError(RuntimeError):
 
 #: Closed on purpose. A trigger nothing consumes would put a question in front of
 #: a human that no recorded decision can answer.
-TRIGGERS = ("block_inert", "block_endpoint_absent", "retirement_returned")
+TRIGGERS = (
+    "block_inert",
+    "block_endpoint_absent",
+    "block_never_observed",
+    "retirement_returned",
+)
 
 
 @dataclass(frozen=True)
@@ -151,8 +177,20 @@ def reconsiderations(
     if not _NUMERIC.fullmatch(version):
         raise ReconsiderError(f"{version!r} is not a version number")
 
+    from .assessment import normalise  # noqa: PLC0415
+    from .reversal import withdrawn  # noqa: PLC0415
+
     try:
         lives, _ = roster(root, baseline=baseline)
+        # Compared through `normalise`, because a human types `--endpoint` and
+        # `reversal` stores what they typed: a block withdrawn as
+        # `/feed/timeline_stream/` must silence a ruling recorded as
+        # `feed/timeline_stream/`. Two spellings of one rule is how an entire
+        # grouping went invisible on 440.
+        withdrawn_blocks = {
+            (decision_id, normalise(subject))
+            for decision_id, subject in withdrawn("block", root)
+        }
     # `ReversalError` too: `retirements_on_record` reaches `reversal.read_reversals`,
     # so a corrupt `reversals.jsonl` left a traceback from both CLIs while the
     # parallel `retirements.jsonl` path refused cleanly.
@@ -196,11 +234,17 @@ def reconsiderations(
     source = root / DEFAULT_SOURCE_PATH
     try:
         unenforced = set(unenforced_endpoints(root / "manifest" / "hooks.json", source))
+        unenforced_unknown = False
     except Exception as error:  # noqa: BLE001 - the app source may be absent
         # Not silently empty. An unreadable source means every block looks
         # enforced, so `block_inert` would judge endpoints whose enforcement
         # nobody checked — the rule still runs, and says what it could not see.
         unenforced = set()
+        # Carried as its own fact rather than inferred from `not unenforced`:
+        # "the source said nothing is unenforced" and "the source could not be
+        # read" produce the same empty set and are opposite states, and
+        # `block_never_observed` below has to tell them apart.
+        unenforced_unknown = True
         not_run.append(
             f"block_inert: could not read the app source at {source} ({error}); "
             "every declared block was treated as enforced"
@@ -267,6 +311,16 @@ def reconsiderations(
             spellings = {endpoint, f"/{endpoint}", endpoint.rstrip("/"), f"/{endpoint.rstrip('/')}"}
             if any(index.descriptors_with_literal(s) for s in spellings):
                 continue
+            # A withdrawn block is not a decision to question. This rule was the
+            # last of the three to consult `withdrawn_blocks`: `retirement_returned`
+            # reads through `retirements_on_record`, and `block_inert` is silenced
+            # only *indirectly*, because `apply_unblock` removes the dep and
+            # `_blocking_hook` then returns "". Neither of those protects this
+            # rule, so withdrawing a block and later watching its endpoint vanish
+            # would propose withdrawing it a second time — a question a human has
+            # already answered for ever, which is what a reversal is.
+            if (ruling.decision_id, normalise(endpoint)) in withdrawn_blocks:
+                continue
 
             found.append(
                 Reconsideration(
@@ -290,6 +344,110 @@ def reconsiderations(
                         "holds the literal, or that the literal was never a candidate "
                         "for indexing. `hook_index` says the difference needs a scan "
                         "of the decode. CONFIRM AGAINST THE DECODE before withdrawing",
+                    ),
+                )
+            )
+
+    # ---- block_never_observed --------------------------------------------
+    #
+    # The only rule here built on a measurement of the app's own traffic rather
+    # than on the shape of the code. Read the module docstring for why it is not
+    # the omitted "declared and not enforced" rule wearing a new name: it skips
+    # the same `unenforced` set `block_inert` skips, so an endpoint with no guard
+    # cannot reach it whatever a watch list claims.
+    from .observation import evidential, never_observed, read as read_observations  # noqa: PLC0415
+
+    try:
+        unseen = set(never_observed(version, root))
+        sessions = evidential(read_observations(version, root))
+    except ObservationError as error:
+        # Skipped, and named. `never_observed` refuses when nothing measured is
+        # evidence — no store, or every session vacuous — and that refusal is the
+        # whole point: an empty answer would be the same answer it gives when
+        # every watched path was seen.
+        unseen, sessions = set(), ()
+        not_run.append(f"block_never_observed: {error}")
+    if unenforced_unknown and sessions:
+        # The rule ran, with a blind spot, and says so under its own name. With
+        # no app source nothing can be shown to be unenforced, so the structural
+        # guarantee above — that this cannot fire on an unenforced endpoint —
+        # does not hold on this run, and `delivery/background_prefetch` in a
+        # watch list would reach a human as a question about a day-old decision.
+        not_run.append(
+            f"block_never_observed: could not read the app source at {source}, so an "
+            "endpoint with no guard was not excluded from this rule"
+        )
+
+    if sessions:
+        surfaces = sorted({item.surface for item in sessions})
+        totals: dict[str, int] = {}
+        for item in sessions:
+            for literal, count in item.counts.items():
+                totals[literal] = totals.get(literal, 0) + count
+        # Keyed by the app's own spelling rule, like every other join here: the
+        # watch list carries the literal as the smali does (`/feed/timeline/`)
+        # and a ruling carries the candidate's (`feed/timeline/`). Built from a
+        # sorted iteration so that two watched spellings of one rule — both
+        # unobserved, so either is a truthful evidence line — always yield the
+        # same one rather than whichever the set happened to hand over.
+        by_rule = {normalise(literal): literal for literal in sorted(unseen, reverse=True)}
+
+        for endpoint, ruling in sorted(blocked_by_ruling.items()):
+            # Declared AND enforced, in that order. `unenforced_endpoints` names
+            # what is *declared and unguarded*, so an endpoint that no hook
+            # declares at all is in neither set and would sail past a check on
+            # enforcement alone — which is the docstring's structural guarantee
+            # failing on the one example it names. Today every ruled endpoint is
+            # declared, so this line changes nothing; it becomes load-bearing the
+            # moment a dep leaves `hooks.json` while `rulings.jsonl` keeps its
+            # row, which is exactly what `apply_unblock` does. `block_inert`
+            # reaches the same answer through `by_id.get(hook_id)` being None.
+            if not _blocking_hook(lives, manifest, endpoint):
+                continue
+            if endpoint in unenforced:
+                continue
+            if (ruling.decision_id, normalise(endpoint)) in withdrawn_blocks:
+                continue
+            literal = by_rule.get(normalise(endpoint))
+            if literal is None:
+                continue
+            found.append(
+                Reconsideration(
+                    kind="block",
+                    subject=endpoint,
+                    original_decision_id=ruling.decision_id,
+                    trigger="block_never_observed",
+                    summary=(
+                        f"{endpoint} is blocked and the app was watching it on {version}, "
+                        f"and across {len(sessions)} session(s) that observed "
+                        f"{sum(totals.values())} request(s) it was never requested once"
+                    ),
+                    evidence=(
+                        f"ruled block on {ruling.recorded_at or 'an unrecorded date'}",
+                        f"watched as {literal}; observed 0 times",
+                        # `totals` cannot be empty here: every session in
+                        # `sessions` is non-vacuous, which is what makes it
+                        # evidence at all. No "or nothing" fallback, because a
+                        # branch that cannot be reached is a safety net nobody
+                        # can test.
+                        "the same sessions observed: "
+                        + ", ".join(
+                            f"{key} x{value}"
+                            for key, value in sorted(
+                                totals.items(), key=lambda pair: (-pair[1], pair[0])
+                            )
+                        ),
+                        f"measured on: {', '.join(surfaces)}",
+                        # The bound, on every finding. It cannot be resolved from
+                        # the store, and it is the reading a human is most likely
+                        # to make without being told not to.
+                        "NEVER OBSERVED IS BOUNDED BY THE SURFACES WALKED. A path only "
+                        "one screen requests is not observed by a session that never "
+                        "went there, and server-side configuration can suppress a "
+                        "request the app would otherwise make — a MobileConfig flag is "
+                        "why a statically perfect 430 settings hook was dead at "
+                        "runtime. CONFIRM THE SURFACE THAT WOULD EXERCISE IT WAS "
+                        "VISITED before withdrawing",
                     ),
                 )
             )
@@ -374,7 +532,14 @@ def main(argv: list[str] | None = None) -> int:
         found, not_run = reconsiderations(
             args.root, version=args.version, baseline=args.baseline, index_dir=args.index
         )
-    except (ReconsiderError, ExpectationError, ReversalError, ValueError, OSError) as error:
+    except (
+        ReconsiderError,
+        ExpectationError,
+        ObservationError,
+        ReversalError,
+        ValueError,
+        OSError,
+    ) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2
     if args.json:

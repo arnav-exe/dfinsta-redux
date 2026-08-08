@@ -1017,6 +1017,170 @@ def _hook_retirement_payload(
     return submission
 
 
+def _resolve_reversal(run_id: str) -> DerivedSubject:
+    """Reproduce the reversal gate's subject from the ledger.
+
+    Same discipline as the other three resolvers: this calls the *Activity's own*
+    derivation against a read-only runtime, including `docket_subjects`, which is
+    the single place a docket document becomes a list of signed items. A parallel
+    implementation here could agree with the admitting side while both were wrong.
+    """
+
+    from . import activities, reversal_record
+    from .reversal_gate import derive_reversal_gate_request
+
+    configured = activities.runtime()
+    recorded = reversal_record.resolve_with(
+        configured.ledger, configured.store, run_id
+    )
+    request = derive_reversal_gate_request(
+        recorded.run_id,
+        recorded.docket,
+        recorded.version,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.items,
+    )
+    return DerivedSubject(
+        run_id=request.run_id,
+        gate_id=request.gate_id,
+        subject_sha256=request.sha256,
+        admission_sha256=request.sha256,
+        prepared_sha256=request.sha256,
+        policy_revision=request.policy_revision,
+        allowed_actor=request.allowed_actor,
+    )
+
+
+def _reversal_rulings(detail: object, items: tuple[str, ...]) -> dict[str, tuple[str, str]]:
+    """The human's rulings, keyed by docket item, refusing anything unexpected.
+
+    Iterates the **derived** items and looks each one up, never the other way
+    round — the same direction, and for the same reason, as `_retirement_rulings`.
+    A file that renames, drops or invents an item is refused by name before
+    anything is signed, and the emission order is the docket's rather than the
+    file's, so the document's digest cannot depend on how somebody ordered their
+    editor.
+
+    No silent verdict: every answer needs a rationale, including `keep`. Going on
+    enforcing a block the evidence says is inert is also a decision, and the row
+    this eventually writes is permanent.
+    """
+
+    from .reversal_gate import VERDICTS as REVERSAL_VERDICTS
+
+    if not isinstance(detail, dict):
+        raise SubmissionRefused(
+            "This gate needs a ruling for every decision in the docket: pass "
+            "--rulings with a JSON object mapping each item id to "
+            '{"verdict": withdraw|keep|defer, "rationale": …}'
+        )
+    unknown = sorted(set(detail) - set(items))
+    if unknown:
+        raise SubmissionRefused(
+            f"Rulings name a decision this docket does not cover: {unknown[0]}"
+        )
+    out: dict[str, tuple[str, str]] = {}
+    for item in items:
+        entry = detail.get(item)
+        if entry is None:
+            # Refused, never defaulted to `keep`. An item nobody mentioned is a
+            # decision nobody looked at, and reading that silence as "leave it in
+            # force" would be a decision made by inattention.
+            raise SubmissionRefused(f"No ruling for decision {item}")
+        if not isinstance(entry, dict):
+            raise SubmissionRefused(f"Ruling for {item} must be an object")
+        verdict = entry.get("verdict")
+        rationale = entry.get("rationale", "")
+        if verdict not in REVERSAL_VERDICTS:
+            raise SubmissionRefused(
+                f"Ruling for {item} has verdict {verdict!r}; expected one of "
+                f"{', '.join(REVERSAL_VERDICTS)}"
+            )
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise SubmissionRefused(
+                f"Ruling for {item} has no rationale. Every verdict needs one here, "
+                "including `keep`"
+            )
+        out[item] = (verdict, rationale)
+    return out
+
+
+def _reversal_payload(
+    pending: "PendingGate", decision: GateDecision, answer: Answer
+) -> object:
+    """Build the rulings document, publish it to CAS, and wrap it with the decision.
+
+    Each ruling carries the digest of the **docket item** it answers, taken from
+    the recorded docket rather than from the human's file — and unlike the
+    retirement gate, the admitting side checks it. So a client that filled this in
+    from anywhere else would be refused rather than quietly recording a decision
+    against evidence nobody saw.
+
+    The last step is the point, as with the other two document gates: this runs
+    the admitting side's own validator over its own submission and refuses here if
+    it cannot admit its own answer, rather than making a human's decision fail at
+    a worker where they cannot see why.
+    """
+
+    from . import activities, reversal_record
+    from .reversal_gate import (
+        RULINGS_ARTIFACT_KIND,
+        ReversalGateSubmissionV1,
+        ReversalRulingsV1,
+        ReversalRulingV1,
+        derive_reversal_gate_request,
+        validate_submission as validate_reversal_submission,
+    )
+
+    configured = activities.runtime()
+    recorded = reversal_record.resolve_with(
+        configured.ledger, configured.store, pending.derived.run_id
+    )
+    request = derive_reversal_gate_request(
+        recorded.run_id,
+        recorded.docket,
+        recorded.version,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.items,
+    )
+    rulings = _reversal_rulings(answer.detail, recorded.item_ids)
+    try:
+        digests = {item.item_id: item.item_sha256 for item in recorded.items}
+        document = ReversalRulingsV1(
+            1,
+            recorded.docket.sha256,
+            recorded.version,
+            recorded.policy_revision,
+            tuple(
+                ReversalRulingV1(1, item, *rulings[item], digests[item])
+                for item in recorded.item_ids
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        # Every refusal out of this client is a `SubmissionRefused`: the CLI turns
+        # that into "refused: …" and exit 2, while anything else is a traceback —
+        # and a gate client that teaches whoever is on call to skim tracebacks has
+        # undone the reason it exists.
+        raise SubmissionRefused(f"These rulings are not a valid answer: {error}") from error
+    body = canonical_json(document).encode("utf-8")
+    reference = configured.store.put_bytes(
+        kind=RULINGS_ARTIFACT_KIND,
+        data=body,
+        producer_operation_id=f"client-{document.sha256}",
+        input_hashes=(recorded.docket.sha256,),
+    )
+    try:
+        submission = ReversalGateSubmissionV1(1, decision, reference)
+        validate_reversal_submission(request, submission, document)
+    except (TypeError, ValueError) as error:
+        raise SubmissionRefused(
+            f"This client cannot admit its own answer, so it will not send it: {error}"
+        ) from error
+    return submission
+
+
 FEATURE_ASSESSMENT_GATE = GateKind(
     name="feature-assessment",
     update_name="submit_feature_dispositions",
@@ -1058,10 +1222,26 @@ HOOK_RETIREMENT_GATE = GateKind(
     payload=_hook_retirement_payload,
 )
 
+#: The reversal gate joined on the same terms as the two above and only then:
+#: `recorded_reversal_dockets_v1` is what lets `_resolve_reversal` reach a docket
+#: from a run id and nothing else. Registering it before that row existed would
+#: have been the `phase-a-approval` mistake wearing a fourth name.
+REVERSAL_GATE = GateKind(
+    name="reversal",
+    update_name="submit_reversal_rulings",
+    # The suffix is spelled out rather than imported from `reversal_gate`, as the
+    # other three are: importing it would make this predicate agree with the
+    # producer by construction, and agreeing by construction is not agreeing.
+    matches=lambda gate_id, run_id: gate_id == f"{run_id}-reversal-gate",
+    resolve=_resolve_reversal,
+    payload=_reversal_payload,
+)
+
 GATE_KINDS: tuple[GateKind, ...] = (
     REPLAY_VERIFICATION_GATE,
     FEATURE_ASSESSMENT_GATE,
     HOOK_RETIREMENT_GATE,
+    REVERSAL_GATE,
 )
 
 

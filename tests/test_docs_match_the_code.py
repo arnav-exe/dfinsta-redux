@@ -59,7 +59,7 @@ def offending_lines(relative: str, phrase: str) -> list[str]:
 
 class DocumentationMatchesCodeTests(unittest.TestCase):
     def test_no_document_says_the_workflows_are_unregistered(self) -> None:
-        """Only while four workflows are in fact registered.
+        """Only while every workflow is in fact registered.
 
         The rule is gated on the code so it cannot outlive its own premise: if
         registration were ever reverted, these sentences would become true again
@@ -72,6 +72,7 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
                 "ReplayRunWorkflow",
                 "FeatureAssessmentRunWorkflow",
                 "HookRetirementRunWorkflow",
+                "ReversalRunWorkflow",
             },
             registered,
             "the premise of this test changed; re-read the rules below before editing",

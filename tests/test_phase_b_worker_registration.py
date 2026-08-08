@@ -57,6 +57,12 @@ EXPECTED_REGISTERED = {
     # decision that takes days needs something that survives a worker restart.
     "prepare_retirement_gate_activity",
     "admit_retirement_rulings_activity",
+    # And the two reversal-gate Activities, when `ReversalRunWorkflow` did. Same
+    # reason a third time: `reconsider` could say which recorded decisions no
+    # longer match the evidence and `reversal` could record a withdrawal at a
+    # command line, and nothing put the one in front of a human as the other.
+    "prepare_reversal_gate_activity",
+    "admit_reversal_rulings_activity",
     *STAGE_WRAPPERS,
 }
 
@@ -95,6 +101,7 @@ class WorkerRegistrationTests(unittest.TestCase):
                 "ReplayRunWorkflow",
                 "FeatureAssessmentRunWorkflow",
                 "HookRetirementRunWorkflow",
+                "ReversalRunWorkflow",
             },
         )
         for cls in worker.REGISTERED_WORKFLOWS:

@@ -15,6 +15,7 @@ from .activities import (
     admit_feature_dispositions_activity,
     admit_replay_verification_grant_activity,
     admit_retirement_rulings_activity,
+    admit_reversal_rulings_activity,
     apply_activity,
     configure_runtime,
     prepare_activity,
@@ -22,6 +23,7 @@ from .activities import (
     prepare_replay_plan_activity,
     prepare_replay_verification_gate_activity,
     prepare_retirement_gate_activity,
+    prepare_reversal_gate_activity,
     record_decision_activity,
     replay_apply_tree_stage_activity,
     replay_build_patched_apk_stage_activity,
@@ -33,6 +35,7 @@ from .activities import (
 from .feature_workflow import FeatureAssessmentRunWorkflow
 from .replay_workflow import ReplayRunWorkflow
 from .retirement_workflow import HookRetirementRunWorkflow
+from .reversal_workflow import ReversalRunWorkflow
 from .workflow import PortRunWorkflow
 
 # Only stage wrappers are registered. The proven checkpoint Activities
@@ -59,6 +62,8 @@ REGISTERED_ACTIVITIES = (
     admit_feature_dispositions_activity,
     prepare_retirement_gate_activity,
     admit_retirement_rulings_activity,
+    prepare_reversal_gate_activity,
+    admit_reversal_rulings_activity,
 )
 
 REGISTERED_WORKFLOWS = (
@@ -66,6 +71,7 @@ REGISTERED_WORKFLOWS = (
     ReplayRunWorkflow,
     FeatureAssessmentRunWorkflow,
     HookRetirementRunWorkflow,
+    ReversalRunWorkflow,
 )
 
 # How long a stopping worker lets a running stage finish before cancelling it.

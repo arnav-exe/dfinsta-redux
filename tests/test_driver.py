@@ -1145,6 +1145,9 @@ class SkipEvidenceGateTests(DriverCase):
             {"full_proposals": None},
             {"refutations": None},
             {"proposals": {**proposals, CONTEXT_HOOK.hook_id: [SHELL]}},
+            # A measurement build is still a build: observing changes what the
+            # run *reports*, never what it is allowed to produce.
+            {"observe": True},
         ]
         for index, extra in enumerate(variations):
             with self.subTest(extra=sorted(extra)):
@@ -1153,17 +1156,29 @@ class SkipEvidenceGateTests(DriverCase):
                 self.assertIs(result.ok, False)
                 self.assertEqual(result.stage_reached, "gate")
 
-    def test_require_evidence_is_the_only_boolean_switch(self):
-        """A second bypass flag would be invisible in a review of this test file.
+    def test_the_boolean_switches_are_exactly_these_two(self):
+        """A second *bypass* flag would be invisible in a review of this test file.
 
-        Pinned mechanically rather than by reading, so adding one fails here.
+        Pinned mechanically rather than by reading, so adding one fails here and
+        has to be justified in this docstring. The list is deliberately an exact
+        equality and not a subset check — a rule this blunt is worth its
+        bluntness, and softening it to "contains require_evidence" is exactly how
+        the flag it guards would stop being the only one.
+
+        * `require_evidence` — the one switch that can weaken the evidence gate.
+        * `observe` — build a measurement APK, which reports MORE and permits
+          nothing more. That it is not a bypass is not asserted here by reading:
+          `test_no_other_argument_gets_past_a_failing_gate` runs a failing gate
+          with `observe=True` and it still stops at the gate.
         """
-        switches = [
+        switches = sorted(
             name
             for name, parameter in inspect.signature(port).parameters.items()
             if isinstance(parameter.default, bool)
-        ]
-        self.assertEqual(switches, ["require_evidence"])
+        )
+        # Sorted, because where a switch sits in the signature is not behaviour
+        # and reordering the parameters should not fail a test about bypasses.
+        self.assertEqual(switches, ["observe", "require_evidence"])
 
 
 # ------------------------------------------------------------ patch source

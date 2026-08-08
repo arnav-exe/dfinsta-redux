@@ -33,7 +33,7 @@ from .executor import (
     execute,
     process_not_reaped,
 )
-from . import assessment_record, replay_gate, retirement_record
+from . import assessment_record, replay_gate, retirement_record, reversal_record
 from .feature_gate import (
     FeatureAssessmentGateV1,
     FeatureDispositionsAdmissionV1,
@@ -50,6 +50,14 @@ from .retirement_gate import (
     derive_retirement_gate_request,
 )
 from .retirement_gate import validate_submission as validate_retirement_submission
+from .reversal_gate import (
+    ReversalGateV1,
+    ReversalRulingsAdmissionV1,
+    ReversalRulingsV1,
+    derive_reversal_gate,
+    derive_reversal_gate_request,
+)
+from .reversal_gate import validate_submission as validate_reversal_submission
 from .ledger import Ledger
 from .replay_contracts import (
     REPLAY_STAGES_WITHOUT_FRAMEWORK,
@@ -4065,6 +4073,122 @@ async def admit_retirement_rulings_activity(
 
     configured.ledger.record_decision(admission.submission.decision)
     configured.ledger.record_admitted_retirement_rulings(
+        {
+            "run_id": admission.run_id,
+            "decision_id": admission.submission.decision.decision_id,
+            "rulings_sha256": reference.sha256,
+            "rulings_size": reference.size,
+            "docket_sha256": document.docket_sha256,
+            "version": document.version,
+            "policy_revision": document.policy_revision,
+        }
+    )
+    return reference
+
+
+def _reversal_request(configured: ActivityRuntime, run_id: str):
+    """The reversal gate subject, re-derived from the ledger for a run id.
+
+    One function, called by the preparing Activity and again by the admitting
+    one. The admitting side must not take the Workflow's copy of the subject —
+    that would make History the authority on what a human approved — so it
+    re-derives, and re-deriving through the *same* code is what makes the two
+    answers mean something. Two implementations agree only until one is edited.
+    """
+
+    recorded = reversal_record.resolve_with(configured.ledger, configured.store, run_id)
+    return recorded, derive_reversal_gate_request(
+        recorded.run_id,
+        recorded.docket,
+        recorded.version,
+        recorded.policy_revision,
+        recorded.allowed_actor,
+        recorded.items,
+    )
+
+
+@activity.defn
+async def prepare_reversal_gate_activity(run_id: str) -> ReversalGateV1:
+    """Publish only the hash of the reversal gate subject.
+
+    The docket — every recorded decision the evidence has stopped supporting,
+    each carrying an agent's prose summary and every line of the case against it,
+    plus the rules that could not be run — stays in the content store. What
+    crosses into History is six scalars, because History is permanent and
+    replayable.
+    """
+
+    configured = runtime()
+    _, request = _reversal_request(configured, run_id)
+    return derive_reversal_gate(request)
+
+
+@activity.defn
+async def admit_reversal_rulings_activity(
+    admission: ReversalRulingsAdmissionV1,
+) -> ArtifactRef:
+    """The authority. Re-derives, fetches, validates, and only then records.
+
+    Nothing here trusts the Workflow's copy of anything. The subject is recomputed
+    from the ledger, the rulings document is fetched by the reference the human
+    signed (which re-verifies its digest and size on read), and
+    `validate_submission` runs over the three together.
+
+    Refusals are `non_retryable`, and the honest reason is narrower than the one
+    the sibling retirement Activity gives. Its docstring says an unmarked failure
+    would be "retried forever" — but `reversal_workflow._GATE_RETRY` is
+    `maximum_attempts=3`, so it would fail after three attempts, not forever. What
+    the flag actually buys is that a wrong answer fails **at once and by that
+    name**: a retry cannot make it right, and two pointless re-runs of the
+    validation put a backoff between a human's mistake and the message that
+    explains it.
+
+    ("Forever" is true one layer up and that is where it belongs: a bare
+    exception raised in *Workflow* code is a workflow task failure, which Temporal
+    does retry indefinitely, which is why `reversal_workflow` raises
+    `ApplicationError` rather than `ValueError`.)
+    """
+
+    configured = runtime()
+    # The Workflow branches on this before invoking the Activity, so on the
+    # supported path it cannot arrive here as anything else. Checked anyway,
+    # because an Activity is reachable independently of the Workflow that
+    # normally calls it, and `validate_submission` deliberately does not judge
+    # the verdict — a `defer` handed straight to this function would otherwise be
+    # admitted as an approval and published as a withdrawal.
+    if admission.submission.decision.decision != "approve":
+        raise ApplicationError(
+            "Reversal rulings were not approved: the decision is "
+            f"{admission.submission.decision.decision!r}",
+            type="ReversalRulingsNotApproved",
+            non_retryable=True,
+        )
+    _, request = _reversal_request(configured, admission.run_id)
+    reference = admission.submission.rulings
+    body = configured.store.read_blob(reference.sha256, reference.size)
+    try:
+        document = ReversalRulingsV1.from_dict(json.loads(body.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ApplicationError(
+            f"Reversal rulings are unreadable: {error}",
+            type="ReversalRulingsUnreadable",
+            non_retryable=True,
+        ) from error
+    try:
+        validate_reversal_submission(request, admission.submission, document)
+    except ValueError as error:
+        raise ApplicationError(
+            f"Reversal rulings refused: {error}",
+            type="ReversalRulingsRefused",
+            non_retryable=True,
+        ) from error
+
+    configured.ledger.record_decision(admission.submission.decision)
+    # And a run-keyed row, so the rulings can be FOUND. The Workflow returns this
+    # reference in its result, and a result is not somewhere a later caller can
+    # look it up — without this row a human's admitted withdrawals are authorised
+    # and then unreachable, which is the disconnection this gate itself closes.
+    configured.ledger.record_admitted_reversal_rulings(
         {
             "run_id": admission.run_id,
             "decision_id": admission.submission.decision.decision_id,

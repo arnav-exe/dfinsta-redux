@@ -213,16 +213,44 @@ class RefusalTests(ReconsiderTestCase):
 
 
 class CommittedCorpusTests(unittest.TestCase):
-    def test_nothing_recorded_here_has_stopped_matching(self) -> None:
-        """Today's real state, and the reasons the six fresh blocks are silent.
+    def test_the_committed_corpus_questions_four_blocks_and_only_by_measurement(self):
+        """Today's real state. This test used to assert the corpus found NOTHING.
 
-        Five are enforced and silent only because their hook runs. The sixth is
-        declared and unenforceable, which `rulings --audit` owns. This asserting
-        empty is what proves the omitted rule stayed omitted;
-        `CommittedCorpusAttributionTests` is what keeps it from being vacuous.
+        It stopped being empty on 2026-08-08, when a measurement build was walked
+        on the phone and four blocked endpoints turned out never to be requested.
+        That is the feature working, not a regression — the reversal gate had no
+        possible input until this corpus existed.
+
+        What still has to hold is the property the module is proudest of: the
+        deliberately omitted "declared and not enforced" rule must not have been
+        re-created. So every finding must come from `block_never_observed`, and
+        none of them may be an endpoint the app does not guard —
+        `delivery/background_prefetch` is declared, unguarded and never observed,
+        and its absence from this list is the omission still holding.
         """
         found, not_run = reconsiderations(REPOSITORY, version="441")
-        self.assertEqual([], [item.to_dict() for item in found])
+
+        self.assertEqual(
+            {"block_never_observed"}, {item.trigger for item in found},
+            "a finding from another rule means the corpus changed shape",
+        )
+        self.assertEqual(
+            [
+                "feed/injected_reels_media/",
+                "feed/reels_media/",
+                "feed/reels_media_stream/",
+                "feed/timeline_stream/",
+            ],
+            sorted(item.subject for item in found),
+        )
+        # The omitted rule, still omitted, on the one endpoint that would expose it.
+        self.assertNotIn(
+            "delivery/background_prefetch", {item.subject for item in found},
+            "an unguarded endpoint reached a reconsideration: the omitted rule is back",
+        )
+        # Every finding names the decision a withdrawal would be recorded against.
+        for item in found:
+            self.assertTrue(item.original_decision_id.startswith("decision-"))
         self.assertTrue(not_run, "the index rule should report itself skipped")
 
 
@@ -317,6 +345,39 @@ class EnforcementTestCase(ReconsiderTestCase):
             encoding="utf-8",
         )
 
+    def observed(
+        self,
+        *sessions: tuple[str, str, list[str], dict[str, int]],
+        version: str = "441",
+    ) -> Path:
+        """Observation sessions, as `(session_id, surface, watched, counts)`.
+
+        Written raw rather than through `observation.append`, deliberately: a
+        fixture built by the writer under test cannot catch a writer and a reader
+        that agree with each other and with nothing else.
+
+        **Always under `self.tmp`.** Never `manifest/observations/` in this
+        repository — a test that wrote into a committed corpus once shipped 36
+        fabricated rows, and the defence is that the root is a parameter with no
+        way to reach the real one from here.
+        """
+
+        path = self.tmp / "manifest" / "observations" / f"{version}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "".join(
+                json.dumps({
+                    "schema_version": 1, "version": version, "build_sha256": "b" * 64,
+                    "recorded_at": "2026-08-09T10:00:00Z", "session_id": session_id,
+                    "surface": surface, "watched": watched,
+                    "counts": counts, "total": sum(counts.values()),
+                }, sort_keys=True) + "\n"
+                for session_id, surface, watched, counts in sessions
+            ),
+            encoding="utf-8",
+        )
+        return path
+
 
 class TheOmittedRuleTests(EnforcementTestCase):
     """"Declared blocked and not yet enforced" is not a trigger, on purpose."""
@@ -409,6 +470,336 @@ class TheOmittedRuleTests(EnforcementTestCase):
         found, _ = reconsiderations(self.tmp, version="441")
         self.assertEqual([("block_inert", "feed/guarded/")],
                          [(item.trigger, item.subject) for item in found])
+
+
+class BlockNeverObservedTests(EnforcementTestCase):
+    """The rule built on a measurement of traffic rather than the shape of code.
+
+    Stage 4 judges an endpoint from its name in a class of names. That produced
+    two rulings on 2026-08-08 it should not have — one path that fires zero times,
+    and `delivery/background_prefetch`, which is a no-op logger's marker name and
+    not a request path at all. Both looked exactly like the four good rulings
+    beside them, because a name is all stage 4 has to look at.
+
+    The tests that matter most here are the ones where it stays **silent**: on an
+    unenforced endpoint, on a path only a vacuous session watched, and on a store
+    that does not exist. Each of those is a way for this rule to become the one
+    the module docstring leaves out on purpose.
+    """
+
+    def test_a_watched_endpoint_never_requested_is_reported(self) -> None:
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(("s1", "feed_tab", ["feed/gone/", "feed/busy/"], {"feed/busy/": 40}))
+
+        found, not_run = reconsiderations(self.tmp, version="441")
+
+        self.assertEqual([("block_never_observed", "feed/gone/")],
+                         [(item.trigger, item.subject) for item in found])
+        self.assertEqual("decision-1", found[0].original_decision_id)
+        self.assertEqual("block", found[0].kind)
+        self.assertIn("never requested once", found[0].summary)
+        self.assertEqual([], [l for l in not_run if l.startswith("block_never_observed")])
+
+    def test_an_endpoint_that_was_observed_is_not_reported(self) -> None:
+        """The positive control. One request is the whole difference."""
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(("s1", "feed_tab", ["feed/gone/"], {"feed/gone/": 1}))
+        self.assertEqual([], reconsiderations(self.tmp, version="441")[0])
+
+    def test_an_endpoint_no_build_was_watching_is_not_reported(self) -> None:
+        """Silence from a path nobody looked for is not evidence of anything.
+
+        Without the watch list this rule would fire on every blocked endpoint the
+        moment any session was recorded, which is a report of the manifest rather
+        than of the phone.
+        """
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(("s1", "feed_tab", ["feed/busy/"], {"feed/busy/": 40}))
+        self.assertEqual([], reconsiderations(self.tmp, version="441")[0])
+
+    def test_an_unenforced_endpoint_cannot_reach_this_rule(self) -> None:
+        """The omitted rule stays omitted, and structurally rather than by luck.
+
+        `feed/unguarded/` is ruled, declared, and has no `throwIfBlocked` guard —
+        the state `delivery/background_prefetch` is in. A watch list is a claim by
+        a build about what it was watching, so a mis-generated one naming an
+        unenforced path would otherwise put a day-old decision in front of a human
+        as a false alarm, which is exactly what the omission exists to prevent.
+        `feed/guarded/` in the same corpus is the positive control: the rule is
+        running, and its silence about the other is a judgement.
+        """
+        self.blocker(deps=["feed/guarded/", "feed/unguarded/"], ran=True)
+        self.rulings("feed/guarded/", "feed/unguarded/")
+        self.app_source("feed/guarded/")
+        self.observed((
+            "s1", "feed_tab",
+            ["feed/guarded/", "feed/unguarded/", "feed/busy/"],
+            {"feed/busy/": 40},
+        ))
+
+        found, not_run = reconsiderations(self.tmp, version="441")
+
+        self.assertEqual([("block_never_observed", "feed/guarded/")],
+                         [(item.trigger, item.subject) for item in found])
+        self.assertEqual([], [l for l in not_run if l.startswith("block_never_observed")])
+
+    def test_an_unreadable_app_source_makes_this_rule_report_its_blind_spot(self) -> None:
+        """With no source nothing can be shown to be unenforced.
+
+        So the guarantee above does not hold on this run, and the rule says so
+        under its own name rather than quietly judging endpoints whose enforcement
+        nobody checked. It still runs — a caveat is not a skip.
+        """
+        self.blocker(deps=["feed/unguarded/"], ran=True)
+        self.rulings("feed/unguarded/")
+        self.observed((
+            "s1", "feed_tab", ["feed/unguarded/", "feed/busy/"], {"feed/busy/": 40},
+        ))
+
+        found, not_run = reconsiderations(self.tmp, version="441")
+
+        self.assertEqual(["feed/unguarded/"],
+                         [i.subject for i in found if i.trigger == "block_never_observed"])
+        excuses = [l for l in not_run if l.startswith("block_never_observed")]
+        self.assertEqual(1, len(excuses), not_run)
+        self.assertIn(str(self.tmp / APP_SOURCE), excuses[0])
+        self.assertIn("was not excluded", excuses[0])
+
+    def test_a_readable_source_removes_that_blind_spot_line(self) -> None:
+        """The positive control for the caveat above: it must be absent sometimes."""
+        self.blocker(deps=["feed/guarded/"], ran=True)
+        self.rulings("feed/guarded/")
+        self.app_source("feed/guarded/")
+        self.observed((
+            "s1", "feed_tab", ["feed/guarded/", "feed/busy/"], {"feed/busy/": 40},
+        ))
+        _, not_run = reconsiderations(self.tmp, version="441")
+        self.assertEqual([], [l for l in not_run if l.startswith("block_never_observed")])
+
+    def test_the_blind_spot_caveat_is_not_raised_about_a_rule_that_never_ran(self) -> None:
+        """The other control, and the one that was missing.
+
+        With no observation store the rule is skipped, and "an endpoint with no
+        guard was not excluded from this rule" would be a caveat about a rule that
+        did not run — text that travels inside the signed docket. Exactly one line
+        about this rule, and it is the skip.
+        """
+        self.blocker(deps=["feed/unguarded/"], ran=True)
+        self.rulings("feed/unguarded/")
+        # No app_source() and no observed(): both unreadable at once.
+        _, not_run = reconsiderations(self.tmp, version="441")
+        mine = [l for l in not_run if l.startswith("block_never_observed")]
+        self.assertEqual(1, len(mine), not_run)
+        self.assertIn("no observation evidence", mine[0])
+        self.assertNotIn("was not excluded", mine[0])
+
+    def test_a_ruled_endpoint_no_hook_declares_cannot_reach_this_rule(self) -> None:
+        """The hole in "an unenforced endpoint cannot reach this rule".
+
+        `unenforced_endpoints` names what is *declared and unguarded*, so an
+        endpoint no hook declares at all is in neither set. That is reachable the
+        moment a dep leaves `hooks.json` while `rulings.jsonl` keeps its row —
+        which is what `apply_unblock` does — and it would put the exact endpoint
+        the omitted rule protects in front of a human with a readable source and
+        no caveat at all. `feed/guarded/` is the positive control: the rule is
+        running.
+        """
+        self.blocker(deps=["feed/guarded/"], ran=True)
+        self.rulings("feed/guarded/", "delivery/background_prefetch")
+        self.app_source("feed/guarded/")
+        self.observed((
+            "s1", "feed_tab",
+            ["feed/guarded/", "delivery/background_prefetch", "feed/busy/"],
+            {"feed/busy/": 40},
+        ))
+
+        found, not_run = reconsiderations(self.tmp, version="441")
+
+        self.assertEqual([("block_never_observed", "feed/guarded/")],
+                         [(item.trigger, item.subject) for item in found])
+        self.assertEqual([], [l for l in not_run if l.startswith("block_never_observed")])
+
+    def test_a_path_watched_only_by_a_vacuous_session_is_not_reported(self) -> None:
+        """A session that saw nothing at all proves nothing about any path.
+
+        It is equally well explained by a build that was not observing, an empty
+        capture, and an app that never ran — so the path it watched is not
+        evidence, and the rule must stay silent about it while still reporting the
+        one an evidential session watched.
+        """
+        self.blocker(deps=["feed/gone/", "feed/quiet/"], ran=True)
+        self.rulings("feed/gone/", "feed/quiet/")
+        self.app_source("feed/gone/", "feed/quiet/")
+        self.observed(
+            ("s1", "feed_tab", ["feed/gone/", "feed/busy/"], {"feed/busy/": 40}),
+            ("v1", "reels_tab", ["feed/quiet/"], {}),
+        )
+        found, _ = reconsiderations(self.tmp, version="441")
+        self.assertEqual(["feed/gone/"], [item.subject for item in found])
+
+    def test_no_observation_store_makes_the_rule_report_itself_skipped(self) -> None:
+        """A rule that quietly did not run is indistinguishable from one that
+        found nothing, and this rule's finding is a negative claim — the exact
+        shape where a missing measurement reads as a result."""
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        found, not_run = reconsiderations(self.tmp, version="441")
+        self.assertEqual([], found)
+        excuses = [l for l in not_run if l.startswith("block_never_observed")]
+        self.assertEqual(1, len(excuses), not_run)
+        self.assertIn("no observation evidence", excuses[0])
+
+    def test_an_all_vacuous_store_makes_the_rule_report_itself_skipped(self) -> None:
+        """The dangerous corpus: sessions exist and none of them is evidence."""
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(("v1", "feed_tab", ["feed/gone/"], {}))
+        found, not_run = reconsiderations(self.tmp, version="441")
+        self.assertEqual([], found)
+        self.assertTrue(
+            [l for l in not_run if l.startswith("block_never_observed") and "vacuous" in l],
+            not_run,
+        )
+
+    def test_a_corrupt_observation_store_is_reported_and_never_read_as_clean(self) -> None:
+        """Present and unreadable is the same fact as absent: nobody measured."""
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        path = self.observed(("s1", "feed_tab", ["feed/gone/"], {"feed/busy/": 1}))
+        path.write_text("{ not json\n", encoding="utf-8")
+        found, not_run = reconsiderations(self.tmp, version="441")
+        self.assertEqual([], found)
+        self.assertTrue([l for l in not_run if l.startswith("block_never_observed")], not_run)
+
+    def test_the_store_is_read_at_the_version_being_reported(self) -> None:
+        """A 440 session must not answer a question about 441."""
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(
+            ("s1", "feed_tab", ["feed/gone/", "feed/busy/"], {"feed/busy/": 40}),
+            version="440",
+        )
+        _, not_run = reconsiderations(self.tmp, version="441")
+        self.assertTrue([l for l in not_run if l.startswith("block_never_observed")], not_run)
+
+    def test_the_manifest_spelling_and_the_watched_spelling_may_differ(self) -> None:
+        """The watch list carries the literal as the smali does; a ruling carries
+        the candidate's. A leading slash hid a whole grouping once."""
+        self.blocker(deps=["/api/v1/feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("/api/v1/feed/gone/")
+        self.observed((
+            "s1", "feed_tab", ["/api/v1/feed/gone/", "feed/busy/"], {"feed/busy/": 40},
+        ))
+        found, _ = reconsiderations(self.tmp, version="441")
+        self.assertEqual([("block_never_observed", "feed/gone/")],
+                         [(item.trigger, item.subject) for item in found])
+        self.assertIn("watched as /api/v1/feed/gone/", "\n".join(found[0].evidence))
+
+    def test_a_withdrawn_block_is_no_longer_questioned(self) -> None:
+        """A withdrawal removes the question for good. Asking again would make the
+        gate propose reconsidering a decision a human already reconsidered."""
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(("s1", "feed_tab", ["feed/gone/", "feed/busy/"], {"feed/busy/": 40}))
+        # The positive control: it fires before the withdrawal is recorded.
+        self.assertEqual(1, len(reconsiderations(self.tmp, version="441")[0]))
+        (self.manifest / "reversals.jsonl").write_text(
+            json.dumps({
+                "schema_version": 1, "withdraws": "block",
+                # Spelled with the leading slash a human would have typed, which
+                # `reversal` stores verbatim — the join has to normalise.
+                "subject": "/feed/gone/",
+                "original_decision_id": "decision-1", "decision_id": "withdraw-1",
+                "ruled_by": "arnav", "rationale": "measured, never requested",
+                "recorded_at": "2026-08-09T00:00:00Z",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual([], reconsiderations(self.tmp, version="441")[0])
+
+    def test_a_withdrawal_of_a_different_decision_does_not_silence_this_one(self) -> None:
+        """Keyed on the pair, not on the subject and not on the id alone."""
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(("s1", "feed_tab", ["feed/gone/", "feed/busy/"], {"feed/busy/": 40}))
+        (self.manifest / "reversals.jsonl").write_text(
+            json.dumps({
+                "schema_version": 1, "withdraws": "block", "subject": "feed/gone/",
+                "original_decision_id": "some-other-decision",
+                "decision_id": "withdraw-1", "ruled_by": "arnav",
+                "rationale": "a different docket", "recorded_at": "2026-08-09T00:00:00Z",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(1, len(reconsiderations(self.tmp, version="441")[0]))
+
+    def test_every_finding_states_the_bound_a_reader_would_otherwise_miss(self) -> None:
+        """A path only one screen requests is not observed by a session that never
+        went there, and server config can suppress a request the app would make.
+        Neither is resolvable from the store, so both travel on the finding.
+        """
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(
+            ("s1", "feed_tab", ["feed/gone/", "feed/busy/"], {"feed/busy/": 40}),
+            ("s2", "explore_tab", ["feed/gone/", "feed/busy/"], {"feed/busy/": 2}),
+            # A vacuous session on a third surface. Its `reels_tab` must NOT be
+            # named: the surface list exists so a human can ask "would this
+            # session have seen it?", and a session that saw nothing at all
+            # answers that wrongly — in the direction of withdrawing a block.
+            ("v1", "reels_tab", ["feed/gone/"], {}),
+        )
+        found, _ = reconsiderations(self.tmp, version="441")
+        evidence = "\n".join(found[0].evidence)
+        self.assertIn("BOUNDED BY THE SURFACES WALKED", evidence)
+        self.assertEqual("measured on: explore_tab, feed_tab",
+                         [l for l in found[0].evidence if l.startswith("measured on:")][0])
+        self.assertNotIn("reels_tab", evidence)
+        self.assertIn("feed/busy/ x42", evidence)
+        self.assertIn("observed 0 times", evidence)
+        # Two sessions, not three. The vacuous one is not counted as evidence
+        # anywhere the finding speaks.
+        self.assertIn("2 session(s)", found[0].summary)
+
+    def test_it_groups_with_the_other_rules_in_both_output_forms(self) -> None:
+        """Two rules on one decision is one question for a human; the report has
+        to carry both without either form going quieter than the other."""
+        self.blocker(deps=["feed/gone/"], ran=False)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(("s1", "feed_tab", ["feed/gone/", "feed/busy/"], {"feed/busy/": 40}))
+
+        found, not_run = reconsiderations(self.tmp, version="441")
+        self.assertEqual({"block_inert", "block_never_observed"},
+                         {item.trigger for item in found})
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(0, main(["--root", str(self.tmp), "--version", "441", "--json"]))
+        payload = json.loads(out.getvalue())
+        self.assertEqual([item.to_dict() for item in found], payload["reconsiderations"])
+        self.assertEqual(not_run, payload["rules_not_run"])
+
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text), contextlib.redirect_stderr(io.StringIO()):
+            main(["--root", str(self.tmp), "--version", "441"])
+        self.assertIn("[block_never_observed] block: feed/gone/", text.getvalue())
+        for line in payload["rules_not_run"]:
+            self.assertIn(line, text.getvalue())
 
 
 class BlockingHookAttributionTests(EnforcementTestCase):
@@ -710,6 +1101,10 @@ class IndexRuleTests(EnforcementTestCase):
         self.blocker(deps=["feed/gone/"], ran=True)
         self.rulings("feed/gone/")
         self.app_source("feed/gone/")
+        # Observed on the phone, so `block_never_observed` runs and stays silent.
+        # Without this the corpus cannot reach `not_run == []`, and an assertion
+        # that no rule was skipped is the strongest thing this test says.
+        self.observed(("s1", "feed_tab", ["feed/gone/"], {"feed/gone/": 3}))
         index = self.write_index({"feed/still_here/": ["LX/01ab;"]})
         found, not_run = reconsiderations(self.tmp, version="441", index_dir=index)
         self.assertEqual([("block_endpoint_absent", "feed/gone/")],
@@ -728,10 +1123,52 @@ class IndexRuleTests(EnforcementTestCase):
                 found, _ = reconsiderations(self.tmp, version="441", index_dir=index)
                 self.assertEqual([], found, spelling)
 
+    def test_a_withdrawn_block_is_not_questioned_again_when_its_endpoint_vanishes(self):
+        """The last of the three rules to consult `withdrawn`, and it did not.
+
+        `retirement_returned` reads through `retirements_on_record`, and
+        `block_inert` is silenced only *indirectly* — `apply_unblock` removes the
+        dep, so `_blocking_hook` returns "". Neither of those protects this rule,
+        so a block that a human withdrew and whose endpoint later disappeared
+        would be proposed for withdrawal a second time. A reversal is a decision
+        taken for ever; re-asking is the false alarm that stops a gate being
+        answered twice.
+
+        Both halves, so neither can pass by accident: it fires before the
+        withdrawal is recorded and is silent after.
+        """
+        self.blocker(deps=["feed/gone/"], ran=True)
+        self.rulings("feed/gone/")
+        self.app_source("feed/gone/")
+        self.observed(("s1", "feed_tab", ["feed/gone/"], {"feed/gone/": 3}))
+        index = self.write_index({"feed/still_here/": ["LX/01ab;"]})
+
+        found, _ = reconsiderations(self.tmp, version="441", index_dir=index)
+        self.assertEqual(
+            [("block_endpoint_absent", "feed/gone/")],
+            [(i.trigger, i.subject) for i in found],
+            "the positive control: without a withdrawal this rule must fire",
+        )
+
+        (self.manifest / "reversals.jsonl").write_text(
+            json.dumps({
+                "schema_version": 1, "withdraws": "block",
+                "subject": "/feed/gone/",
+                "original_decision_id": "decision-1", "decision_id": "withdraw-1",
+                "ruled_by": "arnav", "rationale": "measured, never requested",
+                "recorded_at": "2026-08-09T00:00:00Z",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        found, not_run = reconsiderations(self.tmp, version="441", index_dir=index)
+        self.assertEqual([], found)
+        self.assertEqual([], not_run, "and no rule may have been skipped to achieve it")
+
     def test_supplying_an_index_removes_the_skip_and_only_that_skip(self) -> None:
         self.blocker(deps=["feed/gone/"], ran=True)
         self.rulings("feed/gone/")
         self.app_source("feed/gone/")
+        self.observed(("s1", "feed_tab", ["feed/gone/"], {"feed/gone/": 3}))
         _, without = reconsiderations(self.tmp, version="441")
         _, with_index = reconsiderations(
             self.tmp, version="441", index_dir=self.write_index({"feed/gone/": ["LX/01ab;"]})
@@ -855,12 +1292,23 @@ class MoreRefusalTests(EnforcementTestCase):
                 self.assertIn("not a version number", str(caught.exception))
 
     def test_a_good_version_is_accepted(self) -> None:
-        """The positive control: the guard above must not reject everything."""
+        """The positive control: the guard above must not reject everything.
+
+        The `not_run` list is asserted exactly, not by prefix. A rule that stops
+        reporting itself skipped is the failure both halves of the result exist
+        to prevent, and only an equality catches one going quiet.
+        """
+        from dfinsta_pipeline.observation import store_path
+
         self.blocker(deps=[], ran=True)
         self.app_source()
         self.assertEqual(
             ([], ["block_endpoint_absent: no --index given, so whether these endpoints "
-                  "still exist in the app was not checked"]),
+                  "still exist in the app was not checked",
+                  "block_never_observed: there is no observation evidence for 441 "
+                  f"({store_path('441', self.tmp)} holds no session). Nothing can be "
+                  "said about what the app never requested until something recorded "
+                  "what it did"]),
             reconsiderations(self.tmp, version="441"),
         )
 
@@ -941,7 +1389,9 @@ class MoreRefusalTests(EnforcementTestCase):
 
     def test_the_trigger_vocabulary_is_closed(self) -> None:
         self.assertEqual(
-            ("block_inert", "block_endpoint_absent", "retirement_returned"), TRIGGERS
+            ("block_inert", "block_endpoint_absent", "block_never_observed",
+             "retirement_returned"),
+            TRIGGERS,
         )
         for trigger in TRIGGERS:
             Reconsideration("block", "s", "d", trigger, "", ())
@@ -960,6 +1410,11 @@ class ExitCodeTests(EnforcementTestCase):
         self.blocker(deps=["feed/gone/"], ran=False)
         self.rulings("feed/gone/")
         self.app_source("feed/gone/")
+        # Watched on a session that saw plenty of other traffic and never this —
+        # so the third block rule fires too, and `not_run` can still be empty.
+        self.observed((
+            "s1", "feed_tab", ["feed/gone/", "feed/busy/"], {"feed/busy/": 12},
+        ))
         (self.manifest / "retirements.jsonl").write_text(
             json.dumps({
                 "schema_version": 1, "hook_id": "blocker", "effective_from": "441",
@@ -979,8 +1434,10 @@ class ExitCodeTests(EnforcementTestCase):
         (index / "structural.jsonl").write_text("", encoding="utf-8")
 
         found, not_run = reconsiderations(self.tmp, version="441", index_dir=index)
-        self.assertEqual({"block_inert", "block_endpoint_absent"},
-                         {item.trigger for item in found})
+        self.assertEqual(
+            {"block_inert", "block_endpoint_absent", "block_never_observed"},
+            {item.trigger for item in found},
+        )
         self.assertEqual([], not_run)
         self.assertEqual(0, self.run_main([
             "--root", str(self.tmp), "--version", "441", "--index", str(index)]))

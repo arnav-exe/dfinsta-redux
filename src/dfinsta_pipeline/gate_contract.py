@@ -1,7 +1,7 @@
 """The clauses every gate's authority must check, in one place.
 
-There are three durable human gates in this pipeline — replay verification, the
-feature assessment, and hook retirement — and a fourth arriving for reversals.
+There are four durable human gates in this pipeline — replay verification, the
+feature assessment, hook retirement, and the reversal of a recorded decision.
 Each has its own `validate_submission`, and the first six clauses of each are
 character-for-character the same:
 

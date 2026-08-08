@@ -55,6 +55,7 @@ from dfinsta_pipeline.submission import (
     FEATURE_ASSESSMENT_GATE,
     HOOK_RETIREMENT_GATE,
     REPLAY_VERIFICATION_GATE,
+    REVERSAL_GATE,
     VERDICTS,
     Answer,
     DerivedSubject,
@@ -1187,13 +1188,20 @@ class GateKindTests(unittest.TestCase):
         mistake wearing a different name. The hook-retirement gate joined on the
         same terms and only then: `recorded_retirement_dockets_v1` is what lets
         `_resolve_hook_retirement` reach a docket from a run id and nothing else.
+        The reversal gate is the third to join on those terms, backed by
+        `recorded_reversal_dockets_v1`.
 
         `phase-a-approval` is still absent, and that absence is the point of this
         assertion rather than an omission from it.
         """
         self.assertEqual(
             GATE_KINDS,
-            (REPLAY_VERIFICATION_GATE, FEATURE_ASSESSMENT_GATE, HOOK_RETIREMENT_GATE),
+            (
+                REPLAY_VERIFICATION_GATE,
+                FEATURE_ASSESSMENT_GATE,
+                HOOK_RETIREMENT_GATE,
+                REVERSAL_GATE,
+            ),
         )
         for kind in GATE_KINDS:
             with self.subTest(gate=kind.name):

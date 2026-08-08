@@ -1182,10 +1182,21 @@ live server and so was run by hand.
   release-ready on, and any recorded decision. A three-way cell keeps *nobody measured* (`—`)
   distinct from *measured and silent* (`·`). It immediately surfaced that of the three hooks the
   owner decided to keep on 2026-08-01, **only one carries that decision in the manifest**.
-* **`reconsider.py`** — which recorded decisions no longer match the evidence. Three rules, and a
-  fourth deliberately omitted: "declared blocked and not yet enforced" would have proposed
+* **`reconsider.py`** — which recorded decisions no longer match the evidence. **Four** rules, and
+  one deliberately omitted: "declared blocked and not yet enforced" would have proposed
   reconsidering all six endpoints ruled the day before, which is outstanding work rather than a
-  suspect decision. Always exits 0 — a proposal must never fail a port.
+  suspect decision. Always exits 0 — a proposal must never fail a port. The fourth rule,
+  `block_never_observed`, is the one built on measured traffic rather than on the shape of the
+  code (see `observation.py` below); it skips exactly the endpoints the omitted rule would have
+  fired on, so the omission holds structurally rather than by luck.
+* **`observation.py`** — the device measurement `block_never_observed` reads. The app's generated
+  observe mode emits `I DFInstaObserve: <literal>` once per watched path it sees; this parses a
+  capture into `manifest/observations/<version>.jsonl` and derives which watched paths were never
+  once requested. **The non-vacuity control is the whole design**: a session that observed nothing
+  at all is not evidence — a build that was not observing, an empty capture and an app that never
+  ran all produce it — so it is excluded, derived as `total > 0` with no minimum-session constant
+  anywhere. When no session is evidence, `never_observed` **refuses** rather than returning an
+  empty tuple, because empty is what it says when everything was seen.
 * **`gate_contract.py`** — the six clauses every gate's authority shares, extracted when a third
   gate was about to copy them a third time.
 
@@ -1202,6 +1213,82 @@ retirement exists. So the next step was `throwIfBlocked` for one endpoint, not t
 that ships unable to be raised about anything cannot be exercised in anger, and seam defects
 found only on first real use are this pipeline's most repeated failure. **The first guard is now
 written** (next section), so `block_inert` has one live subject.
+~~The gate itself is not built.~~ **Closed 2026-08-08 — the gate is the next section.**
+
+## The reversal gate: the durable wait between proposing and recording
+
+2026-08-08. `reconsider` proposed and exited 0; `reversal` recorded and had to be typed. Nothing
+carried the one to the other, so an unread proposal left a block in force that the evidence said
+was inert — a disconnection that fails in the *dangerous* direction. The fourth durable human
+gate closes it, built to the shape of the third:
+
+- **`reversal_gate.py`** — the wire contracts and the authority. Routes its six shared clauses
+  through `gate_contract.bind_document` / `bind_decision`, which is what that module was
+  extracted for.
+- **`reversal_workflow.py`** — `ReversalRunWorkflow`, `PINNED`, registered in `worker.py`.
+  Update validator as filter, admitting Activity as authority; an unanswered gate is `blocked`,
+  never an implicit approval, so every questioned decision stays in force.
+- **`reversal_record.py`** — the producer (`record`), the starter (`raise_gate`, with the
+  "not present in task queue" retry the live server taught), and **the consumer**
+  (`publish_admitted`), which turns a `withdraw` into a `reversal.Reversal` row and, for a
+  block, an `apply_unblock` of `manifest/hooks.json`.
+- **`submission.REVERSAL_GATE`** — the fourth kind, joined on the same terms as the previous
+  two: `recorded_reversal_dockets_v1` is what lets the client reach a docket from a run id and
+  nothing else. `phase-a-approval` is still absent and still should be.
+- Two committed Histories, open and closed, under `tests/histories/`.
+
+**Three decisions worth knowing about.** *A docket item is a decision, not a trigger* — two
+rules firing on one block are one question, because `reversal.withdrawn` is keyed on
+`(original_decision_id, subject)` and asking twice would let a human answer both ways on one
+key. *`rules_not_run` is in the signed bytes*, and a sweep that found nothing while a rule could
+not run is **refused** rather than recorded as an empty docket. *Each ruling's `item_sha256` is
+checked against the subject*, which the retirement gate's equivalent `case_sha256` is not — that
+digest is what the permanent record names as the evidence a human ruled against.
+
+**Mutation testing found five real defects, and one of them was in the guard against this
+project's own recorded regression.** 81 mutations out of tree; the survivors were the report.
+
+- **The subject digest was never proved to be re-derived.** Replacing `request.sha256` with
+  `submission.decision.subject_sha256` in the authority — making all three clauses tautological —
+  passed 773 tests. Every existing test mutated *one* hash field, so the other two disagreed with
+  it; nothing bound a decision self-consistently to a digest nobody computed.
+- **The filter-vs-authority test could not fail.** It grepped for `decision.<field>` in two
+  files — and `ReversalGateSubmissionV1.to_dict` writes every one of `GateDecision`'s thirteen
+  fields, so the substring was present by construction. Three deliberately-unchecked clauses were
+  added to the filter and all three passed, including `schema_version`, chosen as a control
+  precisely because the authority ignores it. Now both sides are parsed by AST and scoped to
+  attributes read off the decision, with that control asserted.
+- **`--recorded-at banana` exited 0** and wrote into `manifest/reversals.jsonl`, which nothing
+  ever deletes from. `Reversal.__post_init__` checks every other field for emptiness and does not
+  check `recorded_at` at all; the stamp is now parsed, with a required UTC offset.
+- **A `keep` on an already-withdrawn decision reported "kept in force"** over a manifest that no
+  longer declared the endpoint — the reconciliation guard sat on the `withdraw` branch only.
+- **The operation key did not cover evidence past the docket's version.** `reconsider` reaches
+  `roster`, which walks every version from the baseline, so a 442 probe changed the docket while
+  the key stood still. It failed closed, but by the adopted-blob digest check and with a message
+  about hashes rather than about evidence.
+
+Two more were in the tests rather than the code: `test_a_changed_input_makes_a_different_operation`
+and its app-source sibling asserted only `RecordError`, and the two distinct refusals ("the key
+moved" and "the key did not move") are indistinguishable to that. One was passing through the
+wrong mechanism. Both now compare operation keys directly.
+
+**A second round found that the first round's fix was itself vacuous**, which is the part worth
+remembering. The four rewritten operation-key tests recorded under a *fresh run id* to get a
+fresh ledger — and `run_id` is inside `operation_input`'s payload, so every `assertNotEqual`
+was true before the input under test was considered. Two recordings with nothing changed
+returned different keys. The run id is now held fixed and the state root varies, with
+`test_two_recordings_with_nothing_changed_agree` as the control that was missing. The same round
+found the CAS-orphan assertion inert (its perturbation moved the key but left the docket bytes
+identical, and CAS is content-addressed, so the blob count could not move whatever the code did)
+and one more real bug: `_timestamp` validated `value.strip()` and the call site wrote `value`, so
+a padded stamp was accepted and recorded in a form the validator rejects on the next read.
+
+The lesson is the one this project already has written down twice, arriving in the place built
+to enforce it: **a test that cannot fail is worse than no test**, and the way to know which kind
+you have is a positive control. Three of the guards written this week — the leak scan, the
+authority-versus-filter check, and the operation-key comparisons — needed one, and only the first
+had one.
 
 ## The first of the six ruled endpoints gains a guard
 
@@ -1241,7 +1328,9 @@ round trip shows both feed literals branching to the shared `disable_feed` check
 throw.
 
 **Six tests failed, and all six were right to.** They pinned "all six ruled endpoints are declared
-and not yet enforced" — the premise that justifies `reconsider` omitting a fourth rule. That
+and not yet enforced" — the premise that justifies `reconsider` omitting the "declared and not yet
+enforced" rule. (That was "a fourth rule" when written; `block_never_observed` is now the fourth
+and the omitted one would be a fifth. The premise is unchanged.) That
 premise is now false for one endpoint, so the attribution test was rewritten to assert the
 **split** rather than the equality: which endpoints are held silent because they are unenforced,
 and which by the separate fact that their hook runs. `UNGUARDED_GAP`, the fixture standing for
