@@ -2247,19 +2247,43 @@ class CommittedCorpusTests(unittest.TestCase):
         row = session(toggles=FEED_ON, counts={"/feed/timeline/": 1}).to_dict()
         self.assertIn("toggles", json.dumps(row, sort_keys=True))
 
-    def test_the_committed_rows_carry_no_block_count_and_still_read(self) -> None:
-        """The other absence, and the same rule. Twelve 439 rows predate the counter.
+    def test_every_committed_row_round_trips_and_states_what_it_counted(self) -> None:
+        """Twelve 439 rows, byte for byte, each carrying a measured block count.
 
-        They must keep reading and must come back byte for byte, and their `blocks`
-        must be `None` rather than a zero nobody measured.
+        They were re-derived from `manifest/captures/` once the counter existed;
+        that regeneration changed exactly one field and left everything else
+        identical, which is why the captures are committed at all — the store is
+        now checkable against something rather than merely present.
+
+        `blocks` must be a real count and never `None`: a row that cannot say what
+        it counted makes the arm it belongs to unreadable, and reading a missing
+        count as zero would turn "nobody looked" into "nothing happened".
         """
         path = REPOSITORY / OBSERVATIONS / "439.jsonl"
         committed = path.read_text(encoding="utf-8").splitlines()
         rows = read("439", REPOSITORY)
         self.assertEqual(12, len(rows))
         for original, row in zip(committed, rows):
-            self.assertIsNone(row.blocks)
+            self.assertIsNotNone(row.blocks, row.session_id)
             self.assertEqual(original, json.dumps(row.to_dict(), sort_keys=True))
+        # Not vacuous: some arm actually saw blocks, so a counter that always
+        # returned zero could not satisfy this.
+        self.assertTrue(any(r.blocks and r.blocks.total for r in rows))
+
+    def test_each_committed_row_can_be_re_derived_from_its_committed_capture(self) -> None:
+        """The property the captures exist for, asserted rather than asserted about.
+
+        A store nothing can be checked against is a store that has to be trusted.
+        Every row's counts must fall out of parsing the redacted capture named for
+        its session id.
+        """
+        for row in read("439", REPOSITORY):
+            capture = REPOSITORY / "manifest" / "captures" / f"{row.session_id}.log"
+            with self.subTest(session=row.session_id):
+                self.assertTrue(capture.is_file(), f"no capture for {row.session_id}")
+                again = parse(capture.read_text(encoding="utf-8"))
+                self.assertEqual(dict(row.counts), dict(again.counts))
+                self.assertEqual(row.toggles, again.toggles)
 
 
 class BlockCountingTests(unittest.TestCase):

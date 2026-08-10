@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+from dataclasses import replace
 import tempfile
 import unittest
 from pathlib import Path
@@ -1065,10 +1066,16 @@ class ReportTests(RootedTestCase):
 class CommittedCorpusTests(unittest.TestCase):
     """The real 439 store, read and never written.
 
-    Pinned to what the committed corpus can support **today**: twelve sessions,
-    six states, and no block counts, because the block counter did not exist when
-    they were recorded. If somebody re-records them from the captures this fails,
-    and it should: the answer gets larger and this is where that is noticed.
+    Twelve sessions over six states, each measured twice — once with the arms run
+    forward and once back-to-front — and every row re-derived from the redacted
+    captures committed beside it, so this corpus is checkable rather than merely
+    present.
+
+    It was rewritten once. The rows first landed without block counts, so the
+    BLOCKED half refused by name and this class pinned that refusal. Regenerating
+    from the captures changed exactly one field and made the blocked half readable.
+    What is pinned now is the answer itself, endpoint by endpoint, because that is
+    what a human would act on.
     """
 
     def setUp(self) -> None:
@@ -1104,53 +1111,78 @@ class CommittedCorpusTests(unittest.TestCase):
         self.assertEqual(10, len(never), never)
         self.assertIn("delivery/background_prefetch", never)
 
-    def test_the_committed_store_has_no_block_counts_so_nothing_is_blocked(self) -> None:
-        """And the guard that makes it so is named, because it is not the obvious one.
+    def test_two_paths_are_blocked_and_the_toggle_is_derived_not_declared(self) -> None:
+        """The answer a human acts on, and nothing in reaching it reads a name.
 
-        The first version of this said "delete the block-count requirement and
-        `/feed/timeline/` becomes blocked here". That was false: replacing the whole
-        blocked-branch condition with `if True:` still yields zero BLOCKED on this
-        corpus, and the test stayed green — it caught none of thirty-one mutations.
-        What actually refuses is `_attribute` returning `()` the moment a session has
-        `blocks is None`, one function away. So that is what is asserted, and the
-        reason for each arm is asserted too, because "never counted" and "the two
-        sessions disagree" are different facts the report has already confused once.
+        `/feed/timeline/` and `disable_feed` share a word; `/feed/reels_tray/` and
+        `disable_stories` share none. Both are attributed the same way — by the
+        block-accounting identity, arithmetic over two measurements — which is the
+        whole point of grouping by measurement rather than by what things are called.
         """
-
+        blocked = {
+            item.endpoint: item.toggle
+            for item in self.grouped.classifications
+            if item.verdict == BLOCKED
+        }
         self.assertEqual(
-            [], [item for item in self.grouped.classifications if item.verdict == BLOCKED]
+            {"/feed/timeline/": "disable_feed", "/feed/reels_tray/": "disable_stories"},
+            blocked,
         )
-        self.assertEqual(
-            {
-                "disable_feed": "its blocks were never counted",
-                "disable_explore": "its blocks were never counted",
-                "disable_reels": "its blocks were never counted",
-                "disable_stories": "its blocks were never counted",
-                "disable_adds": "its blocks were never counted",
-            },
-            dict(self.grouped.unreadable),
-            "every arm predates the block counter, and none of them 'disagrees'",
-        )
-        population = sorted(item.endpoint for item in self.grouped.classifications)
-        for arm in self.grouped.arms:
-            self.assertFalse(arm.counted, arm.arm)
-            self.assertEqual(
-                (),
-                grouping._attribute(arm, population),
-                f"{arm.arm}: an uncounted session must attribute nothing",
-            )
 
-    def test_the_timeline_surge_is_reported_as_unexplained_rather_than_ignored(
-        self,
-    ) -> None:
+    def test_the_explore_arm_is_unreadable_because_its_two_sessions_disagree(self) -> None:
+        """Not "never counted" — a different fact, and the report confused the two once.
+
+        Both sessions of `disable_explore` ran the same state and asked for
+        `/discover/topical_explore` six or seven times; one reported a single block
+        event and the other reported none at all. So Instagram's error event can be
+        **absent for a block that certainly happened**, and the replication rule
+        refuses to classify from it rather than taking the run that agreed.
+        """
+        self.assertEqual(
+            {"disable_explore"}, set(dict(self.grouped.unreadable)),
+            "only the explore arm should be unreadable now",
+        )
+        self.assertIn("disagree", dict(self.grouped.unreadable)["disable_explore"])
+        found = next(
+            item for item in self.grouped.classifications
+            if item.endpoint == "/discover/topical_explore"
+        )
+        self.assertEqual(UNCLASSIFIABLE, found.verdict)
+
+    def test_an_uncounted_session_still_attributes_nothing(self) -> None:
+        """The guard that used to be pinned by the corpus, now pinned directly.
+
+        The corpus no longer exercises it — every arm is counted — so it is asserted
+        against a session built for the purpose. The earlier version of this test
+        claimed the corpus proved it and caught none of thirty-one mutations.
+        """
+        arm = self.grouped.arms[0]
+        uncounted = replace(arm, sessions=tuple(
+            replace(s, blocks=None) for s in arm.sessions
+        ))
+        self.assertFalse(uncounted.counted)
+        self.assertEqual(
+            (), grouping._attribute(uncounted, ["/feed/timeline/"]),
+            "a session with no block count must attribute nothing",
+        )
+
+    def test_the_timeline_surge_is_explained_by_the_block_that_causes_it(self) -> None:
+        """20 and 23 requests against a baseline of 6 and 7, every one of them blocked.
+
+        The surge is not incidental: a blocked request is retried, so the count
+        rises *because* of the block. Pinned together so a future reading cannot
+        take the surge as evidence on its own — `/feed/reels_tray/` is blocked just
+        as certainly and its count barely moves.
+        """
         found = next(
             item
             for item in self.grouped.classifications
             if item.endpoint == "/feed/timeline/"
         )
-        self.assertEqual(UNCLASSIFIABLE, found.verdict)
-        self.assertIn("no mechanism accounts", found.reason)
-        self.assertEqual(3, found.noise_floor, "20 and 23 in the disable_feed arm")
+        self.assertEqual(BLOCKED, found.verdict)
+        self.assertEqual("disable_feed", found.toggle)
+        self.assertEqual((20, 23), found.observed["disable_feed"])
+        self.assertEqual((6, 7), found.observed["baseline"])
 
     def test_reels_media_stream_is_unclassifiable_for_the_baseline_it_lacks(self) -> None:
         found = next(
