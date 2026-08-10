@@ -659,6 +659,7 @@ def compose_patch_source(
             METHOD_NAME,
             render_method,
             rules_from_manifest,
+            toggles_of,
             watch_from_manifest,
             watched_literals,
             write_observe_class,
@@ -678,7 +679,7 @@ def compose_patch_source(
             text[:start] + render_method(rules, observe=watched) + text[end:],
             encoding="utf-8",
         )
-        write_observe_class(destination / "newCode")
+        write_observe_class(destination / "newCode", toggles_of(rules))
         print(f"[observe] measurement build watching {len(watched)} paths", flush=True)
     (destination / "patches").mkdir()
     (destination / "patches" / "anchored_patches.json").write_text(

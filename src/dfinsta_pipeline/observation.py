@@ -14,9 +14,13 @@ four good rulings beside them, because a name in a class of names is all the
 evidence stage 4 has.
 
 So the app grows an **observe mode**: a generated form of `throwIfBlocked` that
-blocks nothing and emits one line per watched path it sees. This module is the
-host side — it turns those lines into committed evidence, and that evidence into
-an answer to "which of these paths does this phone never actually request?".
+emits one line per watched path it sees, *before* any rule can throw. It blocks
+exactly what a shipped build blocks — `test_an_observing_build_blocks_exactly_what_a_shipped_one_blocks`
+compares the rule spans of both renderings — and that is the whole reason the
+section below exists, because a build that still blocks suppresses the very
+requests it is counting. This module is the host side: it turns those lines into
+committed evidence, and that evidence into an answer to "which of these paths
+does this phone never actually request?".
 
 ===============================================================================
   THE CONTRACT WITH THE APP
@@ -30,17 +34,121 @@ and in a real capture, with the threadtime prefix logcat adds::
 
     08-08 17:31:02.412 12875 12875 I DFInstaObserve: /feed/timeline/
 
-The message is **verbatim** one of the watched literals, and nothing else is
-emitted under that tag. :func:`parse` therefore anchors on the tag *position*
-rather than searching for the string: a crash dump quoting one of these lines
-inside its own payload is another component talking about DFInsta, not DFInsta
-seeing a request, and `probes.count_signal` already paid for that lesson once —
-re-narration counted as events and turned an off-side zero into a phantom leak.
+plus a **directive** naming which blocks were active, emitted on *every* checked
+request, ahead of any path line that request produces::
+
+    I DFInstaObserve: !toggles disable_feed=1 disable_explore=0 disable_reels=1 …
+    I DFInstaObserve: /feed/timeline/
+
+`1` is on, meaning blocking. A payload beginning `!` is a directive and never a
+path; an unrecognised one **refuses**, so a host reading a capture from a newer
+build fails loudly instead of counting `!version 442` as a request. Repeats are
+collapsed — a 22-request session states the same thing 22 times.
+
+It repeats because the once-per-process version of it failed in the field, and
+failed silently. The protocol is `adb logcat -c` immediately before walking the
+app, Instagram's process is usually already alive, so the single line had been
+written into the buffer that was then cleared and the flag stayed set: 22 path
+lines and no statement of what was active, with nothing marking the omission.
+Restating it per request buys the invariant **any capture holding a path line
+also holds the toggle state**, and buys a second thing the flag could not — a
+toggle changed halfway through a session now contradicts itself in the file
+instead of being invisible.
+
+The message is otherwise **verbatim** one of the watched literals, and nothing
+else is emitted under that tag. :func:`parse` therefore anchors on the tag
+*position* rather than searching for the string: a crash dump quoting one of
+these lines inside its own payload is another component talking about DFInsta,
+not DFInsta seeing a request, and `probes.count_signal` already paid for that
+lesson once — re-narration counted as events and turned an off-side zero into a
+phantom leak.
 
 Anything under that tag which is not verbatim a watched literal makes the whole
-capture refuse. It means the build and the `watched` list disagree about what
-was being watched, and a session whose watch list is wrong cannot support a
-statement about what was *not* seen.
+session refuse — in `ObservationSession`, which is the only place that knows the
+watch list; `parse` counts what it is given. It means the build and the `watched`
+list disagree about what was being watched, and a session whose watch list is
+wrong cannot support a statement about what was *not* seen.
+
+===============================================================================
+  A ZERO IS ONLY READABLE UNDER A STATED CONFIGURATION
+===============================================================================
+
+The blocks suppress requests **downstream of themselves**, so a session measured
+with them on can produce a zero that is a fact about our own configuration.
+Measured on 2026-08-08, same build and same walk, only the five toggles changed:
+
+    /feed/injected_reels_media/   0 with the blocks on   3 with them off
+    /feed/reels_media_stream/     0                      1
+    /clips/discover/stream/       0                      3
+
+Blocking `/feed/timeline/` leaves no timeline response for Reels to be injected
+into, so the child request is never made. And `replaceReelsEndpoint` blanks the
+endpoint string before the URL is built — which is also *before* the observe
+pass — so with `disable_reels` on those paths report zero for a reason that has
+nothing to do with traffic. Three zeros, none of them about Instagram.
+
+So every session carries the toggle state it was measured under, and:
+
+**The state is read from the device, never typed by the operator.** There is no
+`--toggles` flag, and adding one would be the same shape of mistake as the rule
+this project shipped and broke in one line the next day: `effective_from` derived
+from a `--version` the same person supplied in the same command, a safety
+property that was really a formality. `retirement`'s docstring states the lesson —
+*ask what the operator controls*. Here the operator controls the phone's settings
+and the capture; the build controls what it says about itself. A selector may
+*choose* among recorded states, because choosing wrong refuses rather than
+answering.
+
+Precisely what that buys, and no more: **the recorded state is a function of the
+capture alone.** Somebody who wants a row to say something else has to put the
+line into the capture, or construct the record by hand — forging the evidence
+rather than filling in a field. That is a different act from typing a flag: it is
+visible in the capture that gets kept beside the session, and visible in a diff.
+An adversarial pass is right that it is not impossible; it is *the thing you
+would have to do*, which is the most any host-side rule can be worth.
+
+**A capture that cannot state its toggle state is a refusal, not an "all off".**
+A path line ahead of any directive is a capture whose start was cut off, and its
+counts cannot be attributed to any configuration. Two directives that disagree
+are two configurations in one file — a toggle changed mid-session, or two
+captures concatenated — with no line saying which counts belong to which, and
+they refuse too.
+
+A capture with no tag lines at all is the ordinary vacuous capture: no directive
+because the observe pass never ran. It records honestly, with an unknown state,
+and is excluded from every answer by the vacuity rule below rather than by this
+one. The directive proves the build was observing; it does **not** prove the app
+was walked, so a stated session that saw nothing is still vacuous.
+
+===============================================================================
+  WHY THE SESSIONS ARE NOT BLENDED
+===============================================================================
+
+:func:`never_observed` takes the toggle state as a **required argument** and
+answers over the sessions measured under exactly that state. The all-off
+exploration session and the one-toggle-on isolation sessions of the protocol land
+in one `<version>.jsonl` and answer different questions; unioning them produces a
+number that is about no configuration at all.
+
+A required argument rather than "group, and refuse when mixed": a call that
+answers today and refuses tomorrow because somebody filed a second session is
+indistinguishable, from the caller's side, from a corpus that broke. Naming the
+state makes the question well-posed at the call site and keeps it well-posed for
+ever. :func:`states` says which states are on record, and the report answers
+each state separately so the reader never has to pick.
+
+**A session whose toggle state is unknown answers nothing.** It is not "probably
+all off" and not "probably as shipped" — it is a measurement whose experiment was
+not written down. `manifest/observations/441.jsonl` holds exactly one such row,
+recorded on 2026-08-08 before the build reported its own state. The design note
+written the same week says it was walked with the blocks on, which would make it
+the circular measurement above; that note is a recollection and not a
+measurement, and treating it as one is the back-fill this module refuses — which
+is why the row answers nothing rather than answering as "blocks on". It stays
+readable, though: deleting or back-filling a row in
+an append-only store would be inventing a measurement from memory, which is the
+operator-supplied state this design refuses — and it is excluded from every
+toggle-scoped answer, by name, loudly, in both report forms.
 
 ===============================================================================
   WHY A SESSION THAT SAW NOTHING IS NOT EVIDENCE
@@ -129,13 +237,18 @@ __all__ = [
     "ObservationError",
     "SCHEMA_VERSION",
     "TAG",
+    "TOGGLE_DIRECTIVE",
     "OBSERVATIONS",
+    "ToggleState",
+    "Capture",
     "ObservationSession",
     "parse",
     "store_path",
     "append",
     "read",
     "evidential",
+    "stated",
+    "states",
     "never_observed",
     "blocked_endpoints",
     "blocked_and_never_observed",
@@ -173,22 +286,174 @@ _OBSERVE_LINE = re.compile(
     r"^\s*(?:\S+\s+\S+\s+\d+\s+\d+\s+)?[VDIWEFS]\s+" + re.escape(TAG) + r":\s?(?P<literal>.*)$"
 )
 
+#: The one directive the app emits, on every checked request, ahead of any path
+#: line that request produces. A payload starting `!` is never a path — no
+#: watched literal can begin with one, because `throwIfBlocked` tests
+#: `URI.getPath()`.
+TOGGLE_DIRECTIVE = "!toggles"
 
-def parse(text: str) -> dict[str, int]:
-    """Count **every** appearance of each literal, ordered by its first.
+#: A preference key the guard reads. Shape only, deliberately: `guards.Rule`
+#: already decides which names are legitimate for a *rule*, and this module
+#: records what the device said rather than judging it. A build that renames its
+#: toggles must still be able to file an honest capture.
+_TOGGLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-    The count is what matters and the ordering is incidental — an earlier
-    docstring said "by first appearance" of the counting rather than of the
-    order, which reads as though repeats are collapsed. They are not: two
-    requests for one path are two requests.
+
+@dataclass(frozen=True)
+class ToggleState:
+    """Which blocks were active while a capture was taken. Read from the device.
+
+    Stored sorted by name, so two states are equal exactly when they say the same
+    thing however the build ordered them — the app emits them in the order the
+    guard reads them, which is rule order and moves when a rule moves. A state
+    that compared unequal to itself across a rule reordering would split one
+    experiment into two groups and answer both from half the sessions.
+
+    Complete as the build reported it, never as a set of "the ones that were on".
+    Two states naming different *keys* are different states and do not blend:
+    a version that grows a sixth toggle has not measured the same experiment.
+    """
+
+    #: `(name, on)`, sorted by name. A Mapping is accepted here and normalised.
+    pairs: tuple[tuple[str, bool], ...]
+
+    def __post_init__(self) -> None:
+        given = self.pairs
+        items = list(given.items()) if isinstance(given, Mapping) else list(given)
+        cleaned: list[tuple[str, bool]] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, Sequence) or isinstance(item, (str, bytes)) or len(item) != 2:
+                raise ObservationError(
+                    f"a toggle state is (name, on) pairs, got {item!r}"
+                )
+            name, value = item
+            name = str(name)
+            if not _TOGGLE_NAME.fullmatch(name):
+                raise ObservationError(f"{name!r} is not a preference key")
+            if not isinstance(value, bool):
+                # `1 == True` in Python, so an int would compare equal here and
+                # round-trip through JSON as `1` — one state with two spellings
+                # in a store whose whole job is telling two states apart.
+                raise ObservationError(
+                    f"toggle {name} is {value!r}; a toggle state is on or off, and the "
+                    "store writes true/false"
+                )
+            if name in seen:
+                raise ObservationError(
+                    f"a toggle state names {name} twice. One key cannot have been both "
+                    "on and off for one capture"
+                )
+            seen.add(name)
+            cleaned.append((name, value))
+        if not cleaned:
+            raise ObservationError(
+                "a toggle state that names no toggle states nothing. The build reports "
+                "every key it reads, so an empty one is a build that did not answer"
+            )
+        object.__setattr__(self, "pairs", tuple(sorted(cleaned)))
+
+    @classmethod
+    def of(cls, values: Mapping[str, bool] | Iterable[tuple[str, bool]]) -> "ToggleState":
+        return cls(tuple(values.items()) if isinstance(values, Mapping) else tuple(values))
+
+    @classmethod
+    def parse(cls, text: str) -> "ToggleState":
+        """`disable_feed=1 disable_explore=0` — the app's spelling, and a selector's.
+
+        The same reader for both directions, so a state cannot be recorded in a
+        form no caller can name back.
+        """
+
+        pairs: list[tuple[str, bool]] = []
+        for token in str(text).split():
+            name, separator, value = token.partition("=")
+            if not separator or value not in ("0", "1"):
+                raise ObservationError(
+                    f"{token!r} is not `key=0` or `key=1`. A toggle state is read "
+                    "verbatim from what the build reported, and a token nobody can read "
+                    "is a build and a host that disagree about the contract"
+                )
+            pairs.append((name, value == "1"))
+        return cls(tuple(pairs))
+
+    @property
+    def text(self) -> str:
+        """The canonical spelling. Equal states have equal text, and conversely."""
+
+        return " ".join(f"{name}={int(value)}" for name, value in self.pairs)
+
+    @property
+    def on(self) -> tuple[str, ...]:
+        return tuple(name for name, value in self.pairs if value)
+
+    @property
+    def off(self) -> tuple[str, ...]:
+        return tuple(name for name, value in self.pairs if not value)
+
+    @property
+    def blocking(self) -> bool:
+        """Was anything blocking? The condition under which a zero can be ours."""
+
+        return bool(self.on)
+
+    def as_dict(self) -> dict[str, bool]:
+        return dict(self.pairs)
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return self.text
+
+
+@dataclass(frozen=True)
+class Capture:
+    """What one logcat capture says: the configuration, and what was asked for.
+
+    Both from one pass over the text. Two passes could disagree about which lines
+    they saw, and the ordering rule — no path before the directive — is only
+    checkable while reading in order.
+    """
+
+    #: `None` when the capture carries no directive, which only a capture with no
+    #: path lines at all may do. Never a default of "all off": see the module
+    #: docstring.
+    toggles: ToggleState | None
+    counts: Mapping[str, int] = field(default_factory=dict)
+
+    @property
+    def stated(self) -> bool:
+        return self.toggles is not None
+
+
+def parse(text: str) -> Capture:
+    """Read one capture: the toggle state it states, and every path it counted.
+
+    Counts **every** appearance of each literal, ordered by its first. The count
+    is what matters and the ordering is incidental — an earlier docstring said
+    "by first appearance" of the counting rather than of the order, which reads as
+    though repeats are collapsed. They are not: two requests for one path are two
+    requests.
 
     Refuses rather than skips. A line under this tag whose payload is empty or
     padded is a build that is not honouring the contract, and quietly dropping it
     would subtract requests that did happen from a count whose whole purpose is
     to be compared against zero.
+
+    Refuses a **path before any directive**, and two directives that disagree.
+    The app restates its configuration on every checked request, ahead of the
+    path lines that request produces, so a path line with no directive in front
+    of it is a capture whose start was cut off — `logcat -c` landing between the
+    two lines of one request, or a file assembled from pieces. Its counts belong
+    to a configuration nobody can name, and the alternative to refusing is to
+    attribute them to whichever state does appear.
+
+    Repeats are collapsed rather than counted: the same statement made 22 times
+    is one statement. Two *different* statements are two experiments, and this is
+    the shape a toggle changed halfway through a session takes — visible only
+    because the line repeats, which is why it repeats.
     """
 
     counts: dict[str, int] = {}
+    toggles: ToggleState | None = None
     for number, line in enumerate(text.splitlines(), 1):
         match = _OBSERVE_LINE.match(line)
         if match is None:
@@ -206,8 +471,44 @@ def parse(text: str) -> dict[str, int]:
                 "is compared verbatim against the watch list, so a padded literal would "
                 "be counted against a path no build is watching"
             )
+        if literal.startswith("!"):
+            keyword, _, payload = literal.partition(" ")
+            if keyword != TOGGLE_DIRECTIVE:
+                # Forward compatibility that fails closed. A host that ignored an
+                # unknown directive would read a newer build's capture as though
+                # it had said nothing new; one that counted it would manufacture
+                # a request for `!version`.
+                raise ObservationError(
+                    f"line {number}: {TAG} emitted the directive {keyword!r}, which this "
+                    "host does not know. The build is newer than the reader, and a "
+                    "capture whose statements are not all understood cannot be recorded"
+                )
+            try:
+                stated = ToggleState.parse(payload)
+            except ObservationError as error:
+                raise ObservationError(f"line {number}: {error}") from error
+            if toggles is not None and toggles != stated:
+                raise ObservationError(
+                    f"line {number}: this capture states two toggle states, "
+                    f"{toggles.text!r} then {stated.text!r}. A toggle was changed while "
+                    "the session was being walked, or two captures were concatenated; "
+                    "either way no line says which counts belong to which "
+                    "configuration, so this is two experiments at once"
+                )
+            toggles = stated
+            continue
+        if toggles is None:
+            raise ObservationError(
+                f"line {number}: {literal} was reported before any {TOGGLE_DIRECTIVE} "
+                "line. The build restates which blocks were active on every checked "
+                "request, ahead of the paths that request reports, so a path in front of "
+                "one comes from a request this capture did not see begin — the start of "
+                "the file was cut off, or it was assembled from pieces. Its counts "
+                "cannot be attributed to any configuration, and a zero measured under an "
+                "unknown one is not evidence about the app"
+            )
         counts[literal] = counts.get(literal, 0) + 1
-    return counts
+    return Capture(toggles=toggles, counts=counts)
 
 
 def _stamp(value: str) -> str:
@@ -272,6 +573,13 @@ class ObservationSession:
     #: is made over; without it a zero count is indistinguishable from a path the
     #: build never looked for.
     watched: tuple[str, ...]
+    #: Which blocks were active, as the **build** reported them — never as an
+    #: operator typed them. `None` means the capture did not say, which is a
+    #: value that has to be written down rather than defaulted: it is the state
+    #: of the one row recorded before builds reported themselves, and it answers
+    #: no question that depends on the configuration. Required, and deliberately
+    #: ahead of `counts`, so that every construction site states it.
+    toggles: ToggleState | None
     counts: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -307,6 +615,11 @@ class ObservationSession:
         # defect a sibling record store shipped and this one inherited the fix for.
         object.__setattr__(self, "recorded_at", _stamp(self.recorded_at))
         object.__setattr__(self, "watched", tuple(self.watched))
+        # Copied, like `watched` is. Keeping the caller's live mapping meant every
+        # check below could be undone after construction: a count added afterwards
+        # produced a row `append` wrote and this module's own `read` then refused —
+        # a store its writer made and its reader rejects.
+        object.__setattr__(self, "counts", dict(self.counts))
         if not self.watched:
             raise ObservationError(
                 f"session {self.session_id} watched nothing. The negative claim is made "
@@ -340,6 +653,15 @@ class ObservationSession:
                 "not watching. The build and the watch list disagree about what was "
                 "being watched, so nothing this session did not see can be relied on"
             )
+        if self.toggles is not None and not isinstance(self.toggles, ToggleState):
+            # Not coerced from a mapping. A state is normalised — sorted, with
+            # every value a real boolean — and a raw dict slipping through would
+            # compare unequal to the same state read back out of the store, which
+            # is the one comparison every answer here is grouped by.
+            raise ObservationError(
+                f"session {self.session_id} has toggles {self.toggles!r}; pass a "
+                "ToggleState (ToggleState.of({'disable_feed': True, ...})) or None"
+            )
 
     @property
     def total(self) -> int:
@@ -370,6 +692,7 @@ class ObservationSession:
         return tuple(sorted(set(self.watched) - set(self.counts)))
 
     def to_dict(self) -> dict[str, Any]:
+        stated = {"toggles": self.toggles.as_dict()} if self.toggles is not None else {}
         return {
             "schema_version": self.schema_version,
             "version": self.version,
@@ -378,6 +701,12 @@ class ObservationSession:
             "session_id": self.session_id,
             "surface": self.surface,
             "watched": list(self.watched),
+            # Written only when the capture stated one. An unknown state is
+            # spelled by the key's absence, which is how the row recorded before
+            # builds reported themselves is already spelled — so `append`, which
+            # rewrites the whole file, gives that row back byte for byte instead
+            # of editing a store nothing is allowed to edit.
+            **stated,
             "counts": dict(sorted(self.counts.items())),
             # Derived and written anyway, following `SignalCount.to_dict`. It is
             # the number a human reads first, and `from_dict` refuses a row whose
@@ -400,6 +729,7 @@ class ObservationSession:
             "session_id",
             "surface",
             "watched",
+            "toggles",
             "counts",
             "total",
         }
@@ -419,6 +749,26 @@ class ObservationSession:
                 f"counts must be an object of literal -> integer, got "
                 f"{type(counts).__name__}"
             )
+        toggles: ToggleState | None = None
+        if "toggles" in data:
+            raw = data["toggles"]
+            if raw is None:
+                # The same rule as the recorded zero below: absence has one
+                # spelling. A row that says `null` looks like a build that
+                # answered "nothing", and this store must not blur an answer
+                # nobody gave with one somebody gave.
+                raise ObservationError(
+                    "an observation session states toggles: null. An unknown toggle "
+                    "state is spelled by the key being absent — the way a row recorded "
+                    "before the build reported its own state is spelled — and a null is "
+                    "a second spelling of absent"
+                )
+            if not isinstance(raw, Mapping):
+                raise ObservationError(
+                    f"toggles must be an object of key -> true/false, got "
+                    f"{type(raw).__name__}"
+                )
+            toggles = ToggleState.of({str(key): value for key, value in raw.items()})
         session = cls(
             schema_version=data.get("schema_version"),
             version=str(data.get("version", "")),
@@ -427,6 +777,7 @@ class ObservationSession:
             session_id=str(data.get("session_id", "")),
             surface=str(data.get("surface", "")),
             watched=tuple(str(item) for item in watched),
+            toggles=toggles,
             counts={str(key): value for key, value in counts.items()},
         )
         stated = data.get("total")
@@ -539,9 +890,28 @@ def append(
     have to work out for themselves that the fix is to edit a file nothing told
     them about. `os.replace` within one directory is atomic, so the store is
     either every session before this one or every session including it.
+
+    **The writer refuses a session that saw something and cannot say under what
+    configuration.** The constructor cannot hold that rule: it is the one shape
+    `manifest/observations/441.jsonl` is already in, and the reader has to be able
+    to give that row back. So the record type represents history it is no longer
+    allowed to make — new evidence states its configuration or is not written.
     """
 
     location = Path(path) if path is not None else store_path(session.version, root)
+    # `not session.vacuous`, which is `total > 0` and no constant — the same
+    # derived threshold the module docstring insists on. `total > 1` would read as
+    # maintenance and would silently admit a one-request session that says nothing
+    # about its configuration.
+    if session.toggles is None and not session.vacuous:
+        raise ObservationError(
+            f"session {session.session_id} observed {session.total} request(s) and states "
+            "no toggle state. Every count it holds is unreadable: a zero under a block we "
+            "set is caused by us, and nothing here says whether one was set. Record it "
+            "from a capture that carries the build's own "
+            f"`{TOGGLE_DIRECTIVE}` line — there is deliberately no way to supply one by "
+            "hand"
+        )
     existing = read(session.version, root, path=location)
     if any(item.session_id == session.session_id for item in existing):
         raise ObservationError(
@@ -587,47 +957,101 @@ def evidential(sessions: Iterable[ObservationSession]) -> tuple[ObservationSessi
     return tuple(item for item in sessions if not item.vacuous)
 
 
-def never_observed(
+def stated(sessions: Iterable[ObservationSession]) -> tuple[ObservationSession, ...]:
+    """The sessions that say which blocks were active while they were measured.
+
+    The second control, and it is the same shape as :func:`evidential`: a filter
+    derived from the row's own content, with no constant in it. A session that
+    does not state its configuration is not evidence *about a configuration*,
+    which is the only kind of evidence this module produces.
+    """
+
+    return tuple(item for item in sessions if item.toggles is not None)
+
+
+def states(
     version: str, root: Path | str = ".", *, path: Path | str | None = None
+) -> tuple[ToggleState, ...]:
+    """The distinct toggle states that `version` has evidence under, sorted.
+
+    The discovery half of the required argument on :func:`never_observed`: a
+    caller cannot name a state it has no way to learn. Deliberately **not** a
+    refusal when empty — this enumerates, it does not answer, and `()` here says
+    "there is nothing you can ask about", which is not a claim about any path.
+    The refusal belongs where the question is asked, with a message that can name
+    which of the four reasons applies.
+    """
+
+    usable = stated(evidential(read(version, root, path=path)))
+    return tuple(sorted({item.toggles for item in usable}, key=lambda item: item.text))
+
+
+def never_observed(
+    version: str,
+    root: Path | str = ".",
+    *,
+    toggles: ToggleState,
+    path: Path | str | None = None,
 ) -> tuple[str, ...]:
-    """Literals watched in at least one non-vacuous session and never once seen.
+    """Literals watched under `toggles`, in a non-vacuous session, and never seen.
 
-    Both halves matter. *Watched* excludes a path no build was looking for, whose
-    silence says nothing. *Non-vacuous* excludes a session that saw nothing at
-    all, whose silence says nothing either — see the module docstring for the
-    three explanations for a vacuous session that have nothing to do with the
-    app's behaviour.
+    Three halves now, and each excludes a silence that is about the measurement
+    rather than about the app. *Watched* excludes a path no build was looking for.
+    *Non-vacuous* excludes a session that saw nothing at all — see the module
+    docstring for the three explanations that have nothing to do with the app's
+    behaviour. *Measured under this exact state* excludes a zero that our own
+    blocks caused: `/feed/injected_reels_media/` was observed 0 times with the
+    blocks on and 3 times with them off, on one build and one walk.
 
-    **Refuses when no session is evidence.** NOT `()`. This function's entire job
-    is to name paths whose absence was measured, and an empty tuple is the same
+    `toggles` is **required and names the experiment**, and the answer is over
+    the sessions measured under exactly that state. An all-off exploration
+    session and a one-toggle-on isolation session filed under one version answer
+    different questions, and a union of them is about no configuration at all.
+    The argument can only *select* — a state nobody measured refuses instead of
+    answering — so it is not the operator-supplies-the-safety-property mistake
+    that `retirement`'s docstring records; nothing here lets an operator say what
+    a capture was.
+
+    **Refuses when nothing can answer.** NOT `()`. This function's entire job is
+    to name paths whose absence was measured, and an empty tuple is the same
     answer it gives when every watched path was seen — so "we measured nothing"
     would arrive spelled "nothing is wrong". That is absence reported as a pass,
     which is the one failure this project refuses everywhere else;
     `rulings.unenforced_endpoints` refuses in the same place, for the same reason.
+
+    Four refusals, because four different things are wrong and each has its own
+    fix: nothing was recorded, everything recorded saw nothing, everything that
+    saw something predates builds stating their own configuration, and nothing
+    was measured under the state you asked about.
     """
 
+    if not isinstance(toggles, ToggleState):
+        raise ObservationError(
+            f"toggles must be a ToggleState, got {type(toggles).__name__}. Build one "
+            "with ToggleState.parse('disable_feed=1 disable_explore=0 ...') or "
+            "ToggleState.of({...}); `states(version, root)` lists the ones on record"
+        )
     location = Path(path) if path is not None else store_path(version, root)
     sessions = read(version, root, path=location)
-    usable = evidential(sessions)
-    if not usable:
-        if not sessions:
-            raise ObservationError(
-                f"there is no observation evidence for {version} ({location} holds no "
-                "session). Nothing can be said about what the app never requested "
-                "until something recorded what it did"
-            )
+    unanswerable = _unanswerable(version, location, sessions)
+    if unanswerable:
+        raise ObservationError(unanswerable)
+    configured = stated(evidential(sessions))
+    matching = [item for item in configured if item.toggles == toggles]
+    if not matching:
         raise ObservationError(
-            f"all {len(sessions)} observation session(s) for {version} are vacuous: not "
-            "one of them observed a single watched literal. A session that saw nothing "
-            "is equally well explained by a build that was not observing, an empty "
-            "capture, or an app that never ran — so it is evidence about no path. "
-            "Returning an empty tuple here would be the same answer this gives when "
-            "every watched path WAS seen"
+            f"no session for {version} was measured with {toggles.text!r}. The states on "
+            "record are: "
+            + "; ".join(item.text for item in
+                        sorted({item.toggles for item in configured},
+                               key=lambda item: item.text))
+            + ". Answering from a session measured under another configuration would be "
+            "answering a different question"
         )
 
     watched: set[str] = set()
     seen: set[str] = set()
-    for item in usable:
+    for item in matching:
         watched.update(item.watched)
         seen.update(item.counts)
     return tuple(sorted(watched - seen))
@@ -662,7 +1086,11 @@ def blocked_endpoints(root: Path | str = ".") -> tuple[str, ...]:
 
 
 def blocked_and_never_observed(
-    version: str, root: Path | str = ".", *, path: Path | str | None = None
+    version: str,
+    root: Path | str = ".",
+    *,
+    toggles: ToggleState,
+    path: Path | str | None = None,
 ) -> tuple[str, ...]:
     """Of the endpoints this repository blocks, which `version` never requested.
 
@@ -684,13 +1112,61 @@ def blocked_and_never_observed(
     no session was watching cannot appear here, and its silence means nothing —
     `summary` warns by name when the manifest blocks something the evidence never
     watched, because otherwise this answer is quietly incomplete.
+
+    **And bounded by `toggles`, which is where this question is at its most
+    circular.** Asked under a state in which the blocked endpoint's own toggle is
+    on, "we block it and never saw it asked for" is very nearly a tautology: the
+    block is upstream of the request for `/feed/injected_reels_media/`, and
+    `replaceReelsEndpoint` removes the Reels paths from the URL before the
+    observe pass can see them at all. The state is required here for that reason
+    and not merely by inheritance; `summary` says so, per state, in both forms.
     """
 
-    unseen = set(never_observed(version, root, path=path))
+    unseen = set(never_observed(version, root, toggles=toggles, path=path))
     return tuple(literal for literal in blocked_endpoints(root) if literal in unseen)
 
 
 # ------------------------------------------------------------------ reporting
+
+
+def _unanswerable(version: str, location: Path, sessions: Sequence[ObservationSession]) -> str:
+    """Why nothing can be answered for `version`, or `""` when something can.
+
+    One producer for the refusal and for the report's banner. `never_observed`
+    raises this string and `summary` prints it, because a refusal a human reads in
+    one wording and a script reads in another is the defect this module already
+    carries a warning about: the machine view went quiet while the human one spoke.
+
+    Three reasons, in the order they stop being fixable by taking another capture.
+    """
+
+    usable = evidential(sessions)
+    if not sessions:
+        return (
+            f"there is no observation evidence for {version} ({location} holds no "
+            "session). Nothing can be said about what the app never requested until "
+            "something recorded what it did"
+        )
+    if not usable:
+        return (
+            f"all {len(sessions)} observation session(s) for {version} are vacuous: not "
+            "one of them observed a single watched literal. A session that saw nothing "
+            "is equally well explained by a build that was not observing, an empty "
+            "capture, or an app that never ran — so it is evidence about no path. "
+            "Returning an empty tuple here would be the same answer this gives when "
+            "every watched path WAS seen"
+        )
+    if not stated(usable):
+        return (
+            f"none of the {len(usable)} evidential session(s) for {version} states which "
+            "blocks were active: "
+            + ", ".join(sorted(item.session_id for item in usable))
+            + f". They predate the build reporting its own {TOGGLE_DIRECTIVE} line. A "
+            "zero measured under an unknown configuration cannot be told apart from one "
+            "our own blocks caused, and no configuration can be assumed for them now — "
+            "that would be the operator-supplied state this module refuses"
+        )
+    return ""
 
 
 def summary(version: str, root: Path | str = ".") -> dict[str, Any]:
@@ -699,95 +1175,149 @@ def summary(version: str, root: Path | str = ".") -> dict[str, Any]:
     One producer for both views. The human banner and the machine field going out
     of step is a defect this project has shipped — the JSON a script gates on was
     missing the warning the human form printed.
+
+    **Answered per toggle state, and there is no whole-version answer.** There
+    used to be a `never_observed` field here, over every evidential session at
+    once; it is gone rather than kept alongside, because a blended number that
+    looks like an answer is worse than a missing key. A caller reading the old
+    field now fails loudly instead of reading a union of two experiments.
     """
 
+    location = store_path(version, root)
     sessions = read(version, root)
     usable = evidential(sessions)
     vacuous = [item for item in sessions if item.vacuous]
-    totals: dict[str, int] = {}
-    for item in usable:
-        for literal, count in item.counts.items():
-            totals[literal] = totals.get(literal, 0) + count
+    configured = stated(usable)
+    unstated = [item for item in usable if item.toggles is None]
 
     warnings: list[str] = []
-    if not sessions:
-        warnings.append(
-            f"there is no observation evidence for {version}: nothing has been recorded"
-        )
-    elif not usable:
-        warnings.append(
-            f"all {len(sessions)} session(s) are vacuous — not one observed a single "
-            "watched literal, so none of them is evidence about any path"
-        )
-    elif vacuous:
+    unanswerable = _unanswerable(version, location, sessions)
+    if unanswerable:
+        warnings.append(unanswerable)
+    if usable and vacuous:
         warnings.append(
             f"{len(vacuous)} of {len(sessions)} session(s) are vacuous — they observed "
             "nothing and are excluded: "
             + ", ".join(sorted(item.session_id for item in vacuous))
         )
-    # Computed once and used twice. Two `sorted({... for item in usable})`
-    # expressions — one for the warning, one for the field — are two places that
-    # can disagree, and a page whose banner says `feed_tab, reels_tab` while its
-    # bound says `feed_tab` is worse than either alone.
-    surfaces = sorted({item.surface for item in usable})
-    if usable:
+    if configured and unstated:
+        # Only when something *can* be answered. When nothing states a state the
+        # refusal above already names every one of them, and saying it twice in
+        # two wordings is how two spellings of one fact come to disagree.
         warnings.append(
-            "never-observed is bounded by the surfaces walked: "
+            f"{len(unstated)} evidential session(s) state no toggle state and are "
+            "excluded from every answer below: "
+            + ", ".join(sorted(item.session_id for item in unstated))
+            + f". A row without a {TOGGLE_DIRECTIVE} line was measured under a "
+            "configuration nobody wrote down"
+        )
+
+    # Read once, for every state. It fails for reasons `never_observed` cannot —
+    # an unreadable manifest, or one declaring no block at all — and a reader told
+    # "all sessions are vacuous" when the real fault is a missing `url_block_rules`
+    # would repair the wrong thing. Reported as a warning as well as a field, so it
+    # is still audible when there is no state to hang it on.
+    try:
+        blocked: list[str] = list(blocked_endpoints(root))
+        blocked_refusal = ""
+    except ObservationError as error:
+        blocked = []
+        blocked_refusal = str(error)
+    if blocked_refusal:
+        warnings.append(
+            "the blocked-and-never-observed question cannot be answered for any state: "
+            + blocked_refusal
+        )
+
+    entries: list[dict[str, Any]] = []
+    for state in states(version, root):
+        group = [item for item in configured if item.toggles == state]
+        unseen = list(never_observed(version, root, toggles=state))
+        totals: dict[str, int] = {}
+        for item in group:
+            for literal, count in item.counts.items():
+                totals[literal] = totals.get(literal, 0) + count
+        # Computed once and used twice. Two `sorted({...})` expressions — one for
+        # the warning, one for the field — are two places that can disagree, and a
+        # page whose banner says `feed_tab, reels_tab` while its bound says
+        # `feed_tab` is worse than either alone.
+        surfaces = sorted({item.surface for item in group})
+        warnings.append(
+            f"{state.text}: never-observed is bounded by the surfaces walked: "
             + ", ".join(surfaces)
             + ". A path only the Reels player requests is not observed by a session "
             "that stayed on the feed"
         )
-
-    try:
-        unseen: list[str] = list(never_observed(version, root))
-        refusal = ""
-    except ObservationError as error:
-        unseen = []
-        refusal = str(error)
-
-    # Its own refusal string, not a reuse of the one above. This can fail for a
-    # reason `never_observed` cannot — an unreadable manifest, or one declaring
-    # no block at all — and a reader told "all sessions are vacuous" when the
-    # real fault is a missing `url_block_rules` would repair the wrong thing.
-    try:
-        blocked_unseen: list[str] = list(blocked_and_never_observed(version, root))
-        blocked_refusal = ""
-    except ObservationError as error:
-        blocked_unseen = []
-        blocked_refusal = str(error)
-
-    # A blocked endpoint no session was watching is not evidence of anything, and
-    # it is absent from the answer above in exactly the way a finding is. Named,
-    # because the reader's question about a short list is "is that all of them?".
-    if not blocked_refusal and usable:
+        # Produced once and placed twice: in the state's own entry, where `render`
+        # prints it immediately above the list it is about, and in `warnings`,
+        # which is what a script reads. The most dangerous line in this report is
+        # a never-observed literal under a blocking state, and a caution twenty
+        # lines below it in a WARNINGS block is a caution the reader has already
+        # passed.
+        caution = ""
+        if state.blocking:
+            caution = (
+                f"{state.text}: measured with {', '.join(state.on)} ON, so a zero here "
+                "can be caused by our own blocks rather than by the app. Blocking "
+                "/feed/timeline/ leaves no timeline response for /feed/injected_reels_media/ "
+                "to be injected into, and disable_reels blanks the Reels endpoint before "
+                "the URL is built, which is upstream of the observe pass. Only a session "
+                "with every toggle off answers 'would the app ask for this?'"
+            )
+            warnings.append(caution)
+        builds = sorted({item.build_sha256 for item in group})
+        if len(builds) > 1:
+            # A toggle key is not the experiment: what `disable_feed` blocks is
+            # decided by the manifest the build was rendered from, so two builds
+            # of one version can report the same state and block different
+            # literals. Not a refusal — the usual case is a rebuild that changed
+            # nothing here — but the reader has to be told the group spans two.
+            warnings.append(
+                f"{state.text}: this answer unions sessions from {len(builds)} builds "
+                + ", ".join(item[:12] for item in builds)
+                + ". A toggle name is not a rule: two builds can report the same state "
+                "and block different literals"
+            )
         watched: set[str] = set()
-        for item in usable:
+        for item in group:
             watched.update(item.watched)
-        try:
-            unwatched = [item for item in blocked_endpoints(root) if item not in watched]
-        except ObservationError:  # pragma: no cover - blocked_refusal covers it
-            unwatched = []
+        # A blocked endpoint no session was watching is not evidence of anything,
+        # and it is absent from the answer in exactly the way a finding is. Named,
+        # because the reader's question about a short list is "is that all of them?".
+        unwatched = [item for item in blocked if item not in watched]
         if unwatched:
             warnings.append(
-                f"{len(unwatched)} blocked endpoint(s) were not in any evidential "
-                "session's watch list, so nothing here says anything about them: "
+                f"{state.text}: {len(unwatched)} blocked endpoint(s) were not in any "
+                "watch list under this state, so nothing here says anything about them: "
                 + ", ".join(unwatched)
             )
+        entries.append({
+            "toggles": state.as_dict(),
+            "toggles_text": state.text,
+            "toggles_on": list(state.on),
+            "circular": caution,
+            "session_ids": sorted(item.session_id for item in group),
+            "build_sha256s": builds,
+            "surfaces": surfaces,
+            "observed": dict(sorted(totals.items())),
+            "never_observed": unseen,
+            "blocked_never_observed": [item for item in blocked if item in set(unseen)],
+            "blocked_never_observed_refused": blocked_refusal,
+        })
 
     return {
         "schema_version": SCHEMA_VERSION,
         "version": version,
         "session_count": len(sessions),
         "evidential_session_count": len(usable),
+        "stated_session_count": len(configured),
         "vacuous_session_ids": sorted(item.session_id for item in vacuous),
-        "surfaces": surfaces,
-        "observed": dict(sorted(totals.items())),
-        "never_observed": unseen,
-        # Present in the machine form whenever the human form would print it, and
-        # never only in one of them.
-        "never_observed_refused": refusal,
-        "blocked_never_observed": blocked_unseen,
-        "blocked_never_observed_refused": blocked_refusal,
+        "unstated_session_ids": sorted(item.session_id for item in unstated),
+        # Empty exactly when `states` is non-empty: every question this report can
+        # answer is answered under one of them, and when it can answer none this
+        # says which of the three reasons applies.
+        "unanswerable_reason": unanswerable,
+        "states": entries,
         "warnings": warnings,
     }
 
@@ -796,47 +1326,57 @@ def render(report: Mapping[str, Any]) -> str:
     lines = [f"OBSERVATION  {report['version']}", "=" * 68, ""]
     lines.append(
         f"  {report['session_count']} session(s), "
-        f"{report['evidential_session_count']} with observations"
+        f"{report['evidential_session_count']} with observations, "
+        f"{report['stated_session_count']} stating which blocks were active"
     )
-    if report["surfaces"]:
-        lines.append(f"  surfaces walked: {', '.join(report['surfaces'])}")
     lines.append("")
 
-    if report["never_observed_refused"]:
-        lines += ["  WATCHED AND NEVER OBSERVED: refused", "",
-                  f"    {report['never_observed_refused']}", ""]
-    elif report["never_observed"]:
-        lines.append(f"  WATCHED AND NEVER OBSERVED ({len(report['never_observed'])})")
-        lines.append("")
-        for literal in report["never_observed"]:
-            lines.append(f"    {literal}")
-        lines.append("")
-    else:
-        lines += ["  Every watched path was observed at least once.", ""]
+    if report["unanswerable_reason"]:
+        lines += ["  NOTHING CAN BE ANSWERED", "",
+                  f"    {report['unanswerable_reason']}", ""]
 
-    if report["blocked_never_observed_refused"]:
-        lines += ["  BLOCKED AND NEVER OBSERVED: refused", "",
-                  f"    {report['blocked_never_observed_refused']}", ""]
-    elif report["blocked_never_observed"]:
-        lines.append(
-            f"  BLOCKED AND NEVER OBSERVED ({len(report['blocked_never_observed'])})"
-        )
+    for state in report["states"]:
+        lines.append(f"  TOGGLES  {state['toggles_text']}")
+        lines.append(f"    sessions: {', '.join(state['session_ids'])}")
+        lines.append(f"    surfaces: {', '.join(state['surfaces'])}")
         lines.append("")
-        for literal in report["blocked_never_observed"]:
-            lines.append(f"    {literal}")
-        lines.append("")
-    else:
-        lines += ["  Every blocked path this manifest declares was observed.", ""]
+        if state["circular"]:
+            # Above the list, not in the WARNINGS block below it.
+            lines += [f"    {state['circular']}", ""]
 
-    if report["observed"]:
-        lines.append("  OBSERVED")
-        lines.append("")
-        width = max(len(literal) for literal in report["observed"])
-        for literal, count in sorted(
-            report["observed"].items(), key=lambda pair: (-pair[1], pair[0])
-        ):
-            lines.append(f"    {literal.ljust(width)}  {count}")
-        lines.append("")
+        if state["never_observed"]:
+            # No count in the heading. It is a second spelling of the length of a
+            # list printed directly below it, and this project has twice shipped a
+            # count that drifted from the thing it counted.
+            lines.append("    WATCHED AND NEVER OBSERVED")
+            lines.append("")
+            for literal in state["never_observed"]:
+                lines.append(f"      {literal}")
+            lines.append("")
+        else:
+            lines += ["    Every watched path was observed at least once.", ""]
+
+        if state["blocked_never_observed_refused"]:
+            lines += ["    BLOCKED AND NEVER OBSERVED: refused", "",
+                      f"      {state['blocked_never_observed_refused']}", ""]
+        elif state["blocked_never_observed"]:
+            lines.append("    BLOCKED AND NEVER OBSERVED")
+            lines.append("")
+            for literal in state["blocked_never_observed"]:
+                lines.append(f"      {literal}")
+            lines.append("")
+        else:
+            lines += ["    Every blocked path this manifest declares was observed.", ""]
+
+        if state["observed"]:
+            lines.append("    OBSERVED")
+            lines.append("")
+            width = max(len(literal) for literal in state["observed"])
+            for literal, count in sorted(
+                state["observed"].items(), key=lambda pair: (-pair[1], pair[0])
+            ):
+                lines.append(f"      {literal.ljust(width)}  {count}")
+            lines.append("")
 
     if report["warnings"]:
         lines += ["  WARNINGS", ""]
@@ -876,10 +1416,16 @@ def _watch_list(args: argparse.Namespace) -> tuple[str, ...]:
     return tuple(ordered)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--root", type=Path, default=Path("."))
-    sub = parser.add_subparsers(dest="command", required=True)
+def _record_parser(sub: Any) -> argparse.ArgumentParser:
+    """Every option `record` accepts — one definition, so a test can ask.
+
+    Not inlined into :func:`main`, because the property worth defending is about
+    what this command *offers*: nothing here may carry a toggle state. A test
+    that rebuilt the option list to check that would be checking its own copy,
+    and a test that named `--toggles` would be a denylist of one — which is the
+    shape `retirement` replaced with an allowlist after `agent` was denied and
+    `claude`, `bot` and `ci` sailed through.
+    """
 
     record = sub.add_parser("record", help="turn one logcat capture into a session")
     record.add_argument("--version", required=True)
@@ -894,6 +1440,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     record.add_argument("--watched-from", type=Path, help="a file of watched literals, one per line")
     record.add_argument("--capture", type=Path, help="a logcat capture; default stdin")
+    # And deliberately nothing naming a toggle, a block or a state. The toggle
+    # state comes out of the capture, where the build put it; an option here would
+    # let the person who ran the session state what the session measured, which is
+    # the shape of safety property this project shipped and broke the next day.
+    return record
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--root", type=Path, default=Path("."))
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    _record_parser(sub)
 
     report = sub.add_parser("report", help="what was seen at a version, and what was not")
     report.add_argument("--version", required=True)
@@ -907,6 +1466,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if args.capture
                 else sys.stdin.read()
             )
+            capture = parse(text)
             session = ObservationSession(
                 schema_version=SCHEMA_VERSION,
                 version=args.version,
@@ -915,7 +1475,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 session_id=args.session_id,
                 surface=args.surface,
                 watched=_watch_list(args),
-                counts=parse(text),
+                toggles=capture.toggles,
+                counts=capture.counts,
             )
             written = append(session, root=args.root)
             print(
@@ -923,6 +1484,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{len(session.counts)} of {len(session.watched)} watched path(s) "
                 f"on {session.surface}"
             )
+            if session.toggles is None:
+                print(
+                    f"  toggles: not stated — this capture carries no {TOGGLE_DIRECTIVE} "
+                    "line, which only a capture that observed nothing can do."
+                )
+            else:
+                print(f"  toggles: {session.toggles.text}  (as the build reported them)")
+            if session.toggles is not None and session.toggles.blocking:
+                # The whole reason the field exists, said at the moment the number
+                # is produced rather than only where it is read.
+                print(
+                    "  CIRCULAR: "
+                    + ", ".join(session.toggles.on)
+                    + " were ON, so a zero in this session can be caused by our own "
+                    "blocks. Only a session with every toggle off answers 'would the "
+                    "app ask for this?'."
+                )
             if session.vacuous:
                 # Printed on the way out, not swallowed. A vacuous session is
                 # worth recording — it is the honest record of a capture that saw

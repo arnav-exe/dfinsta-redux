@@ -74,9 +74,14 @@ class.
 
 `src/dfinsta_pipeline/observation.py` is the host side. It parses a logcat
 capture into a session row in `manifest/observations/<version>.jsonl`, keyed on
-version, build SHA-256, timestamp, session id, the surface walked, and the full
-watch list. `never_observed()` returns the literals that were watched in at least
-one non-vacuous session and never once seen.
+version, build SHA-256, timestamp, session id, the surface walked, the full watch
+list, and the toggle state the build reported. `never_observed(version, root,
+toggles=...)` returns the literals that were watched in at least one non-vacuous
+session **measured under exactly that state** and never once seen; the state is a
+required argument, `states()` lists the ones on record, and there is deliberately
+no whole-version answer. It refuses in four distinguishable ways: nothing
+recorded, everything recorded saw nothing, everything that saw something states
+no configuration, and nothing was measured under the state asked about.
 
 Two properties are load-bearing and both are enforced by tests rather than by
 intention.
@@ -94,9 +99,10 @@ describe a different app while being quoted about the shipped one.
 rule spans of both renderings, with
 `test_the_span_comparison_would_catch_a_changed_rule` as its control.
 
-That second property has a consequence the module docstring of `observation.py`
-currently gets wrong. It says observe mode "blocks nothing". It does not — it
-blocks precisely what the shipped build blocks. **An exploration session with the
+That second property has a consequence worth stating plainly, and one the module
+docstring of `observation.py` got wrong until 2026-08-10 — it said observe mode
+"blocks nothing". It does not: it blocks precisely what the shipped build blocks.
+**An exploration session with the
 blocks off is produced by turning the five toggles off in the app, not by
 building a different APK.** And the toggles default to *on*:
 `getBoolTrueEz` is `getSharedPreferences("com.instagram", 0).getBoolean(key,
@@ -115,7 +121,42 @@ which is every literal already blocked *plus* every unruled candidate in
 `observe_watch`. Both halves matter. A blocked literal that is never once asked
 for is the evidence that a recorded decision should be revisited, and that
 cannot be produced by watching only the undecided. `observation.blocked_and_never_observed`
-is the query; on the committed 441 corpus it currently names seven.
+is the query. On the committed 441 corpus it currently **refuses**: that session
+predates builds stating their own toggle state, so its zeros cannot be told apart
+from zeros our own blocks caused. It named seven until 2026-08-10; that list was
+a measurement of our configuration.
+
+**Every capture states its own toggle state.** An observing build logs, on every
+checked request and ahead of the path lines that request produces:
+
+    I DFInstaObserve: !toggles disable_feed=1 disable_explore=0 disable_reels=1 ...
+
+That line is read from the device, not typed by whoever ran the session, and the
+distinction is the whole reason it exists. A measurement taken with the blocks on
+cannot answer "is this endpoint ever requested" — blocking `/feed/timeline/`
+leaves no timeline response for Reels to be injected into, so
+`/feed/injected_reels_media/` never fires whatever Instagram would otherwise do.
+Measured on 2026-08-08: 0 observations with the blocks on, 3 with them off, same
+build and same walk. There is a second and independent route to the same wrong
+answer — `replaceReelsEndpoint` blanks the endpoint string before the URL is
+built, which is also before the observe pass runs, so `disable_reels` suppresses
+those paths for a reason unrelated to traffic.
+
+An operator-supplied toggle state would be a formality rather than a safety
+property, the same shape of mistake as deriving a retirement's effective version
+from a flag the same person typed. So `observation record` has no `--toggles`
+flag, and a capture carrying path lines with no `!toggles` line **refuses**
+rather than defaulting to "all off".
+
+The line repeats on every checked request rather than once per process, because
+the once-per-process version failed on the first real session and failed
+silently: `adb logcat -c` immediately before walking, with Instagram's process
+already alive, cleared the one line that had been emitted and left the static
+flag set — 22 path lines and no statement of what was active. Restating it buys
+the invariant *any capture holding a path line also holds the toggle state*
+(`ToggleDirectiveTests.test_any_capture_that_counts_a_path_states_its_toggle_state`),
+and it makes a toggle changed halfway through a session contradict itself in the
+file instead of being invisible; `parse` refuses that too.
 
 **3. Run one session with all five toggles off, and restart first.** This is the
 session that says what the app does when it is behaving like stock. It is the
@@ -150,7 +191,11 @@ The one session on record has exactly this shape. `441-long-multisurface` in
 `/feed/timeline/` 28, `/feed/reels_tray/` 20, `/discover/topical_explore` 2,
 `/clips/discover` 2. Every newly-guarded literal is zero, including
 `/feed/injected_reels_media/`. Nothing in the record says whether the toggles
-were on, and the schema has nowhere to put it.
+were on — it was recorded before builds stated it — so every one of those zeros
+is unreadable and `never_observed` refuses to answer from it under any state. It
+cannot be repaired by writing the state in now: that would be the
+operator-supplied state this design refuses, from memory, into an append-only
+store. The session has to be walked again.
 
 There is a second, independent route to a circular zero that is easy to miss.
 `replaceReelsEndpoint` blanks the endpoint string — it returns `""` when
@@ -233,15 +278,16 @@ this design substitutes for a correction path.
 
 ## What this design does not yet resolve
 
-**The session record cannot say which toggles were set.** `ObservationSession`
-carries version, build hash, time, id, surface, watch list and counts, and
-nothing else. The entire protocol above turns on the difference between an
-all-off session and a one-toggle-on session, and the committed store cannot
-express it. Worse, `never_observed` unions across every non-vacuous session for a
-version, so an all-off exploration session and five isolation sessions filed in
-one `441.jsonl` collapse into a single blended answer with no way to separate
-them. This needs a field, and the field needs to be part of what makes a session
-readable — a zero whose configuration is unknown is not a measurement.
+**~~The session record cannot say which toggles were set.~~** Resolved on
+2026-08-10. `ObservationSession.toggles` carries the state the build reported;
+`never_observed(version, root, toggles=...)` takes it as a required argument and
+answers over the sessions measured under exactly that state, `states()` lists
+what is on record, and `observation report` answers each state separately with a
+caution naming any that had a block on. Four refusals rather than one, because
+"nothing was recorded", "everything recorded saw nothing", "everything that saw
+something predates the field" and "nothing was measured under that state" have
+four different fixes. What is left is the corpus, not the code: the only 441
+session on record is the third of those.
 
 **Step 5 cannot be done with toggles alone.** "Block exactly one literal"
 requires that literal to be the only one under its toggle, and `disable_reels`

@@ -26,6 +26,8 @@ from dfinsta_pipeline.guards import (
     OBSERVE_CLASS_PATH,
     OBSERVE_DESCRIPTOR,
     OBSERVE_TAG,
+    render_observe_class,
+    toggles_of,
     watch_from_manifest,
     watched_literals,
     write_observe_class,
@@ -366,10 +368,46 @@ class ObserveModeTests(unittest.TestCase):
         self.assertNotIn(OBSERVE_DESCRIPTOR, out)
         self.assertNotIn(OBSERVE_TAG, out)
 
+    def test_the_observe_class_reports_the_toggle_state_it_was_built_with(self):
+        """The line that makes a capture interpretable, read from the device.
+
+        A measurement taken with the blocks on cannot answer "is this endpoint
+        ever requested": blocking `/feed/timeline/` leaves no timeline response
+        for Reels to be injected into, so the child never fires whatever
+        Instagram would do. Measured 2026-08-08 — `/feed/injected_reels_media/`
+        observed 0 times with blocks on and 3 with them off. So the build states
+        which blocks were active, and it is the build rather than the operator
+        because an operator-typed answer is a formality, not a safety property.
+        """
+        body = render_observe_class(("disable_feed", "disable_reels"))
+        self.assertIn('const-string v2, "!toggles"', body)
+        self.assertEqual(2, body.count("->one(Ljava/lang/StringBuilder;"))
+        for toggle in ("disable_feed", "disable_reels"):
+            self.assertIn(f'const-string v2, "{toggle}"', body)
+        # Emitted on EVERY call, deliberately. A once-per-process flag lost the
+        # line entirely on the first real session: `logcat -c` runs immediately
+        # before walking the app, Instagram's process is usually already alive,
+        # so the single line went into the buffer that was then cleared and the
+        # flag stayed set. The capture had 22 path lines and no toggle state, and
+        # nothing said so. Any capture with a path line must carry the state.
+        self.assertNotIn("sget-boolean", body)
+        self.assertNotIn("cond_done", body)
+
+    def test_an_observing_build_states_its_toggles_before_any_path(self):
+        """Order again: a path line before the toggle line could not be attributed."""
+        out = render_method(DEVICE_PROVED_RULES, observe=("/feed/timeline/",))
+        self.assertLess(out.index("->state()V"), out.index(f"{OBSERVE_DESCRIPTOR}->seen"))
+
+    def test_an_observe_class_with_no_toggles_is_refused(self):
+        """It could not state what was active, so its captures answer nothing."""
+        with self.assertRaises(GuardError) as caught:
+            render_observe_class(())
+        self.assertIn("cannot state its toggle state", str(caught.exception))
+
     def test_the_observe_class_logs_and_never_throws(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        written = write_observe_class(Path(tmp.name))
+        written = write_observe_class(Path(tmp.name), ("disable_feed",))
         self.assertEqual(Path(tmp.name) / OBSERVE_CLASS_PATH, written)
         body = written.read_text(encoding="utf-8")
         self.assertIn(f'const-string v0, "{OBSERVE_TAG}"', body)

@@ -54,14 +54,27 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       without the record losing the fact that it was once doubted — `retirement show` prints
       the whole history, and `returned()` reports a retired hook that has started passing
       probes again. It reports; it never rules.
-- [ ] **Record the toggle state in `ObservationSession`.** The protocol turns on all-off
-      versus one-toggle-on and the committed record cannot express which. Measured
-      2026-08-08: with blocks on, `/feed/injected_reels_media/` observed 0 times; with
-      them off, 3. **An honest zero and a self-inflicted one are currently
-      indistinguishable in the record.** This is the next thing to build.
-- [ ] **Separate sessions in `never_observed`.** It unions every non-vacuous session for a
-      version, so an exploration run and five isolation runs would blend into one answer.
-- [ ] **Run the exploration protocol** end to end on 441 and record what each group is.
+- [x] **Record the toggle state in `ObservationSession`.** Measured 2026-08-08: with
+      blocks on, `/feed/injected_reels_media/` observed 0 times; with them off, 3 — an
+      honest zero and a self-inflicted one were indistinguishable in the record. The
+      state now comes out of the capture, where the build states it on every checked
+      request, and there is deliberately no `--toggles` flag: an operator-supplied state
+      would be the formality `effective_from = --version + 1` was. A capture that cannot
+      state one **refuses** rather than defaulting to "all off".
+- [x] **Separate sessions in `never_observed`.** It takes the state as a required
+      argument and answers over the sessions measured under exactly that one; `states()`
+      lists what is on record and `observation report` answers each separately. The one
+      committed 441 session predates the field: it stays readable, is named in every
+      report, and answers nothing.
+- [ ] **Re-take the 441 exploration session.** The committed row cannot say what was
+      active, so every zero in it — including the twelve literals it used to be quoted
+      for — is unusable. Nothing can be back-filled: that would be inventing the
+      measurement from memory.
+- [ ] **Run the exploration protocol at 439**, then carry it forward to 440 and 441.
+      Owner decision 2026-08-10: starting at 439 makes two "future" versions available
+      immediately instead of waiting for Instagram to ship 442, so "this survives a version
+      bump" becomes checkable today. Installing 439 over a 441 build is a downgrade and
+      needs `adb install -r -d`.
 - [ ] **Present observation evidence at the feature gate**, and say *"never watched"* and
       *"watched, never seen"* in different words — they look identical and mean opposite
       things.

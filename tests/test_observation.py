@@ -13,6 +13,15 @@ answer: a store with no sessions, a store whose sessions all saw nothing, a stor
 that is a directory, a store that is not UTF-8, and a watch list that was only
 ever carried by a session which saw nothing.
 
+The second property is the same one about the **experiment**. A zero measured
+with `/feed/timeline/` blocked is a fact about our configuration, not about
+Instagram, so a session states which blocks were active — as the *build*
+reported them, never as the operator typed them — and sessions measured under
+different states are never unioned. The corpora that must not produce a clean
+answer therefore also include: a capture that cannot say what was active, a
+capture that says two different things, a store whose only evidence predates
+builds saying anything, and a store holding two states at once.
+
 **Nothing here writes into `manifest/observations/`.** Every root is a temporary
 directory passed explicitly. A test in this repository once wrote into a
 committed corpus and shipped 36 fabricated rows, and the defence that actually
@@ -21,10 +30,12 @@ holds is that no test ever names the real root.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,8 +44,11 @@ from dfinsta_pipeline.observation import (
     OBSERVATIONS,
     SCHEMA_VERSION,
     TAG,
+    TOGGLE_DIRECTIVE,
     ObservationError,
     ObservationSession,
+    ToggleState,
+    _record_parser,
     append,
     blocked_and_never_observed,
     blocked_endpoints,
@@ -44,6 +58,8 @@ from dfinsta_pipeline.observation import (
     parse,
     read,
     render,
+    stated,
+    states,
     store_path,
     summary,
 )
@@ -52,6 +68,27 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 
 BUILD = "b" * 64
 
+#: The five keys `throwIfBlocked` reads, in the two states the protocol turns on:
+#: the all-off exploration session, and the shipped configuration.
+KEYS = ("disable_feed", "disable_explore", "disable_reels", "disable_stories",
+        "disable_adds")
+ALL_OFF = ToggleState.of({key: False for key in KEYS})
+ALL_ON = ToggleState.of({key: True for key in KEYS})
+#: One toggle on: the isolation session of step 5.
+FEED_ON = ToggleState.of({key: key == "disable_feed" for key in KEYS})
+
+
+def line(payload: str, *, stamp: str = "08-08 17:31:02.412 12875 12875") -> str:
+    """One logcat line in the threadtime form a real capture has."""
+
+    return f"{stamp} I {TAG}: {payload}\n"
+
+
+def header(state: ToggleState = ALL_OFF) -> str:
+    """The directive an observing build emits once, before any path line."""
+
+    return line(f"{TOGGLE_DIRECTIVE} {state.text}")
+
 
 def session(
     session_id: str = "s1",
@@ -59,6 +96,7 @@ def session(
     version: str = "441",
     surface: str = "feed_tab",
     watched: tuple[str, ...] = ("/feed/timeline/", "/feed/reels_tray/"),
+    toggles: ToggleState | None = ALL_OFF,
     counts: dict[str, int] | None = None,
 ) -> ObservationSession:
     return ObservationSession(
@@ -69,6 +107,7 @@ def session(
         session_id=session_id,
         surface=surface,
         watched=watched,
+        toggles=toggles,
         counts=dict(counts or {}),
     )
 
@@ -101,18 +140,22 @@ class RootedTestCase(unittest.TestCase):
 
 class ParseTests(unittest.TestCase):
     def test_the_threadtime_form_from_a_real_capture_is_counted(self) -> None:
-        capture = (
+        capture = header() + (
             "08-08 17:31:02.412 12875 12875 I DFInstaObserve: /feed/timeline/\n"
             "08-08 17:31:02.900 12875 12875 I DFInstaObserve: /feed/timeline/\n"
             "08-08 17:31:03.100 12875 12875 I DFInstaObserve: /feed/reels_tray/\n"
         )
         self.assertEqual(
-            {"/feed/timeline/": 2, "/feed/reels_tray/": 1}, parse(capture)
+            {"/feed/timeline/": 2, "/feed/reels_tray/": 1}, parse(capture).counts
         )
 
     def test_the_bare_form_the_app_emits_is_counted(self) -> None:
         """`Log.i(TAG, literal)` is what the contract fixes; the prefix is logcat's."""
-        self.assertEqual({"/feed/x/": 2}, parse("I DFInstaObserve: /feed/x/\n" * 2))
+        capture = (
+            f"I DFInstaObserve: {TOGGLE_DIRECTIVE} {ALL_OFF.text}\n"
+            + "I DFInstaObserve: /feed/x/\n" * 2
+        )
+        self.assertEqual({"/feed/x/": 2}, parse(capture).counts)
 
     def test_lines_from_other_tags_are_ignored(self) -> None:
         capture = (
@@ -120,7 +163,8 @@ class ParseTests(unittest.TestCase):
             "08-08 17:31:02.500 12875 12875 I DFInstaProbe: tigon_url_block\n"
             "--------- beginning of main\n"
         )
-        self.assertEqual({}, parse(capture))
+        self.assertEqual({}, parse(capture).counts)
+        self.assertIsNone(parse(capture).toggles)
 
     def test_a_line_quoting_the_tag_inside_another_payload_is_not_a_request(self) -> None:
         """Re-narration, which `probes.count_signal` already paid for once.
@@ -134,33 +178,61 @@ class ParseTests(unittest.TestCase):
             "08-08 17:31:02.412 12875 12875 E IgFunctionalErrorEvent: "
             "I DFInstaObserve: /feed/timeline/\n"
         )
-        self.assertEqual({}, parse(quoted))
+        self.assertEqual({}, parse(quoted).counts)
+
+    def test_a_quoted_directive_does_not_state_the_toggle_state(self) -> None:
+        """The same re-narration rule, on the line that decides the experiment.
+
+        A capture whose configuration came out of somebody else's error payload
+        would attribute every count to a state DFInsta never reported.
+        """
+        quoted = (
+            "08-08 17:31:02.412 12875 12875 E IgFunctionalErrorEvent: "
+            f"I DFInstaObserve: {TOGGLE_DIRECTIVE} {ALL_OFF.text}\n"
+        )
+        self.assertIsNone(parse(quoted).toggles)
 
     def test_the_same_literal_in_tag_position_is_counted(self) -> None:
         """The positive control for the test above.
 
         Without it, a regex that matched nothing at all would pass that test.
         """
-        real = "08-08 17:31:02.412 12875 12875 I DFInstaObserve: /feed/timeline/\n"
-        self.assertEqual({"/feed/timeline/": 1}, parse(real))
+        real = header() + (
+            "08-08 17:31:02.412 12875 12875 I DFInstaObserve: /feed/timeline/\n"
+        )
+        self.assertEqual({"/feed/timeline/": 1}, parse(real).counts)
+        self.assertEqual(ALL_OFF, parse(real).toggles)
 
     def test_an_empty_capture_counts_nothing_rather_than_refusing(self) -> None:
-        """A capture with no lines is a vacuous session, decided later, not here."""
-        self.assertEqual({}, parse(""))
-        self.assertEqual({}, parse("\n\n"))
+        """A capture with no lines is a vacuous session, decided later, not here.
+
+        And it states no toggle state, because the observe pass never ran to say
+        one. That is the *only* shape in which an unknown state may be recorded.
+        """
+        for text in ("", "\n\n"):
+            with self.subTest(text=text):
+                self.assertEqual({}, parse(text).counts)
+                self.assertIsNone(parse(text).toggles)
+                self.assertFalse(parse(text).stated)
 
     def test_a_crlf_capture_reads_the_same(self) -> None:
         """`adb` on Windows. A stray `\\r` would make the literal unmatchable."""
-        self.assertEqual(
-            {"/feed/x/": 1},
-            parse("08-08 17:31:02.412 1 1 I DFInstaObserve: /feed/x/\r\n"),
+        capture = (
+            f"08-08 17:31:02.412 1 1 I DFInstaObserve: {TOGGLE_DIRECTIVE} "
+            f"{ALL_OFF.text}\r\n"
+            "08-08 17:31:02.412 1 1 I DFInstaObserve: /feed/x/\r\n"
         )
+        self.assertEqual({"/feed/x/": 1}, parse(capture).counts)
+        # The state as well, or a `\r` would ride along on the last toggle's value
+        # and make this capture's state unequal to every other capture's.
+        self.assertEqual(ALL_OFF, parse(capture).toggles)
 
     def test_a_tag_line_with_no_literal_is_refused_by_line(self) -> None:
         """Dropping it would subtract a request that did happen from a count whose
         only purpose is being compared with zero."""
         with self.assertRaises(ObservationError) as caught:
-            parse("I DFInstaObserve: /feed/x/\nI DFInstaObserve: \n")
+            parse(f"I DFInstaObserve: {TOGGLE_DIRECTIVE} {ALL_OFF.text}\n"
+                  "I DFInstaObserve: \n")
         self.assertIn("line 2", str(caught.exception))
 
     def test_a_padded_literal_is_refused_rather_than_silently_unmatchable(self) -> None:
@@ -172,6 +244,253 @@ class ParseTests(unittest.TestCase):
 
     def test_the_tag_is_the_one_the_app_side_emits(self) -> None:
         self.assertEqual("DFInstaObserve", TAG)
+
+
+# ===========================================================================
+#   the toggle state — read from the build, never from the operator
+# ===========================================================================
+
+
+class ToggleStateTests(unittest.TestCase):
+    def test_the_line_the_app_emits_is_read_verbatim(self) -> None:
+        """The exact shape `guards.render_observe_class` produces, pinned here.
+
+        The app writes the keys in the order the guard reads them, which is rule
+        order — so this is not sorted, and must not have to be.
+        """
+        state = ToggleState.parse(
+            "disable_feed=1 disable_explore=0 disable_reels=1 disable_stories=1 "
+            "disable_adds=0"
+        )
+        self.assertEqual(
+            {"disable_feed": True, "disable_explore": False, "disable_reels": True,
+             "disable_stories": True, "disable_adds": False},
+            state.as_dict(),
+        )
+        self.assertEqual(("disable_feed", "disable_reels", "disable_stories"), state.on)
+        self.assertEqual(("disable_adds", "disable_explore"), state.off)
+        self.assertTrue(state.blocking)
+
+    def test_the_same_state_in_another_order_is_the_same_state(self) -> None:
+        """Rule order moves when a rule moves, and the app emits in rule order.
+
+        A state that stopped comparing equal to itself across a manifest edit
+        would split one experiment into two groups and answer both from half the
+        sessions — silently, because both halves look like corpora.
+        """
+        first = ToggleState.parse("disable_feed=1 disable_adds=0")
+        second = ToggleState.parse("disable_adds=0 disable_feed=1")
+        self.assertEqual(first, second)
+        self.assertEqual(first.text, second.text)
+        self.assertEqual({first, second}, {first})
+
+    def test_states_naming_different_keys_are_different_states(self) -> None:
+        """A build that grew a sixth toggle did not run the same experiment, and
+        `never_observed` must not answer one version's question from the other's
+        sessions."""
+        self.assertNotEqual(
+            ToggleState.parse("disable_feed=0"),
+            ToggleState.parse("disable_feed=0 disable_shop=0"),
+        )
+
+    def test_an_all_off_state_is_not_blocking(self) -> None:
+        """The control for `blocking`: the report's circularity caution has to be
+        able to be absent, or its presence says nothing."""
+        self.assertFalse(ALL_OFF.blocking)
+        self.assertEqual((), ALL_OFF.on)
+        self.assertTrue(FEED_ON.blocking)
+
+    def test_the_canonical_text_round_trips(self) -> None:
+        for state in (ALL_OFF, ALL_ON, FEED_ON):
+            with self.subTest(state=state.text):
+                self.assertEqual(state, ToggleState.parse(state.text))
+
+    def test_a_token_that_is_not_key_equals_zero_or_one_is_refused(self) -> None:
+        """Read verbatim from what the build reported. A token nobody can read is
+        a build and a host that disagree about the contract, and guessing which
+        way is exactly the assumption this field exists to remove."""
+        for token in ("disable_feed", "disable_feed=true", "disable_feed=2",
+                      "disable_feed=", "=1", "disable_feed=1=0"):
+            with self.subTest(token=token):
+                with self.assertRaises(ObservationError):
+                    ToggleState.parse(token)
+
+    def test_a_state_naming_nothing_is_refused(self) -> None:
+        with self.assertRaises(ObservationError) as caught:
+            ToggleState.parse("")
+        self.assertIn("names no toggle", str(caught.exception))
+
+    def test_a_state_naming_one_key_twice_is_refused(self) -> None:
+        with self.assertRaises(ObservationError) as caught:
+            ToggleState.parse("disable_feed=1 disable_feed=0")
+        self.assertIn("twice", str(caught.exception))
+
+    def test_a_non_boolean_value_is_refused(self) -> None:
+        """`1 == True` in Python, so an int would compare equal here and round-trip
+        through JSON as `1` — one state with two spellings, in the field whose
+        whole job is telling two states apart."""
+        with self.assertRaises(ObservationError):
+            ToggleState.of({"disable_feed": 1})
+        with self.assertRaises(ObservationError):
+            ToggleState.of({"disable_feed": "yes"})
+
+    def test_a_key_that_is_not_a_preference_name_is_refused(self) -> None:
+        for name in ("", "9lives", "disable feed", "disable-feed"):
+            with self.subTest(name=name):
+                with self.assertRaises(ObservationError):
+                    ToggleState.of({name: True})
+
+
+class ToggleDirectiveTests(unittest.TestCase):
+    """What a capture must say about its own configuration before it says anything.
+
+    The app restates the directive on **every checked request**, ahead of the
+    path lines that request produces. It used to say it once per process behind a
+    static flag, and that failed on the first real session and failed silently:
+    the protocol is `adb logcat -c` immediately before walking, Instagram's
+    process is usually already alive, so the one line went into the buffer that
+    was then cleared and the flag stayed set — 22 path lines and no statement of
+    what was active, with nothing marking the omission.
+    """
+
+    def real_session(self, state: ToggleState = FEED_ON, requests: int = 22) -> str:
+        """What a walk actually looks like: the state restated before every path."""
+
+        return "".join(header(state) + line("/feed/timeline/") for _ in range(requests))
+
+    def test_the_directive_states_the_capture_and_is_not_itself_a_request(self) -> None:
+        """It travels under the same tag, so the one thing it must not become is a
+        count against a path no build was watching."""
+        capture = header(FEED_ON) + line("/feed/timeline/")
+        self.assertEqual(FEED_ON, parse(capture).toggles)
+        self.assertEqual({"/feed/timeline/": 1}, parse(capture).counts)
+
+    def test_the_repeated_directive_is_one_statement_and_not_twenty_two(self) -> None:
+        """A 22-request session states the same thing 22 times. Collapsed, and the
+        paths still counted once each — a directive counted as a request would put
+        22 phantom hits against a literal nothing was watching."""
+        capture = self.real_session()
+        self.assertEqual(FEED_ON, parse(capture).toggles)
+        self.assertEqual({"/feed/timeline/": 22}, parse(capture).counts)
+
+    def test_any_capture_that_counts_a_path_states_its_toggle_state(self) -> None:
+        """**The invariant**, over every capture shape this module has a name for.
+
+        Not "the parser handles these cases" — the property itself: parse either
+        refuses, or every count it returns came with a statement of what was
+        active. The once-per-process build satisfied every individual case above
+        while violating this in the field, so this is asserted as one claim over
+        many shapes rather than as a list of shapes.
+        """
+        shapes = {
+            "the real walk": self.real_session(),
+            "all off": self.real_session(ALL_OFF, 3),
+            "one request": header(ALL_OFF) + line("/feed/timeline/"),
+            "directive only": header(ALL_OFF),
+            "nothing at all": "",
+            "other tags only": "08-08 17:31:02.412 1 1 D Other: /feed/timeline/\n",
+            "the cleared buffer": line("/feed/timeline/") * 22,
+            "cleared mid-request": line("/feed/timeline/") + self.real_session(),
+            "state changed mid-walk": (
+                self.real_session(ALL_OFF, 3) + self.real_session(FEED_ON, 3)
+            ),
+            "quoted directive": (
+                "08-08 17:31:02.412 1 1 E IgFunctionalErrorEvent: "
+                f"I DFInstaObserve: {TOGGLE_DIRECTIVE} {ALL_OFF.text}\n"
+                + line("/feed/timeline/")
+            ),
+        }
+        refused: list[str] = []
+        counted: list[str] = []
+        for label, text in shapes.items():
+            with self.subTest(shape=label):
+                try:
+                    capture = parse(text)
+                except ObservationError:
+                    refused.append(label)
+                    continue
+                if capture.counts:
+                    counted.append(label)
+                    self.assertIsNotNone(
+                        capture.toggles,
+                        f"{label}: counts with no toggle state is the field failure "
+                        "this line repeats to prevent",
+                    )
+        # Both branches have to be reachable, or the invariant is satisfied by a
+        # parser that refuses everything — or by one that counts nothing.
+        self.assertTrue(refused)
+        self.assertTrue(counted)
+
+    def test_a_path_before_any_directive_is_refused(self) -> None:
+        """The cut-off capture, and the one the field failure produced.
+
+        Every path line the build reports has a directive in front of it, so a
+        path with none belongs to a request this capture did not see begin. Its
+        counts belong to a configuration nobody can name — and the alternative to
+        refusing is attributing them to whichever state appears later in the file.
+        """
+        capture = line("/feed/timeline/") + header(FEED_ON) + line("/feed/timeline/")
+        with self.assertRaises(ObservationError) as caught:
+            parse(capture)
+        self.assertIn("before any !toggles", str(caught.exception))
+        self.assertIn("line 1", str(caught.exception))
+
+    def test_a_capture_with_paths_and_no_directive_at_all_is_refused(self) -> None:
+        """Not an "all off" default. This is the whole point of the field: an
+        observing build that never said what was active produced counts nobody can
+        read, and "probably nothing was blocked" is the operator's guess wearing
+        a measurement's clothes.
+
+        This is the exact capture the flag version produced in the field — 22
+        path lines, no statement — so the host refuses what the build could not
+        say.
+        """
+        with self.assertRaises(ObservationError) as caught:
+            parse(line("/feed/timeline/") * 22)
+        self.assertIn(TOGGLE_DIRECTIVE, str(caught.exception))
+
+    def test_two_directives_that_agree_are_one_capture(self) -> None:
+        """The ordinary case now, and the control for the test below."""
+        capture = header(ALL_OFF) + line("/feed/timeline/") + header(ALL_OFF) + line(
+            "/feed/timeline/"
+        )
+        self.assertEqual(ALL_OFF, parse(capture).toggles)
+        self.assertEqual({"/feed/timeline/": 2}, parse(capture).counts)
+
+    def test_a_toggle_changed_halfway_through_a_session_is_refused(self) -> None:
+        """Two experiments in one file, and no line says which one a count is in.
+
+        Keeping the first state would attribute the second half's counts to the
+        first half's configuration; keeping the last would do the reverse. This is
+        detectable *only* because the directive repeats — the once-per-process
+        version could not see it at all.
+        """
+        capture = self.real_session(ALL_OFF, 3) + self.real_session(FEED_ON, 3)
+        with self.assertRaises(ObservationError) as caught:
+            parse(capture)
+        self.assertIn("two toggle states", str(caught.exception))
+        self.assertIn(ALL_OFF.text, str(caught.exception))
+        self.assertIn(FEED_ON.text, str(caught.exception))
+
+    def test_an_unknown_directive_is_refused_rather_than_ignored(self) -> None:
+        """Fails closed on a build newer than this host.
+
+        Ignoring it reads the capture as though nothing new had been said;
+        counting it manufactures a request for `!version`.
+        """
+        with self.assertRaises(ObservationError) as caught:
+            parse(line("!version 442"))
+        self.assertIn("!version", str(caught.exception))
+
+    def test_a_directive_naming_no_toggle_is_refused_by_line(self) -> None:
+        with self.assertRaises(ObservationError) as caught:
+            parse(line(TOGGLE_DIRECTIVE) + line("/feed/timeline/"))
+        self.assertIn("line 1", str(caught.exception))
+
+    def test_a_malformed_directive_is_refused_by_line(self) -> None:
+        with self.assertRaises(ObservationError) as caught:
+            parse(line(f"{TOGGLE_DIRECTIVE} disable_feed=on"))
+        self.assertIn("line 1", str(caught.exception))
 
 
 # ===========================================================================
@@ -204,6 +523,62 @@ class SessionTests(unittest.TestCase):
         item = session(counts={"/feed/timeline/": 3})
         again = ObservationSession.from_dict(json.loads(json.dumps(item.to_dict())))
         self.assertEqual(item, again)
+        self.assertEqual(ALL_OFF, again.toggles)
+
+    def test_the_toggle_state_survives_the_store_as_a_state_and_not_as_text(self) -> None:
+        """Written as an object and read back as a `ToggleState`.
+
+        Two sessions are grouped by comparing this field, so a row that read back
+        as a dict — or as the canonical string — would compare unequal to every
+        session built in memory and quietly form a group of one.
+        """
+        item = session(toggles=FEED_ON, counts={"/feed/timeline/": 1})
+        row = json.loads(json.dumps(item.to_dict()))
+        self.assertEqual(
+            {"disable_feed": True, "disable_explore": False, "disable_reels": False,
+             "disable_stories": False, "disable_adds": False},
+            row["toggles"],
+        )
+        self.assertEqual(FEED_ON, ObservationSession.from_dict(row).toggles)
+
+    def test_an_unknown_toggle_state_is_spelled_by_the_key_being_absent(self) -> None:
+        """And the row round-trips without acquiring one.
+
+        `append` rewrites the whole file, so a `to_dict` that wrote `null` for an
+        unknown state would edit the one committed row every time a new session
+        was recorded beside it — an edit to an append-only store, performed by a
+        writer nobody asked to change it.
+        """
+        item = session(toggles=None, counts={})
+        self.assertNotIn("toggles", item.to_dict())
+        self.assertIsNone(ObservationSession.from_dict(item.to_dict()).toggles)
+
+    def test_a_null_toggle_state_is_refused_rather_than_read_as_unknown(self) -> None:
+        """The recorded-zero rule, one field over: absence has one spelling.
+
+        A row saying `null` looks like a build that answered "nothing", and this
+        store must not blur an answer nobody gave with one somebody gave.
+        """
+        row = session(counts={"/feed/timeline/": 1}).to_dict()
+        row["toggles"] = None
+        with self.assertRaises(ObservationError) as caught:
+            ObservationSession.from_dict(row)
+        self.assertIn("second spelling of absent", str(caught.exception))
+
+    def test_a_toggle_state_that_is_not_a_state_is_refused(self) -> None:
+        """No coercion from a raw mapping. A state is normalised — sorted, with
+        real booleans — and a dict slipping through would compare unequal to the
+        same state read back out of the store, which is the one comparison every
+        answer is grouped by."""
+        with self.assertRaises(ObservationError) as caught:
+            session(toggles={"disable_feed": True})
+        self.assertIn("ToggleState", str(caught.exception))
+        for value in ("disable_feed=1", ["disable_feed"], 1):
+            with self.subTest(value=value):
+                row = session(counts={"/feed/timeline/": 1}).to_dict()
+                row["toggles"] = value
+                with self.assertRaises(ObservationError):
+                    ObservationSession.from_dict(row)
 
     def test_a_stated_total_that_disagrees_with_the_counts_is_refused(self) -> None:
         """The reason the derived field is written at all: a hand-edit that
@@ -265,7 +640,7 @@ class SessionTests(unittest.TestCase):
             session().__class__(
                 schema_version=1, version="441", build_sha256="short",
                 recorded_at="x", session_id="s", surface="f",
-                watched=("/a/",), counts={},
+                watched=("/a/",), toggles=ALL_OFF, counts={},
             )
         self.assertIn("SHA-256", str(caught.exception))
         for field in ("recorded_at", "session_id", "surface"):
@@ -273,7 +648,8 @@ class SessionTests(unittest.TestCase):
                 arguments = {
                     "schema_version": 1, "version": "441", "build_sha256": BUILD,
                     "recorded_at": "2026-08-09T10:00:00Z", "session_id": "s",
-                    "surface": "f", "watched": ("/a/",), "counts": {},
+                    "surface": "f", "watched": ("/a/",), "toggles": ALL_OFF,
+                    "counts": {},
                 }
                 arguments[field] = "  "
                 with self.assertRaises(ObservationError) as caught:
@@ -293,7 +669,7 @@ class SessionTests(unittest.TestCase):
                     ObservationSession(
                         schema_version=1, version="441", build_sha256=BUILD,
                         recorded_at=stamp, session_id="s", surface="f",
-                        watched=("/a/",), counts={},
+                        watched=("/a/",), toggles=ALL_OFF, counts={},
                     )
                 self.assertIn(stamp, str(caught.exception))
 
@@ -304,7 +680,7 @@ class SessionTests(unittest.TestCase):
             ObservationSession(
                 schema_version=1, version="441", build_sha256=BUILD,
                 recorded_at="2026-08-09T10:00:00", session_id="s", surface="f",
-                watched=("/a/",), counts={},
+                watched=("/a/",), toggles=ALL_OFF, counts={},
             )
         self.assertIn("no UTC offset", str(caught.exception))
 
@@ -316,7 +692,7 @@ class SessionTests(unittest.TestCase):
                 item = ObservationSession(
                     schema_version=1, version="441", build_sha256=BUILD,
                     recorded_at=stamp, session_id="s", surface="f",
-                    watched=("/a/",), counts={},
+                    watched=("/a/",), toggles=ALL_OFF, counts={},
                 )
                 self.assertEqual(stamp, item.recorded_at)
 
@@ -326,10 +702,32 @@ class SessionTests(unittest.TestCase):
         item = ObservationSession(
             schema_version=1, version="441", build_sha256=BUILD,
             recorded_at="  2026-08-09T10:00:00+00:00  ", session_id="s", surface="f",
-            watched=("/a/",), counts={},
+            watched=("/a/",), toggles=ALL_OFF, counts={},
         )
         self.assertEqual("2026-08-09T10:00:00+00:00", item.recorded_at)
         self.assertEqual("2026-08-09T10:00:00+00:00", item.to_dict()["recorded_at"])
+
+    def test_the_counts_are_copied_so_the_checks_cannot_be_undone_afterwards(self) -> None:
+        """Every count rule above runs once, at construction, on a mapping the
+        caller can still be holding.
+
+        Left uncopied, a count added after the fact produced a row `append`
+        wrote and this module's own `read` then refused — a store its writer made
+        and its reader rejects. `watched` was copied and `counts` was not.
+        """
+        live = {"/feed/timeline/": 1}
+        # Constructed directly: the `session` helper here passes `dict(counts)`,
+        # so writing this through it would prove the helper copies and nothing
+        # about the record type — the shape of test this project keeps shipping.
+        item = ObservationSession(
+            schema_version=SCHEMA_VERSION, version="441", build_sha256=BUILD,
+            recorded_at="2026-08-09T10:00:00Z", session_id="s", surface="f",
+            watched=("/feed/timeline/",), toggles=ALL_OFF, counts=live,
+        )
+        live["/never/watched/"] = 3
+        self.assertEqual({"/feed/timeline/": 1}, dict(item.counts))
+        self.assertEqual(1, item.total)
+        self.assertNotIn("/never/watched/", item.to_dict()["counts"])
 
     def test_a_watch_list_given_as_a_list_is_stored_as_a_tuple(self) -> None:
         """Two sessions with the same watch list must compare equal however the
@@ -337,7 +735,7 @@ class SessionTests(unittest.TestCase):
         item = ObservationSession(
             schema_version=1, version="441", build_sha256=BUILD,
             recorded_at="2026-08-09T10:00:00Z", session_id="s", surface="f",
-            watched=["/a/", "/b/"], counts={},
+            watched=["/a/", "/b/"], toggles=ALL_OFF, counts={},
         )
         self.assertEqual(("/a/", "/b/"), item.watched)
 
@@ -422,6 +820,39 @@ class StoreTests(RootedTestCase):
         self.assertEqual(
             ["441.jsonl"], sorted(p.name for p in self.store().parent.iterdir())
         )
+
+    def test_a_session_that_saw_something_and_states_no_state_is_not_written(self) -> None:
+        """The writer's rule, and the constructor deliberately does not hold it.
+
+        `manifest/observations/441.jsonl` is already in exactly this shape, so the
+        record type has to be able to represent it or the committed row could not
+        be read back. What must not happen again is *making* one: every count in
+        such a row is unreadable, because a zero under a block we set is caused by
+        us and nothing says whether one was set.
+        """
+        for count in (1, 4, 52):
+            # Every non-vacuous size, because the rule is `total > 0` and no
+            # constant. `total > 1` reads as maintenance, passes a suite that only
+            # ever tries 4, and admits the one-request session that says nothing
+            # about its configuration — `derive-the-threshold-never-declare-it`.
+            with self.subTest(count=count):
+                unstated = session("s1", toggles=None, counts={"/feed/timeline/": count})
+                with self.assertRaises(ObservationError) as caught:
+                    append(unstated, root=self.root)
+                self.assertIn("states no toggle state", str(caught.exception))
+                self.assertEqual((), read("441", self.root))
+
+    def test_a_vacuous_session_that_states_no_state_is_written(self) -> None:
+        """The control, and the honest record of a capture that saw nothing.
+
+        A capture with no observe lines carries no directive either, because the
+        pass that emits it never ran. Refusing the row as well would leave no way
+        to record "this session measured nothing", which is the fact the operator
+        most needs to keep.
+        """
+        append(session("s1", toggles=None, counts={}), root=self.root)
+        self.assertEqual(1, len(read("441", self.root)))
+        self.assertIsNone(read("441", self.root)[0].toggles)
 
     def test_a_missing_store_is_no_sessions(self) -> None:
         self.assertEqual((), read("441", self.root))
@@ -512,7 +943,7 @@ class ScopingTests(RootedTestCase):
 
     def test_the_answer_does_not_change_with_the_process_directory(self) -> None:
         append(session("s1", counts={"/feed/timeline/": 2}), root=self.root)
-        here = never_observed("441", self.root)
+        here = never_observed("441", self.root, toggles=ALL_OFF)
 
         decoy = tempfile.TemporaryDirectory()
         self.addCleanup(decoy.cleanup)
@@ -527,7 +958,7 @@ class ScopingTests(RootedTestCase):
         os.chdir(decoy_root)
         self.addCleanup(os.chdir, previous)
 
-        self.assertEqual(here, never_observed("441", self.root))
+        self.assertEqual(here, never_observed("441", self.root, toggles=ALL_OFF))
         self.assertEqual(("/feed/reels_tray/",), here)
 
 
@@ -539,17 +970,20 @@ class ScopingTests(RootedTestCase):
 class NeverObservedTests(RootedTestCase):
     def test_a_watched_path_no_session_saw_is_reported(self) -> None:
         append(session("s1", counts={"/feed/timeline/": 7}), root=self.root)
-        self.assertEqual(("/feed/reels_tray/",), never_observed("441", self.root))
+        self.assertEqual(
+            ("/feed/reels_tray/",), never_observed("441", self.root, toggles=ALL_OFF)
+        )
 
     def test_a_path_seen_in_any_session_is_not_reported(self) -> None:
-        """The union across sessions, not the intersection. A path the feed
-        session never saw and the explore session did was observed."""
+        """The union across sessions *under one state*, not the intersection. A
+        path the feed session never saw and the explore session did was
+        observed."""
         append(session("s1", counts={"/feed/timeline/": 7}), root=self.root)
         append(
             session("s2", surface="explore_tab", counts={"/feed/reels_tray/": 1}),
             root=self.root,
         )
-        self.assertEqual((), never_observed("441", self.root))
+        self.assertEqual((), never_observed("441", self.root, toggles=ALL_OFF))
 
     def test_everything_seen_gives_an_empty_tuple(self) -> None:
         """The positive control for every refusal below.
@@ -561,7 +995,7 @@ class NeverObservedTests(RootedTestCase):
             session("s1", counts={"/feed/timeline/": 1, "/feed/reels_tray/": 1}),
             root=self.root,
         )
-        self.assertEqual((), never_observed("441", self.root))
+        self.assertEqual((), never_observed("441", self.root, toggles=ALL_OFF))
 
     def test_a_path_watched_only_by_a_vacuous_session_is_not_reported(self) -> None:
         """The heart of it.
@@ -582,7 +1016,9 @@ class NeverObservedTests(RootedTestCase):
             ),
             root=self.root,
         )
-        self.assertEqual(("/feed/reels_tray/",), never_observed("441", self.root))
+        self.assertEqual(
+            ("/feed/reels_tray/",), never_observed("441", self.root, toggles=ALL_OFF)
+        )
 
     def test_one_evidential_session_is_enough(self) -> None:
         """Deliberately no minimum-N. Two vacuous sessions do not weaken the one
@@ -591,11 +1027,13 @@ class NeverObservedTests(RootedTestCase):
         append(session("v1", counts={}), root=self.root)
         append(session("s1", counts={"/feed/timeline/": 1}), root=self.root)
         append(session("v2", counts={}), root=self.root)
-        self.assertEqual(("/feed/reels_tray/",), never_observed("441", self.root))
+        self.assertEqual(
+            ("/feed/reels_tray/",), never_observed("441", self.root, toggles=ALL_OFF)
+        )
 
     def test_a_store_with_no_sessions_refuses(self) -> None:
         with self.assertRaises(ObservationError) as caught:
-            never_observed("441", self.root)
+            never_observed("441", self.root, toggles=ALL_OFF)
         self.assertIn("no observation evidence", str(caught.exception))
 
     def test_a_store_whose_sessions_are_all_vacuous_refuses(self) -> None:
@@ -605,7 +1043,7 @@ class NeverObservedTests(RootedTestCase):
         append(session("v1", counts={}), root=self.root)
         append(session("v2", surface="explore_tab", counts={}), root=self.root)
         with self.assertRaises(ObservationError) as caught:
-            never_observed("441", self.root)
+            never_observed("441", self.root, toggles=ALL_OFF)
         self.assertIn("vacuous", str(caught.exception))
 
     def test_the_two_refusals_say_different_things(self) -> None:
@@ -613,21 +1051,216 @@ class NeverObservedTests(RootedTestCase):
         different problems with different fixes, and a human reads the message."""
         empty = self.assertRaisesRegex(ObservationError, "no observation evidence")
         with empty:
-            never_observed("441", self.root)
+            never_observed("441", self.root, toggles=ALL_OFF)
         append(session("v1", counts={}), root=self.root)
         with self.assertRaises(ObservationError) as caught:
-            never_observed("441", self.root)
+            never_observed("441", self.root, toggles=ALL_OFF)
         self.assertNotIn("holds no session", str(caught.exception))
 
     def test_an_unreadable_store_refuses_rather_than_reporting_nothing(self) -> None:
         self.store().parent.mkdir(parents=True, exist_ok=True)
         self.store().write_text("{ not json\n", encoding="utf-8")
         with self.assertRaises(ObservationError):
-            never_observed("441", self.root)
+            never_observed("441", self.root, toggles=ALL_OFF)
 
     def test_evidential_keeps_exactly_the_sessions_that_saw_something(self) -> None:
         sessions = (session("v", counts={}), session("s", counts={"/feed/timeline/": 1}))
         self.assertEqual(("s",), tuple(i.session_id for i in evidential(sessions)))
+
+    def test_stated_keeps_exactly_the_sessions_that_say_what_was_active(self) -> None:
+        sessions = (session("u", toggles=None), session("s", toggles=ALL_OFF))
+        self.assertEqual(("s",), tuple(i.session_id for i in stated(sessions)))
+
+
+# ===========================================================================
+#   never_observed — and the refusal to blend two experiments
+# ===========================================================================
+
+
+class ToggleScopedAnswerTests(RootedTestCase):
+    """Sessions measured under different toggle states answer different questions.
+
+    The measurement that forced this: same build, same walk, only the five
+    toggles changed. `/feed/injected_reels_media/` was requested 0 times with the
+    blocks on and 3 times with them off, because blocking `/feed/timeline/`
+    leaves no timeline response for it to be injected into. Union those two
+    sessions and the answer is about neither configuration.
+    """
+
+    def corpus(self) -> None:
+        """One all-off exploration session and one shipped-configuration session.
+
+        Both non-vacuous, both watching the same list, and they disagree about
+        exactly the path the real measurement disagreed about.
+        """
+        watched = ("/feed/timeline/", "/feed/injected_reels_media/")
+        append(
+            session(
+                "explore-all-off",
+                toggles=ALL_OFF,
+                watched=watched,
+                counts={"/feed/timeline/": 28, "/feed/injected_reels_media/": 3},
+            ),
+            root=self.root,
+        )
+        append(
+            session(
+                "isolation-feed-on",
+                toggles=FEED_ON,
+                watched=watched,
+                counts={"/feed/timeline/": 28},
+            ),
+            root=self.root,
+        )
+
+    def test_each_state_answers_its_own_question(self) -> None:
+        """The heart of it. With the blocks off the path was requested; with the
+        feed blocked it was not, and that zero is ours."""
+        self.corpus()
+        self.assertEqual((), never_observed("441", self.root, toggles=ALL_OFF))
+        self.assertEqual(
+            ("/feed/injected_reels_media/",),
+            never_observed("441", self.root, toggles=FEED_ON),
+        )
+
+    def test_the_two_sessions_are_never_unioned(self) -> None:
+        """The mutation this class exists to catch: dropping the state filter.
+
+        A union would answer `()` for both states — the all-off session saw the
+        path, so the blocked session's zero would disappear into it — and `()` is
+        a real answer that a real corpus produces, which is exactly why the test
+        above cannot be the only one. Here the blocked state's answer is
+        non-empty, so a filter that silently stopped filtering changes it.
+        """
+        self.corpus()
+        blended = set()
+        for state in states("441", self.root):
+            blended |= set(never_observed("441", self.root, toggles=state))
+        self.assertEqual({"/feed/injected_reels_media/"}, blended)
+        self.assertNotEqual(
+            never_observed("441", self.root, toggles=ALL_OFF),
+            never_observed("441", self.root, toggles=FEED_ON),
+        )
+
+    def test_a_state_nobody_measured_refuses_and_names_the_ones_on_record(self) -> None:
+        """The selector can only choose, never assert.
+
+        Choosing a configuration nothing was measured under is a refusal that
+        lists what *was* measured — so a typo cannot come back as an answer, and
+        the operator can see which experiments exist without reading the store.
+        """
+        self.corpus()
+        with self.assertRaises(ObservationError) as caught:
+            never_observed("441", self.root, toggles=ALL_ON)
+        self.assertIn("no session for 441 was measured with", str(caught.exception))
+        self.assertIn(ALL_OFF.text, str(caught.exception))
+        self.assertIn(FEED_ON.text, str(caught.exception))
+
+    def test_the_states_on_record_are_the_evidential_stated_ones(self) -> None:
+        self.corpus()
+        append(session("vacuous", toggles=ALL_ON, counts={}), root=self.root)
+        append(session("unstated", toggles=None, counts={}), root=self.root)
+        # A state carried only by a vacuous session is not a state you can ask
+        # about: that session is evidence about no path under any configuration.
+        self.assertEqual((ALL_OFF, FEED_ON), states("441", self.root))
+
+    def test_a_corpus_whose_evidence_states_no_state_refuses(self) -> None:
+        """The committed 441 row's shape. It is not "probably all off".
+
+        The refusal names the sessions, because the operator's next question is
+        which capture to take again.
+        """
+        # Written directly, because `append` will not make one of these any more.
+        # The committed row predates the rule and the reader has to keep reading it.
+        self.write(session("old", toggles=None, counts={"/feed/timeline/": 28}).to_dict())
+        with self.assertRaises(ObservationError) as caught:
+            never_observed("441", self.root, toggles=ALL_OFF)
+        self.assertIn("states which blocks were active", str(caught.exception))
+        self.assertIn("old", str(caught.exception))
+        self.assertEqual((), states("441", self.root))
+
+    def test_an_unstated_session_is_excluded_rather_than_joined(self) -> None:
+        """It must not widen the watch list either.
+
+        `/feed/only_old_watched/` is watched only by the row that cannot say what
+        was active. Counting it as "watched and never observed" would let a
+        measurement nobody can read produce a finding.
+        """
+        self.write(
+            session(
+                "old",
+                toggles=None,
+                watched=("/feed/timeline/", "/feed/only_old_watched/"),
+                counts={"/feed/timeline/": 28},
+            ).to_dict(),
+            session(
+                "new",
+                toggles=ALL_OFF,
+                watched=("/feed/timeline/", "/feed/reels_tray/"),
+                counts={"/feed/timeline/": 3},
+            ).to_dict(),
+        )
+        self.assertEqual(
+            ("/feed/reels_tray/",), never_observed("441", self.root, toggles=ALL_OFF)
+        )
+
+    def test_the_state_must_be_a_state_and_not_its_spelling(self) -> None:
+        """A string would compare unequal to every recorded state and refuse with
+        "nobody measured that" — a true sentence about the wrong problem."""
+        self.corpus()
+        with self.assertRaises(ObservationError) as caught:
+            never_observed("441", self.root, toggles=ALL_OFF.text)
+        self.assertIn("ToggleState", str(caught.exception))
+
+    def test_the_answer_is_required_to_name_a_state(self) -> None:
+        """No default, and deliberately not "the only state on record".
+
+        A default that worked while one experiment existed would change meaning
+        the day a second was filed — the caller's question would have been
+        re-pointed by somebody else's session. Both functions, because the
+        blocked-endpoint one is where the question is at its most circular.
+        """
+        self.corpus()
+        for answer in (never_observed, blocked_and_never_observed):
+            with self.subTest(answer=answer.__name__):
+                with self.assertRaises(TypeError):
+                    answer("441", self.root)  # type: ignore[call-arg]
+
+    def test_the_four_refusals_say_four_different_things(self) -> None:
+        """Each has a different fix: record something, walk the app, take a
+        capture from a build that reports itself, ask about a state you measured.
+
+        Asserted by naming the sentence each corpus must produce, not by counting
+        distinct strings: with the third refusal deleted, that corpus falls
+        through to the fourth, whose message embeds a different list of states —
+        so four strings stay distinct while only three causes exist. Counting
+        passed with a refusal removed; this does not.
+        """
+        seen: list[str] = []
+        rows: list[dict] = []
+        for row, expected in (
+            (None, "no observation evidence"),
+            (session("v1", toggles=ALL_OFF, counts={}), "are vacuous"),
+            (session("old", toggles=None, counts={"/feed/timeline/": 1}),
+             "states which blocks were active"),
+            (session("s1", toggles=FEED_ON, counts={"/feed/timeline/": 1}),
+             "no session for 441 was measured with"),
+        ):
+            with self.subTest(expected=expected):
+                if row is not None:
+                    rows.append(row.to_dict())
+                    self.write(*rows)
+                with self.assertRaises(ObservationError) as caught:
+                    never_observed("441", self.root, toggles=ALL_OFF)
+                self.assertIn(expected, str(caught.exception))
+                seen.append(str(caught.exception))
+
+        self.assertEqual(4, len(set(seen)), seen)
+        # And the last one is answerable under the state that was measured, so
+        # the corpus above is not simply broken.
+        self.assertEqual(
+            ("/feed/reels_tray/",), never_observed("441", self.root, toggles=FEED_ON)
+        )
 
 
 # ===========================================================================
@@ -679,7 +1312,8 @@ class BlockedAndNeverObservedTests(RootedTestCase):
         append(session("s1", counts={"/feed/timeline/": 7}), root=self.root)
 
         self.assertEqual(
-            ("/feed/reels_tray/",), blocked_and_never_observed("441", self.root)
+            ("/feed/reels_tray/",),
+            blocked_and_never_observed("441", self.root, toggles=ALL_OFF),
         )
 
     def test_an_unblocked_path_never_requested_is_not_reported(self) -> None:
@@ -693,8 +1327,12 @@ class BlockedAndNeverObservedTests(RootedTestCase):
         self.manifest("/feed/timeline/")
         append(session("s1", counts={"/feed/timeline/": 7}), root=self.root)
 
-        self.assertIn("/feed/reels_tray/", never_observed("441", self.root))
-        self.assertEqual((), blocked_and_never_observed("441", self.root))
+        self.assertIn(
+            "/feed/reels_tray/", never_observed("441", self.root, toggles=ALL_OFF)
+        )
+        self.assertEqual(
+            (), blocked_and_never_observed("441", self.root, toggles=ALL_OFF)
+        )
 
     def test_a_blocked_path_that_was_requested_is_not_reported(self) -> None:
         """The positive control: `()` must be reachable from a real corpus."""
@@ -704,7 +1342,9 @@ class BlockedAndNeverObservedTests(RootedTestCase):
             root=self.root,
         )
 
-        self.assertEqual((), blocked_and_never_observed("441", self.root))
+        self.assertEqual(
+            (), blocked_and_never_observed("441", self.root, toggles=ALL_OFF)
+        )
 
     def test_a_blocked_path_nobody_watched_is_absent_rather_than_reported(self) -> None:
         """Silence about it is about the watch list, not about the app.
@@ -716,7 +1356,10 @@ class BlockedAndNeverObservedTests(RootedTestCase):
         self.manifest("/feed/timeline/", "/never/watched/")
         append(session("s1", counts={"/feed/timeline/": 7}), root=self.root)
 
-        self.assertNotIn("/never/watched/", blocked_and_never_observed("441", self.root))
+        self.assertNotIn(
+            "/never/watched/",
+            blocked_and_never_observed("441", self.root, toggles=ALL_OFF),
+        )
 
     def test_it_refuses_when_no_session_is_evidence_rather_than_answering_empty(self):
         """Inherited from `never_observed`, and deliberately not softened.
@@ -729,13 +1372,13 @@ class BlockedAndNeverObservedTests(RootedTestCase):
         append(session("s1", counts={}), root=self.root)
 
         with self.assertRaises(ObservationError) as caught:
-            blocked_and_never_observed("441", self.root)
+            blocked_and_never_observed("441", self.root, toggles=ALL_OFF)
         self.assertIn("vacuous", str(caught.exception))
 
     def test_no_evidence_at_all_refuses_too(self) -> None:
         self.manifest("/feed/timeline/")
         with self.assertRaises(ObservationError) as caught:
-            blocked_and_never_observed("441", self.root)
+            blocked_and_never_observed("441", self.root, toggles=ALL_OFF)
         self.assertIn("no observation evidence", str(caught.exception))
 
     def test_an_unreadable_manifest_refuses_through_this_modules_error(self) -> None:
@@ -743,13 +1386,13 @@ class BlockedAndNeverObservedTests(RootedTestCase):
         append(session("s1", counts={"/feed/timeline/": 1}), root=self.root)
 
         with self.assertRaises(ObservationError):
-            blocked_and_never_observed("441", self.root)
+            blocked_and_never_observed("441", self.root, toggles=ALL_OFF)
 
         path = self.root / "manifest" / "hooks.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not json", encoding="utf-8")
         with self.assertRaises(ObservationError) as caught:
-            blocked_and_never_observed("441", self.root)
+            blocked_and_never_observed("441", self.root, toggles=ALL_OFF)
         self.assertIn("hooks.json", str(caught.exception))
 
     def test_a_manifest_declaring_no_block_refuses_rather_than_answering_empty(self):
@@ -781,7 +1424,39 @@ class BlockedAndNeverObservedTests(RootedTestCase):
         )
 
         self.assertEqual(("feed/timeline_stream/",), blocked_endpoints(self.root))
-        self.assertEqual((), blocked_and_never_observed("441", self.root))
+        self.assertEqual(
+            (), blocked_and_never_observed("441", self.root, toggles=ALL_OFF)
+        )
+
+    def test_the_answer_is_scoped_to_the_state_it_was_measured_under(self) -> None:
+        """This is the question at its most circular, so it must not blend either.
+
+        Under `disable_feed=1` the block is upstream of the request, and "we block
+        it and never saw it asked for" is close to a tautology. Under the all-off
+        session the same path was requested 3 times. One store, two states, two
+        answers — and the tautological one is the one that must not be quotable
+        as the other.
+        """
+        self.manifest("/feed/injected_reels_media/")
+        watched = ("/feed/timeline/", "/feed/injected_reels_media/")
+        append(
+            session("off", toggles=ALL_OFF, watched=watched,
+                    counts={"/feed/timeline/": 28, "/feed/injected_reels_media/": 3}),
+            root=self.root,
+        )
+        append(
+            session("on", toggles=FEED_ON, watched=watched,
+                    counts={"/feed/timeline/": 28}),
+            root=self.root,
+        )
+
+        self.assertEqual(
+            (), blocked_and_never_observed("441", self.root, toggles=ALL_OFF)
+        )
+        self.assertEqual(
+            ("/feed/injected_reels_media/",),
+            blocked_and_never_observed("441", self.root, toggles=FEED_ON),
+        )
 
     def test_the_answer_is_scoped_to_the_root_it_was_given(self) -> None:
         """Both halves — the store and the manifest — or `--root` is half-scoped."""
@@ -793,7 +1468,8 @@ class BlockedAndNeverObservedTests(RootedTestCase):
         self.addCleanup(os.chdir, previous)
 
         self.assertEqual(
-            ("/feed/reels_tray/",), blocked_and_never_observed("441", self.root)
+            ("/feed/reels_tray/",),
+            blocked_and_never_observed("441", self.root, toggles=ALL_OFF),
         )
 
 
@@ -808,17 +1484,228 @@ class ReportTests(RootedTestCase):
         append(session("s1", counts={"/feed/timeline/": 12}), root=self.root)
         append(session("v1", surface="reels_tab", counts={}), root=self.root)
 
-    def test_the_report_names_what_was_never_observed(self) -> None:
+    def two_states(self) -> None:
+        """The corpus the protocol produces: one all-off walk, one isolation run."""
+        watched = ("/feed/timeline/", "/feed/injected_reels_media/")
+        append(
+            session("off", toggles=ALL_OFF, watched=watched,
+                    counts={"/feed/timeline/": 28, "/feed/injected_reels_media/": 3}),
+            root=self.root,
+        )
+        append(
+            session("on", surface="feed_tab_blocked", toggles=FEED_ON, watched=watched,
+                    counts={"/feed/timeline/": 28}),
+            root=self.root,
+        )
+
+    def test_the_report_names_what_was_never_observed_under_each_state(self) -> None:
         self.corpus()
         report = summary("441", self.root)
-        self.assertEqual(["/feed/reels_tray/"], report["never_observed"])
-        self.assertEqual({"/feed/timeline/": 12}, report["observed"])
+        self.assertEqual(1, len(report["states"]))
+        state = report["states"][0]
+        self.assertEqual(ALL_OFF.text, state["toggles_text"])
+        self.assertEqual(ALL_OFF.as_dict(), state["toggles"])
+        self.assertEqual(["/feed/reels_tray/"], state["never_observed"])
+        self.assertEqual({"/feed/timeline/": 12}, state["observed"])
+        self.assertEqual(["s1"], state["session_ids"])
         self.assertEqual(2, report["session_count"])
         self.assertEqual(1, report["evidential_session_count"])
+        self.assertEqual(1, report["stated_session_count"])
         self.assertEqual(["v1"], report["vacuous_session_ids"])
+        self.assertEqual("", report["unanswerable_reason"])
+
+    def test_there_is_no_whole_version_answer_to_read_by_mistake(self) -> None:
+        """The blended field is gone rather than kept beside the per-state ones.
+
+        A script reading `never_observed` off this report used to get a union of
+        every evidential session; keeping the key would mean it still does, and
+        the union of an all-off walk and a blocked walk describes no
+        configuration. A missing key fails loudly; a blended one does not fail.
+        """
+        self.two_states()
+        report = summary("441", self.root)
+        for gone in ("never_observed", "observed", "surfaces",
+                     "blocked_never_observed", "never_observed_refused"):
+            self.assertNotIn(gone, report)
+        # And the report is not simply empty: an absence assertion whose subject
+        # never existed passes against a `summary` that returns `{}`.
+        self.assertEqual(2, len(report["states"]))
+        self.assertTrue(all(item["never_observed"] is not None for item in report["states"]))
+
+    def test_two_states_are_reported_separately_and_disagree(self) -> None:
+        """Same store, same watch list, two experiments and two answers."""
+        self.two_states()
+        report = summary("441", self.root)
+        by_state = {item["toggles_text"]: item for item in report["states"]}
+        self.assertEqual(
+            [], by_state[ALL_OFF.text]["never_observed"]
+        )
+        self.assertEqual(
+            ["/feed/injected_reels_media/"], by_state[FEED_ON.text]["never_observed"]
+        )
+        self.assertEqual(["off"], by_state[ALL_OFF.text]["session_ids"])
+        self.assertEqual(["on"], by_state[FEED_ON.text]["session_ids"])
+        self.assertEqual(["feed_tab"], by_state[ALL_OFF.text]["surfaces"])
+        self.assertEqual(["feed_tab_blocked"], by_state[FEED_ON.text]["surfaces"])
+
+    def test_a_state_with_a_block_on_is_marked_circular_in_both_forms(self) -> None:
+        """The caution that makes a zero readable, named per state.
+
+        A reader who takes `/feed/injected_reels_media/` off the blocked-state
+        list and calls it "never requested" has repeated the exact mistake the
+        field was added for — 0 with the blocks on, 3 with them off.
+        """
+        self.two_states()
+        report = summary("441", self.root)
+        circular = [w for w in report["warnings"] if "caused by our own blocks" in w]
+        self.assertEqual(1, len(circular), report["warnings"])
+        self.assertIn(FEED_ON.text, circular[0])
+        self.assertIn("disable_feed", circular[0])
+        # Named for the state it is about, and not for the other one.
+        self.assertNotIn(ALL_OFF.text, circular[0])
+        self.assertIn(circular[0], render(report))
+
+        by_state = {item["toggles_text"]: item for item in report["states"]}
+        self.assertEqual(circular[0], by_state[FEED_ON.text]["circular"])
+        self.assertEqual("", by_state[ALL_OFF.text]["circular"])
+        self.assertEqual(["disable_feed"], by_state[FEED_ON.text]["toggles_on"])
+        self.assertEqual([], by_state[ALL_OFF.text]["toggles_on"])
+
+    def section(self, text: str, state_text: str) -> str:
+        """The part of the rendered report that belongs to one state.
+
+        Searching the whole document would find `/feed/injected_reels_media/` in
+        the *other* state's OBSERVED block — it was requested 3 times there —
+        which is how a placement assertion comes to be about the wrong section.
+        """
+        heading = f"  TOGGLES  {state_text}"
+        self.assertIn(heading, text)
+        start = text.index(heading)
+        rest = text[start + len(heading):]
+        following = [
+            rest.index(marker) for marker in ("\n  TOGGLES  ", "\n  WARNINGS")
+            if marker in rest
+        ]
+        return rest[: min(following)] if following else rest
+
+    def test_the_circularity_caution_is_printed_above_the_list_it_is_about(self) -> None:
+        """Placement, because a caution the reader has already passed is not one.
+
+        The most dangerous line in this report is a never-observed literal under a
+        blocking state. With the caution only in the WARNINGS block at the bottom,
+        the reader meets `/feed/injected_reels_media/` first and the reason it is
+        meaningless twenty lines later.
+        """
+        self.two_states()
+        text = render(summary("441", self.root))
+        blocked = self.section(text, FEED_ON.text)
+        self.assertLess(
+            blocked.index("caused by our own blocks"),
+            blocked.index("/feed/injected_reels_media/"),
+        )
+        # And the all-off section, whose answer is not circular, does not carry it.
+        self.assertNotIn("caused by our own blocks", self.section(text, ALL_OFF.text))
+
+    def test_every_state_names_itself_beside_its_own_answer(self) -> None:
+        """Two `WATCHED AND NEVER OBSERVED` blocks back to back, with nothing
+        saying which configuration each came from, is the confusion this whole
+        change exists to prevent — in the one artefact a human reads before
+        deciding. Every literal a state names is printed inside that state's own
+        section, under a heading that names the state."""
+        self.two_states()
+        report = summary("441", self.root)
+        text = render(report)
+        for state in report["states"]:
+            with self.subTest(state=state["toggles_text"]):
+                section = self.section(text, state["toggles_text"])
+                self.assertIn(", ".join(state["session_ids"]), section)
+                self.assertIn(", ".join(state["surfaces"]), section)
+                for literal in state["never_observed"]:
+                    self.assertIn(literal, section)
+        # The control for the slicing: the sections are really different, so an
+        # assertion "inside this state's section" is not an assertion about the
+        # whole document.
+        self.assertNotEqual(
+            self.section(text, ALL_OFF.text), self.section(text, FEED_ON.text)
+        )
+        self.assertNotIn(
+            "/feed/injected_reels_media/",
+            self.section(text, ALL_OFF.text).split("OBSERVED")[0],
+        )
+
+    def test_an_answer_unioning_two_builds_says_so(self) -> None:
+        """A toggle name is not a rule. What `disable_feed` blocks comes from the
+        manifest the build was rendered from, so two builds of one version can
+        report the same state and block different literals — and the answer here
+        unions them."""
+        append(
+            session("first", counts={"/feed/timeline/": 1}), root=self.root
+        )
+        other = ObservationSession(
+            schema_version=SCHEMA_VERSION, version="441", build_sha256="c" * 64,
+            recorded_at="2026-08-09T11:00:00Z", session_id="second", surface="feed_tab",
+            watched=("/feed/timeline/", "/feed/reels_tray/"), toggles=ALL_OFF,
+            counts={"/feed/timeline/": 2},
+        )
+        append(other, root=self.root)
+
+        report = summary("441", self.root)
+        self.assertEqual([BUILD, "c" * 64], report["states"][0]["build_sha256s"])
+        named = [w for w in report["warnings"] if "2 builds" in w]
+        self.assertEqual(1, len(named), report["warnings"])
+
+    def test_one_build_raises_no_such_warning(self) -> None:
+        """The control: it must be absent for the ordinary corpus."""
+        self.corpus()
+        report = summary("441", self.root)
+        self.assertEqual([BUILD], report["states"][0]["build_sha256s"])
+        self.assertEqual([], [w for w in report["warnings"] if "builds" in w])
+
+    def test_an_all_off_corpus_carries_no_circularity_caution(self) -> None:
+        """The control. A caution printed on every report says nothing at all."""
+        self.corpus()
+        report = summary("441", self.root)
+        self.assertEqual(
+            [], [w for w in report["warnings"] if "caused by our own blocks" in w]
+        )
+
+    def test_a_session_that_states_no_state_is_named_and_excluded(self) -> None:
+        """The committed 441 row's shape, beside a usable one.
+
+        It must not vanish quietly: it is a real 52-request session, and a reader
+        who cannot see that it was excluded will wonder where it went.
+        """
+        self.write(
+            session("old", toggles=None, counts={"/feed/timeline/": 28}).to_dict(),
+            session("new", toggles=ALL_OFF, counts={"/feed/timeline/": 3}).to_dict(),
+        )
+        report = summary("441", self.root)
+        self.assertEqual(["old"], report["unstated_session_ids"])
+        self.assertEqual(1, len(report["states"]))
+        self.assertEqual(["new"], report["states"][0]["session_ids"])
+        named = [w for w in report["warnings"] if "state no toggle state" in w]
+        self.assertEqual(1, len(named), report["warnings"])
+        self.assertIn("old", named[0])
+        self.assertIn(named[0], render(report))
+        # And its 28 requests are not in the answer's counts either.
+        self.assertEqual({"/feed/timeline/": 3}, report["states"][0]["observed"])
+
+    def test_a_corpus_that_states_nothing_says_so_once_and_answers_nothing(self) -> None:
+        """The whole committed corpus today. `states` is empty and the reason is
+        stated — not two wordings of it, which is how two spellings of one fact
+        come to disagree."""
+        self.write(session("old", toggles=None, counts={"/feed/timeline/": 28}).to_dict())
+        report = summary("441", self.root)
+        self.assertEqual([], report["states"])
+        self.assertIn("states which blocks were active", report["unanswerable_reason"])
+        self.assertEqual(
+            [report["unanswerable_reason"]],
+            [w for w in report["warnings"] if "states which blocks" in w],
+        )
+        self.assertIn(report["unanswerable_reason"], render(report))
 
     def test_the_report_carries_the_blocked_answer_and_its_own_refusal(self) -> None:
-        """A second field with a second refusal string, not a reuse of the first.
+        """A second refusal string, not a reuse of the first.
 
         This can fail where `never_observed` succeeds — an unreadable manifest, or
         one declaring no block — and a reader told "all sessions are vacuous" when
@@ -828,18 +1715,26 @@ class ReportTests(RootedTestCase):
 
         without = summary("441", self.root)
 
-        self.assertEqual([], without["blocked_never_observed"])
-        self.assertIn("hooks.json", without["blocked_never_observed_refused"])
-        # The control: the sibling field answered on the same corpus, so the
-        # refusal above is about the manifest and not about the evidence.
-        self.assertEqual(["/feed/reels_tray/"], without["never_observed"])
-        self.assertEqual("", without["never_observed_refused"])
+        self.assertEqual([], without["states"][0]["blocked_never_observed"])
+        self.assertIn(
+            "hooks.json", without["states"][0]["blocked_never_observed_refused"]
+        )
+        # The control: the sibling answer held on the same corpus, so the refusal
+        # above is about the manifest and not about the evidence.
+        self.assertEqual(["/feed/reels_tray/"], without["states"][0]["never_observed"])
+        self.assertEqual("", without["unanswerable_reason"])
+        # And it is audible in the warnings too, because a report with no state at
+        # all has no field to hang it on.
+        self.assertTrue(any("hooks.json" in w for w in without["warnings"]))
 
         BlockedAndNeverObservedTests.manifest(self, "/feed/reels_tray/")
         with_manifest = summary("441", self.root)
 
-        self.assertEqual(["/feed/reels_tray/"], with_manifest["blocked_never_observed"])
-        self.assertEqual("", with_manifest["blocked_never_observed_refused"])
+        self.assertEqual(
+            ["/feed/reels_tray/"], with_manifest["states"][0]["blocked_never_observed"]
+        )
+        self.assertEqual("", with_manifest["states"][0]["blocked_never_observed_refused"])
+        self.assertEqual([], [w for w in with_manifest["warnings"] if "hooks.json" in w])
 
     def test_a_blocked_endpoint_nobody_watched_is_named_in_the_warnings(self) -> None:
         """Otherwise the answer above is quietly incomplete.
@@ -853,7 +1748,9 @@ class ReportTests(RootedTestCase):
 
         report = summary("441", self.root)
 
-        self.assertEqual(["/feed/reels_tray/"], report["blocked_never_observed"])
+        self.assertEqual(
+            ["/feed/reels_tray/"], report["states"][0]["blocked_never_observed"]
+        )
         named = [w for w in report["warnings"] if "/never/watched/" in w]
         self.assertEqual(1, len(named), report["warnings"])
         self.assertNotIn("/feed/reels_tray/", named[0])
@@ -894,8 +1791,13 @@ class ReportTests(RootedTestCase):
         "=" * 68,
         "OBSERVED",
         "WARNINGS",
+        "NOTHING CAN BE ANSWERED",
         "Every watched path was observed at least once.",
-        "WATCHED AND NEVER OBSERVED: refused",
+        # No `(n)` on either heading: a count beside the list it counts is a
+        # second spelling of a length, and it also passed this test by
+        # coincidence, because a corpus of one session carries the string "1".
+        "WATCHED AND NEVER OBSERVED",
+        "BLOCKED AND NEVER OBSERVED",
         "BLOCKED AND NEVER OBSERVED: refused",
         "Every blocked path this manifest declares was observed.",
         "This measures; it does not decide. A blocked path that was never once "
@@ -919,12 +1821,16 @@ class ReportTests(RootedTestCase):
         value and fails here — which is precisely the defect this project shipped,
         the machine view going quieter than the human one.
 
-        Run over all three corpora, because the path that most needs to be loud is
-        the one where nothing was measured.
+        Run over four corpora, because the paths that most need to be loud are the
+        ones where nothing was measured and where two experiments were.
         """
         for label, build in (
             ("populated", self.corpus),
+            ("two states", self.two_states),
             ("all vacuous", lambda: append(session("v1", counts={}), root=self.root)),
+            ("unstated", lambda: self.write(
+                session("old", toggles=None, counts={"/feed/timeline/": 1}).to_dict()
+            )),
             ("empty", lambda: None),
         ):
             with self.subTest(corpus=label):
@@ -940,17 +1846,24 @@ class ReportTests(RootedTestCase):
                     ["--root", str(self.root), "report", "--version", "441"]
                 )
 
-                carried = {report["version"], report["never_observed_refused"]}
-                carried |= set(report["warnings"]) | set(report["never_observed"])
-                carried |= set(report["observed"]) | set(report["surfaces"])
+                carried = {report["version"], report["unanswerable_reason"]}
+                carried |= set(report["warnings"])
                 carried |= set(report["vacuous_session_ids"])
+                carried |= set(report["unstated_session_ids"])
                 carried |= {str(report[key]) for key in
-                            ("session_count", "evidential_session_count")}
-                carried |= {str(value) for value in report["observed"].values()}
+                            ("session_count", "evidential_session_count",
+                             "stated_session_count")}
+                for state in report["states"]:
+                    carried |= {state["toggles_text"]}
+                    carried |= set(state["never_observed"]) | set(state["observed"])
+                    carried |= set(state["surfaces"]) | set(state["session_ids"])
+                    carried |= set(state["blocked_never_observed"])
+                    carried |= {state["blocked_never_observed_refused"]}
+                    carried |= {str(value) for value in state["observed"].values()}
                 carried.discard("")
 
-                for line in text.splitlines():
-                    stripped = line.strip()
+                for line_of in text.splitlines():
+                    stripped = line_of.strip()
                     if not stripped or stripped in self.BOILERPLATE:
                         continue
                     self.assertTrue(
@@ -967,18 +1880,18 @@ class ReportTests(RootedTestCase):
         sentences a script gating on this file needs to find.
         """
         report = summary("441", self.root)
-        self.assertIn("no observation evidence", report["never_observed_refused"])
+        self.assertIn("no observation evidence", report["unanswerable_reason"])
         self.assertTrue(any("no observation evidence" in w for w in report["warnings"]))
 
         append(session("v1", counts={}), root=self.root)
         report = summary("441", self.root)
-        self.assertIn("vacuous", report["never_observed_refused"])
+        self.assertIn("vacuous", report["unanswerable_reason"])
         self.assertTrue(any("vacuous" in w for w in report["warnings"]))
 
         append(session("s1", counts={"/feed/timeline/": 3}), root=self.root)
         report = summary("441", self.root)
-        self.assertEqual("", report["never_observed_refused"])
-        self.assertEqual(["/feed/reels_tray/"], report["never_observed"])
+        self.assertEqual("", report["unanswerable_reason"])
+        self.assertEqual(["/feed/reels_tray/"], report["states"][0]["never_observed"])
         self.assertTrue(any("vacuous" in w for w in report["warnings"]))
 
     def test_a_vacuous_session_is_reported_in_both_forms(self) -> None:
@@ -988,7 +1901,7 @@ class ReportTests(RootedTestCase):
         self.assertIn("v1", "\n".join(report["warnings"]))
         self.assertIn("v1", render(report))
 
-    def test_the_surfaces_bound_is_stated_on_every_report_that_has_an_answer(self) -> None:
+    def test_the_surfaces_bound_is_stated_on_every_state_that_has_an_answer(self) -> None:
         """A zero means "not on this surface" until somebody says which surfaces
         were walked. It is the reading a human is most likely to get wrong.
 
@@ -1001,7 +1914,7 @@ class ReportTests(RootedTestCase):
         self.corpus()
         report = summary("441", self.root)
         self.assertTrue(any("bounded by the surfaces" in w for w in report["warnings"]))
-        self.assertEqual(["feed_tab"], report["surfaces"])
+        self.assertEqual(["feed_tab"], report["states"][0]["surfaces"])
         self.assertIn("feed_tab", render(report))
         self.assertNotIn("reels_tab", render(report))
         bound = next(w for w in report["warnings"] if "bounded by the surfaces" in w)
@@ -1011,16 +1924,16 @@ class ReportTests(RootedTestCase):
         """The dangerous shape: nothing to report because nothing was measured."""
         append(session("v1", counts={}), root=self.root)
         report = summary("441", self.root)
-        self.assertEqual([], report["never_observed"])
-        self.assertIn("vacuous", report["never_observed_refused"])
+        self.assertEqual([], report["states"])
+        self.assertIn("vacuous", report["unanswerable_reason"])
 
         _, text, _ = self.run_main(["--root", str(self.root), "report", "--version", "441"])
-        self.assertIn("refused", text)
+        self.assertIn("NOTHING CAN BE ANSWERED", text)
         self.assertNotIn("Every watched path was observed", text)
         _, as_json, _ = self.run_main(
             ["--root", str(self.root), "report", "--version", "441", "--json"]
         )
-        self.assertIn("vacuous", json.loads(as_json)["never_observed_refused"])
+        self.assertIn("vacuous", json.loads(as_json)["unanswerable_reason"])
 
     def test_an_empty_store_says_so_in_both_forms(self) -> None:
         report = summary("441", self.root)
@@ -1041,8 +1954,8 @@ class ReportTests(RootedTestCase):
             root=self.root,
         )
         report = summary("441", self.root)
-        self.assertEqual([], report["never_observed"])
-        self.assertEqual("", report["never_observed_refused"])
+        self.assertEqual([], report["states"][0]["never_observed"])
+        self.assertEqual("", report["unanswerable_reason"])
         self.assertEqual([], [w for w in report["warnings"] if "vacuous" in w])
         self.assertIn("Every watched path was observed", render(report))
 
@@ -1073,8 +1986,8 @@ class CommandLineTests(RootedTestCase):
 
     def test_a_capture_becomes_a_recorded_session(self) -> None:
         capture = self.capture(
-            "08-08 17:31:02.412 1 1 I DFInstaObserve: /feed/timeline/\n"
-            "08-08 17:31:03.412 1 1 I DFInstaObserve: /feed/timeline/\n"
+            header(ALL_OFF) + line("/feed/timeline/")
+            + header(ALL_OFF) + line("/feed/timeline/")
         )
         code, out, _ = self.run_main(
             self.record_argv(capture, "--watched", "/feed/timeline/",
@@ -1085,12 +1998,103 @@ class CommandLineTests(RootedTestCase):
         recorded = read("441", self.root)
         self.assertEqual(1, len(recorded))
         self.assertEqual({"/feed/timeline/": 2}, dict(recorded[0].counts))
-        self.assertEqual(("/feed/reels_tray/",), never_observed("441", self.root))
+        self.assertEqual(
+            ("/feed/reels_tray/",), never_observed("441", self.root, toggles=ALL_OFF)
+        )
+
+    def test_the_recorded_state_comes_from_the_capture_and_is_printed(self) -> None:
+        """The operator never types it, and the operator is told what was recorded.
+
+        A state read out of the build and then never shown is a field nobody can
+        check against the phone they were just holding.
+        """
+        capture = self.capture(header(FEED_ON) + line("/feed/timeline/"))
+        code, out, _ = self.run_main(
+            self.record_argv(capture, "--watched", "/feed/timeline/")
+        )
+        self.assertEqual(0, code)
+        self.assertEqual(FEED_ON, read("441", self.root)[0].toggles)
+        self.assertIn(FEED_ON.text, out)
+
+    def test_a_session_measured_with_a_block_on_says_so_when_it_is_recorded(self) -> None:
+        """The caution at the moment the number is produced, not only where it is
+        read. And it must be absent for an all-off capture, or it says nothing."""
+        blocked = self.capture(header(FEED_ON) + line("/feed/timeline/"))
+        _, out, _ = self.run_main(
+            self.record_argv(blocked, "--watched", "/feed/timeline/")
+        )
+        self.assertIn("CIRCULAR", out)
+        self.assertIn("disable_feed", out)
+
+        off = self.capture(header(ALL_OFF) + line("/feed/timeline/"))
+        _, out, _ = self.run_main(
+            self.record_argv(off, "--session-id", "441-feed-2", "--watched",
+                             "/feed/timeline/")
+        )
+        self.assertNotIn("CIRCULAR", out)
+
+    def test_the_recorded_state_is_a_function_of_the_capture_alone(self) -> None:
+        """The property the whole design rests on, asserted as the property.
+
+        `retirement` shipped a rule reading `effective_from = --version + 1` where
+        `--version` came from the same person in the same command; an adversarial
+        pass broke it in one line. The equivalent here is an operator-supplied
+        state, and the guarantee is that what lands in the row is exactly what
+        `parse` read out of the capture — so nothing the command line carries can
+        change it, whatever the flag is called.
+        """
+        text = header(FEED_ON) + line("/feed/timeline/")
+        capture = self.capture(text)
+        code, _, _ = self.run_main(
+            self.record_argv(capture, "--watched", "/feed/timeline/")
+        )
+        self.assertEqual(0, code)
+        self.assertEqual(parse(text).toggles, read("441", self.root)[0].toggles)
+        self.assertEqual(FEED_ON, read("441", self.root)[0].toggles)
+
+    def test_the_record_command_offers_no_option_that_could_carry_a_state(self) -> None:
+        """And the structural half, because the test above passes against a flag
+        nobody used in it.
+
+        An earlier version of this test asserted that `--toggles` specifically was
+        rejected; an adversarial pass renamed it `--blocks-active` and the whole
+        suite stayed green. A denylist of one flag name is the shape `retirement`
+        replaced with an allowlist — so this asks what the parser accepts at all.
+        """
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--root", type=Path, default=Path("."))
+        sub = parser.add_subparsers(dest="command", required=True)
+        record = _record_parser(sub)
+        offered = sorted(action.dest for action in record._actions)
+        self.assertEqual(
+            [],
+            [name for name in offered
+             if re.search(r"toggle|block|state|pref|switch", name)],
+            f"the record command offers {offered}; a state supplied here would be "
+            "the operator asserting what the session measured",
+        )
+        # The control: this test must be able to fail, and it must be looking at
+        # a parser that really does offer the record options.
+        self.assertIn("build_sha256", offered)
+
+    def test_a_capture_that_states_nothing_is_refused_and_writes_nothing(self) -> None:
+        """The field failure, at the command line: 22 path lines, no statement.
+
+        Exit 2 and an empty store, rather than a row whose 22 counts nobody can
+        read.
+        """
+        capture = self.capture(line("/feed/timeline/") * 22)
+        code, _, err = self.run_main(
+            self.record_argv(capture, "--watched", "/feed/timeline/")
+        )
+        self.assertEqual(2, code)
+        self.assertIn(TOGGLE_DIRECTIVE, err)
+        self.assertEqual((), read("441", self.root))
 
     def test_a_watch_list_can_come_from_a_file(self) -> None:
         watch = self.root / "watched.txt"
         watch.write_text("/feed/timeline/\n\n/feed/reels_tray/\n", encoding="utf-8")
-        capture = self.capture("I DFInstaObserve: /feed/timeline/\n")
+        capture = self.capture(header(ALL_OFF) + line("/feed/timeline/"))
         code, _, _ = self.run_main(
             self.record_argv(capture, "--watched-from", str(watch))
         )
@@ -1101,26 +2105,32 @@ class CommandLineTests(RootedTestCase):
 
     def test_a_vacuous_capture_is_recorded_and_announced_as_vacuous(self) -> None:
         """Worth recording — it is the honest record of a capture that saw
-        nothing — and worth saying it will never be counted."""
+        nothing — and worth saying it will never be counted.
+
+        It states no toggle state either, because the pass that would have said
+        one never ran. That is the only shape in which an unstated row is written.
+        """
         capture = self.capture("08-08 17:31:02.412 1 1 D Other: nothing here\n")
         code, out, _ = self.run_main(
             self.record_argv(capture, "--watched", "/feed/timeline/")
         )
         self.assertEqual(0, code)
         self.assertIn("VACUOUS", out)
+        self.assertIn("toggles: not stated", out)
         self.assertEqual(1, len(read("441", self.root)))
+        self.assertIsNone(read("441", self.root)[0].toggles)
         with self.assertRaises(ObservationError):
-            never_observed("441", self.root)
+            never_observed("441", self.root, toggles=ALL_OFF)
 
     def test_recording_with_no_watch_list_is_refused(self) -> None:
-        capture = self.capture("I DFInstaObserve: /feed/timeline/\n")
+        capture = self.capture(header(ALL_OFF) + line("/feed/timeline/"))
         code, _, err = self.run_main(self.record_argv(capture))
         self.assertEqual(2, code)
         self.assertIn("no watch list", err)
         self.assertEqual((), read("441", self.root))
 
     def test_a_capture_naming_an_unwatched_path_is_refused(self) -> None:
-        capture = self.capture("I DFInstaObserve: /feed/surprise/\n")
+        capture = self.capture(header(ALL_OFF) + line("/feed/surprise/"))
         code, _, err = self.run_main(
             self.record_argv(capture, "--watched", "/feed/timeline/")
         )
@@ -1129,7 +2139,9 @@ class CommandLineTests(RootedTestCase):
         self.assertEqual((), read("441", self.root))
 
     def test_a_malformed_capture_is_refused_rather_than_partly_counted(self) -> None:
-        capture = self.capture("I DFInstaObserve: /feed/timeline/\nI DFInstaObserve: \n")
+        capture = self.capture(
+            header(ALL_OFF) + line("/feed/timeline/") + "I DFInstaObserve: \n"
+        )
         code, _, err = self.run_main(
             self.record_argv(capture, "--watched", "/feed/timeline/")
         )
@@ -1144,7 +2156,7 @@ class CommandLineTests(RootedTestCase):
 
     def test_recording_with_an_unusable_timestamp_is_refused_and_writes_nothing(self) -> None:
         """The `--recorded-at banana` shape, in the module that learned it."""
-        capture = self.capture("I DFInstaObserve: /feed/timeline/\n")
+        capture = self.capture(header(ALL_OFF) + line("/feed/timeline/"))
         argv = self.record_argv(capture, "--watched", "/feed/timeline/")
         argv[argv.index("--recorded-at") + 1] = "banana"
         code, _, err = self.run_main(argv)
@@ -1159,45 +2171,69 @@ class CommandLineTests(RootedTestCase):
 
 
 class CommittedCorpusTests(unittest.TestCase):
-    def test_the_first_real_session_is_committed_and_is_evidence(self) -> None:
-        """Today's real state. This test used to assert the corpus was EMPTY.
+    """The one row on record, and what it is allowed to be used for.
 
-        It stopped being true on 2026-08-08, when a measurement build was walked
-        on the phone for the first time: 52 requests across 4 of 16 watched paths.
-        That is what turned `block_never_observed` from a rule that reports itself
-        skipped into one that produces findings, so the change is the point rather
-        than a regression.
+    It says 52 requests across 4 of 16 watched paths, and it does **not** say
+    which blocks were active — it was recorded on 2026-08-08, before the build
+    reported itself. From the design note written the same week: it was walked
+    with the blocks on, which is the configuration in which `/feed/timeline/`
+    being blocked stops `/feed/injected_reels_media/` from ever being requested.
 
-        Pinned as an exact set, not a count. `never_observed` is what a human is
-        asked to act on, and a path silently entering or leaving that list is
-        exactly the drift worth failing over.
-        """
+    This test used to pin the twelve literals that session "never observed". That
+    list was a measurement of our own configuration, and it is no longer an
+    answer this module will give.
+    """
+
+    def test_the_committed_session_is_readable_and_is_not_evidence(self) -> None:
         sessions = read("441", REPOSITORY)
         self.assertTrue(sessions, "the committed session went missing")
-        # It has to be non-vacuous, or the zeros below prove nothing.
+        # Non-vacuous — it really did see traffic — and still unusable, which is
+        # the whole point: vacuity was never the only way to be unreadable.
         self.assertTrue(evidential(sessions), "every committed session is vacuous")
-
-        self.assertEqual(
-            [
-                "/api/v1/clips/homecoming/",
-                "/clips/discover/stream/",
-                "/feed/injected_reels_media/",
-                "/feed/injected_reels_media_www/",
-                "/feed/reels_media/",
-                "/feed/reels_media_stream/",
-                "/feed/text_post_app_timeline/",
-                "/feed/text_post_app_timeline_priming/",
-                "/feed/timeline_stream/",
-                "/profile_ads/get_profile_ads/",
-                "delivery/background_prefetch",
-                "delivery/reels_cache",
-            ],
-            sorted(never_observed("441", REPOSITORY)),
-        )
-        # And the control, so "never observed" cannot be an artefact of a capture
-        # that recorded nothing at all: the busiest path was seen many times.
+        self.assertEqual((), stated(sessions))
         seen = {k: v for s in sessions for k, v in s.counts.items()}
         self.assertGreater(seen.get("/feed/timeline/", 0), 20)
+
+    def test_no_toggle_scoped_question_is_answered_from_it(self) -> None:
+        """Including the two states somebody is most likely to try.
+
+        A refusal that only covered "all off" would let the same circular list
+        out under any other spelling of the experiment.
+        """
+        for state in (ALL_OFF, ALL_ON, FEED_ON):
+            with self.subTest(state=state.text):
+                with self.assertRaises(ObservationError) as caught:
+                    never_observed("441", REPOSITORY, toggles=state)
+                self.assertIn("states which blocks were active", str(caught.exception))
+                with self.assertRaises(ObservationError):
+                    blocked_and_never_observed("441", REPOSITORY, toggles=state)
+        self.assertEqual((), states("441", REPOSITORY))
+
+    def test_the_report_says_what_is_wrong_with_it_rather_than_going_quiet(self) -> None:
+        report = summary("441", REPOSITORY)
+        self.assertEqual([], report["states"])
+        self.assertEqual(1, report["evidential_session_count"])
+        self.assertEqual(0, report["stated_session_count"])
+        self.assertEqual(["441-long-multisurface"], report["unstated_session_ids"])
+        self.assertIn("states which blocks were active", report["unanswerable_reason"])
+
+    def test_reading_the_committed_row_does_not_rewrite_it(self) -> None:
+        """`append` rewrites the whole file from `to_dict`, so a round trip that
+        added `"toggles": null` would edit an append-only store the next time a
+        session was recorded beside this one — and would turn "nobody said" into
+        "the build said nothing"."""
+        path = REPOSITORY / OBSERVATIONS / "441.jsonl"
+        committed = path.read_text(encoding="utf-8").splitlines()
+        rows = read("441", REPOSITORY)
+        self.assertEqual(len(committed), len(rows))
+        for original, row in zip(committed, rows):
+            self.assertEqual(original, json.dumps(row.to_dict(), sort_keys=True))
+
+    def test_a_stated_session_would_write_the_field(self) -> None:
+        """The control for the round trip above: `to_dict` omitting `toggles`
+        always would satisfy it, and would also delete the feature."""
+        row = session(toggles=FEED_ON, counts={"/feed/timeline/": 1}).to_dict()
+        self.assertIn("toggles", json.dumps(row, sort_keys=True))
 
 
 if __name__ == "__main__":
