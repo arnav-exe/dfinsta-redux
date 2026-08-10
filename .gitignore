@@ -146,3 +146,10 @@ fabric.properties
 # Generated decoded evidence trees (see AGENTS.md: never patch source)
 /TESTING-PLAYGROUND/
 .coverage
+
+# Redacted observation captures are committed EVIDENCE, not build output — see
+# manifest/captures/README.md. Exempted from the Android Studio `captures/` rule
+# above and from `*.log`. The directory has to be un-ignored before its contents,
+# because git does not descend into an ignored directory to find a negation.
+!manifest/captures/
+!manifest/captures/*.log

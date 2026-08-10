@@ -41,6 +41,10 @@ import unittest
 from pathlib import Path
 
 from dfinsta_pipeline.observation import (
+    BLOCK_MESSAGE,
+    BLOCK_TAG,
+    UNATTRIBUTED,
+    BlockCount,
     OBSERVATIONS,
     SCHEMA_VERSION,
     TAG,
@@ -90,6 +94,12 @@ def header(state: ToggleState = ALL_OFF) -> str:
     return line(f"{TOGGLE_DIRECTIVE} {state.text}")
 
 
+#: What a capture with no block header in it counts. A *measured* zero, which is
+#: the default here because it is what reading any of the fixtures below would
+#: find; `blocks=None` has to be asked for, because it means nobody counted.
+NO_BLOCKS = BlockCount(0)
+
+
 def session(
     session_id: str = "s1",
     *,
@@ -97,6 +107,7 @@ def session(
     surface: str = "feed_tab",
     watched: tuple[str, ...] = ("/feed/timeline/", "/feed/reels_tray/"),
     toggles: ToggleState | None = ALL_OFF,
+    blocks: BlockCount | None = NO_BLOCKS,
     counts: dict[str, int] | None = None,
 ) -> ObservationSession:
     return ObservationSession(
@@ -108,6 +119,7 @@ def session(
         surface=surface,
         watched=watched,
         toggles=toggles,
+        blocks=blocks,
         counts=dict(counts or {}),
     )
 
@@ -1645,7 +1657,7 @@ class ReportTests(RootedTestCase):
             schema_version=SCHEMA_VERSION, version="441", build_sha256="c" * 64,
             recorded_at="2026-08-09T11:00:00Z", session_id="second", surface="feed_tab",
             watched=("/feed/timeline/", "/feed/reels_tray/"), toggles=ALL_OFF,
-            counts={"/feed/timeline/": 2},
+            blocks=NO_BLOCKS, counts={"/feed/timeline/": 2},
         )
         append(other, root=self.root)
 
@@ -2234,6 +2246,226 @@ class CommittedCorpusTests(unittest.TestCase):
         always would satisfy it, and would also delete the feature."""
         row = session(toggles=FEED_ON, counts={"/feed/timeline/": 1}).to_dict()
         self.assertIn("toggles", json.dumps(row, sort_keys=True))
+
+    def test_the_committed_rows_carry_no_block_count_and_still_read(self) -> None:
+        """The other absence, and the same rule. Twelve 439 rows predate the counter.
+
+        They must keep reading and must come back byte for byte, and their `blocks`
+        must be `None` rather than a zero nobody measured.
+        """
+        path = REPOSITORY / OBSERVATIONS / "439.jsonl"
+        committed = path.read_text(encoding="utf-8").splitlines()
+        rows = read("439", REPOSITORY)
+        self.assertEqual(12, len(rows))
+        for original, row in zip(committed, rows):
+            self.assertIsNone(row.blocks)
+            self.assertEqual(original, json.dumps(row.to_dict(), sort_keys=True))
+
+
+class BlockCountingTests(unittest.TestCase):
+    """The second signal: what Instagram reported when the guard threw.
+
+    Every negative here has a positive twin. A regex that matched nothing would
+    satisfy "the echo is not counted" on its own, so each of those tests also
+    asserts the header beside it *was* counted.
+    """
+
+    def capture(self, *payloads: str, state: ToggleState = ALL_OFF) -> str:
+        return header(state) + "".join(payloads)
+
+    def error(self, payload: str, *, level: str = "E") -> str:
+        return f"08-10 20:05:11.310 20544 20544 {level} {BLOCK_TAG}: {payload}\n"
+
+    def test_the_header_is_counted_once_per_event(self) -> None:
+        text = self.capture(
+            self.error("FEED_NOT_LOADING"),
+            self.error(BLOCK_MESSAGE),
+            self.error("FEED_NOT_LOADING"),
+            self.error(BLOCK_MESSAGE),
+        )
+        self.assertEqual(2, parse(text).blocks.total)
+
+    def test_the_payload_echo_of_the_same_event_is_not_a_second_event(self) -> None:
+        """Both spellings. A denylist of one field name would have missed the other."""
+        text = self.capture(
+            self.error(BLOCK_MESSAGE),
+            self.error(f"\t NETWORK_FAILURE_REASON = {BLOCK_MESSAGE.split(': ')[1]}"),
+            self.error(f"\t FAILURE_REASON = {BLOCK_MESSAGE.split(': ')[1]}"),
+        )
+        self.assertEqual(1, parse(text).blocks.total, "the header, and only it")
+
+    def test_the_stack_frame_naming_the_guard_is_not_an_event(self) -> None:
+        text = self.capture(
+            self.error(BLOCK_MESSAGE),
+            self.error("\tat com.dfinstagram.hooks.throwIfBlocked(dex-id-abc:352)"),
+        )
+        self.assertEqual(1, parse(text).blocks.total)
+
+    def test_narration_quoting_the_message_is_not_an_event(self) -> None:
+        """Re-narration, arriving from a third direction. `probes` paid for this once."""
+        text = self.capture(
+            self.error(
+                "After 3 seconds, same action, then App responded with: network issues: "
+                "Network request IgApi discover/topical_explore/ failed with 0, error "
+                f"message: fault_message: {BLOCK_MESSAGE.split(': ')[1]}."
+            )
+        )
+        self.assertEqual(0, parse(text).blocks.total)
+        self.assertEqual(
+            1,
+            parse(self.capture(self.error(BLOCK_MESSAGE))).blocks.total,
+            "the control: the real header in the same shape of capture is counted",
+        )
+
+    def test_a_message_with_anything_after_it_is_not_the_header(self) -> None:
+        """The end anchor. Every other negative here fails earlier in the pattern.
+
+        The five above (both echo spellings, the stack frame, the narration, the
+        wrong tag position) all differ from the header *before* its last character,
+        so a pattern with no `$` satisfies all of them and still counts this.
+        """
+        trailing = self.capture(
+            self.error(BLOCK_MESSAGE + " while loading /feed/timeline/")
+        )
+        self.assertEqual(0, parse(trailing).blocks.total)
+        self.assertEqual(
+            1,
+            parse(self.capture(self.error(BLOCK_MESSAGE))).blocks.total,
+            "the control: the same line without the tail is the event",
+        )
+
+    def test_the_tag_is_anchored_in_tag_position(self) -> None:
+        """Another component quoting the line is not the guard throwing."""
+        text = self.capture(
+            f"08-10 20:05:11.310 1 1 W SomeOtherTag: {BLOCK_TAG}: {BLOCK_MESSAGE}\n"
+        )
+        self.assertEqual(0, parse(text).blocks.total)
+
+    def test_the_line_above_names_the_feature(self) -> None:
+        text = self.capture(
+            self.error("FEED_NOT_LOADING"),
+            self.error(BLOCK_MESSAGE),
+            self.error("STORY_NOT_LOADING"),
+            self.error(BLOCK_MESSAGE),
+            self.error(BLOCK_MESSAGE),
+        )
+        blocks = parse(text).blocks
+        self.assertEqual(3, blocks.total)
+        self.assertEqual(
+            {"FEED_NOT_LOADING": 1, "STORY_NOT_LOADING": 1, UNATTRIBUTED: 1},
+            blocks.features,
+            "the third follows a header, which names no feature",
+        )
+
+    def test_an_unrelated_line_above_is_not_read_as_a_feature(self) -> None:
+        text = self.capture(
+            "08-10 20:05:11.306 20544 20544 W BackgroundStartupDetector: cold\n",
+            self.error(BLOCK_MESSAGE),
+        )
+        self.assertEqual({UNATTRIBUTED: 1}, parse(text).blocks.features)
+
+    def test_a_block_before_any_directive_refuses(self) -> None:
+        """Its configuration is unnamed, and a phantom block in a baseline is the
+        one number that must not be inventable."""
+        with self.assertRaises(ObservationError) as caught:
+            parse(self.error(BLOCK_MESSAGE) + header())
+        self.assertIn(TOGGLE_DIRECTIVE, str(caught.exception))
+
+    def test_a_capture_with_no_block_reports_a_measured_zero(self) -> None:
+        """Not `None`. Reading a capture and finding none is evidence."""
+        capture = parse(self.capture(line("/feed/timeline/")))
+        self.assertEqual(0, capture.blocks.total)
+        self.assertEqual((), capture.blocks.by_feature)
+
+
+class BlockCountShapeTests(unittest.TestCase):
+    def test_a_breakdown_that_does_not_sum_to_the_total_refuses(self) -> None:
+        with self.assertRaises(ObservationError) as caught:
+            BlockCount.of(20, {"FEED_NOT_LOADING": 19})
+        self.assertIn("summing to", str(caught.exception))
+
+    def test_a_zero_in_the_breakdown_refuses(self) -> None:
+        with self.assertRaises(ObservationError):
+            BlockCount.of(1, {"FEED_NOT_LOADING": 1, "STORY_NOT_LOADING": 0})
+
+    def test_a_negative_total_refuses(self) -> None:
+        with self.assertRaises(ObservationError):
+            BlockCount(-1)
+
+    def test_a_feature_that_is_not_a_category_refuses(self) -> None:
+        with self.assertRaises(ObservationError) as caught:
+            BlockCount.of(1, {"feed not loading": 1})
+        self.assertIn("feature category", str(caught.exception))
+
+    def test_the_unattributed_key_is_accepted_and_a_real_one_cannot_collide(self) -> None:
+        self.assertEqual(1, BlockCount.of(1, {UNATTRIBUTED: 1}).total)
+        with self.assertRaises(ObservationError):
+            BlockCount.of(1, {"(anything else)": 1})
+
+    def test_it_round_trips_through_json(self) -> None:
+        original = BlockCount.of(20, {"FEED_NOT_LOADING": 20})
+        self.assertEqual(original, BlockCount.from_dict(
+            json.loads(json.dumps(original.as_dict()))
+        ))
+
+    def test_an_unknown_key_refuses(self) -> None:
+        with self.assertRaises(ObservationError):
+            BlockCount.from_dict({"total": 1, "by_feature": {}, "extra": 1})
+
+
+class BlockRecordTests(RootedTestCase):
+    def test_absent_means_nobody_counted_and_null_is_refused(self) -> None:
+        """One spelling for absent, in the one field whose zero is evidence."""
+        row = session(counts={"/feed/timeline/": 1}, blocks=None).to_dict()
+        self.assertNotIn("blocks", row)
+        with self.assertRaises(ObservationError) as caught:
+            ObservationSession.from_dict({**row, "blocks": None})
+        self.assertIn("second spelling of absent", str(caught.exception))
+
+    def test_a_measured_zero_is_written_and_read_back(self) -> None:
+        row = session(counts={"/feed/timeline/": 1}, blocks=BlockCount(0)).to_dict()
+        self.assertEqual({"total": 0, "by_feature": {}}, row["blocks"])
+        self.assertEqual(BlockCount(0), ObservationSession.from_dict(row).blocks)
+
+    def test_an_int_is_not_coerced_into_a_count(self) -> None:
+        """`blocks=0` would be indistinguishable, once stored, from a measurement."""
+        with self.assertRaises(ObservationError) as caught:
+            session(blocks=0)
+        self.assertIn("BlockCount", str(caught.exception))
+
+    def test_the_writer_refuses_a_session_that_counted_nothing(self) -> None:
+        with self.assertRaises(ObservationError) as caught:
+            append(session(counts={"/feed/timeline/": 1}, blocks=None), root=self.root)
+        self.assertIn("states no block count", str(caught.exception))
+        self.assertFalse(self.store().exists(), "and nothing was written")
+
+    def test_the_writer_accepts_one_that_counted(self) -> None:
+        """The control. A writer that refused everything would pass the test above."""
+        append(session(counts={"/feed/timeline/": 1}), root=self.root)
+        self.assertEqual(BlockCount(0), read("441", self.root)[0].blocks)
+
+    def test_recording_from_a_capture_carries_the_count_through(self) -> None:
+        capture = self.root / "capture.log"
+        capture.write_text(
+            header()
+            + line("/feed/timeline/")
+            + f"08-10 20:05:11.310 1 1 E {BLOCK_TAG}: FEED_NOT_LOADING\n"
+            + f"08-10 20:05:11.310 1 1 E {BLOCK_TAG}: {BLOCK_MESSAGE}\n",
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main([
+                "--root", str(self.root), "record", "--version", "441",
+                "--build-sha256", BUILD, "--recorded-at", "2026-08-10T10:00:00Z",
+                "--session-id", "s1", "--surface", "feed_tab",
+                "--watched", "/feed/timeline/", "--capture", str(capture),
+            ])
+        self.assertEqual(0, code)
+        self.assertIn("blocks:  1 (FEED_NOT_LOADING 1)", out.getvalue())
+        recorded = read("441", self.root)[0]
+        self.assertEqual(1, recorded.blocks.total)
+        self.assertEqual({"FEED_NOT_LOADING": 1}, recorded.blocks.features)
 
 
 if __name__ == "__main__":

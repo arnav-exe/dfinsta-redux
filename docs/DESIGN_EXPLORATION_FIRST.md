@@ -298,10 +298,57 @@ message and must never ship). Either way step 5 costs one build per candidate
 group. That is the real argument for step 3: the all-off session is what stops
 you paying for builds on candidates that were never going to fire.
 
-**Nothing derives grouping from measurement yet.** Step 6 describes what a human
-should conclude; there is no code that takes a set of isolation sessions and
-proposes "these three kill the same surface". Until there is, the toggle mapping
-is still a judgement — a much better informed one, but a judgement.
+**~~Nothing derives grouping from measurement yet.~~** Resolved on 2026-08-10.
+`src/dfinsta_pipeline/grouping.py` takes the baseline and the one-toggle-on arms
+out of `manifest/observations/<version>.jsonl` and derives, per watched path,
+`erased by T` / `blocked by T` / `unaffected` / `never_requested`, refusing with a
+reason where the corpus cannot decide. `grouping report --version 439 [--json]`
+prints it. It is a **view** — recomputed every time, stored nowhere, and acting on
+it is still a human editing `url_block_rules`.
+
+Two things it needed that were not here before. `observation.parse` now also
+counts the `java.io.IOException: Blocked by DFInsta setting` headers, because a
+path block does not lower a request count — `/feed/reels_tray/` goes 2 → 3 under
+`disable_stories`, which is inside the spread two runs of one state produce — so
+the request log alone cannot see a block at all. And the noise floor is derived
+from the corpus's own within-state spread rather than declared, which is only
+possible because every state was walked twice.
+
+What it says about the **439 captures** is worth recording here, because one of it
+disagrees with what a human took from the same numbers by hand. Read the caveat
+below it first: the request counts are in the committed store and checkable, the
+block counts are not in any committed file and come from re-reading
+`work/observations/`, which is gitignored:
+
+* `/clips/discover` and `/clips/discover/stream/` **erased** by `disable_reels`,
+  from counts alone, with the arm reporting zero blocks — which is what an
+  erasure upstream of the guard has to look like.
+* `/feed/timeline/` **blocked** by `disable_feed` and `/feed/reels_tray/`
+  **blocked** by `disable_stories`, from the block count matching the path's own
+  request count exactly in both sessions of each arm.
+* Ten watched paths **never requested**, `delivery/background_prefetch` among
+  them.
+* `disable_adds` governs nothing observable.
+* `/discover/topical_explore` is **unclassifiable**, not blocked by
+  `disable_explore`. `439-isolate-explore` reported one block;
+  `439-reverse-explore` ran the same state, asked for the path six times, and
+  reported **no block at all**. The block signal does not replicate across the two
+  running orders, so the arm answers nothing — see the note below about these
+  events being Instagram's to emit.
+
+Those verdicts require the sessions to carry block counts. The twelve rows
+committed on 2026-08-10 predate the counter, so `grouping report` over the
+repository as it stands returns the two erasures and the ten never-requested and
+**refuses the blocked half by name**. Re-recording the twelve captures reproduces
+every existing field exactly and adds the counts.
+
+**`IgFunctionalErrorEvent` is weaker than this document said.** The section above
+calls it "good at attributing a block to a feature category", validated on two
+endpoints. The 439 explore arm shows the prior question is not settled either: the
+event can be **absent** for a block that certainly happened. Six requests to
+`/discover/topical_explore` with `disable_explore` on produced zero headers in one
+session and one header in the other. A zero in this signal is not evidence that
+nothing was refused, and every count taken from it needs its own replication.
 
 **`delivery/background_prefetch` is still a recorded `block`, and nothing can now
 remove it.** It is in `observe_watch` precisely so its absence becomes citable

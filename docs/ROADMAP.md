@@ -85,5 +85,25 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
   there is no mechanism. The new approach avoids *creating* bad rulings and says nothing
   about the six that exist. `delivery/background_prefetch` is the live example, and it is
   the one thing the exploration protocol does not reach backwards to fix.
-- **Grouping is still human judgement**, better informed. Nothing derives a toggle mapping
-  from measurement automatically.
+- ~~**Grouping is still human judgement**, better informed. Nothing derives a toggle mapping
+  from measurement automatically.~~ Closed 2026-08-10 by `dfinsta_pipeline.grouping`, which
+  derives `erased by T` / `blocked by T` / `unaffected` / `never_requested` per watched path
+  from the baseline and the one-toggle-on arms, with a derived noise floor and no stored
+  answer. *Deciding* is still a human editing `url_block_rules`; what is no longer a
+  judgement is which paths a toggle was measured to govern.
+
+- **The 439 sessions predate the block counter.** `observation.parse` now counts the
+  `IgFunctionalErrorEvent` block headers, which is the only signal that sees a path block at
+  all — a block does not lower a request count, and `/feed/reels_tray/` moves 2 → 3 under
+  `disable_stories`. The twelve committed rows have no `blocks` key, so `grouping report`
+  returns the erasures and the never-requested and **refuses the blocked half by name**.
+  Re-recording the twelve captures reproduces every existing field exactly and adds the
+  counts, but it rewrites an append-only store from `work/`, which is gitignored — an owner
+  decision, not a maintenance one.
+
+- **`IgFunctionalErrorEvent` can be absent for a block that happened.** `439-reverse-explore`
+  ran with `disable_explore` on, asked for `/discover/topical_explore` six times and reported
+  **no block at all**; `439-isolate-explore` reported one. So `/discover/topical_explore` is
+  `unclassifiable` rather than blocked, and every count taken from this signal needs its own
+  replication. `DESIGN_EXPLORATION_FIRST.md` previously described this instrument as good at
+  attribution on the strength of two endpoints.

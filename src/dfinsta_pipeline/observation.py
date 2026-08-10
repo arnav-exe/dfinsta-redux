@@ -70,6 +70,53 @@ list disagree about what was being watched, and a session whose watch list is
 wrong cannot support a statement about what was *not* seen.
 
 ===============================================================================
+  AND ONE LINE THE APP EMITS, WHICH THE COUNTS CANNOT REPLACE
+===============================================================================
+
+The observe line says a request was **made**. It does not say it was **stopped**,
+and the two come apart in both directions:
+
+* A path block does not lower the count. The request is made, the observe pass
+  logs it, and only then does `throwIfBlocked` throw. `/feed/timeline/` under
+  `disable_feed` *rises* 6 → 20 because the app retries; `/feed/reels_tray/`
+  under `disable_stories` goes 2 → 3, which is inside the spread two runs of one
+  state produce anyway. **A block is not reliably visible in a request count.**
+* An upstream erasure does not produce a block. `replaceReelsEndpoint` blanks the
+  literal before the URL is built, so the path never reaches the guard, never
+  throws, and never appears in the log at all — `/clips/discover` 4 → 0.
+
+So :func:`parse` also counts the one line Instagram emits when the guard throws::
+
+    E IgFunctionalErrorEvent: FEED_NOT_LOADING
+    E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+    E IgFunctionalErrorEvent: 	at com.dfinstagram.hooks.throwIfBlocked(...)
+    ...
+    E IgFunctionalErrorEvent: 	 NETWORK_FAILURE_REASON = Blocked by DFInsta setting
+
+**Only the header counts.** The last line is the same event narrating itself into
+a field of its own payload, and counting it doubles every total; a third spelling,
+`FAILURE_REASON = ...`, is in this corpus too, so a denylist of field names would
+have missed one. The rule is therefore positive: the payload must be *exactly*
+`java.io.IOException: Blocked by DFInsta setting`, at level `E`, with
+`IgFunctionalErrorEvent` in **tag position**. That also excludes the app's own
+`aware_trace` narration, which quotes `fault_message: Blocked by DFInsta setting`
+inside a JSON blob logged un-indented under the same tag — the re-narration
+failure `probes.count_signal` documents, arriving here from a third direction.
+
+The line **immediately above** the header names the failing feature
+(`FEED_NOT_LOADING`, `STORY_NOT_LOADING`, `EXPLORE_NOT_LOADING`), so
+:class:`BlockCount` carries the breakdown as well as the total. It is
+corroboration and never a basis: it names a *feature*, not a path, and the
+mapping from one to the other has been measured three times.
+
+**These are Instagram's events, emitted at Instagram's discretion, and they go
+missing.** In this corpus `439-reverse-explore` ran with `disable_explore` on,
+asked for `/discover/topical_explore` six times, and reported **no block at all**,
+while `439-isolate-explore` — same state, same walk, other order — reported one.
+A count of 0 here is therefore not proof that nothing was blocked, which is
+exactly why `grouping` will not classify from a state whose two sessions disagree.
+
+===============================================================================
   A ZERO IS ONLY READABLE UNDER A STATED CONFIGURATION
 ===============================================================================
 
@@ -238,8 +285,12 @@ __all__ = [
     "SCHEMA_VERSION",
     "TAG",
     "TOGGLE_DIRECTIVE",
+    "BLOCK_TAG",
+    "BLOCK_MESSAGE",
+    "UNATTRIBUTED",
     "OBSERVATIONS",
     "ToggleState",
+    "BlockCount",
     "Capture",
     "ObservationSession",
     "parse",
@@ -291,6 +342,50 @@ _OBSERVE_LINE = re.compile(
 #: watched literal can begin with one, because `throwIfBlocked` tests
 #: `URI.getPath()`.
 TOGGLE_DIRECTIVE = "!toggles"
+
+#: Instagram's own error-event tag. Not ours: these events are emitted at
+#: Instagram's discretion and can go missing entirely — see the module docstring.
+BLOCK_TAG = "IgFunctionalErrorEvent"
+
+#: The exception `throwIfBlocked` raises, as the header line spells it. Matched
+#: **whole**, so the same string quoted inside a field value or a narration blob
+#: is not an event. `guards` renders the message; a build that changes it makes
+#: every capture read zero here, which is why the constant is stated once.
+BLOCK_MESSAGE = "java.io.IOException: Blocked by DFInsta setting"
+
+#: `[<stamp> <pid> <tid>] E IgFunctionalErrorEvent: java.io.IOException: ...`
+#:
+#: Anchored the same way `_OBSERVE_LINE` is — tag position, and here the payload
+#: is pinned end to end rather than searched for. The indented
+#: `NETWORK_FAILURE_REASON = Blocked by DFInsta setting` echo, its `FAILURE_REASON`
+#: spelling, the `\tat com.dfinstagram.hooks.throwIfBlocked(...)` frame and the
+#: `aware_trace` JSON that quotes the message are all the same event describing
+#: itself; each of them would inflate the count, and none of them matches this.
+_BLOCK_HEADER = re.compile(
+    r"^\s*(?:\S+\s+\S+\s+\d+\s+\d+\s+)?E\s+"
+    + re.escape(BLOCK_TAG)
+    + r":\s?"
+    + re.escape(BLOCK_MESSAGE)
+    + r"\s*$"
+)
+
+#: The line immediately above a header, when it is a bare feature category.
+#: Deliberately narrow — a bare SHOUTING_TOKEN and nothing else — because the
+#: line above may equally be a stack frame, an indented field, or an unrelated
+#: tag, and guessing which is which is how a payload continuation becomes a
+#: feature name.
+_FEATURE_LINE = re.compile(
+    r"^\s*(?:\S+\s+\S+\s+\d+\s+\d+\s+)?E\s+"
+    + re.escape(BLOCK_TAG)
+    + r":\s?(?P<feature>[A-Z][A-Z0-9_]*)\s*$"
+)
+
+#: The feature key for a block whose preceding line names no category. Spelled
+#: with parentheses so it can never collide with a real one, which `_FEATURE_LINE`
+#: constrains to `[A-Z][A-Z0-9_]*`. Present rather than dropped: the per-feature
+#: breakdown must sum to the total, or a reader cannot tell an unattributed block
+#: from one nobody counted.
+UNATTRIBUTED = "(no feature line)"
 
 #: A preference key the guard reads. Shape only, deliberately: `guards.Rule`
 #: already decides which names are legitimate for a *rule*, and this module
@@ -405,12 +500,120 @@ class ToggleState:
 
 
 @dataclass(frozen=True)
-class Capture:
-    """What one logcat capture says: the configuration, and what was asked for.
+class BlockCount:
+    """How many requests the guard refused in one capture, and under which feature.
 
-    Both from one pass over the text. Two passes could disagree about which lines
-    they saw, and the ordering rule — no path before the directive — is only
-    checkable while reading in order.
+    A **measured** number, so `BlockCount(0)` and "nobody counted" must never be
+    the same value: the first is the baseline evidence that a state blocks nothing,
+    the second is a row written before this host counted at all. Absence is spelled
+    by `ObservationSession.blocks` being `None`, and by the key being missing from
+    the stored row — the one spelling `toggles` already uses.
+
+    The breakdown must **sum to the total**, with `UNATTRIBUTED` carrying the
+    headers whose preceding line named no category. A breakdown that is allowed to
+    be partial is a breakdown a hand-edit can quietly shrink, and the number a
+    reader would then compare against zero is the one that stayed right.
+    """
+
+    total: int
+    #: `(feature, count)`, sorted by feature. A Mapping is accepted and normalised.
+    by_feature: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        total = self.total
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            raise ObservationError(
+                f"a block count is a whole number of refused requests, got {total!r}"
+            )
+        given = self.by_feature
+        items = list(given.items()) if isinstance(given, Mapping) else list(given)
+        cleaned: list[tuple[str, int]] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, Sequence) or isinstance(item, (str, bytes)) or len(item) != 2:
+                raise ObservationError(
+                    f"a block breakdown is (feature, count) pairs, got {item!r}"
+                )
+            feature, count = item
+            feature = str(feature)
+            if feature != UNATTRIBUTED and not re.fullmatch(r"[A-Z][A-Z0-9_]*", feature):
+                raise ObservationError(
+                    f"{feature!r} is not a feature category. The line above a block "
+                    f"header is a bare SHOUTING_TOKEN, or it is {UNATTRIBUTED!r}"
+                )
+            if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+                raise ObservationError(
+                    f"block feature {feature} has count {count!r}; a recorded zero is a "
+                    "second spelling of absent"
+                )
+            if feature in seen:
+                raise ObservationError(f"a block breakdown names {feature} twice")
+            seen.add(feature)
+            cleaned.append((feature, count))
+        if sum(count for _, count in cleaned) != total:
+            raise ObservationError(
+                f"a block breakdown summing to {sum(count for _, count in cleaned)} "
+                f"states a total of {total}. Every header is attributed to a feature or "
+                f"to {UNATTRIBUTED!r}, so the two cannot disagree unless one was edited"
+            )
+        object.__setattr__(self, "by_feature", tuple(sorted(cleaned)))
+
+    @classmethod
+    def of(
+        cls, total: int, by_feature: Mapping[str, int] | Iterable[tuple[str, int]] = ()
+    ) -> "BlockCount":
+        return cls(
+            total,
+            tuple(by_feature.items()) if isinstance(by_feature, Mapping) else tuple(by_feature),
+        )
+
+    @property
+    def features(self) -> dict[str, int]:
+        return dict(self.by_feature)
+
+    @property
+    def text(self) -> str:
+        if not self.by_feature:
+            return str(self.total)
+        return f"{self.total} (" + ", ".join(
+            f"{feature} {count}" for feature, count in self.by_feature
+        ) + ")"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"total": self.total, "by_feature": dict(self.by_feature)}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "BlockCount":
+        if not isinstance(data, Mapping):
+            raise ObservationError(
+                f"blocks must be an object with a total and a breakdown, got "
+                f"{type(data).__name__}"
+            )
+        unknown = sorted(set(data) - {"total", "by_feature"})
+        if unknown:
+            raise ObservationError(f"blocks has unknown keys: {', '.join(unknown)}")
+        if "total" not in data:
+            raise ObservationError("blocks states no total")
+        by_feature = data.get("by_feature", {})
+        if not isinstance(by_feature, Mapping):
+            raise ObservationError(
+                f"by_feature must be an object of feature -> integer, got "
+                f"{type(by_feature).__name__}"
+            )
+        return cls.of(data["total"], {str(key): value for key, value in by_feature.items()})
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return self.text
+
+
+@dataclass(frozen=True)
+class Capture:
+    """What one logcat capture says: the configuration, what was asked for, what
+    was refused.
+
+    All from one pass over the text. Two passes could disagree about which lines
+    they saw, and both ordering rules — no path before the directive, and no block
+    header before it either — are only checkable while reading in order.
     """
 
     #: `None` when the capture carries no directive, which only a capture with no
@@ -418,6 +621,10 @@ class Capture:
     #: docstring.
     toggles: ToggleState | None
     counts: Mapping[str, int] = field(default_factory=dict)
+    #: Always a real count, never `None`: a capture that was read was counted. The
+    #: default is for the hand-made fixtures that predate this field, and it says
+    #: "this text held no block header", which is what reading it would find.
+    blocks: BlockCount = field(default_factory=lambda: BlockCount(0))
 
     @property
     def stated(self) -> bool:
@@ -425,7 +632,7 @@ class Capture:
 
 
 def parse(text: str) -> Capture:
-    """Read one capture: the toggle state it states, and every path it counted.
+    """Read one capture: the state it states, every path it counted, every block.
 
     Counts **every** appearance of each literal, ordered by its first. The count
     is what matters and the ordering is incidental — an earlier docstring said
@@ -450,11 +657,37 @@ def parse(text: str) -> Capture:
     is one statement. Two *different* statements are two experiments, and this is
     the shape a toggle changed halfway through a session takes — visible only
     because the line repeats, which is why it repeats.
+
+    **Blocks are counted under the same ordering rule as paths.** A block header
+    ahead of any directive belongs to a request this capture did not see begin, and
+    it would be added to the count a reader compares against zero — a phantom block
+    in a baseline is the one number that must not be inventable. It is counted from
+    the header alone, never from the echo of the same event in its own payload;
+    :data:`_BLOCK_HEADER` says why at length.
     """
 
     counts: dict[str, int] = {}
+    features: dict[str, int] = {}
+    blocks = 0
     toggles: ToggleState | None = None
+    previous = ""
     for number, line in enumerate(text.splitlines(), 1):
+        if _BLOCK_HEADER.match(line):
+            if toggles is None:
+                raise ObservationError(
+                    f"line {number}: a block was reported before any {TOGGLE_DIRECTIVE} "
+                    "line. Blocks are caused by our own toggles, so one that arrives "
+                    "before the build has said which were active cannot be attributed to "
+                    "a configuration — and counting it would put a block into a state "
+                    "that may have had none"
+                )
+            blocks += 1
+            named = _FEATURE_LINE.match(previous)
+            feature = named.group("feature") if named else UNATTRIBUTED
+            features[feature] = features.get(feature, 0) + 1
+            previous = line
+            continue
+        previous = line
         match = _OBSERVE_LINE.match(line)
         if match is None:
             continue
@@ -508,7 +741,9 @@ def parse(text: str) -> Capture:
                 "unknown one is not evidence about the app"
             )
         counts[literal] = counts.get(literal, 0) + 1
-    return Capture(toggles=toggles, counts=counts)
+    return Capture(
+        toggles=toggles, counts=counts, blocks=BlockCount.of(blocks, features)
+    )
 
 
 def _stamp(value: str) -> str:
@@ -581,6 +816,16 @@ class ObservationSession:
     #: ahead of `counts`, so that every construction site states it.
     toggles: ToggleState | None
     counts: Mapping[str, int] = field(default_factory=dict)
+    #: How many requests the guard refused, as the capture reported them. `None`
+    #: means **nobody counted** — the shape of every row written before this host
+    #: read the block header at all — and it is not `BlockCount(0)`, which is the
+    #: measured statement that a state refused nothing. That distinction is the
+    #: whole of the baseline: `grouping` calls a toggle a blocking one by comparing
+    #: its arm against a baseline of zero, and an uncounted zero would let a row
+    #: that measured nothing supply the control. Defaulted rather than required,
+    #: unlike `toggles`, because a row already in the store has to keep reading;
+    #: `append` is where the rule that new evidence must state it lives.
+    blocks: BlockCount | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
@@ -662,6 +907,14 @@ class ObservationSession:
                 f"session {self.session_id} has toggles {self.toggles!r}; pass a "
                 "ToggleState (ToggleState.of({'disable_feed': True, ...})) or None"
             )
+        if self.blocks is not None and not isinstance(self.blocks, BlockCount):
+            # Not coerced from an int either. `blocks=0` reads as "no blocks" and
+            # would be indistinguishable, once stored, from a real measurement —
+            # which is the one distinction this field exists to keep.
+            raise ObservationError(
+                f"session {self.session_id} has blocks {self.blocks!r}; pass a "
+                "BlockCount (BlockCount.of(20, {'FEED_NOT_LOADING': 20})) or None"
+            )
 
     @property
     def total(self) -> int:
@@ -693,6 +946,10 @@ class ObservationSession:
 
     def to_dict(self) -> dict[str, Any]:
         stated = {"toggles": self.toggles.as_dict()} if self.toggles is not None else {}
+        # Same rule, same reason: absent means nobody counted. `append` rewrites
+        # the whole file, so the twelve 439 rows written before this field existed
+        # come back byte for byte rather than acquiring a zero nobody measured.
+        counted = {"blocks": self.blocks.as_dict()} if self.blocks is not None else {}
         return {
             "schema_version": self.schema_version,
             "version": self.version,
@@ -707,6 +964,7 @@ class ObservationSession:
             # rewrites the whole file, gives that row back byte for byte instead
             # of editing a store nothing is allowed to edit.
             **stated,
+            **counted,
             "counts": dict(sorted(self.counts.items())),
             # Derived and written anyway, following `SignalCount.to_dict`. It is
             # the number a human reads first, and `from_dict` refuses a row whose
@@ -730,6 +988,7 @@ class ObservationSession:
             "surface",
             "watched",
             "toggles",
+            "blocks",
             "counts",
             "total",
         }
@@ -769,6 +1028,16 @@ class ObservationSession:
                     f"{type(raw).__name__}"
                 )
             toggles = ToggleState.of({str(key): value for key, value in raw.items()})
+        blocks: BlockCount | None = None
+        if "blocks" in data:
+            if data["blocks"] is None:
+                raise ObservationError(
+                    "an observation session states blocks: null. A block count nobody "
+                    "took is spelled by the key being absent — the way the rows written "
+                    "before this host counted them are spelled — and a null is a second "
+                    "spelling of absent, in the one field whose zero is evidence"
+                )
+            blocks = BlockCount.from_dict(data["blocks"])
         session = cls(
             schema_version=data.get("schema_version"),
             version=str(data.get("version", "")),
@@ -778,6 +1047,7 @@ class ObservationSession:
             surface=str(data.get("surface", "")),
             watched=tuple(str(item) for item in watched),
             toggles=toggles,
+            blocks=blocks,
             counts={str(key): value for key, value in counts.items()},
         )
         stated = data.get("total")
@@ -896,6 +1166,14 @@ def append(
     `manifest/observations/441.jsonl` is already in, and the reader has to be able
     to give that row back. So the record type represents history it is no longer
     allowed to make — new evidence states its configuration or is not written.
+
+    **And it refuses a session with no block count at all.** :func:`parse` always
+    produces one, so a `None` arriving here was hand-built; the store's readers
+    compare an arm's blocks against a baseline's, and a row that never counted
+    would make a comparison unanswerable for a reason nobody could see from the
+    file. Refusing at the write says the fix — record from a capture — at the
+    moment it is cheap. The thirteen rows already committed keep their absence and
+    keep reading, exactly as the unstated toggle state does.
     """
 
     location = Path(path) if path is not None else store_path(session.version, root)
@@ -911,6 +1189,14 @@ def append(
             "from a capture that carries the build's own "
             f"`{TOGGLE_DIRECTIVE}` line — there is deliberately no way to supply one by "
             "hand"
+        )
+    if session.blocks is None:
+        raise ObservationError(
+            f"session {session.session_id} states no block count. `parse` counts the "
+            f"`{BLOCK_MESSAGE}` headers in every capture it reads, so a session without "
+            "one was not read from a capture. A state's blocks are only readable against "
+            "a baseline that counted its own, and an uncounted zero cannot serve as that "
+            "control"
         )
     existing = read(session.version, root, path=location)
     if any(item.session_id == session.session_id for item in existing):
@@ -1476,6 +1762,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 surface=args.surface,
                 watched=_watch_list(args),
                 toggles=capture.toggles,
+                blocks=capture.blocks,
                 counts=capture.counts,
             )
             written = append(session, root=args.root)
@@ -1491,6 +1778,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             else:
                 print(f"  toggles: {session.toggles.text}  (as the build reported them)")
+            print(
+                f"  blocks:  {session.blocks.text}  (Instagram's own error events, "
+                "which go missing)"
+            )
             if session.toggles is not None and session.toggles.blocking:
                 # The whole reason the field exists, said at the moment the number
                 # is produced rather than only where it is read.
