@@ -1400,6 +1400,85 @@ class WalkScopeTests(RootedTestCase):
         self.assertIn("--walk", err.getvalue())
 
 
+#: The capture spans of a scripted three-round walk. A named synthetic; see
+#: `THREE_ROUND_JITTER` in `test_observation.py` for where the numbers came from
+#: and why they are written down rather than read from a store.
+JITTER_SPANS = [271, 271, 271] + [273] * 9
+
+
+class JitterSpanRegressionTests(RootedTestCase):
+    """A grouping must survive a corpus whose spans barely differ.
+
+    This is the blocker the relative floor was added for, kept at the level it
+    actually appeared at. Twelve real `three-round-v2` sessions were walked on 440
+    on 2026-08-11 and their capture spans came out 271, 271, 271 and 273 nine times
+    — one script, one build, one sitting. Both sides of that split are **zero
+    seconds wide**, so the walk check read a two-second difference across a
+    271-second walk as two protocols and `grouping report --version 440 --walk
+    three-round-v2` returned `NOTHING CAN BE DERIVED` over a clean corpus.
+
+    That store was withdrawn the same day for an unrelated navigation fault, so the
+    counts here are the ordinary fixture and only the **spans** are the withdrawn
+    corpus's — which is all this regression was ever about. A scripted walk with
+    fixed sleeps is the usual case, not an edge one, so the next real corpus will
+    look like this too.
+    """
+
+    def corpus(self) -> tuple[dict, ...]:
+        """`flat_corpus` with the jitter spans laid over it, in recorded order."""
+
+        rows = flat_corpus()
+        assert len(rows) == len(JITTER_SPANS), "one span per session"
+        return tuple(
+            {**item, "span_seconds": span}
+            for item, span in zip(rows, JITTER_SPANS)
+        )
+
+    def test_the_report_is_answerable_at_all(self) -> None:
+        """The blocker, asserted as the thing an operator actually ran."""
+
+        self.write(*self.corpus())
+        report = summary("439", self.root, walk=WALK)
+        self.assertEqual("", report["unanswerable_reason"])
+        self.assertNotIn("NOTHING CAN BE DERIVED", render(report))
+        self.assertEqual([], [item for item in report["warnings"]
+                              if "do not agree that they ran it" in item])
+
+    def test_and_a_real_second_walk_in_the_same_store_still_refuses(self) -> None:
+        """The positive twin, without which the test above passes for a check that
+        never fires. The same corpus with six of its twelve at three times the
+        span — one walk's name over two protocols — must refuse."""
+
+        rows = list(self.corpus())
+        for index in range(6):
+            rows[index] = {**rows[index], "span_seconds": rows[index]["span_seconds"] * 3}
+        self.write(*rows)
+        report = summary("439", self.root, walk=WALK)
+        self.assertIn("do not agree that they ran it", report["unanswerable_reason"])
+        self.assertIn("NOTHING CAN BE DERIVED", render(report))
+
+    def test_the_spans_are_evidenced_so_the_check_could_have_fired(self) -> None:
+        """The positive control: the answer is not standing because nothing was
+        measured. Every session carries a span, so `walk_evidence` must be silent
+        and the verdicts must be reachable."""
+
+        self.write(*self.corpus())
+        grouped = classify("439", self.root, walk=WALK)
+        self.assertEqual([], [item for item in grouped.warnings
+                              if "only partly evidenced" in item])
+        spans = [span for state in (grouped.baseline, *grouped.arms)
+                 for span in state.spans]
+        self.assertEqual(sorted(JITTER_SPANS), sorted(spans))
+        self.assertTrue(grouped.classifications)
+
+    def test_the_report_prints_the_spans_it_rested_on(self) -> None:
+        """A reader's own check that these were two runs of one thing — which is
+        the whole reason the numbers are visible rather than only judged."""
+
+        self.write(*self.corpus())
+        self.assertIn("spans 271s, 271s", render(summary("439", self.root, walk=WALK)))
+
+
 class CommittedCorpusTests(unittest.TestCase):
     """The real 439 counts, read from the committed store and never written to.
 

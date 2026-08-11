@@ -34,12 +34,14 @@ import argparse
 import contextlib
 import io
 import json
+import math
 import os
 import re
 import tempfile
 import unittest
 from pathlib import Path
 
+from dfinsta_pipeline import observation
 from dfinsta_pipeline.observation import (
     BLOCK_MESSAGE,
     BLOCK_TAG,
@@ -108,6 +110,83 @@ NO_BLOCKS = BlockCount(0)
 #: what the tests are about is that two sessions naming the same one are
 #: comparable and two naming different ones are not.
 WALK = "one-pass-three-surfaces"
+
+
+#: Twelve capture spans from a scripted three-round walk, in seconds.
+#:
+#: **A named synthetic, and the provenance matters.** These were measured on
+#: 2026-08-11 from twelve real `three-round-v2` sessions on 440 — one script, one
+#: build, one sitting. That whole corpus was discarded the same day: the session
+#: driver picked bottom-nav tabs by `content-desc`, `Reels` also matched a content
+#: node near the top of the feed, and half the sessions tapped (379, 220) instead
+#: of the tab. The fault was about *where the taps landed*, not about how long the
+#: script ran, so the spans are still a faithful description of what a walk with
+#: fixed sleeps produces — but nothing committed holds them any more, so they are
+#: written down here rather than read.
+#:
+#: They are the case the whole floor exists for. Each side of the 271/273 split is
+#: **zero seconds wide**, so against the derived scale alone a two-second
+#: difference over a 271-second walk was infinitely sharper than the variation, and
+#: `grouping report --version 440 --walk three-round-v2` returned NOTHING CAN BE
+#: DERIVED over a corpus that was clean in every respect this check can see.
+THREE_ROUND_JITTER = [271, 271, 271] + [273] * 9
+
+#: The same walk with one more round in it: 271s becomes 361s, a 33% difference.
+#:
+#: **Wholly constructed** — nobody has walked a four-round protocol — and it is the
+#: binding limit on `_MIN_SEPARATION` rather than the loosest one. Three rounds
+#: against four is the smallest protocol change a person would plausibly make, so a
+#: floor that cannot see it is a floor that has stopped meaning anything.
+ONE_MORE_ROUND = [round(span * 4 / 3) for span in THREE_ROUND_JITTER[:6]]
+
+#: 440's twelve one-pass spans, from the same withdrawn corpus and carried for the
+#: same reason: they are the only record of **one walk measured on two builds**.
+#: 439 ran 122-153s and 440 ran 109-116s on the identical protocol, which is the
+#: control that stops this check reading a device or a version as a protocol. The
+#: property is worth keeping even though the store is not.
+ONE_PASS_ON_ANOTHER_BUILD = [109, 114] + [116] * 10
+
+
+
+def whole_second_floor(fraction: float, at_least: int) -> tuple[int, int]:
+    """The smallest span whose floor is a whole second and at least `at_least`.
+
+    The boundary cases below need `_MIN_SEPARATION x span` to land exactly on a
+    second, or "the gap is exactly the floor" cannot be written down. Searched
+    rather than written, so those tests describe the *shape* of the rule at
+    whatever the fraction is and only the two anchors respond to its value.
+    """
+
+    for span in range(1, 10 ** 7):
+        floor = fraction * span
+        if abs(floor - round(floor)) < 1e-9 and round(floor) >= at_least:
+            return span, round(floor)
+    raise AssertionError(f"no whole-second floor for {fraction}")
+
+
+def committed_spans() -> dict[str, list[int]]:
+    """Every group of committed sessions that really was one walk, by span.
+
+    Read from `manifest/captures/`, never from the store's `span_seconds` — the
+    rows written before the field carry none, and a helper that quietly returned
+    fewer groups than it names would make the tests below pass by measuring less.
+
+    One group survives: 439's twelve, walked with the one-pass protocol before the
+    field existed, which is a fact from outside the data. 440's twenty-four were
+    withdrawn on 2026-08-11 for a navigation fault; what is still needed of them is
+    written down as the named synthetics above, with their provenance, rather than
+    silently disappearing from the anchors they were supporting.
+    """
+
+    groups: dict[str, list[int]] = {}
+    for version in ("439",):
+        for row in read(version, REPOSITORY):
+            capture = REPOSITORY / "manifest" / "captures" / f"{row.session_id}.log"
+            span = parse(capture.read_text(encoding="utf-8")).span_seconds
+            assert span is not None, row.session_id
+            groups.setdefault(f"{version} {row.walk or 'one-pass'}", []).append(span)
+    return groups
+
 
 
 def session(
@@ -3082,41 +3161,171 @@ class WalkDisputeTests(unittest.TestCase):
     def test_the_committed_captures_agree_that_they_are_one_walk(self) -> None:
         """The real evidence, and the control that matters most.
 
-        Every 439 and 440 capture in `manifest/captures/` was taken with the
-        one-pass protocol, on two different builds and under six different toggle
-        states each. Their request counts run 8 to 39 and their spans run 109s to
-        153s, so a rule that read the spans as two protocols would be measuring
-        the phone rather than the driving — and `grouping` would refuse a corpus
-        that is entirely sound.
+        One group survives with its captures: 439's twelve, one script, and none of
+        it may dispute. A rule that split it would be measuring the phone rather
+        than the driving, and would refuse a corpus that is entirely sound.
         """
-        spans = []
-        for version in ("439", "440"):
-            for row in read(version, REPOSITORY):
-                capture = REPOSITORY / "manifest" / "captures" / f"{row.session_id}.log"
-                span = parse(capture.read_text(encoding="utf-8")).span_seconds
-                self.assertIsNotNone(span, row.session_id)
-                spans.append(span)
-        self.assertEqual(24, len(spans))
-        self.assertEqual("", walk_dispute(self.group(*spans)))
-        # Each version on its own, too: `grouping` compares within one store.
-        self.assertEqual("", walk_dispute(self.group(*spans[:12])))
-        self.assertEqual("", walk_dispute(self.group(*spans[12:])))
+        groups = committed_spans()
+        self.assertEqual(["439 one-pass"], sorted(groups))
+        for name, spans in sorted(groups.items()):
+            with self.subTest(group=name):
+                self.assertEqual(12, len(spans), name)
+                self.assertEqual("", walk_dispute(self.group(*spans)), name)
 
-    def test_and_a_three_round_walk_filed_beside_them_is_caught(self) -> None:
-        """The positive twin. The test above passes just as happily for a rule
-        that never disputes anything, so the same real spans are given the corpus
-        the walk field exists for: twelve one-pass sessions and twelve three-round
-        ones, all claiming one walk.
+    def test_one_walk_on_two_builds_pools_without_disputing(self) -> None:
+        """The version is not the protocol, and this is the control for that.
+
+        439 ran the one-pass walk in 122-153s and 440 ran the same script in
+        109-116s. Pooled they must not dispute: a rule that split them would be
+        reading the build. 439's half is real and committed; 440's is the named
+        synthetic `ONE_PASS_ON_ANOTHER_BUILD`, because that store was withdrawn —
+        the property is worth keeping even though the corpus is gone.
         """
-        spans = [
-            parse((REPOSITORY / "manifest" / "captures" / f"{row.session_id}.log")
-                  .read_text(encoding="utf-8")).span_seconds
-            for row in read("440", REPOSITORY)
-        ]
-        # Three rounds of a walk that takes about two minutes.
-        contaminated = self.group(*spans, *(span * 3 for span in spans))
-        self.assertIn("two groups", walk_dispute(contaminated))
+        pooled = committed_spans()["439 one-pass"] + ONE_PASS_ON_ANOTHER_BUILD
+        self.assertEqual(24, len(pooled))
+        self.assertEqual("", walk_dispute(self.group(*pooled)))
 
+    def test_the_jitter_corpus_is_not_disputed(self) -> None:
+        """Anchor one, and the reason `_MIN_SEPARATION` exists.
+
+        `THREE_ROUND_JITTER` — see its comment for where it came from and why it is
+        written down rather than read. Both sides of the 271/273 split are zero
+        seconds wide, so the derived term reads it as infinitely sharp and on that
+        alone `grouping` refused the whole corpus over two seconds in 271.
+
+        The ratio is asserted as well as the verdict. Without it a floor of 90%
+        would satisfy the verdict too, and this test is one of the two things
+        standing between the constant and a silent retune.
+        """
+        self.assertEqual([271, 271, 271] + [273] * 9, sorted(THREE_ROUND_JITTER))
+        self.assertEqual("", walk_dispute(self.group(*THREE_ROUND_JITTER)))
+        self.assertLessEqual(2 / 271, observation._MIN_SEPARATION)
+
+    def test_a_second_walk_filed_under_one_name_is_caught(self) -> None:
+        """Anchor two, with the hard half real.
+
+        439's twelve committed spans are the faster group, and they carry a genuine
+        31-second internal spread — so the derived term is 31 here, not 0, and a
+        rule that only worked on tight groups would pass a tidy fixture and be
+        useless on this. The slower group is `THREE_ROUND_JITTER`, which makes this
+        the point where the two anchors are checked against each other: 122-153s
+        against 271-273s separates by 118s over 153s, which is 77%.
+        """
+        base = committed_spans()["439 one-pass"]
+        self.assertEqual(31, max(base) - min(base),
+                         "premise: the faster group must be the noisy one")
+        found = walk_dispute(self.group(*base, *THREE_ROUND_JITTER))
+        self.assertIn("two groups", found)
+        self.assertIn("118s apart", found)
+        self.assertIn("31s either group spans on its own", found)
+
+    def test_it_is_caught_when_the_slower_group_is_noisy_too(self) -> None:
+        """The twin, with the spread on the other side.
+
+        The same twelve scaled by three — a slower group whose own spread is 93s,
+        three times the faster one's. `widest` is then taken from the slower group
+        rather than the faster, so this exercises the other branch of that `max`
+        and the contamination must still clear it.
+        """
+        base = committed_spans()["439 one-pass"]
+        found = walk_dispute(self.group(*base, *(span * 3 for span in base)))
+        self.assertIn("two groups", found)
+        self.assertIn("213s apart", found)
+        self.assertIn("93s either group spans on its own", found)
+
+    def test_a_shorter_protocol_is_still_caught(self) -> None:
+        """The other end of the bracket: three rounds against four.
+
+        271s to 361s is 33%, the smallest protocol change anyone would plausibly
+        make, and wholly constructed — nobody has walked four rounds. It is what
+        stops `_MIN_SEPARATION` being raised until the check means nothing: this
+        fails at any value above a third, and `test_the_jitter_corpus_is_not_disputed`
+        fails at any value below 0.74%. Both ends are now constructions, which is
+        weaker than it was and is said so in the constant's own comment.
+        """
+        three = THREE_ROUND_JITTER[:6]
+        self.assertEqual(6, len(ONE_MORE_ROUND))
+        self.assertIn("two groups", walk_dispute(self.group(*three, *ONE_MORE_ROUND)))
+        self.assertGreater((ONE_MORE_ROUND[0] - three[0]) / three[0],
+                           observation._MIN_SEPARATION)
+
+    def test_the_floor_is_a_fraction_of_the_faster_group(self) -> None:
+        """Which span the fraction is taken of, pinned four ways.
+
+        `_MIN_SEPARATION x (the largest span below the cut)` reads "the slower group
+        must run at least a twentieth longer than the faster one". Three other
+        denominators are just as plausible to write and all of them pass the two
+        anchors, because on those corpora every candidate lands on the same side.
+
+        **The corpora here are derived from the constant rather than written down**,
+        so this tests the *shape* of the rule at whatever the fraction happens to
+        be, and only the two anchor tests respond to its value. A fixture calibrated
+        to 5% would fail for 2% as well — and then moving the constant inside its
+        own bracket would break tests that are not about the bracket, which hides
+        the two that are. Each case still asserts its premises, because a derived
+        fixture can stop discriminating just as quietly as a written one.
+        """
+        m = observation._MIN_SEPARATION
+
+        # Tight groups. The gap clears a fraction of the faster group and not of the
+        # slower, which separates "faster" from "slower" and from "largest in the
+        # corpus". `step` is the smallest whole second that can do both.
+        fast, step = whole_second_floor(m, math.ceil(1 / m))
+        gap = step + 1
+        self.assertLess(m * fast, gap, "premise: the gap must clear the faster group")
+        self.assertLessEqual(gap, m * (fast + gap), "premise: and not the slower")
+        self.assertIn(
+            "two groups",
+            walk_dispute(self.group(*[fast] * 3, *[fast + gap] * 3)),
+        )
+
+        # The faster group spread over `slow - spread .. slow`. The gap clears its
+        # range and a fraction of its *smallest* member, but not a fraction of its
+        # largest — separating "faster group" from "smallest in the corpus", and
+        # from any floor stated in seconds rather than as a fraction.
+        slow, reach = whole_second_floor(m, 2 * math.ceil(1 / m))
+        spread = reach // 2
+        self.assertGreater(reach, spread, "premise: the derived term must pass")
+        self.assertLess(m * (slow - spread), reach,
+                        "premise: a smallest-span floor would fire")
+        self.assertLessEqual(reach, m * slow, "premise: the real floor must not")
+        self.assertEqual("", walk_dispute(self.group(
+            slow - spread, slow - spread // 2, slow, *[slow + reach] * 3,
+        )))
+
+    def test_both_terms_are_strict_and_a_split_that_only_ties_is_not_one(self) -> None:
+        """`>` and not `>=`, on each term separately.
+
+        A split exactly as wide as the variation, or exactly a fraction of the walk,
+        is the case the rule is least sure about, and the two boundaries are where a
+        `>=` would hide. Each corpus sits exactly on one boundary while clearing the
+        other, so each pins one inequality — and both are derived from the constant
+        for the reason given above.
+        """
+        m = observation._MIN_SEPARATION
+
+        # Exactly a fraction of the faster group, with both groups zero wide.
+        fast, step = whole_second_floor(m, math.ceil(1 / m))
+        self.assertEqual(step, m * fast, "premise: the floor must be a whole second")
+        self.assertEqual("", walk_dispute(self.group(*[fast] * 3, *[fast + step] * 3)))
+        # One second more and the same corpus disputes, so this is a boundary and
+        # not a rule that never fires here.
+        self.assertIn(
+            "two groups",
+            walk_dispute(self.group(*[fast] * 3, *[fast + step + 1] * 3)),
+        )
+
+        # Exactly as wide as the variation, with the floor already cleared so that
+        # only the derived term is deciding.
+        base = 100
+        tie = int(m * base) + 5
+        self.assertGreater(tie, m * base, "premise: the floor must not be deciding")
+        self.assertEqual("", walk_dispute(self.group(
+            *[base] * 3, base + tie, base + tie, base + 2 * tie,
+        )))
+        self.assertIn("two groups", walk_dispute(self.group(
+            *[base] * 3, base + tie + 1, base + tie + 1, base + 2 * tie,
+        )))
 
 
 class WalkFieldShapeTests(unittest.TestCase):
@@ -3294,14 +3503,7 @@ class WalkDisputePrecisionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.spans = {
-            version: [
-                parse((REPOSITORY / "manifest" / "captures" / f"{row.session_id}.log")
-                      .read_text(encoding="utf-8")).span_seconds
-                for row in read(version, REPOSITORY)
-            ]
-            for version in ("439", "440")
-        }
+        cls.groups = committed_spans()
 
     def rows(self, spans):
         return tuple(
@@ -3310,11 +3512,11 @@ class WalkDisputePrecisionTests(unittest.TestCase):
             for index, span in enumerate(spans)
         )
 
-    def test_no_subset_of_either_committed_corpus_is_refused(self) -> None:
+    def test_no_subset_of_any_committed_corpus_is_refused(self) -> None:
         from itertools import combinations  # noqa: PLC0415
 
-        for version, spans in self.spans.items():
-            self.assertEqual(12, len(spans))
+        for name, spans in sorted(self.groups.items()):
+            self.assertEqual(12, len(spans), name)
             for size in range(2, 13):
                 refused = [
                     subset for subset in combinations(spans, size)
@@ -3322,8 +3524,7 @@ class WalkDisputePrecisionTests(unittest.TestCase):
                 ]
                 self.assertEqual(
                     [], refused,
-                    f"{version}: {len(refused)} honest {size}-session subset(s) "
-                    "refused",
+                    f"{name}: {len(refused)} honest {size}-session subset(s) refused",
                 )
 
     def test_the_smallest_corpus_that_yields_a_finding_is_not_refused(self) -> None:
@@ -3334,23 +3535,21 @@ class WalkDisputePrecisionTests(unittest.TestCase):
         self.assertEqual("", walk_dispute(self.rows((153, 122, 141, 122))))
 
     def test_it_still_catches_a_second_walk_from_three_sessions_onward(self) -> None:
-        """The positive twin, and the cost of the fix stated as a test.
+        """The positive twin, and the cost of the minimum stated as a test.
 
-        Three sessions of the new walk are caught; two are not, and that is the
-        trade the minimum bought. It is the safe direction — the field carries the
-        residual either way, and a check an operator has learned to ignore carries
-        nothing.
+        Three sessions of the second walk are caught; two are not, and that is the
+        trade `_MIN_PER_SIDE` bought. It is the safe direction — the field carries
+        the residual either way, and a check an operator has learned to ignore
+        carries nothing. The faster group is 439's real twelve; the slower is
+        `THREE_ROUND_JITTER`, whose provenance is on the constant itself.
         """
-        base = self.spans["440"]
-        for new in (3, 4, 6, 12):
-            with self.subTest(new=new):
-                self.assertIn(
-                    "two groups",
-                    walk_dispute(self.rows([*base, *(s * 3 for s in base[:new])])),
-                )
-        self.assertEqual(
-            "", walk_dispute(self.rows([*base, *(s * 3 for s in base[:2])]))
-        )
+        base = self.groups["439 one-pass"]
+        other = THREE_ROUND_JITTER
+        for count in (3, 4, 6, 12):
+            with self.subTest(count=count):
+                self.assertIn("two groups",
+                              walk_dispute(self.rows([*base, *other[:count]])))
+        self.assertEqual("", walk_dispute(self.rows([*base, *other[:2]])))
 
     def test_a_one_shot_iterator_is_refused_by_both_of_the_pair(self) -> None:
         """The hazard is at the call site, so that is where it has to be refused.

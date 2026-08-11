@@ -233,12 +233,12 @@ dress it up.
 **What is not typed is the evidence beside it.** A capture carries logcat's own
 timestamps, so :func:`parse` measures the **span** — the time from the first line
 it read to the last — and stores it on the session. The span is a fact about the
-driving in a way no request count is: across the twenty-four sessions committed
-for 439 and 440, walked under six different toggle states each, the observed
-request counts run 8 to 39 while the spans run 109s to 153s — 440's twelve all
-inside 7s of one another, and ten of 439's twelve inside 9s. The walk is a script
-with sleeps in it; the counts are the app's answer. A three-round walk takes about
-three times as long, and no toggle makes a two-minute walk take six.
+driving in a way no request count is: across the twelve sessions committed for
+439, walked under six different toggle states, the observed request counts run 14
+to 39 while the spans run 122s to 153s and ten of the twelve sit inside 9s of one
+another. The walk is a script with sleeps in it; the counts are the app's answer.
+A three-round walk takes about three times as long, and no toggle makes a
+two-minute walk take six.
 
 That does not let the value be derived — a span names no protocol — but it lets a
 **wrong** one be caught, which is the part worth having. :func:`walk_dispute`
@@ -1190,9 +1190,9 @@ class ObservationSession:
         # the whole file, so the twelve 439 rows written before this field existed
         # come back byte for byte rather than acquiring a zero nobody measured.
         counted = {"blocks": self.blocks.as_dict()} if self.blocks is not None else {}
-        # Same rule a third time. The twenty-four 439 and 440 rows written before
-        # a walk was named come back byte for byte rather than acquiring a walk
-        # nobody stated or a span nobody measured.
+        # Same rule a third time. The twelve 439 rows written before a walk was
+        # named come back byte for byte rather than acquiring a walk nobody stated
+        # or a span nobody measured.
         driven = {"walk": self.walk} if self.walk is not None else {}
         timed = (
             {"span_seconds": self.span_seconds} if self.span_seconds is not None else {}
@@ -1472,10 +1472,10 @@ def append(
     from the capture the way the toggle state and the block count both were. So
     there is no regeneration available for a row that arrives without it, only a
     person remembering, and the refusal is at the write because the write is the
-    last moment the person is still in the room. The twenty-four rows committed
-    before 2026-08-11 keep their absence, keep reading, and are named in every
-    report; refusing here is what keeps that set closed rather than letting it grow
-    one silent row at a time.
+    last moment the person is still in the room. The rows committed before
+    2026-08-11 — 439's twelve, and the one 441 row — keep their absence, keep
+    reading, and are named in every report; refusing here is what keeps that set
+    closed rather than letting it grow one silent row at a time.
     """
 
     location = Path(path) if path is not None else store_path(session.version, root)
@@ -1650,6 +1650,80 @@ def walks(
 #: contamination than to teach an operator to ignore this.
 _MIN_PER_SIDE = 3
 
+#: How much longer the slower group must run, as a fraction of the faster one,
+#: before a split can be two protocols. **This one is a magnitude and there is no
+#: honest way to pretend otherwise.**
+#:
+#: Why it cannot be derived, stated as the argument rather than as an apology. The
+#: rule above scales a gap against the groups' own ranges, and that works until a
+#: group has no range: a scripted walk with fixed sleeps produces near-identical
+#: spans, which is the *usual* case and not an edge one. The twelve `three-round-v2`
+#: sessions committed for 440 read 271, 271, 271 and then 273 nine times — one
+#: script, one build, one sitting — and the range of each side of that split is
+#: zero, so a two-second difference over a 271-second walk was "infinitely sharper
+#: than the variation" and `grouping` refused the whole corpus.
+#:
+#: No function of the *shape* can fix that, and this is provable rather than a
+#: guess: `{271 x 3, 273 x 9}` and `{271 x 3, 543 x 9}` have the same cardinalities,
+#: the same ordering and the same group ranges — zero — and differ only in how big
+#: the gap is next to the spans. Anything reading ranks, counts or ratios of ranges
+#: gives both the same answer. Only size separates them, and a size needs a scale
+#: from outside the shape. Given that, a **dimensionless fraction** is the best
+#: available: it costs nothing when the walk gets longer or shorter, and
+#: `test_the_verdict_is_the_same_at_ten_times_the_scale` holds it to that.
+#:
+#: Where 5% comes from, and — read this before trusting it — **which of the
+#: numbers bracketing it are measurements and which are constructions.**
+#:
+#: * **Lower end, 0.74%, constructed from a withdrawn measurement.** Twelve
+#:   `three-round-v2` sessions were walked on 440 on 2026-08-11 and read 271, 271,
+#:   271 then 273 nine times; the whole corpus was discarded the same day for an
+#:   unrelated navigation fault (a `content-desc` selector matched a feed node, so
+#:   half the sessions never reached the surface their `surface` field named). The
+#:   *spans* were never in doubt — the fault was about where the taps landed, not
+#:   about how long the script ran — but the store is gone, so this is carried in
+#:   `tests/test_observation.py` as the named synthetic `THREE_ROUND_JITTER` rather
+#:   than read from anything committed.
+#: * **Upper end, 33%, wholly constructed.** Three rounds against four, 271s to
+#:   361s: the smallest protocol change anyone would make, and the binding limit.
+#:   Nobody has walked a four-round protocol. It is arithmetic on the number above.
+#: * **What *is* real is the precision side**, and it is the half that decides
+#:   whether this gets switched off. 439's twelve one-pass sessions are committed
+#:   with their captures, they span 122-153s with a genuine 31-second internal
+#:   spread, and neither they nor any subset of them may dispute. That corpus also
+#:   supplies the *faster group* of the contamination anchor, which is the hard half
+#:   — a rule that only worked on tight groups would pass a tidy fixture and be
+#:   useless here.
+#:
+#: 0.74% to 33% is a factor of forty-five, and 5% is its geometric middle: 6.7x
+#: above the jitter and 6.7x below the tightest contamination. It is not fitted to
+#: either end. The protection against a silent retune is not that the number was
+#: derived — it was not — but that **both ends are pinned as tests**: raising it
+#: fails `test_a_shorter_protocol_is_still_caught`, lowering it fails
+#: `test_the_jitter_corpus_is_not_disputed`. A magnitude bracketed on both sides
+#: cannot be moved in a diff that looks like maintenance, which is what
+#: `derive-the-threshold-never-declare-it` is actually protecting against.
+#:
+#: **A bracket made of two constructions is weaker than one made of two
+#: measurements, and this is currently the former.** Both ends say what a walk
+#: *would* do rather than what one *did*, so a systematic error in that reasoning
+#: is invisible to them. Re-measuring a three-round corpus replaces the lower end
+#: with evidence and is worth doing for that reason alone.
+_MIN_SEPARATION = 0.05
+
+
+def _cuts(count: int) -> range:
+    """Every split of `count` sorted spans with :data:`_MIN_PER_SIDE` each side.
+
+    The single owner of the minimum. It used to be stated twice — an early return
+    in :func:`walk_dispute` and the loop bound beneath it — and the early return
+    was dead, because the loop is empty for exactly the inputs it caught. A line
+    that reads like a guard and is not one is how the guard beside it comes to be
+    deleted, so there is now one expression and everything asks it.
+    """
+
+    return range(_MIN_PER_SIDE, count - _MIN_PER_SIDE + 1)
+
 
 def _too_few(measured: Sequence[Any]) -> bool:
     """Is there too little here for a split to mean anything?
@@ -1658,10 +1732,11 @@ def _too_few(measured: Sequence[Any]) -> bool:
     control both ask it. Two copies of it desynchronised is the control reporting
     "fully evidenced" over a corpus the check structurally cannot read — which is
     exactly the failure the control exists to prevent, arriving through the
-    control.
+    control. Asks :func:`_cuts`, so "can this fire?" and "where could it fire?"
+    cannot disagree.
     """
 
-    return len(measured) < 2 * _MIN_PER_SIDE
+    return not _cuts(len(measured))
 
 
 def _rows(sessions: Sequence[ObservationSession], caller: str) -> Sequence[ObservationSession]:
@@ -1694,28 +1769,44 @@ def walk_dispute(sessions: Sequence[ObservationSession]) -> str:
     """Why these sessions' spans contradict the walk they claim, or `""`.
 
     The walk is typed and the span is measured, so this is the one place the typed
-    value can be checked against evidence. It asks a question with no magnitude in
-    it: do the spans **split into two groups further apart than either group is
-    wide**? Sorted, at every cut with :data:`_MIN_PER_SIDE` sessions on each side::
+    value can be checked against evidence. Do the spans **split into two groups
+    that are both sharper than the corpus's own variation and larger than a
+    fraction of the walk**? Sorted, at every cut with :data:`_MIN_PER_SIDE`
+    sessions on each side::
 
         gap    = the smallest span above the cut - the largest below it
         widest = the wider of the two groups' own ranges
+        floor  = _MIN_SEPARATION x the largest span below the cut
 
-    and a dispute is `gap > widest`. The corpus supplies its own scale, exactly as
-    `grouping.noise_floors` does — a claim fails only when the evidence separates
-    more sharply than it varies — so there is no duration in here to repair in a
-    diff that looks like maintenance.
+    and a dispute is `gap > widest and gap > floor`.
 
-    Measured against both real corpora: 439's twelve spans run 122-153s and 440's
-    run 109-116s, and neither disputes at any cut, nor does any subset of either.
-    A store holding those twelve beside twelve three-round sessions at ~350s
-    disputes at the obvious one. And **all twenty-four** pooled do not dispute,
-    which is the control that matters: they are the same walk on two builds, and a
-    rule that called them two protocols would be measuring the phone rather than
-    the driving. Stated of the full twenty-four because that is what was measured —
-    subsets of the *pool* do refuse at around 8% near size seven, where 440's tight
-    cluster and 439's tail can be drawn to look like two sittings. No caller can
-    reach that: all three read one version's store.
+    **The first term is derived and does all the work whenever there is variation
+    to derive it from** — the corpus supplies its own scale, exactly as
+    `grouping.noise_floors` does, and a claim fails only when the evidence
+    separates more sharply than it varies. **The second is a magnitude**, and
+    :data:`_MIN_SEPARATION` says so plainly, gives the two committed measurements
+    that bracket it, and shows why no function of the shape can replace it. It
+    exists because the first term collapses to zero on exactly the corpus this is
+    most often asked about: a scripted walk with fixed sleeps produces near-
+    identical spans, and a zero scale makes any difference at all look infinitely
+    sharp.
+
+    What it has been checked against, separating evidence from construction:
+
+    * **Real.** 439's twelve one-pass sessions are committed with their captures.
+      They span 122-153s, no subset of them disputes at any size, and their genuine
+      31-second internal spread makes them the hard half of the contamination case
+      as well — a rule that only worked on tight groups would pass a tidy fixture
+      and refuse this.
+    * **Constructed.** Both ends of :data:`_MIN_SEPARATION` are now synthetics, and
+      that constant's comment says which and why. The one that mattered — twelve
+      spans reading 271, 271, 271, 273 x 9, where each side of the split is zero
+      seconds wide — was measured on 440 on 2026-08-11 and withdrawn the same day
+      with the rest of its corpus for an unrelated navigation fault. Under the
+      derived term alone it disputed on a two-second difference across a
+      271-second walk, and `grouping report --version 440 --walk three-round-v2`
+      returned nothing at all. That is what the floor exists for, and it is pinned
+      as `THREE_ROUND_JITTER` rather than dropped.
 
     **Its reach, so nobody reads it as more than it is.**
 
@@ -1724,24 +1815,20 @@ def walk_dispute(sessions: Sequence[ObservationSession]) -> str:
       invisible. :func:`walk_evidence` reports the first; that constant's own
       comment gives the measurement behind the number and what the alternative cost.
     * A capture with no timestamps has no span and is not considered. **Every row
-      committed before 2026-08-11 is in exactly that shape**, so the contamination
-      this most wants to see — twelve old sessions and twelve new ones sharing one
-      name — is invisible to it until those rows are re-recorded. It is `grouping`'s
-      refusal of an unstated walk, not this, that stands between them and an answer.
+      committed today is in exactly that shape** — 439's twelve predate the field —
+      so the contamination this most wants to see, old sessions and new ones
+      sharing one name, is invisible to it until those rows are re-recorded. It is
+      `grouping`'s refusal of an unstated walk, not this, that stands between them
+      and an answer.
     * It compares, so a corpus in which every session is mislabelled the same way is
       silent. That is the residual the `--walk` flag carries, stated in the module
       docstring rather than papered over.
-    * And it reads sharpness, not size, so a corpus with **no** within-group
-      variation disputes over nothing: six sessions at 116s and six at 117s split
-      by one second with groups zero seconds wide, and one second is not one pass
-      against three rounds. 440's spans are nearly that tight, so three sessions in
-      a morning and three in an afternoon is a plausible shape for this to refuse.
-      Both real corpora pass because they have outliers, which is to say they pass
-      on their variation rather than on the rule. A floor at the span's own
-      resolution — `_span` truncates to whole seconds, so a one-second gap is
-      quantisation and not evidence — would remove the sharpest case; it is not
-      done here because it is a change to what the rule *means* and belongs to
-      whoever next has a corpus that needs it.
+    * Two walks less than :data:`_MIN_SEPARATION` apart are not distinguished at
+      all. That is the price of the floor and it is the right way round: a protocol
+      change worth catching adds or removes rounds, and the smallest one this
+      corpus can show — three rounds against four, 271s to 361s — is 33%, six times
+      the floor. A change smaller than 5% of the walk is inside the jitter of
+      running it twice, and the field is what carries it.
 
     Returns a sentence, not a bool. Two callers need to say what is wrong and both
     would otherwise write their own wording of it, which is how a human banner and
@@ -1753,33 +1840,29 @@ def walk_dispute(sessions: Sequence[ObservationSession]) -> str:
         for item in _rows(sessions, "walk_dispute")
         if item.span_seconds is not None
     )
-    if _too_few(measured):
-        # Not "no dispute": nothing was asked. A caller that needs to know whether
-        # this could have fired asks `walk_evidence`.
-        #
-        # **This return is a statement, not the guard.** The loop below is empty for
-        # exactly the same inputs — `range(m, n - m + 1)` has no members when
-        # `n < 2m` — so deleting this line changes no answer. It is here so the rule
-        # has one name that `walk_evidence` can ask for too, and it is called out as
-        # inert because a line that reads like a guard and is not one is how a real
-        # guard comes to be deleted beside it.
-        return ""
     spans = [span for span, _ in measured]
-    for cut in range(_MIN_PER_SIDE, len(spans) - _MIN_PER_SIDE + 1):
+    for cut in _cuts(len(spans)):
         gap = spans[cut] - spans[cut - 1]
         widest = max(spans[cut - 1] - spans[0], spans[-1] - spans[cut])
-        if gap > widest:
+        # Two scales, and a split must clear both. The first is derived and does all
+        # the work whenever the corpus has variation to derive it from. The second
+        # is a floor for when it has none — see :data:`_MIN_SEPARATION`, which
+        # argues at length why that case cannot be reached by any function of the
+        # shape, and what stops the number being tuned.
+        floor = _MIN_SEPARATION * spans[cut - 1]
+        if gap > widest and gap > floor:
             below = ", ".join(f"{name} {span}s" for span, name in measured[:cut])
             above = ", ".join(f"{name} {span}s" for span, name in measured[cut:])
             return (
                 f"{len(measured)} session(s) claim one walk and their capture spans "
-                f"fall into two groups {gap}s apart, wider than the {widest}s either "
-                f"group spans on its own: [{below}] against [{above}]. A walk is a "
-                "script with sleeps in it, so its span barely moves between two runs "
-                "and the request counts move a lot; a split this sharp is two "
-                "protocols wearing one name. Whatever difference a comparison found "
-                "between two states here would include the difference between the two "
-                "walks"
+                f"fall into two groups {gap}s apart — wider than the {widest}s either "
+                f"group spans on its own, and more than the {floor:.0f}s that is "
+                f"{_MIN_SEPARATION:.0%} of the faster group: [{below}] against "
+                f"[{above}]. A walk is a script with sleeps in it, so its span barely "
+                "moves between two runs while the request counts move a lot; a split "
+                "this sharp and this large is two protocols wearing one name. "
+                "Whatever difference a comparison found between two states here would "
+                "include the difference between the two walks"
             )
     return ""
 

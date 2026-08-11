@@ -330,11 +330,24 @@ script, and nothing on the phone or in a capture names it — so the docstring s
 so instead of implying the guarantee `toggles` has. What a capture does carry is
 logcat's timestamps, and `parse` now measures the **span** from them.
 `observation.walk_dispute` refuses a walk whose sessions' spans split into two
-groups further apart than either group is wide, with no constant in it: across the
-24 committed sessions, over two builds and six toggle states each, request counts
-run 8–39 while spans run 109–153s. A walk is a script with sleeps in it; the
-counts are the app's answer. That does not let the value be derived, but it lets a
-wrong one be caught, which is the part worth having.
+groups that are both sharper than the corpus's own variation **and** more than 5%
+apart: across 439's twelve one-pass sessions, over six toggle states, request
+counts run 14–39 while spans run 122–153s. A walk is a script with sleeps in it;
+the counts are the app's answer. That does not let the value be derived, but it
+lets a wrong one be caught, which is the part worth having.
+
+The 5% is a magnitude and `_MIN_SEPARATION` says so rather than dressing it up.
+The sharpness term alone is scale-free and correct wherever the corpus has
+variation to derive a scale from — but a scripted walk with fixed sleeps often has
+none. Twelve `three-round-v2` sessions walked on 440 read 271, 271, 271 and 273
+nine times, both sides of that split are zero seconds wide, and on the derived
+term alone a two-second difference across a 271-second walk refused the entire
+corpus. No function of the shape can fix that: `{271 x 3, 273 x 9}` and
+`{271 x 3, 543 x 9}` are identical in ranks, counts and group ranges. What keeps
+the number honest is that both ends are pinned as tests — 0.74% must pass, 33%
+must fail — though **both are now constructions**: that 440 corpus was withdrawn
+the same day for a navigation fault, so the spans are carried as named synthetics
+with their provenance and only the precision side still rests on evidence.
 
 What it says about the **439 captures** is worth recording here, because one of it
 disagrees with what a human took from the same numbers by hand. Read the caveat

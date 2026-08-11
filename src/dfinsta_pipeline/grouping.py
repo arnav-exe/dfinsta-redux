@@ -134,7 +134,7 @@ filed a session on a new walk is indistinguishable, from the caller's side, from
 corpus that broke. `observation.walks()` says which are on record.
 
 Two things this deliberately does *not* do. It does not pool the sessions that
-name no walk, and it does not offer a way to ask for them: those twenty-four rows
+name no walk, and it does not offer a way to ask for them: 439's twelve rows
 predate the field, and a comparison over sessions whose protocol nobody wrote
 down is the thing the argument exists to prevent — a bucket named "unstated" that
 answered in full would hand back exactly the property naming the walk buys.

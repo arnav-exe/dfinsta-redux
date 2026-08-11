@@ -101,38 +101,68 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       of the phone, and nothing in a capture names it. What a capture *does* carry is
       logcat's timestamps, so `parse` measures the **span** and stores it, and
       `walk_dispute` refuses when the sessions claiming one walk split into two groups
-      further apart than either group is wide. No magnitude in it — the corpus supplies its
-      own scale. Measured: the 24 committed sessions span 109–153s across two builds and
-      six toggle states while their request counts run 8–39, and the check passes them
-      pooled and fails the moment a three-round set is filed under the same name.
+      that are both sharper than the corpus's own variation and more than 5% apart.
+      Measured: 439's twelve one-pass sessions span 122–153s over six toggle states while
+      their request counts run 14–39, and neither they nor any subset of them disputes.
 
-      **A derived threshold still needs its precision measured.** The first version
-      required two sessions on each side of a split, and an adversarial pass measured what
-      that cost on this repository's own evidence: **66 of the 495 four-session subsets of
-      the 439 corpus were refused**, every one of them a single walk on a single build,
-      rising to 145 of 924 at six — including the smallest corpus that yields a finding at
-      all. With two members a group's range is one difference and comes out at 0–1s, so any
-      honest five-second variation reads as two protocols; that is the leak scan that
-      flagged every fixture, arriving again. At **three** a side no subset of either
-      committed corpus is refused at any size, and contamination is still caught from three
-      sessions of the second walk onward. The cost, stated rather than hidden: two
-      mislabelled sessions among many are now invisible.
+      **A derived threshold still needs its precision measured, and this one needed
+      a magnitude in the end.** The first version required two sessions on each side
+      of a split and compared the gap only against the groups' own ranges. An
+      adversarial pass measured what the first half cost: **66 of the 495
+      four-session subsets of the 439 corpus were refused**, every one a single walk
+      on a single build. Three a side fixed that. The second half then failed on the
+      first three-round corpus: twelve sessions walked on 440 read 271, 271, 271 and
+      273 nine times — one script, one sitting — and both sides of that split are
+      *zero seconds wide*, so a two-second difference over a 271-second walk was
+      infinitely sharper than the variation and
+      `grouping report --version 440 --walk three-round-v2` returned nothing at all.
+      A scripted walk with fixed sleeps is precisely what produces near-identical
+      spans, so the rule was least reliable where it is most often applied.
 
-- [ ] **Re-record the 24 committed 439 and 440 sessions with their walk.** They predate the
+      A split must now also exceed **5% of the faster group**, and that term is a
+      magnitude rather than a derived scale. It cannot be derived, and the argument
+      is in `_MIN_SEPARATION`: `{271 x 3, 273 x 9}` and `{271 x 3, 543 x 9}` have the
+      same cardinalities, ordering and group ranges, so no function of the shape
+      separates them — only size does, and size needs a scale from outside the
+      shape. A dimensionless fraction is the best available: it costs nothing when
+      the walk gets longer, and the existing scale-invariance test holds it to that.
+      What stops it being retuned is that **both ends are pinned as tests** — spans
+      2s apart over 271s is 0.74% and must not dispute; three rounds against four is
+      33% and must — so raising or lowering it fails rather than reading as
+      maintenance. **Both of those ends are now constructions, not measurements.**
+      The 440 corpus they were taken from was withdrawn on 2026-08-11 (see below),
+      so they are carried as named synthetics with their provenance written down,
+      and only the precision side — 439's twelve, which must never dispute — still
+      rests on committed evidence. A bracket of two constructions is weaker than one
+      of two measurements and `_MIN_SEPARATION` says so; re-measuring a three-round
+      corpus replaces the lower end with evidence.
+
+- [x] **The 440 corpus was withdrawn.** All 24 rows and every `440-*` capture were deleted
+      on 2026-08-11. The session driver picked bottom-nav tabs by `content-desc`, `Reels`
+      also matched a content node near the top of the feed, and taking the first match in
+      document order sent the Reels leg of six sessions to the top of the screen for three
+      taps each — silently. Those sessions do not measure what their `surface` field
+      claims, and `disable_reels` is exactly the signal that came from there. 439 is
+      unaffected: it ran an earlier driver with hand-verified tab coordinates.
+
+- [ ] **Re-record 439's twelve committed sessions with their walk.** They predate the
       field, so `grouping` refuses them by name and says so. Deliberately **not**
       back-filled by anyone else: unlike the toggle state and the block count, which were
       re-derived from `manifest/captures/` because the evidence was in the capture, the
       walk is not in a capture at all. The repair is not a re-walk, though — the captures
       are committed and
 
-          python -m dfinsta_pipeline.observation record --version 440 \
+          python -m dfinsta_pipeline.observation record --version 439 \
               --capture manifest/captures/<session_id>.log --walk <what you ran> ...
 
       reproduces every count, block and toggle identically and adds the one thing only the
-      person who ran them knows. Until then 439's and 440's groupings are unanswerable, and
-      that is the honest state rather than a regression. A bucket for "unstated" that
-      answered in full was considered and rejected: it would hand back exactly the property
-      naming the walk buys.
+      person who ran them knows. Until then 439's grouping is unanswerable, and that is
+      the honest state rather than a regression. A bucket for "unstated" that answered in
+      full was considered and rejected: it would hand back exactly the property naming the
+      walk buys.
+
+- [ ] **Re-walk 440 with the fixed driver**, which also restores the lower anchor of
+      `_MIN_SEPARATION` to a measurement.
 
 - [ ] **Present observation evidence at the feature gate**, and say *"never watched"* and
       *"watched, never seen"* in different words — they look identical and mean opposite
