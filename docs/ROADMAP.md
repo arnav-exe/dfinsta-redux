@@ -70,11 +70,22 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       active, so every zero in it — including the twelve literals it used to be quoted
       for — is unusable. Nothing can be back-filled: that would be inventing the
       measurement from memory.
-- [ ] **Run the exploration protocol at 439**, then carry it forward to 440 and 441.
-      Owner decision 2026-08-10: starting at 439 makes two "future" versions available
-      immediately instead of waiting for Instagram to ship 442, so "this survives a version
-      bump" becomes checkable today. Installing 439 over a 441 build is a downgrade and
-      needs `adb install -r -d`.
+- [x] **The exploration protocol runs end to end on 439.** Twelve sessions over six
+      toggle states, every state measured twice — once forward, once back-to-front — and
+      `grouping` derives from them: `/feed/timeline/` BLOCKED by `disable_feed`,
+      `/feed/reels_tray/` BLOCKED by `disable_stories`, `/clips/discover` and
+      `/clips/discover/stream/` ERASED upstream by `disable_reels`, ten NEVER REQUESTED
+      including `delivery/background_prefetch`, two unclassifiable.
+- [x] **The store is checkable against committed inputs.** `manifest/captures/` holds a
+      verified redaction of each session — `tools/redact_capture.py` refuses unless the
+      reduction parses identically to the original — so a clone can re-derive every count.
+      Regenerating the store from them changed exactly one field.
+- [ ] **Carry the protocol to 440, then 441.** Owner decision 2026-08-10: starting at 439
+      makes two "future" versions available immediately instead of waiting for Instagram to
+      ship 442, so "this survives a version bump" is checkable today. 440 and 441 are
+      upgrades from 439 and need no re-login; going *back* to 439 later needs
+      `pm uninstall -k` then install, because `install -r -d` is refused for a
+      non-debuggable app.
 - [ ] **Present observation evidence at the feature gate**, and say *"never watched"* and
       *"watched, never seen"* in different words — they look identical and mean opposite
       things.
@@ -92,14 +103,13 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
   answer. *Deciding* is still a human editing `url_block_rules`; what is no longer a
   judgement is which paths a toggle was measured to govern.
 
-- **The 439 sessions predate the block counter.** `observation.parse` now counts the
-  `IgFunctionalErrorEvent` block headers, which is the only signal that sees a path block at
-  all — a block does not lower a request count, and `/feed/reels_tray/` moves 2 → 3 under
-  `disable_stories`. The twelve committed rows have no `blocks` key, so `grouping report`
-  returns the erasures and the never-requested and **refuses the blocked half by name**.
-  Re-recording the twelve captures reproduces every existing field exactly and adds the
-  counts, but it rewrites an append-only store from `work/`, which is gitignored — an owner
-  decision, not a maintenance one.
+- ~~**The 439 sessions predate the block counter.**~~ Closed 2026-08-10. The block count is
+  the only signal that sees a path block at all — a block does not lower a request count, and
+  `/feed/reels_tray/` moves 2 → 3 under `disable_stories`. The twelve rows were re-derived
+  from `manifest/captures/`, which changed exactly one field and left the rest byte-identical.
+  The objection that stopped it — rewriting a committed store from evidence a clone never
+  gets — was answered by committing the redacted captures first, so the regeneration is
+  reproducible by anyone.
 
 - **`IgFunctionalErrorEvent` can be absent for a block that happened.** `439-reverse-explore`
   ran with `disable_explore` on, asked for `/discover/topical_explore` six times and reported
