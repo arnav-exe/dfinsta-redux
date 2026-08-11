@@ -86,6 +86,54 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       upgrades from 439 and need no re-login; going *back* to 439 later needs
       `pm uninstall -k` then install, because `install -r -d` is refused for a
       non-debuggable app.
+- [x] **Record which walk produced a session.** The driving script went from one pass over
+      three surfaces to three rounds on 2026-08-11 and the 440 baseline went from 11–16
+      observed requests to 25. Two sessions of one state walked differently spread by 14
+      for a reason no toggle caused, and `grouping` derives its noise floor from exactly
+      that spread — it would have called the whole difference noise and swallowed every
+      real effect under it. So a session names its `walk`, `grouping.classify` takes it as
+      a **required argument** and compares only within it, and `observation.never_observed`
+      deliberately does not: a negative claim only gets safer as walks are pooled into it,
+      a differential does not.
+
+      **This one the operator types**, unlike the toggle state, and the docstring says so
+      rather than implying a guarantee: the walk is a property of the driving script, not
+      of the phone, and nothing in a capture names it. What a capture *does* carry is
+      logcat's timestamps, so `parse` measures the **span** and stores it, and
+      `walk_dispute` refuses when the sessions claiming one walk split into two groups
+      further apart than either group is wide. No magnitude in it — the corpus supplies its
+      own scale. Measured: the 24 committed sessions span 109–153s across two builds and
+      six toggle states while their request counts run 8–39, and the check passes them
+      pooled and fails the moment a three-round set is filed under the same name.
+
+      **A derived threshold still needs its precision measured.** The first version
+      required two sessions on each side of a split, and an adversarial pass measured what
+      that cost on this repository's own evidence: **66 of the 495 four-session subsets of
+      the 439 corpus were refused**, every one of them a single walk on a single build,
+      rising to 145 of 924 at six — including the smallest corpus that yields a finding at
+      all. With two members a group's range is one difference and comes out at 0–1s, so any
+      honest five-second variation reads as two protocols; that is the leak scan that
+      flagged every fixture, arriving again. At **three** a side no subset of either
+      committed corpus is refused at any size, and contamination is still caught from three
+      sessions of the second walk onward. The cost, stated rather than hidden: two
+      mislabelled sessions among many are now invisible.
+
+- [ ] **Re-record the 24 committed 439 and 440 sessions with their walk.** They predate the
+      field, so `grouping` refuses them by name and says so. Deliberately **not**
+      back-filled by anyone else: unlike the toggle state and the block count, which were
+      re-derived from `manifest/captures/` because the evidence was in the capture, the
+      walk is not in a capture at all. The repair is not a re-walk, though — the captures
+      are committed and
+
+          python -m dfinsta_pipeline.observation record --version 440 \
+              --capture manifest/captures/<session_id>.log --walk <what you ran> ...
+
+      reproduces every count, block and toggle identically and adds the one thing only the
+      person who ran them knows. Until then 439's and 440's groupings are unanswerable, and
+      that is the honest state rather than a regression. A bucket for "unstated" that
+      answered in full was considered and rejected: it would hand back exactly the property
+      naming the walk buys.
+
 - [ ] **Present observation evidence at the feature gate**, and say *"never watched"* and
       *"watched, never seen"* in different words — they look identical and mean opposite
       things.

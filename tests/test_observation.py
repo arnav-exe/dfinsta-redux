@@ -44,6 +44,8 @@ from dfinsta_pipeline.observation import (
     BLOCK_MESSAGE,
     BLOCK_TAG,
     UNATTRIBUTED,
+    UNWALKED,
+    _WALK,
     BlockCount,
     OBSERVATIONS,
     SCHEMA_VERSION,
@@ -66,6 +68,9 @@ from dfinsta_pipeline.observation import (
     states,
     store_path,
     summary,
+    walk_dispute,
+    walk_evidence,
+    walks,
 )
 
 REPOSITORY = Path(__file__).resolve().parent.parent
@@ -99,6 +104,11 @@ def header(state: ToggleState = ALL_OFF) -> str:
 #: find; `blocks=None` has to be asked for, because it means nobody counted.
 NO_BLOCKS = BlockCount(0)
 
+#: The driving protocol these fixtures pretend to have run. Any name would do —
+#: what the tests are about is that two sessions naming the same one are
+#: comparable and two naming different ones are not.
+WALK = "one-pass-three-surfaces"
+
 
 def session(
     session_id: str = "s1",
@@ -107,6 +117,8 @@ def session(
     surface: str = "feed_tab",
     watched: tuple[str, ...] = ("/feed/timeline/", "/feed/reels_tray/"),
     toggles: ToggleState | None = ALL_OFF,
+    walk: str | None = WALK,
+    span_seconds: int | None = None,
     blocks: BlockCount | None = NO_BLOCKS,
     counts: dict[str, int] | None = None,
 ) -> ObservationSession:
@@ -119,6 +131,8 @@ def session(
         surface=surface,
         watched=watched,
         toggles=toggles,
+        walk=walk,
+        span_seconds=span_seconds,
         blocks=blocks,
         counts=dict(counts or {}),
     )
@@ -652,7 +666,7 @@ class SessionTests(unittest.TestCase):
             session().__class__(
                 schema_version=1, version="441", build_sha256="short",
                 recorded_at="x", session_id="s", surface="f",
-                watched=("/a/",), toggles=ALL_OFF, counts={},
+                watched=("/a/",), toggles=ALL_OFF, walk=WALK, counts={},
             )
         self.assertIn("SHA-256", str(caught.exception))
         for field in ("recorded_at", "session_id", "surface"):
@@ -661,7 +675,7 @@ class SessionTests(unittest.TestCase):
                     "schema_version": 1, "version": "441", "build_sha256": BUILD,
                     "recorded_at": "2026-08-09T10:00:00Z", "session_id": "s",
                     "surface": "f", "watched": ("/a/",), "toggles": ALL_OFF,
-                    "counts": {},
+                    "walk": WALK, "counts": {},
                 }
                 arguments[field] = "  "
                 with self.assertRaises(ObservationError) as caught:
@@ -681,7 +695,7 @@ class SessionTests(unittest.TestCase):
                     ObservationSession(
                         schema_version=1, version="441", build_sha256=BUILD,
                         recorded_at=stamp, session_id="s", surface="f",
-                        watched=("/a/",), toggles=ALL_OFF, counts={},
+                        watched=("/a/",), toggles=ALL_OFF, walk=WALK, counts={},
                     )
                 self.assertIn(stamp, str(caught.exception))
 
@@ -692,7 +706,7 @@ class SessionTests(unittest.TestCase):
             ObservationSession(
                 schema_version=1, version="441", build_sha256=BUILD,
                 recorded_at="2026-08-09T10:00:00", session_id="s", surface="f",
-                watched=("/a/",), toggles=ALL_OFF, counts={},
+                watched=("/a/",), toggles=ALL_OFF, walk=WALK, counts={},
             )
         self.assertIn("no UTC offset", str(caught.exception))
 
@@ -704,7 +718,7 @@ class SessionTests(unittest.TestCase):
                 item = ObservationSession(
                     schema_version=1, version="441", build_sha256=BUILD,
                     recorded_at=stamp, session_id="s", surface="f",
-                    watched=("/a/",), toggles=ALL_OFF, counts={},
+                    watched=("/a/",), toggles=ALL_OFF, walk=WALK, counts={},
                 )
                 self.assertEqual(stamp, item.recorded_at)
 
@@ -714,7 +728,7 @@ class SessionTests(unittest.TestCase):
         item = ObservationSession(
             schema_version=1, version="441", build_sha256=BUILD,
             recorded_at="  2026-08-09T10:00:00+00:00  ", session_id="s", surface="f",
-            watched=("/a/",), toggles=ALL_OFF, counts={},
+            watched=("/a/",), toggles=ALL_OFF, walk=WALK, counts={},
         )
         self.assertEqual("2026-08-09T10:00:00+00:00", item.recorded_at)
         self.assertEqual("2026-08-09T10:00:00+00:00", item.to_dict()["recorded_at"])
@@ -734,7 +748,7 @@ class SessionTests(unittest.TestCase):
         item = ObservationSession(
             schema_version=SCHEMA_VERSION, version="441", build_sha256=BUILD,
             recorded_at="2026-08-09T10:00:00Z", session_id="s", surface="f",
-            watched=("/feed/timeline/",), toggles=ALL_OFF, counts=live,
+            watched=("/feed/timeline/",), toggles=ALL_OFF, walk=WALK, counts=live,
         )
         live["/never/watched/"] = 3
         self.assertEqual({"/feed/timeline/": 1}, dict(item.counts))
@@ -747,7 +761,7 @@ class SessionTests(unittest.TestCase):
         item = ObservationSession(
             schema_version=1, version="441", build_sha256=BUILD,
             recorded_at="2026-08-09T10:00:00Z", session_id="s", surface="f",
-            watched=["/a/", "/b/"], toggles=ALL_OFF, counts={},
+            watched=["/a/", "/b/"], toggles=ALL_OFF, walk=WALK, counts={},
         )
         self.assertEqual(("/a/", "/b/"), item.watched)
 
@@ -1657,7 +1671,7 @@ class ReportTests(RootedTestCase):
             schema_version=SCHEMA_VERSION, version="441", build_sha256="c" * 64,
             recorded_at="2026-08-09T11:00:00Z", session_id="second", surface="feed_tab",
             watched=("/feed/timeline/", "/feed/reels_tray/"), toggles=ALL_OFF,
-            blocks=NO_BLOCKS, counts={"/feed/timeline/": 2},
+            walk=WALK, blocks=NO_BLOCKS, counts={"/feed/timeline/": 2},
         )
         append(other, root=self.root)
 
@@ -1862,6 +1876,8 @@ class ReportTests(RootedTestCase):
                 carried |= set(report["warnings"])
                 carried |= set(report["vacuous_session_ids"])
                 carried |= set(report["unstated_session_ids"])
+                carried |= set(report["unwalked_session_ids"])
+                carried |= set(report["walks"])
                 carried |= {str(report[key]) for key in
                             ("session_count", "evidential_session_count",
                              "stated_session_count")}
@@ -1869,6 +1885,7 @@ class ReportTests(RootedTestCase):
                     carried |= {state["toggles_text"]}
                     carried |= set(state["never_observed"]) | set(state["observed"])
                     carried |= set(state["surfaces"]) | set(state["session_ids"])
+                    carried |= set(state["walks"])
                     carried |= set(state["blocked_never_observed"])
                     carried |= {state["blocked_never_observed_refused"]}
                     carried |= {str(value) for value in state["observed"].values()}
@@ -1992,6 +2009,7 @@ class CommandLineTests(RootedTestCase):
             "--recorded-at", "2026-08-09T10:00:00Z",
             "--session-id", "441-feed-1",
             "--surface", "feed_tab",
+            "--walk", WALK,
             "--capture", str(capture),
             *extra,
         ]
@@ -2482,7 +2500,7 @@ class BlockRecordTests(RootedTestCase):
             code = main([
                 "--root", str(self.root), "record", "--version", "441",
                 "--build-sha256", BUILD, "--recorded-at", "2026-08-10T10:00:00Z",
-                "--session-id", "s1", "--surface", "feed_tab",
+                "--session-id", "s1", "--surface", "feed_tab", "--walk", WALK,
                 "--watched", "/feed/timeline/", "--capture", str(capture),
             ])
         self.assertEqual(0, code)
@@ -2490,6 +2508,897 @@ class BlockRecordTests(RootedTestCase):
         recorded = read("441", self.root)[0]
         self.assertEqual(1, recorded.blocks.total)
         self.assertEqual({"FEED_NOT_LOADING": 1}, recorded.blocks.features)
+
+
+
+# ===========================================================================
+#   the walk
+# ===========================================================================
+
+
+class WalkFieldTests(RootedTestCase):
+    """Which driving protocol produced a session, and what the field may hold.
+
+    The walk is the one value in a row that an operator types, and this file's
+    other sections exist because typed values are what this project got wrong
+    before. So the tests here are about the two things that can still be
+    defended: the field cannot hold something no other session can match, and the
+    field cannot be left out of anything new.
+    """
+
+    def test_the_walk_survives_a_round_trip_through_the_store(self) -> None:
+        append(session(walk="three-round-v2", counts={"/feed/timeline/": 1}),
+               root=self.root)
+        self.assertEqual("three-round-v2", read("441", self.root)[0].walk)
+
+    def test_an_unstated_walk_is_absent_from_the_row_and_null_is_refused(self) -> None:
+        """One spelling for absent, the third field to need the rule.
+
+        `append` rewrites the whole file from `to_dict`, so a row that came back
+        carrying `"walk": null` would edit the twenty-four committed rows the next
+        time a session was recorded beside one of them — and would turn "nobody
+        said" into "the walk was nothing".
+        """
+        row = session(walk=None, counts={"/feed/timeline/": 1}).to_dict()
+        self.assertNotIn("walk", row)
+        with self.assertRaises(ObservationError) as caught:
+            ObservationSession.from_dict({**row, "walk": None})
+        self.assertIn("second spelling of absent", str(caught.exception))
+
+    def test_a_stated_walk_would_write_the_field(self) -> None:
+        """The control for the test above: a `to_dict` that never wrote `walk`
+        satisfies it and also deletes the feature."""
+
+        self.assertIn(
+            "three-round-v2",
+            json.dumps(session(walk="three-round-v2").to_dict(), sort_keys=True),
+        )
+
+    def test_a_walk_that_is_not_a_join_key_is_refused(self) -> None:
+        """It is compared for equality against other sessions' walks, so two
+        spellings of one protocol would halve every group without saying so."""
+
+        for bad in ("Three-Round", "three round", "-leading", "", "  ", "x" * 65,
+                    "three/round", "(no walk stated)"):
+            with self.subTest(walk=bad):
+                with self.assertRaises(ObservationError) as caught:
+                    session(walk=bad)
+                self.assertIn("walk", str(caught.exception))
+
+    def test_the_legal_shapes_are_accepted(self) -> None:
+        """The control: a rule that refused everything would pass the test above."""
+
+        for good in ("three-round-v2", "one_pass", "v2.1", "a", "0"):
+            with self.subTest(walk=good):
+                self.assertEqual(good, session(walk=good).walk)
+
+    def test_a_walk_that_names_only_this_session_is_refused(self) -> None:
+        """A walk is what says two sessions did the same thing. One that is unique
+        to a session names an outcome, and every group it could form has one
+        member — which `grouping` then refuses for a reason nobody could see."""
+
+        with self.assertRaises(ObservationError) as caught:
+            session("440-isolate-feed", walk="440-isolate-feed")
+        self.assertIn("names itself", str(caught.exception))
+        # And the control, because a rule that refused every walk would pass:
+        self.assertEqual("one-pass", session("440-isolate-feed", walk="one-pass").walk)
+
+    def test_new_evidence_without_a_walk_is_refused_at_the_write(self) -> None:
+        """The record type still represents history it is no longer allowed to
+        make — the twenty-four committed rows are in exactly this shape."""
+
+        with self.assertRaises(ObservationError) as caught:
+            append(session(walk=None, counts={"/feed/timeline/": 1}), root=self.root)
+        message = str(caught.exception)
+        self.assertIn("--walk", message)
+        self.assertIn("noise floor", message)
+        self.assertEqual((), read("441", self.root))
+
+    def test_a_vacuous_session_without_a_walk_is_refused_too(self) -> None:
+        """Unlike the toggle state, which a capture that saw nothing may omit.
+
+        A vacuous capture cannot state its configuration, because the build only
+        says it on a checked request — so `append` lets that through. Nothing
+        stops an operator naming the walk they ran, whatever the capture holds, so
+        there is no equivalent hole here.
+        """
+        with self.assertRaises(ObservationError):
+            append(session(walk=None, counts={}), root=self.root)
+
+    def test_the_walk_recorded_is_exactly_the_one_that_was_typed(self) -> None:
+        """Stated rather than derived, and this is what that costs.
+
+        Nothing in the capture names a protocol, so this value is worth what the
+        person who typed it is worth. It is asserted here so that a future change
+        which started *inferring* it — from the surface, from the session id, from
+        the span — would fail rather than quietly become a guess wearing a
+        guarantee.
+        """
+        capture = self.root / "c.log"
+        capture.write_text(header(ALL_OFF) + line("/feed/timeline/"), encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main([
+                "--root", str(self.root), "record", "--version", "441",
+                "--build-sha256", BUILD, "--recorded-at", "2026-08-09T10:00:00Z",
+                "--session-id", "441-feed-1", "--surface", "feed_tab",
+                "--walk", "three-round-v2",
+                "--watched", "/feed/timeline/", "--capture", str(capture),
+            ])
+        self.assertEqual(0, code)
+        self.assertEqual("three-round-v2", read("441", self.root)[0].walk)
+        self.assertIn("walk:    three-round-v2", out.getvalue())
+        # Printed as what it is, at the moment it is filed.
+        self.assertIn("yours to state", out.getvalue().lower())
+
+    def test_a_capture_with_no_timestamps_says_nothing_can_contradict_the_walk(
+        self,
+    ) -> None:
+        """The span is the only thing that can catch a wrong `--walk`, and a
+        capture that carries none is outside the check. Said at the write rather
+        than discovered later."""
+
+        capture = self.root / "c.log"
+        capture.write_text(
+            f"I {TAG}: {TOGGLE_DIRECTIVE} {ALL_OFF.text}\nI {TAG}: /feed/timeline/\n",
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main([
+                "--root", str(self.root), "record", "--version", "441",
+                "--build-sha256", BUILD, "--recorded-at", "2026-08-09T10:00:00Z",
+                "--session-id", "441-feed-2", "--surface", "feed_tab",
+                "--walk", "three-round-v2",
+                "--watched", "/feed/timeline/", "--capture", str(capture),
+            ])
+        self.assertEqual(0, code)
+        self.assertIn("no timestamps", out.getvalue())
+        self.assertIsNone(read("441", self.root)[0].span_seconds)
+
+    def test_record_will_not_run_without_a_walk(self) -> None:
+        """Loud, and at the moment the operator still knows which script they ran."""
+
+        capture = self.root / "c.log"
+        capture.write_text(header(ALL_OFF) + line("/feed/timeline/"), encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            main([
+                "--root", str(self.root), "record", "--version", "441",
+                "--build-sha256", BUILD, "--recorded-at", "2026-08-09T10:00:00Z",
+                "--session-id", "441-feed-1", "--surface", "feed_tab",
+                "--watched", "/feed/timeline/", "--capture", str(capture),
+            ])
+        self.assertEqual(2, caught.exception.code)
+        self.assertIn("--walk", err.getvalue())
+
+    def test_the_walk_is_the_only_option_that_states_a_condition(self) -> None:
+        """The allowlist `_record_parser` exists for, re-asked with one member added.
+
+        `--toggles` must still be absent — a build can report that one — and the
+        way to be sure is to read the parser rather than a copy of the list.
+        """
+        options = {
+            action.dest
+            for action in _record_parser(
+                argparse.ArgumentParser().add_subparsers()
+            )._actions
+        }
+        self.assertIn("walk", options)
+        self.assertEqual(
+            {"help", "version", "build_sha256", "recorded_at", "session_id",
+             "surface", "walk", "watched", "watched_from", "capture"},
+            options,
+        )
+
+    def test_a_report_names_the_walks_each_state_was_measured_on(self) -> None:
+        """The same rule the surface list follows: a reader's first question is
+        "would this session have seen it?", and a third round reaches things one
+        pass does not."""
+
+        append(session("a", walk="one-pass", counts={"/feed/timeline/": 1}),
+               root=self.root)
+        append(session("b", walk="three-round", counts={"/feed/timeline/": 3}),
+               root=self.root)
+        report = summary("441", self.root)
+        self.assertEqual(["one-pass", "three-round"], report["states"][0]["walks"])
+        self.assertEqual(["one-pass", "three-round"], report["walks"])
+        self.assertIn("one-pass, three-round", render(report))
+
+    def test_a_report_names_the_sessions_that_state_no_walk(self) -> None:
+        """And says why it is still answering from them, which `grouping` is not.
+
+        A negative claim only gets safer as walks are pooled into it — a path gets
+        more chances to be seen, never fewer — so this report answers and warns.
+        A differential is the other way round.
+        """
+        self.write(session("old", walk=None, counts={"/feed/timeline/": 1}).to_dict())
+        report = summary("441", self.root)
+        self.assertEqual(["old"], report["unwalked_session_ids"])
+        named = [item for item in report["warnings"] if "name no walk" in item]
+        self.assertEqual(1, len(named), report["warnings"])
+        self.assertIn("old", named[0])
+        # Still answered, unlike a session with no toggle state.
+        self.assertEqual(
+            ("/feed/reels_tray/",), never_observed("441", self.root, toggles=ALL_OFF)
+        )
+
+    def test_the_control_for_that_warning(self) -> None:
+        """It must be absent when every session names its walk, or it says nothing."""
+
+        append(session("new", counts={"/feed/timeline/": 1}), root=self.root)
+        report = summary("441", self.root)
+        self.assertEqual([], report["unwalked_session_ids"])
+        self.assertEqual([], [i for i in report["warnings"] if "name no walk" in i])
+
+    def test_the_report_says_when_a_walk_is_contradicted_by_its_own_captures(
+        self,
+    ) -> None:
+        """Asked once per claimed walk, never over the pool.
+
+        Pooling two walks and then asking whether the spans split would find the
+        split every time and call an honest corpus a liar. The question is only
+        ever "do the sessions claiming *this* protocol agree that they ran it?".
+        """
+        for index, span in enumerate((120, 121, 122, 360, 361, 362)):
+            append(session(f"s{index}", walk="one-pass", span_seconds=span,
+                           counts={"/feed/timeline/": 1}), root=self.root)
+        report = summary("441", self.root)
+        named = [item for item in report["warnings"] if "is contradicted" in item]
+        self.assertEqual(1, len(named), report["warnings"])
+        self.assertIn("'one-pass'", named[0])
+
+    def test_two_honestly_different_walks_are_not_contradicted(self) -> None:
+        """The control, and the one that would fail if the check ran over the pool:
+        exactly the same four spans, labelled as the two protocols they are."""
+
+        for index, (walk, span) in enumerate(
+            (("one-pass", 120), ("one-pass", 121), ("one-pass", 122),
+             ("three-round", 360), ("three-round", 361), ("three-round", 362))
+        ):
+            append(session(f"s{index}", walk=walk, span_seconds=span,
+                           counts={"/feed/timeline/": 1}), root=self.root)
+        report = summary("441", self.root)
+        self.assertEqual([], [i for i in report["warnings"] if "is contradicted" in i])
+
+    def test_recording_says_so_when_the_new_row_disputes_its_siblings(self) -> None:
+        """At the write, where the operator still remembers which script they ran.
+
+        `grouping` refuses on the same evidence later, and by then the fix is
+        archaeology.
+        """
+        # Five sessions cannot dispute anything — the check needs three on each
+        # side of a split — so the contradiction becomes visible on the sixth.
+        for index, span in enumerate((120, 121, 122, 360, 361)):
+            append(session(f"s{index}", walk="one-pass", span_seconds=span,
+                           counts={"/feed/timeline/": 1}), root=self.root)
+        capture = self.root / "c.log"
+        capture.write_text(
+            line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="08-08 17:00:00.000 1 1")
+            + line("/feed/timeline/", stamp="08-08 17:06:01.000 1 1"),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main([
+                "--root", str(self.root), "record", "--version", "441",
+                "--build-sha256", BUILD, "--recorded-at", "2026-08-09T10:00:00Z",
+                "--session-id", "late", "--surface", "feed_tab",
+                "--walk", "one-pass",
+                "--watched", "/feed/timeline/", "--capture", str(capture),
+            ])
+        self.assertEqual(0, code)
+        self.assertIn("WALK DISPUTED", out.getvalue())
+        # Recorded anyway: this store never refuses an honest measurement for
+        # disagreeing with its neighbours, it says which of them to look at.
+        self.assertEqual(6, len(read("441", self.root)))
+
+    def test_the_control_for_the_record_time_dispute(self) -> None:
+        """A session that agrees with its siblings must record silently, or the
+        line above is printed over every capture and means nothing."""
+
+        for index, span in enumerate((120, 121, 122, 123, 124)):
+            append(session(f"s{index}", walk="one-pass", span_seconds=span,
+                           counts={"/feed/timeline/": 1}), root=self.root)
+        capture = self.root / "c.log"
+        capture.write_text(
+            line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="08-08 17:00:00.000 1 1")
+            + line("/feed/timeline/", stamp="08-08 17:02:00.000 1 1"),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main([
+                "--root", str(self.root), "record", "--version", "441",
+                "--build-sha256", BUILD, "--recorded-at", "2026-08-09T10:00:00Z",
+                "--session-id", "late", "--surface", "feed_tab",
+                "--walk", "one-pass",
+                "--watched", "/feed/timeline/", "--capture", str(capture),
+            ])
+        self.assertEqual(0, code)
+        self.assertNotIn("WALK DISPUTED", out.getvalue())
+
+
+
+class CaptureSpanTests(unittest.TestCase):
+    """How long the capture ran — the only evidence a typed walk can be wrong.
+
+    Measured over the lines the parser **read**, which is not a detail:
+    `tools/redact_capture.py` commits a reduction of every capture and its whole
+    guarantee is that `parse` answers identically for the reduction and the
+    original. A span taken over lines the redaction is free to drop would break
+    that for all twenty-four at once.
+    """
+
+    def test_the_span_is_the_time_between_the_first_and_last_line_read(self) -> None:
+        capture = (
+            line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="08-08 17:31:02.412 1 1")
+            + line("/feed/timeline/", stamp="08-08 17:31:02.412 1 1")
+            + line("/feed/timeline/", stamp="08-08 17:33:14.900 1 1")
+        )
+        self.assertEqual(132, parse(capture).span_seconds)
+
+    def test_a_capture_with_no_timestamps_has_no_span_and_is_not_refused(self) -> None:
+        """The bare contract form, and a hand-made fixture. `None`, not `0`."""
+
+        capture = f"I {TAG}: {TOGGLE_DIRECTIVE} {ALL_OFF.text}\nI {TAG}: /feed/timeline/\n"
+        read_back = parse(capture)
+        self.assertIsNone(read_back.span_seconds)
+        self.assertEqual({"/feed/timeline/": 1}, dict(read_back.counts))
+
+    def test_one_timestamped_line_is_not_a_span(self) -> None:
+        self.assertIsNone(parse(header(ALL_OFF)).span_seconds)
+
+    def test_lines_landing_inside_one_second_measure_zero_not_absent(self) -> None:
+        """`0` is a measurement and `None` is not, in the field whose whole job is
+        to be compared against another one."""
+
+        self.assertEqual(0, parse(header(ALL_OFF) + line("/feed/timeline/")).span_seconds)
+
+    def test_lines_the_parser_ignores_do_not_move_the_span(self) -> None:
+        """The redaction invariant, asserted directly rather than trusted.
+
+        A real capture is 1.4 MB of the phone's whole log and the committed form
+        keeps only what `parse` reads. If an unrelated line an hour later could
+        stretch the span, every committed capture would parse differently from the
+        original it was reduced from, and `redact_capture --verify` would refuse
+        all of them.
+        """
+        core = (
+            line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="08-08 17:31:02.412 1 1")
+            + line("/feed/timeline/", stamp="08-08 17:31:12.412 1 1")
+        )
+        noisy = (
+            "08-08 09:00:00.000 1 1 I SomeOtherTag: cold start\n"
+            + core
+            + "08-08 23:59:00.000 1 1 E IgFunctionalErrorEvent: something else\n"
+        )
+        self.assertEqual(parse(core), parse(noisy))
+        self.assertEqual(10, parse(noisy).span_seconds)
+
+    def test_out_of_order_lines_never_produce_a_negative_span(self) -> None:
+        """logcat interleaves buffers, so two lines can arrive milliseconds out of
+        order. A subtraction that could come out negative is one somebody would
+        have to interpret."""
+
+        capture = (
+            line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="08-08 17:31:10.000 1 1")
+            + line("/feed/timeline/", stamp="08-08 17:31:04.000 1 1")
+            + line("/feed/timeline/", stamp="08-08 17:31:09.000 1 1")
+        )
+        self.assertEqual(6, parse(capture).span_seconds)
+
+    def test_a_span_across_a_month_boundary_is_measured(self) -> None:
+        """A logcat stamp carries no year but it does carry the month, and a walk
+        that starts on the 31st is not a walk that took a month."""
+
+        capture = (
+            line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="08-31 23:59:00.000 1 1")
+            + line("/feed/timeline/", stamp="09-01 00:01:00.000 1 1")
+        )
+        self.assertEqual(120, parse(capture).span_seconds)
+
+    def test_a_stamp_inside_a_message_body_is_not_the_line_s_timestamp(self) -> None:
+        """The re-narration failure, arriving at a third field.
+
+        `_OBSERVE_LINE` and `_BLOCK_HEADER` each anchor on tag *position* because a
+        line that merely contains their text is another component talking about
+        DFInsta. A timestamp read by search rather than from the start of the line
+        has the same hole: a watched literal that looks like a logcat stamp would
+        become the time the line was written, and two of them would manufacture a
+        span out of the app's own payload.
+        """
+        capture = (
+            f"I {TAG}: {TOGGLE_DIRECTIVE} {ALL_OFF.text}\n"
+            f"I {TAG}: 08-08 17:00:00.000 /x\n"
+            f"I {TAG}: 08-08 17:05:00.000 /x\n"
+        )
+        self.assertIsNone(parse(capture).span_seconds)
+        # And the lines were read: the span is absent because no line *started*
+        # with a stamp, not because nothing was parsed.
+        self.assertEqual(
+            {"08-08 17:00:00.000 /x": 1, "08-08 17:05:00.000 /x": 1},
+            dict(parse(capture).counts),
+        )
+
+    def test_an_impossible_month_is_ignored_rather_than_crashing(self) -> None:
+        """A refusal channel that leaks an IndexError is not a refusal channel.
+
+        The month indexes a table, so a corrupt stamp is the one input that can
+        turn `parse` into a traceback rather than an `ObservationError`. It is not
+        worth refusing over — the span is corroboration and not a term of the
+        contract — but it is worth not crashing over.
+        """
+        capture = (
+            line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="13-45 10:00:00.000 1 1")
+            + line("/feed/timeline/", stamp="99-99 10:00:09.000 1 1")
+        )
+        self.assertIsNone(parse(capture).span_seconds)
+        self.assertEqual({"/feed/timeline/": 1}, dict(parse(capture).counts))
+        # The control: the same two lines with legal months are measured, so this
+        # is the guard doing its job and not the parser failing to see them.
+        legal = (
+            line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="12-31 10:00:00.000 1 1")
+            + line("/feed/timeline/", stamp="12-31 10:00:09.000 1 1")
+        )
+        self.assertEqual(9, parse(legal).span_seconds)
+
+    def test_the_span_round_trips_and_null_is_refused(self) -> None:
+        row = session(span_seconds=116, counts={"/feed/timeline/": 1}).to_dict()
+        self.assertEqual(116, row["span_seconds"])
+        self.assertEqual(116, ObservationSession.from_dict(row).span_seconds)
+        self.assertNotIn("span_seconds", session(span_seconds=None).to_dict())
+        for bad in (None, "116", 1.5, True):
+            with self.subTest(value=bad):
+                with self.assertRaises(ObservationError):
+                    ObservationSession.from_dict({**row, "span_seconds": bad})
+        with self.assertRaises(ObservationError):
+            session(span_seconds=-1)
+
+    def test_recording_carries_the_span_from_the_capture(self) -> None:
+        """It is derived from the capture and never from a flag: there is
+        deliberately no `--span`, because unlike the walk this one is in the
+        evidence."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = root / "c.log"
+            capture.write_text(
+                line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="08-08 17:31:02.412 1 1")
+                + line("/feed/timeline/", stamp="08-08 17:33:02.412 1 1"),
+                encoding="utf-8",
+            )
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                code = main([
+                    "--root", str(root), "record", "--version", "441",
+                    "--build-sha256", BUILD, "--recorded-at", "2026-08-09T10:00:00Z",
+                    "--session-id", "s1", "--surface", "feed_tab", "--walk", WALK,
+                    "--watched", "/feed/timeline/", "--capture", str(capture),
+                ])
+            self.assertEqual(0, code)
+            self.assertEqual(120, read("441", root)[0].span_seconds)
+            self.assertIn("over 120s of capture", out.getvalue())
+
+
+class WalkDisputeTests(unittest.TestCase):
+    """The check that makes a typed walk worth something, and its own control.
+
+    The question has no constant in it: do the spans of the sessions claiming one
+    walk split into two groups further apart than either group is wide? So the
+    tests here move the *scale* and require the verdict not to move, which is the
+    same defence `grouping`'s noise-floor tests use — a threshold hiding in this
+    would answer differently at ten times the size.
+    """
+
+    def group(self, *spans: int | None, walk: str = "one-pass"):
+        return tuple(
+            session(f"s{index}", walk=walk, span_seconds=span,
+                    counts={"/feed/timeline/": 1})
+            for index, span in enumerate(spans)
+        )
+
+    def test_two_groups_further_apart_than_either_is_wide_are_a_dispute(self) -> None:
+        found = walk_dispute(self.group(116, 117, 118, 350, 351, 352))
+        self.assertIn("two groups", found)
+        self.assertIn("s0 116s", found)
+        self.assertIn("s3 350s", found)
+
+    def test_spans_that_merely_vary_are_not_a_dispute(self) -> None:
+        """The control. A rule that always disputed would pass the test above and
+        would refuse every honest corpus."""
+
+        self.assertEqual("", walk_dispute(self.group(109, 114, 116, 116, 117)))
+
+    def test_the_verdict_is_the_same_at_ten_times_the_scale(self) -> None:
+        """No constant. A `> 60` hidden anywhere in here would answer differently
+        for a walk that takes twenty minutes than for one that takes two."""
+
+        honest = (109, 112, 114, 116, 116, 117)
+        split = (116, 117, 118, 350, 351, 352)
+        for factor in (1, 10, 100):
+            with self.subTest(factor=factor):
+                self.assertEqual(
+                    "", walk_dispute(self.group(*(v * factor for v in honest)))
+                )
+                self.assertIn(
+                    "two groups",
+                    walk_dispute(self.group(*(v * factor for v in split))),
+                )
+
+    def test_a_minority_apart_from_the_rest_is_not_a_dispute(self) -> None:
+        """Three on each side, because a group of one or two has no range of its
+        own to be the scale. A walk with a slow session is an operator who took a
+        phone call, and a check that cried wolf on that would be turned off — this
+        one was measured doing exactly that on 66 of the 495 four-session subsets
+        of the committed 439 corpus before the minimum went from two to three."""
+
+        self.assertEqual("", walk_dispute(self.group(116, 116, 117, 118, 119, 350)))
+        self.assertEqual("", walk_dispute(self.group(116, 116, 117, 118, 349, 350)))
+
+    def test_too_few_sessions_cannot_fire_and_the_control_says_so(self) -> None:
+        """The positive control, as a value rather than as an intention.
+
+        A check that silently could not have fired is the failure this project
+        keeps repeating. And the control shares the minimum with the check itself
+        rather than keeping a second copy: two copies desynchronised would report
+        "fully evidenced" over a corpus the check structurally cannot read, which
+        is that same failure arriving through the thing meant to prevent it.
+        """
+        for count in range(2, 6):
+            with self.subTest(count=count):
+                rows = self.group(*([116] * (count - 1)), 350)
+                self.assertEqual("", walk_dispute(rows))
+                self.assertIn("could not have contradicted", walk_evidence(rows))
+        # And at the minimum it can fire, so the control must fall silent.
+        self.assertEqual("", walk_evidence(self.group(116, 117, 118, 119, 120, 121)))
+        self.assertIn("two groups",
+                      walk_dispute(self.group(116, 117, 118, 350, 351, 352)))
+
+    def test_a_session_with_no_span_is_outside_the_check_and_is_named(self) -> None:
+        """Named even when the rest are enough to run the check, or a report would
+        claim a check that covered one fewer session than the reader thinks."""
+
+        rows = self.group(116, 117, 118, 119, 120, 121, None)
+        self.assertEqual("", walk_dispute(rows))
+        self.assertIn("s6", walk_evidence(rows))
+        self.assertIn("outside the walk check", walk_evidence(rows))
+        # The control: with every session timed it must say nothing.
+        self.assertEqual("", walk_evidence(self.group(116, 117, 118, 119, 120, 121)))
+
+    def test_the_check_and_its_control_share_one_minimum(self) -> None:
+        """Asserted structurally, because the two copies of `4` this replaced went
+        out of step under mutation and the control reported "fully evidenced" over
+        a corpus that could not be read."""
+
+        for count in range(1, 10):
+            with self.subTest(count=count):
+                rows = self.group(*range(100, 100 + count))
+                could_fire = walk_evidence(rows) == ""
+                self.assertEqual(
+                    could_fire, count >= 6,
+                    "the control disagrees with the check about what is readable",
+                )
+
+    def test_the_committed_captures_agree_that_they_are_one_walk(self) -> None:
+        """The real evidence, and the control that matters most.
+
+        Every 439 and 440 capture in `manifest/captures/` was taken with the
+        one-pass protocol, on two different builds and under six different toggle
+        states each. Their request counts run 8 to 39 and their spans run 109s to
+        153s, so a rule that read the spans as two protocols would be measuring
+        the phone rather than the driving — and `grouping` would refuse a corpus
+        that is entirely sound.
+        """
+        spans = []
+        for version in ("439", "440"):
+            for row in read(version, REPOSITORY):
+                capture = REPOSITORY / "manifest" / "captures" / f"{row.session_id}.log"
+                span = parse(capture.read_text(encoding="utf-8")).span_seconds
+                self.assertIsNotNone(span, row.session_id)
+                spans.append(span)
+        self.assertEqual(24, len(spans))
+        self.assertEqual("", walk_dispute(self.group(*spans)))
+        # Each version on its own, too: `grouping` compares within one store.
+        self.assertEqual("", walk_dispute(self.group(*spans[:12])))
+        self.assertEqual("", walk_dispute(self.group(*spans[12:])))
+
+    def test_and_a_three_round_walk_filed_beside_them_is_caught(self) -> None:
+        """The positive twin. The test above passes just as happily for a rule
+        that never disputes anything, so the same real spans are given the corpus
+        the walk field exists for: twelve one-pass sessions and twelve three-round
+        ones, all claiming one walk.
+        """
+        spans = [
+            parse((REPOSITORY / "manifest" / "captures" / f"{row.session_id}.log")
+                  .read_text(encoding="utf-8")).span_seconds
+            for row in read("440", REPOSITORY)
+        ]
+        # Three rounds of a walk that takes about two minutes.
+        contaminated = self.group(*spans, *(span * 3 for span in spans))
+        self.assertIn("two groups", walk_dispute(contaminated))
+
+
+
+class WalkFieldShapeTests(unittest.TestCase):
+    """The coercions this field must not do, and the label absence wears.
+
+    `toggles` refuses a raw mapping, `blocks` refuses an int and `span_seconds`
+    refuses a float, each with a paragraph about a second spelling of one value.
+    The walk is the field `grouping` joins rows on, so it is the last one that may
+    quietly accept `123` and store `"123"`.
+    """
+
+    def test_a_walk_that_is_not_a_string_is_refused_rather_than_coerced(self) -> None:
+        for bad in (123, 1.5, 0, ("one-pass",), ["one-pass"]):
+            with self.subTest(walk=bad):
+                with self.assertRaises(ObservationError) as caught:
+                    session(walk=bad)
+                self.assertIn("as a string", str(caught.exception))
+
+    def test_a_hand_edited_numeric_walk_does_not_read_back_as_digits(self) -> None:
+        """The store's own reader must refuse what its writer would never make."""
+
+        row = session(walk="123", counts={"/feed/timeline/": 1}).to_dict()
+        with self.assertRaises(ObservationError):
+            ObservationSession.from_dict({**row, "walk": 123})
+
+    def test_the_label_for_an_unstated_walk_cannot_be_typed_as_one(self) -> None:
+        """`UNWALKED` is a label a report prints, never a value a row may hold.
+
+        Spelled with brackets exactly so that `_WALK` forbids it — the trick
+        `UNATTRIBUTED` already uses — because a session that named it would join
+        the group the reports use to mean "nobody said".
+        """
+        self.assertFalse(_WALK.fullmatch(UNWALKED))
+        with self.assertRaises(ObservationError):
+            session(walk=UNWALKED)
+
+    def test_a_report_spells_an_unstated_walk_with_the_label(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = store_path("441", root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(session("old", walk=None,
+                                   counts={"/feed/timeline/": 1}).to_dict(),
+                           sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            report = summary("441", root)
+            # The literal, on at least one side of every comparison. Reading
+            # `UNWALKED` on both sides compares the code against itself: emptying
+            # the constant satisfies all three, and two of them go vacuous into the
+            # bargain, because `assertIn("", anything)` is true.
+            self.assertEqual(["(no walk stated)"], report["states"][0]["walks"])
+            self.assertIn("(no walk stated)", render(report))
+            named = [item for item in report["warnings"] if "on walk(s)" in item]
+            self.assertEqual(1, len(named), report["warnings"])
+            self.assertIn("on walk(s) (no walk stated)", named[0])
+            # And the constant is what produced it, so the two cannot drift apart.
+            self.assertEqual("(no walk stated)", UNWALKED)
+
+
+class WalkReportingTests(RootedTestCase):
+    """What the two report forms say about walks, asserted on the strings.
+
+    Every one of these was found by an adversarial pass mutating the *prose* the
+    fields are placed into. A test that reads `report["walks"]` and then checks
+    `render` for the same substring is satisfied by the field alone, and the
+    sentence it was aimed at can be deleted underneath it.
+    """
+
+    def test_the_bound_is_stated_in_the_warning_and_not_only_in_the_field(
+        self,
+    ) -> None:
+        append(session("a", walk="one-pass", counts={"/feed/timeline/": 1}),
+               root=self.root)
+        append(session("b", walk="three-round", counts={"/feed/timeline/": 3}),
+               root=self.root)
+        bound = [item for item in summary("441", self.root)["warnings"]
+                 if "never-observed is bounded" in item]
+        self.assertEqual(1, len(bound))
+        self.assertIn("on walk(s) one-pass, three-round", bound[0])
+
+    def test_a_vacuous_session_does_not_advertise_a_walk_nobody_can_ask_about(
+        self,
+    ) -> None:
+        """`walks` is the discovery half of `grouping`'s required argument, so a
+        walk listed here has to be one that can be asked for. A vacuous session is
+        excluded from every answer, and offering its walk would send the reader to
+        a refusal."""
+
+        append(session("real", walk="one-pass", counts={"/feed/timeline/": 1}),
+               root=self.root)
+        append(session("empty", walk="three-round", counts={}), root=self.root)
+        self.assertEqual(["one-pass"], summary("441", self.root)["walks"])
+        self.assertEqual(("one-pass",), walks("441", self.root))
+
+    def test_the_report_says_when_a_walk_could_not_have_been_contradicted(
+        self,
+    ) -> None:
+        """The positive control, in the report that has no refusal to hang it on.
+
+        On this repository's committed stores it can never fire — not one row
+        carries a span — so a report that said nothing would be claiming a check
+        it never ran.
+        """
+        for index in range(3):
+            append(session(f"s{index}", walk="one-pass", span_seconds=120,
+                           counts={"/feed/timeline/": 1}), root=self.root)
+        inert = [item for item in summary("441", self.root)["warnings"]
+                 if "only partly evidenced" in item]
+        self.assertEqual(1, len(inert), summary("441", self.root)["warnings"])
+        self.assertIn("could not have contradicted", inert[0])
+
+    def test_and_it_falls_silent_once_the_check_can_fire(self) -> None:
+        """The control for the control: a caution printed over every corpus is not
+        a caution."""
+
+        for index in range(6):
+            append(session(f"s{index}", walk="one-pass", span_seconds=120 + index,
+                           counts={"/feed/timeline/": 1}), root=self.root)
+        self.assertEqual(
+            [], [item for item in summary("441", self.root)["warnings"]
+                 if "only partly evidenced" in item]
+        )
+
+    def test_the_record_time_dispute_is_asked_per_walk_and_not_over_the_pool(
+        self,
+    ) -> None:
+        """The same rule `summary` follows, and it is written in two places.
+
+        Pooling two walks and then asking whether the spans split finds the split
+        every time — so a session filed under the second walk, beside a first walk
+        that is nowhere near it, must record silently.
+        """
+        for index, span in enumerate((120, 121, 122)):
+            append(session(f"short{index}", walk="one-pass", span_seconds=span,
+                           counts={"/feed/timeline/": 1}), root=self.root)
+        for index, span in enumerate((360, 361)):
+            append(session(f"long{index}", walk="three-round", span_seconds=span,
+                           counts={"/feed/timeline/": 1}), root=self.root)
+        capture = self.root / "c.log"
+        capture.write_text(
+            line(f"{TOGGLE_DIRECTIVE} {ALL_OFF.text}", stamp="08-08 17:00:00.000 1 1")
+            + line("/feed/timeline/", stamp="08-08 17:06:02.000 1 1"),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main([
+                "--root", str(self.root), "record", "--version", "441",
+                "--build-sha256", BUILD, "--recorded-at", "2026-08-09T10:00:00Z",
+                "--session-id", "long2", "--surface", "feed_tab",
+                "--walk", "three-round",
+                "--watched", "/feed/timeline/", "--capture", str(capture),
+            ])
+        self.assertEqual(0, code)
+        self.assertNotIn("WALK DISPUTED", out.getvalue())
+
+
+class WalkDisputePrecisionTests(unittest.TestCase):
+    """It must not refuse the corpus this repository actually holds.
+
+    A check that cries wolf gets turned off — that is a recorded lesson here, from
+    a leak scan whose hex and IPv4 patterns flagged every fixture on legitimate
+    content. An adversarial pass measured this one doing the same thing: with two
+    sessions a side, **66 of the 495 four-session subsets of the committed 439
+    corpus were refused**, all of them one walk on one build, and among them the
+    smallest corpus that yields a finding at all.
+
+    So the property pinned here is not "it catches contamination" — that is next
+    door — but "it refuses nothing in the real evidence, at any size". It is
+    asserted over every subset rather than over the twelve, because the twelve
+    passing was true before the fix as well.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.spans = {
+            version: [
+                parse((REPOSITORY / "manifest" / "captures" / f"{row.session_id}.log")
+                      .read_text(encoding="utf-8")).span_seconds
+                for row in read(version, REPOSITORY)
+            ]
+            for version in ("439", "440")
+        }
+
+    def rows(self, spans):
+        return tuple(
+            session(f"s{index}", walk="one-pass", span_seconds=span,
+                    counts={"/feed/timeline/": 1})
+            for index, span in enumerate(spans)
+        )
+
+    def test_no_subset_of_either_committed_corpus_is_refused(self) -> None:
+        from itertools import combinations  # noqa: PLC0415
+
+        for version, spans in self.spans.items():
+            self.assertEqual(12, len(spans))
+            for size in range(2, 13):
+                refused = [
+                    subset for subset in combinations(spans, size)
+                    if walk_dispute(self.rows(subset))
+                ]
+                self.assertEqual(
+                    [], refused,
+                    f"{version}: {len(refused)} honest {size}-session subset(s) "
+                    "refused",
+                )
+
+    def test_the_smallest_corpus_that_yields_a_finding_is_not_refused(self) -> None:
+        """A baseline pair and one arm pair, drawn from the real spans that used to
+        break it: 153 and 122 for the all-off state, 141 and 122 for the adds arm.
+        The first walk of a new version is slow, and that is not a protocol."""
+
+        self.assertEqual("", walk_dispute(self.rows((153, 122, 141, 122))))
+
+    def test_it_still_catches_a_second_walk_from_three_sessions_onward(self) -> None:
+        """The positive twin, and the cost of the fix stated as a test.
+
+        Three sessions of the new walk are caught; two are not, and that is the
+        trade the minimum bought. It is the safe direction — the field carries the
+        residual either way, and a check an operator has learned to ignore carries
+        nothing.
+        """
+        base = self.spans["440"]
+        for new in (3, 4, 6, 12):
+            with self.subTest(new=new):
+                self.assertIn(
+                    "two groups",
+                    walk_dispute(self.rows([*base, *(s * 3 for s in base[:new])])),
+                )
+        self.assertEqual(
+            "", walk_dispute(self.rows([*base, *(s * 3 for s in base[:2])]))
+        )
+
+    def test_a_one_shot_iterator_is_refused_by_both_of_the_pair(self) -> None:
+        """The hazard is at the call site, so that is where it has to be refused.
+
+        These two are asked about the *same* sessions. Whichever reads a generator
+        first empties it, and the second then answers from nothing — `walk_evidence`
+        returning `""`, which is its way of saying "this could have fired and found
+        nothing", about a corpus it never saw. Materialising inside either function
+        does not help and reads as though it does: `tuple(sessions)` drains the
+        caller's generator exactly as iterating it would.
+
+        Asserted as the **observable**, not as the presence of a `tuple()`: one
+        iterator, used twice, and the second answer must not be a quiet "nothing is
+        wrong".
+        """
+        rows = self.rows((116, 117, 118, 350, 351, 352))
+
+        # The failure this prevents, demonstrated on a plain list first so the
+        # expected answers are on record.
+        self.assertIn("two groups", walk_dispute(rows))
+        self.assertEqual("", walk_evidence(rows))
+
+        for function in (walk_dispute, walk_evidence):
+            with self.subTest(function=function.__name__):
+                stream = (item for item in rows)
+                with self.assertRaises(ObservationError) as caught:
+                    function(stream)
+                self.assertIn("one-shot iterator", str(caught.exception))
+                self.assertIn(function.__name__, str(caught.exception))
+                # Refused before anything was read, so the caller still has its
+                # sessions and can hand them over as a list.
+                self.assertEqual(6, len(list(stream)))
+
+    def test_walk_evidence_reads_its_input_twice(self) -> None:
+        """Which is why the refusal above covers it too.
+
+        Its `timed` and `untimed` comprehensions are two passes. Over a drained
+        iterator `untimed` comes out empty, and a corpus holding sessions the check
+        cannot see reports itself as fully evidenced — the exact absence-as-a-pass
+        this function exists to prevent, arriving through the function.
+        """
+        rows = (*self.rows((116, 117, 118, 119, 120, 121)),
+                session("blind", walk="one-pass", counts={"/feed/timeline/": 1}))
+        found = walk_evidence(rows)
+        self.assertIn("blind", found)
+        self.assertIn("outside the walk check", found)
+        with self.assertRaises(ObservationError):
+            walk_evidence(item for item in rows)
 
 
 if __name__ == "__main__":

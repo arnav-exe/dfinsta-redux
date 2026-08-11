@@ -52,7 +52,9 @@ from dfinsta_pipeline.observation import (
     BlockCount,
     ObservationSession,
     ToggleState,
+    read,
     store_path,
+    walks,
 )
 
 REPOSITORY = Path(__file__).resolve().parent.parent
@@ -76,6 +78,12 @@ def state(*on: str) -> ToggleState:
 BASE = state()
 
 
+#: The walk every fixture here claims, and the one `verdicts()` asks for. A
+#: comparison names the protocol it rests on, so every test in this file is a
+#: comparison within one walk unless it says otherwise.
+WALK = "one-pass-three-surfaces"
+
+
 def row(
     session_id: str,
     *,
@@ -87,6 +95,8 @@ def row(
     at: str = "2026-08-10T19:00:00+00:00",
     version: str = "439",
     surface: str = "feed_explore_reels",
+    walk: str | None = WALK,
+    span_seconds: int | None = None,
 ) -> dict:
     return ObservationSession(
         schema_version=SCHEMA_VERSION,
@@ -97,6 +107,8 @@ def row(
         surface=surface,
         watched=watched,
         toggles=toggles,
+        walk=walk,
+        span_seconds=span_seconds,
         blocks=blocks,
         counts=dict(counts or {}),
     ).to_dict()
@@ -151,11 +163,11 @@ class RootedTestCase(unittest.TestCase):
     def verdicts(self, version: str = "439") -> dict[str, str]:
         return {
             item.endpoint: item.verdict
-            for item in classify(version, self.root).classifications
+            for item in classify(version, self.root, walk=WALK).classifications
         }
 
     def verdict_of(self, endpoint: str, version: str = "439"):
-        for item in classify(version, self.root).classifications:
+        for item in classify(version, self.root, walk=WALK).classifications:
             if item.endpoint == endpoint:
                 return item
         raise AssertionError(f"{endpoint} was not classified at all")
@@ -478,7 +490,7 @@ class BlockAttributionTests(RootedTestCase):
         rows = flat_corpus(**{"disable_adds-fwd": gone, "disable_adds-rev": gone})
         self.write(*rows)
         arm = next(
-            item for item in classify("439", self.root).arms if item.arm == "disable_adds"
+            item for item in classify("439", self.root, walk=WALK).arms if item.arm == "disable_adds"
         )
         self.assertEqual((0, 0), arm.block_totals)
         self.assertEqual((), grouping._attribute(arm, sorted(WATCHED)))
@@ -537,7 +549,7 @@ class BlockAttributionTests(RootedTestCase):
         self.assertEqual(
             ("/feed/reels_tray/", "/feed/timeline/"),
             grouping._attribute(
-                next(arm for arm in classify("439", self.root).arms
+                next(arm for arm in classify("439", self.root, walk=WALK).arms
                      if arm.arm == "disable_feed"),
                 sorted(verdicts),
             ),
@@ -643,7 +655,7 @@ class BlockAttributionTests(RootedTestCase):
         self.assertNotIn(BLOCKED, self.verdicts().values())
         warned = [
             item
-            for item in classify("439", self.root).warnings
+            for item in classify("439", self.root, walk=WALK).warnings
             if "with every toggle off" in item
         ]
         self.assertEqual(1, len(warned), warned)
@@ -751,7 +763,7 @@ class NeverRequestedTests(RootedTestCase):
         self.assertNotIn("/half/watched/", self.verdicts())
         warned = [
             item
-            for item in classify("439", self.root).warnings
+            for item in classify("439", self.root, walk=WALK).warnings
             if "/half/watched/" in item
         ]
         self.assertEqual(1, len(warned), warned)
@@ -796,7 +808,7 @@ class DeclaredTests(RootedTestCase):
         self.assertEqual(UNAFFECTED, found.verdict, "measurement still answers")
         self.assertTrue(
             any("declared under today" in item
-                for item in classify("439", self.root).warnings)
+                for item in classify("439", self.root, walk=WALK).warnings)
         )
 
     def test_a_path_no_rule_matches_is_declared_by_nothing_not_unknown(self) -> None:
@@ -810,7 +822,7 @@ class RefusalTests(RootedTestCase):
     def refusal(self, *rows: dict) -> str:
         self.write(*rows)
         with self.assertRaises(GroupingError) as caught:
-            classify("439", self.root)
+            classify("439", self.root, walk=WALK)
         return str(caught.exception)
 
     def test_no_sessions_at_all(self) -> None:
@@ -892,7 +904,7 @@ class RefusalTests(RootedTestCase):
         """The positive control. Six refusals that always fire check nothing."""
 
         self.write(*flat_corpus())
-        self.assertEqual(4, len(classify("439", self.root).classifications))
+        self.assertEqual(4, len(classify("439", self.root, walk=WALK).classifications))
 
 
 class ExcludedStateTests(RootedTestCase):
@@ -904,7 +916,7 @@ class ExcludedStateTests(RootedTestCase):
             row("both-rev", toggles=both, counts={"/feed/timeline/": 99}),
         ]
         self.write(*rows)
-        grouped = classify("439", self.root)
+        grouped = classify("439", self.root, walk=WALK)
         self.assertEqual(UNAFFECTED, self.verdicts()["/feed/timeline/"])
         warned = [item for item in grouped.warnings if "more than one toggle" in item]
         self.assertEqual(1, len(warned), grouped.warnings)
@@ -919,7 +931,7 @@ class ExcludedStateTests(RootedTestCase):
                 item["total"] = 0
             rows.append(item)
         self.write(*rows)
-        grouped = classify("439", self.root)
+        grouped = classify("439", self.root, walk=WALK)
         self.assertTrue(
             any("disable_adds-rev" in item and "observed nothing" in item
                 for item in grouped.warnings),
@@ -943,7 +955,7 @@ class ReportTests(RootedTestCase):
         """
 
         self.write(*with_blocks(flat_corpus(), **{"disable_explore-fwd": 2}))
-        report = summary("439", self.root)
+        report = summary("439", self.root, walk=WALK)
         page = render(report)
         self.assertTrue(report["warnings"])
 
@@ -976,7 +988,7 @@ class ReportTests(RootedTestCase):
                 item.pop("blocks")
             rows.append(item)
         self.write(*rows)
-        report = summary("439", self.root)
+        report = summary("439", self.root, walk=WALK)
         self.assertEqual(
             {"disable_feed": "its blocks were never counted"},
             report["unreadable_toggles"],
@@ -987,7 +999,7 @@ class ReportTests(RootedTestCase):
 
     def test_a_refusal_reaches_both_forms_and_exits_two(self) -> None:
         self.write()
-        report = summary("439", self.root)
+        report = summary("439", self.root, walk=WALK)
         self.assertIn("holds no session", report["unanswerable_reason"])
         self.assertIn(report["unanswerable_reason"], report["warnings"])
         self.assertIn("NOTHING CAN BE DERIVED", render(report))
@@ -995,7 +1007,7 @@ class ReportTests(RootedTestCase):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = main(["--root", str(self.root), "report", "--version", "439",
-                         "--json"])
+                         "--walk", WALK, "--json"])
         self.assertEqual(2, code)
         self.assertIn("holds no session", json.loads(out.getvalue())["unanswerable_reason"])
 
@@ -1005,7 +1017,7 @@ class ReportTests(RootedTestCase):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 code = main(["--root", str(self.root), "report", "--version", "439",
-                             *extra])
+                             "--walk", WALK, *extra])
             self.assertEqual(0, code)
             self.assertIn("/feed/timeline/", out.getvalue())
 
@@ -1013,13 +1025,14 @@ class ReportTests(RootedTestCase):
         """`GroupingError`, not a leaked `ObservationError` and not a traceback."""
 
         with self.assertRaises(GroupingError) as caught:
-            classify("banana", self.root)
+            classify("banana", self.root, walk=WALK)
         self.assertIn("banana", str(caught.exception))
         self.assertNotIsInstance(caught.exception, ObservationError)
 
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(["--root", str(self.root), "report", "--version", "banana"])
+            code = main(["--root", str(self.root), "report", "--version", "banana",
+                         "--walk", WALK])
         self.assertEqual(2, code)
         self.assertIn("banana", err.getvalue() + out.getvalue())
 
@@ -1033,9 +1046,9 @@ class ReportTests(RootedTestCase):
             store_path("439", self.root).read_text(encoding="utf-8"), encoding="utf-8"
         )
         store_path("439", self.root).unlink()
-        self.assertIn("holds no session", summary("439", self.root)["unanswerable_reason"])
+        self.assertIn("holds no session", summary("439", self.root, walk=WALK)["unanswerable_reason"])
         self.assertEqual(
-            "", summary("439", self.root, path=elsewhere)["unanswerable_reason"]
+            "", summary("439", self.root, walk=WALK, path=elsewhere)["unanswerable_reason"]
         )
 
     def test_the_page_states_what_each_toggle_governs(self) -> None:
@@ -1043,7 +1056,7 @@ class ReportTests(RootedTestCase):
         rows = flat_corpus(**{"disable_feed-fwd": arm, "disable_feed-rev": arm})
         self.write(*with_blocks(rows, **{"disable_feed-fwd": 20,
                                          "disable_feed-rev": 20}))
-        report = summary("439", self.root)
+        report = summary("439", self.root, walk=WALK)
         self.assertEqual(["/feed/timeline/"], report["by_toggle"]["disable_feed"])
         self.assertEqual([], report["by_toggle"]["disable_adds"])
         self.assertIn("nothing observable", render(report))
@@ -1052,7 +1065,7 @@ class ReportTests(RootedTestCase):
         """Two different facts; the report must not say one in the words of the other."""
 
         self.write(*with_blocks(flat_corpus(), **{"disable_explore-fwd": 2}))
-        report = summary("439", self.root)
+        report = summary("439", self.root, walk=WALK)
         self.assertEqual(
             {"disable_explore": "its two sessions report blocks 2, 0 and disagree"},
             report["unreadable_toggles"],
@@ -1063,8 +1076,332 @@ class ReportTests(RootedTestCase):
         self.assertNotIn("disable_explore", idle[0])
 
 
+class WalkScopeTests(RootedTestCase):
+    """A comparison names the protocol it rests on, or it is not a comparison.
+
+    The defect this class is about is not hypothetical and is not subtle once it
+    is written down: the noise floor is "the largest difference two runs of one
+    state produced", and that sentence is only true while the two runs did the
+    same thing. `test_pooling_two_walks_swallows_a_real_erasure` is the harm,
+    demonstrated on a corpus where the effect is unmissable; everything else here
+    is the machinery that stops it.
+    """
+
+    #: A path the arm erases outright, under both walks, so the verdict cannot
+    #: come from anything but the pooling.
+    ERASED_PATH = "/clips/discover"
+
+    def two_walks(self) -> tuple[dict, ...]:
+        """The same experiment run under two protocols, with its own spans.
+
+        One pass sees `/clips/discover` four times with everything off; three
+        rounds sees it twelve. `disable_reels` erases it in both. Nothing about
+        the *effect* differs between the walks — only the scale of the counts,
+        which is exactly what a walk changes and a toggle does not.
+        """
+
+        rows: list[dict] = []
+        for walk, seen, span in (("one-pass", 4, 120), ("three-round", 12, 360)):
+            for order in ("fwd", "rev"):
+                rows.append(row(
+                    f"{walk}-base-{order}",
+                    toggles=BASE,
+                    walk=walk,
+                    span_seconds=span,
+                    counts={"/feed/timeline/": seen, self.ERASED_PATH: seen},
+                ))
+                rows.append(row(
+                    f"{walk}-reels-{order}",
+                    toggles=state("disable_reels"),
+                    walk=walk,
+                    span_seconds=span,
+                    counts={"/feed/timeline/": seen},
+                ))
+        return tuple(rows)
+
+    def test_each_walk_answers_on_its_own(self) -> None:
+        self.write(*self.two_walks())
+        for walk in ("one-pass", "three-round"):
+            with self.subTest(walk=walk):
+                found = next(
+                    item
+                    for item in classify("439", self.root, walk=walk).classifications
+                    if item.endpoint == self.ERASED_PATH
+                )
+                self.assertEqual(ERASED, found.verdict)
+                self.assertEqual("disable_reels", found.toggle)
+
+    def test_pooling_two_walks_swallows_a_real_erasure(self) -> None:
+        """The harm, demonstrated rather than described.
+
+        Every row above, relabelled to one walk and with the spans taken away so
+        that nothing can contradict the label. The baseline now reads 4, 4, 12, 12
+        — a spread of 8 that no toggle caused — the floor becomes 8, and a fall of
+        4 to zero in every session of the arm no longer clears it. The erasure is
+        reported as `unaffected`: not refused, not caveated, but positively stated
+        to be nothing.
+        """
+        self.write(*(
+            {**{k: v for k, v in item.items() if k != "span_seconds"},
+             "walk": "one-pass"}
+            for item in self.two_walks()
+        ))
+        found = next(
+            item
+            for item in classify("439", self.root, walk="one-pass").classifications
+            if item.endpoint == self.ERASED_PATH
+        )
+        self.assertEqual(UNAFFECTED, found.verdict)
+        self.assertEqual(8, found.noise_floor)
+
+    def test_and_the_spans_catch_it_when_the_label_is_wrong(self) -> None:
+        """The same pooled corpus with its real spans left in. `classify` refuses
+        rather than deriving a floor across two protocols, because a floor that is
+        wrong in this direction looks exactly like an answer."""
+
+        self.write(*({**item, "walk": "one-pass"} for item in self.two_walks()))
+        with self.assertRaises(GroupingError) as caught:
+            classify("439", self.root, walk="one-pass")
+        message = str(caught.exception)
+        self.assertIn("do not agree that they ran it", message)
+        self.assertIn("two groups", message)
+
+    def test_sessions_on_another_walk_are_excluded_and_named(self) -> None:
+        """Excluded, not dropped. They are not worse evidence, they are evidence
+        about a different protocol."""
+
+        self.write(*self.two_walks())
+        grouped = classify("439", self.root, walk="one-pass")
+        self.assertEqual(
+            {"one-pass-base-fwd", "one-pass-base-rev", "one-pass-reels-fwd",
+             "one-pass-reels-rev"},
+            {item.session_id
+             for state_ in (grouped.baseline, *grouped.arms)
+             for item in state_.sessions},
+        )
+        named = [item for item in grouped.warnings if "another walk" in item]
+        self.assertEqual(1, len(named), grouped.warnings)
+        self.assertIn("three-round-base-fwd", named[0])
+        self.assertNotIn("one-pass-base-fwd", named[0])
+
+    def test_the_control_for_that_warning(self) -> None:
+        """Absent when the store holds one walk, or it is saying nothing."""
+
+        self.write(*flat_corpus())
+        self.assertEqual(
+            [], [i for i in classify("439", self.root, walk=WALK).warnings
+                 if "another walk" in i]
+        )
+
+    def test_a_walk_nobody_recorded_refuses_and_lists_the_ones_that_exist(self) -> None:
+        """It can only select, so naming the wrong one refuses instead of
+        answering — which is what stops a required argument being the
+        operator-supplies-the-answer shape."""
+
+        self.write(*self.two_walks())
+        with self.assertRaises(GroupingError) as caught:
+            classify("439", self.root, walk="two-round")
+        message = str(caught.exception)
+        self.assertIn("'two-round'", message)
+        self.assertIn("one-pass", message)
+        self.assertIn("three-round", message)
+
+    def test_an_empty_walk_is_refused_through_the_one_channel(self) -> None:
+        self.write(*flat_corpus())
+        for bad in ("", "   ", None, 7):
+            with self.subTest(walk=bad):
+                with self.assertRaises(GroupingError) as caught:
+                    classify("439", self.root, walk=bad)
+                self.assertIn("driving protocol", str(caught.exception))
+                self.assertNotIsInstance(caught.exception, ObservationError)
+
+    def test_sessions_naming_no_walk_refuse_and_say_how_to_repair_them(self) -> None:
+        """The twenty-four committed rows' shape. Not deleted and not back-filled:
+        a capture states which blocks were active and how long it ran, and never
+        which script drove it, so the only repair is the person who ran them
+        saying so — from the committed captures, which reproduce every count."""
+
+        self.write(*(
+            {k: v for k, v in item.items() if k != "walk"} for item in flat_corpus()
+        ))
+        with self.assertRaises(GroupingError) as caught:
+            classify("439", self.root, walk=WALK)
+        message = str(caught.exception)
+        self.assertIn("name no walk", message)
+        self.assertIn("base-fwd", message)
+        self.assertIn("manifest/captures/", message)
+        self.assertIn("--walk", message)
+
+    def test_a_store_mixing_stated_and_unstated_rows_still_answers(self) -> None:
+        """The unstated rows are excluded by the selector and named; they do not
+        poison the walks that *are* stated. That is the difference from an
+        unstated toggle state, which refuses the whole corpus — toggles are the
+        axis this compares along, and a session belonging to no state cannot be
+        placed in the experiment at all."""
+
+        rows = [{k: v for k, v in item.items() if k != "walk"} for item in flat_corpus()]
+        rows += [
+            row("late-base-fwd", toggles=BASE, at="2026-08-12T09:00:00+00:00",
+                counts={"/feed/timeline/": 6, "/feed/reels_tray/": 3,
+                        "/clips/discover": 4}),
+            row("late-base-rev", toggles=BASE, at="2026-08-12T09:30:00+00:00",
+                counts={"/feed/timeline/": 6, "/feed/reels_tray/": 3,
+                        "/clips/discover": 4}),
+            row("late-reels-fwd", toggles=state("disable_reels"),
+                at="2026-08-12T10:00:00+00:00",
+                counts={"/feed/timeline/": 6, "/feed/reels_tray/": 3}),
+            row("late-reels-rev", toggles=state("disable_reels"),
+                at="2026-08-12T10:30:00+00:00",
+                counts={"/feed/timeline/": 6, "/feed/reels_tray/": 3}),
+        ]
+        self.write(*rows)
+        grouped = classify("439", self.root, walk=WALK)
+        self.assertEqual(
+            {"late-base-fwd", "late-base-rev", "late-reels-fwd", "late-reels-rev"},
+            {item.session_id
+             for state_ in (grouped.baseline, *grouped.arms)
+             for item in state_.sessions},
+        )
+        named = [item for item in grouped.warnings if "name no walk" in item]
+        self.assertEqual(1, len(named), grouped.warnings)
+        self.assertIn("base-fwd", named[0])
+
+    def test_the_answer_carries_the_walk_it_is_about_in_both_forms(self) -> None:
+        """A page that does not say which protocol it rests on is a page whose
+        first sentence is missing."""
+
+        self.write(*flat_corpus())
+        report = summary("439", self.root, walk=WALK)
+        self.assertEqual(WALK, report["walk"])
+        self.assertIn(f"walk {WALK}", render(report))
+        bounded = [item for item in report["warnings"] if f"bounded by the walk ({WALK})" in item]
+        self.assertEqual(1, len(bounded), report["warnings"])
+
+    def test_a_refusal_still_says_which_walk_was_asked_for(self) -> None:
+        self.write()
+        report = summary("439", self.root, walk="three-round")
+        self.assertEqual("three-round", report["walk"])
+        self.assertIn("walk three-round", render(report))
+
+    def test_the_walk_check_says_when_it_could_not_have_fired(self) -> None:
+        """The positive control, carried into the report.
+
+        The ordinary fixtures here have no capture spans at all, so nothing could
+        have contradicted their walk. A page that did not say so would be claiming
+        a check it never ran.
+        """
+        self.write(*flat_corpus())
+        inert = [item for item in classify("439", self.root, walk=WALK).warnings
+                 if "only partly evidenced" in item]
+        self.assertEqual(1, len(inert))
+        self.assertIn("could not have contradicted", inert[0])
+
+    def test_and_it_is_silent_when_every_session_is_evidenced(self) -> None:
+        """The control for the control. A warning that is always printed is not a
+        warning."""
+
+        self.write(*(
+            {**item, "span_seconds": 120 + index % 3}
+            for index, item in enumerate(flat_corpus())
+        ))
+        self.assertEqual(
+            [], [item for item in classify("439", self.root, walk=WALK).warnings
+                 if "only partly evidenced" in item]
+        )
+
+    def test_the_report_prints_each_state_s_spans(self) -> None:
+        """Printed rather than judged: two numbers from one state are a reader's
+        own check that these really were two runs of one thing."""
+
+        self.write(*(
+            {**item, "span_seconds": 120} for item in flat_corpus()
+        ))
+        page = render(summary("439", self.root, walk=WALK))
+        self.assertIn("spans 120s, 120s", page)
+
+    def test_an_unmeasured_span_is_not_printed_as_zero(self) -> None:
+        self.write(*flat_corpus())
+        self.assertIn("spans unmeasured, unmeasured",
+                      render(summary("439", self.root, walk=WALK)))
+
+    def test_partition_refuses_sessions_naming_two_walks(self) -> None:
+        """The route round the whole change, closed where the information still
+        exists.
+
+        `classify` selects by walk before it calls `partition`, so this can never
+        fire from there — but both `partition` and `noise_floors` are exported, and
+        `noise_floors(partition(read(version, root)), endpoints)` is one line with
+        no argument anybody could get wrong. A rule enforced only at a module's
+        front door is a rule its own exports walk around.
+        """
+        rows = [ObservationSession.from_dict(item) for item in self.two_walks()]
+        with self.assertRaises(GroupingError) as caught:
+            partition(rows)
+        message = str(caught.exception)
+        self.assertIn("'one-pass'", message)
+        self.assertIn("'three-round'", message)
+        self.assertIn("noise floor", message)
+        # An unstated walk is a third value and not a wildcard.
+        with self.assertRaises(GroupingError) as caught:
+            partition([rows[0], replace(rows[1], walk=None)])
+        self.assertIn("no walk", str(caught.exception))
+
+    def test_partition_still_groups_one_walk(self) -> None:
+        """The control: a rule that refused every input would pass the test above
+        and would take `classify` with it."""
+
+        rows = [
+            ObservationSession.from_dict(item)
+            for item in self.two_walks() if item["walk"] == "one-pass"
+        ]
+        self.assertEqual(2, len(partition(rows)))
+        self.assertEqual((), partition([]))
+
+    def test_the_floor_that_pooling_would_have_produced(self) -> None:
+        """What the export used to hand back, pinned so the size of it is on record.
+
+        Same twelve sessions, one walk selected against all of them pooled. This is
+        the number the whole change is about: nobody chose it, it looks derived,
+        and it is four to sixteen times too big.
+        """
+        rows = [ObservationSession.from_dict(item) for item in self.two_walks()]
+        one_walk = noise_floors(
+            partition([item for item in rows if item.walk == "one-pass"]),
+            ["/feed/timeline/", self.ERASED_PATH],
+        )
+        self.assertEqual({"/feed/timeline/": 0, self.ERASED_PATH: 0}, one_walk)
+        pooled = noise_floors(
+            partition([replace(item, walk="one-pass") for item in rows]),
+            ["/feed/timeline/", self.ERASED_PATH],
+        )
+        self.assertEqual({"/feed/timeline/": 8, self.ERASED_PATH: 8}, pooled)
+
+    def test_the_walk_argument_has_no_default(self) -> None:
+        """Required at the call site and not merely refused at runtime.
+
+        A default of `""` still refuses when it is reached, so every behavioural
+        test passes with one added — and every existing caller silently stops
+        naming the experiment it is asking about.
+        """
+        import inspect  # noqa: PLC0415
+
+        for function in (classify, summary):
+            with self.subTest(function=function.__name__):
+                parameter = inspect.signature(function).parameters["walk"]
+                self.assertIs(inspect.Parameter.empty, parameter.default)
+                self.assertIs(inspect.Parameter.KEYWORD_ONLY, parameter.kind)
+
+    def test_the_command_line_will_not_report_without_a_walk(self) -> None:
+        self.write(*flat_corpus())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            main(["--root", str(self.root), "report", "--version", "439"])
+        self.assertEqual(2, caught.exception.code)
+        self.assertIn("--walk", err.getvalue())
+
+
 class CommittedCorpusTests(unittest.TestCase):
-    """The real 439 store, read and never written.
+    """The real 439 counts, read from the committed store and never written to.
 
     Twelve sessions over six states, each measured twice — once with the arms run
     forward and once back-to-front — and every row re-derived from the redacted
@@ -1076,10 +1413,73 @@ class CommittedCorpusTests(unittest.TestCase):
     from the captures changed exactly one field and made the blocked half readable.
     What is pinned now is the answer itself, endpoint by endpoint, because that is
     what a human would act on.
+
+    **And the committed rows now name no walk**, because none existed when they
+    were recorded. `classify` refuses them by name — `test_the_committed_store_is
+    _refused_until_somebody_says_what_was_walked` is that refusal, asserted rather
+    than worked around — so the answer below is pinned over the same counts with a
+    walk **supplied by this test**. That is a fixture transformation and not a
+    back-fill: nothing is written into `manifest/`, and the name here is a label
+    for the comparison rather than a claim about which script the owner ran. The
+    real rows get a real walk when the person who walked them re-records them from
+    `manifest/captures/`, which is the one thing a capture cannot supply.
     """
 
+    #: A label for the comparison below, not a claim about the corpus. Deliberately
+    #: not a plausible protocol name: reading it as the answer to "what was walked?"
+    #: has to be visibly wrong.
+    LABEL = "relabelled-by-this-test"
+
+    @classmethod
+    def relabelled(cls, root: Path) -> Path:
+        """The committed 439 rows, in a temporary store, all naming one walk."""
+
+        rows = read("439", REPOSITORY)
+        path = store_path("439", root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "".join(
+                json.dumps(replace(item, walk=cls.LABEL).to_dict(), sort_keys=True)
+                + "\n"
+                for item in rows
+            ),
+            encoding="utf-8",
+        )
+        return path
+
     def setUp(self) -> None:
-        self.grouped = classify("439", REPOSITORY)
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name).resolve()
+        self.relabelled(self.root)
+        # The manifest is read for the "declared today" column only, and it is the
+        # repository's real one here because that is the thing being described.
+        (self.root / "manifest" / "hooks.json").write_bytes(
+            (REPOSITORY / "manifest" / "hooks.json").read_bytes()
+        )
+        self.grouped = classify("439", self.root, walk=self.LABEL)
+
+    def test_the_committed_store_is_refused_until_somebody_says_what_was_walked(
+        self,
+    ) -> None:
+        """The 24 rows' fate, asserted where a reader will find it.
+
+        Not deleted, not back-filled, and not quietly pooled into an "unstated"
+        bucket that answers in full — that last one would hand back exactly the
+        property naming the walk buys. They stay readable and are named, and the
+        refusal says the fix.
+        """
+
+        with self.assertRaises(GroupingError) as caught:
+            classify("439", REPOSITORY, walk=self.LABEL)
+        message = str(caught.exception)
+        self.assertIn("name no walk", message)
+        self.assertIn("439-isolate-feed", message)
+        self.assertIn("manifest/captures/", message)
+        # And the rows themselves are untouched and still readable: refusing a
+        # comparison is not the same as refusing to read.
+        self.assertEqual(12, len(read("439", REPOSITORY)))
+        self.assertEqual((), walks("439", REPOSITORY))
 
     def test_the_corpus_is_still_twelve_sessions_over_six_states(self) -> None:
         self.assertEqual(2, len(self.grouped.baseline.sessions))
@@ -1198,8 +1598,12 @@ class CommittedCorpusTests(unittest.TestCase):
         """The 36-fabricated-rows defence, asserted rather than intended."""
 
         before = (REPOSITORY / "manifest" / "observations" / "439.jsonl").read_bytes()
-        classify("439", REPOSITORY)
-        summary("439", REPOSITORY)
+        with contextlib.suppress(GroupingError):
+            classify("439", REPOSITORY, walk=self.LABEL)
+        summary("439", REPOSITORY, walk=self.LABEL)
+        # And the relabelling this class does for its own fixtures reads the real
+        # store too, which is the operation most likely to grow a write by accident.
+        self.relabelled(self.root)
         self.assertEqual(
             before, (REPOSITORY / "manifest" / "observations" / "439.jsonl").read_bytes()
         )

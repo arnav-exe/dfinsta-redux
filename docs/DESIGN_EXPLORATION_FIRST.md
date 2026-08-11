@@ -302,9 +302,9 @@ you paying for builds on candidates that were never going to fire.
 `src/dfinsta_pipeline/grouping.py` takes the baseline and the one-toggle-on arms
 out of `manifest/observations/<version>.jsonl` and derives, per watched path,
 `erased by T` / `blocked by T` / `unaffected` / `never_requested`, refusing with a
-reason where the corpus cannot decide. `grouping report --version 439 [--json]`
-prints it. It is a **view** — recomputed every time, stored nowhere, and acting on
-it is still a human editing `url_block_rules`.
+reason where the corpus cannot decide. `grouping report --version 439 --walk <name>
+[--json]` prints it. It is a **view** — recomputed every time, stored nowhere, and
+acting on it is still a human editing `url_block_rules`.
 
 Two things it needed that were not here before. `observation.parse` now also
 counts the `java.io.IOException: Blocked by DFInsta setting` headers, because a
@@ -313,6 +313,28 @@ path block does not lower a request count — `/feed/reels_tray/` goes 2 → 3 u
 the request log alone cannot see a block at all. And the noise floor is derived
 from the corpus's own within-state spread rather than declared, which is only
 possible because every state was walked twice.
+
+**And a third, which the walk change forced.** "The same experiment, run again" is
+doing all the work in that last sentence. On 2026-08-11 the driving script went
+from one pass over three surfaces to three rounds and the 440 baseline went from
+11–16 observed requests to 25 — so two sessions of one state, walked differently,
+spread by 14 for a reason no toggle caused, and a floor derived from that spread
+swallows every real effect underneath it. A session therefore names its `walk`,
+and `grouping.classify` takes it as a **required argument** rather than pooling
+and refusing later. `observation.never_observed` deliberately does *not* partition
+by walk: it makes a negative claim, and pooling a second walk into one can only
+give a path more chances to be seen.
+
+The walk is the one field an operator types — it is a property of the driving
+script, and nothing on the phone or in a capture names it — so the docstring says
+so instead of implying the guarantee `toggles` has. What a capture does carry is
+logcat's timestamps, and `parse` now measures the **span** from them.
+`observation.walk_dispute` refuses a walk whose sessions' spans split into two
+groups further apart than either group is wide, with no constant in it: across the
+24 committed sessions, over two builds and six toggle states each, request counts
+run 8–39 while spans run 109–153s. A walk is a script with sleeps in it; the
+counts are the app's answer. That does not let the value be derived, but it lets a
+wrong one be caught, which is the part worth having.
 
 What it says about the **439 captures** is worth recording here, because one of it
 disagrees with what a human took from the same numbers by hand. Read the caveat
@@ -336,11 +358,18 @@ block counts are not in any committed file and come from re-reading
   running orders, so the arm answers nothing — see the note below about these
   events being Instagram's to emit.
 
-Those verdicts require the sessions to carry block counts. The twelve rows
-committed on 2026-08-10 predate the counter, so `grouping report` over the
-repository as it stands returns the two erasures and the ten never-requested and
-**refuses the blocked half by name**. Re-recording the twelve captures reproduces
-every existing field exactly and adds the counts.
+Those verdicts require the sessions to carry block counts. The twelve rows first
+committed on 2026-08-10 predated the counter and were re-derived from
+`manifest/captures/` on the same day, which changed exactly one field.
+
+**They now predate the walk, and `grouping report` refuses all 24 by name.** That
+is deliberate: unlike the toggle state and the block count, the walk is not in a
+capture, so nothing can re-derive it and nobody but the person who ran them may
+supply it. The repair is not a re-walk — the captures are committed, and
+`observation record --capture manifest/captures/<session_id>.log --walk <name>`
+reproduces every count, block and toggle identically while adding the walk and the
+measured span. Until that happens the verdicts above stand as a record of what was
+derived, not as something a clone can reproduce today.
 
 **`IgFunctionalErrorEvent` is weaker than this document said.** The section above
 calls it "good at attributing a block to a feature category", validated on two

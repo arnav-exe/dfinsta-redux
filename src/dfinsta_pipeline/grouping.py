@@ -1,6 +1,6 @@
 """Which endpoints belong to which toggle, derived from what the phone did.
 
-    python -m dfinsta_pipeline.grouping report --version 439 [--json]
+    python -m dfinsta_pipeline.grouping report --version 439 --walk three-round-v2 [--json]
 
 Step 6 of `docs/DESIGN_EXPLORATION_FIRST.md`: *endpoints that kill the same thing
 get grouped, and the group gets a toggle*. Until now the grouping came from
@@ -113,6 +113,45 @@ On 439 the floors come out 1, 1, 2, 2, 1, 3 for the six paths that were ever
 requested. Nobody chose any of them, and re-walking the app changes them.
 
 ===============================================================================
+  AND THAT IS EXACTLY WHY A COMPARISON MUST NAME ITS WALK
+===============================================================================
+
+*"The same experiment, run again"* is doing all the work in the paragraph above.
+It is true only if the two sessions did the same thing, and on 2026-08-11 the
+driving script went from one pass over three surfaces to **three rounds** over
+them: the 440 baseline went from 11–16 observed requests to 25. Two sessions of
+one state, one short-walk and one long-walk, spread by 14 for a reason no toggle
+caused — and this module would have taken that spread as its floor, called it
+noise, and then swallowed every real effect underneath it. A measured threshold
+is only better than a declared one while the thing it measures is what it claims
+to measure.
+
+So :func:`classify` takes the **walk as a required argument** and answers over the
+sessions recorded under exactly that one. A required argument rather than "group,
+and refuse when mixed", for the reason `observation.never_observed` states about
+toggle states: a call that answers today and refuses tomorrow because somebody
+filed a session on a new walk is indistinguishable, from the caller's side, from a
+corpus that broke. `observation.walks()` says which are on record.
+
+Two things this deliberately does *not* do. It does not pool the sessions that
+name no walk, and it does not offer a way to ask for them: those twenty-four rows
+predate the field, and a comparison over sessions whose protocol nobody wrote
+down is the thing the argument exists to prevent — a bucket named "unstated" that
+answered in full would hand back exactly the property naming the walk buys.
+`observation.summary` is the other way round and says why: a negative claim only
+gets safer as walks are pooled into it, a differential does not.
+
+And the walk is **typed**, which the toggle state is not, because nothing on the
+phone knows which script drove it. The check that makes a typed value worth
+something is `observation.walk_dispute`: the spans of the sessions claiming one
+walk must not split into two groups further apart than either group is wide. The
+scale in it is derived, exactly as the floor above is — the only number written
+down is how many sessions a group needs to *have* a range, and its own comment
+gives the measurement behind that. It refuses here rather than warning, because a
+floor derived across two protocols is wrong in the direction that looks like an
+answer.
+
+===============================================================================
   WHAT A PATH CAN BE CALLED, AND WHAT IT TAKES
 ===============================================================================
 
@@ -154,7 +193,8 @@ this would otherwise say when it had measured nothing at all. That is
 refuses in the same place for the same reason.
 
 Nothing recorded; every session vacuous; an evidential session that states no
-toggle state; no baseline; no single-toggle state; sessions from more than one
+toggle state; no session on the walk that was asked for; a walk its own captures
+contradict; no baseline; no single-toggle state; sessions from more than one
 build; and no literal watched by all of them. The last two are checked late
 because they are the ones that have to know which sessions the answer would have
 rested on. The build one is a refusal here and only a
@@ -203,6 +243,8 @@ from .observation import (
     evidential,
     read,
     store_path,
+    walk_dispute,
+    walk_evidence,
 )
 
 __all__ = [
@@ -306,6 +348,18 @@ class State:
     @property
     def surfaces(self) -> tuple[str, ...]:
         return tuple(sorted({item.surface for item in self.sessions}))
+
+    @property
+    def spans(self) -> tuple[int | None, ...]:
+        """How long each session's capture ran, in recorded order. `None` is absent.
+
+        Printed rather than judged. `observation.walk_dispute` is the only thing
+        that draws a conclusion from spans, and it does so over the whole walk;
+        two numbers from one state are a reader's own check that these really were
+        two runs of one thing.
+        """
+
+        return tuple(item.span_seconds for item in self.sessions)
 
     def counts(self, endpoint: str) -> tuple[int, ...]:
         """What each session of this state saw, in recorded order. Absent is 0."""
@@ -440,6 +494,9 @@ class Grouping:
     """Every path's verdict, and everything that bounds them."""
 
     version: str
+    #: The walk every session here was recorded under. Not derived and not implied:
+    #: it is what the caller asked for, and what the answer is only about.
+    walk: str
     baseline: State
     arms: tuple[State, ...]
     classifications: tuple[Classification, ...]
@@ -477,10 +534,41 @@ def partition(sessions: Iterable[ObservationSession]) -> tuple[State, ...]:
     own: they belong to no experiment, and inventing one for them is the
     operator-supplied configuration `observation` refuses. `classify` refuses
     before it gets here if any evidential session is in that shape.
+
+    **Sessions naming more than one walk are a refusal**, and this is the second
+    place that rule lives rather than the first being enough. `classify` selects by
+    walk before it calls this, so the check can never fire from there — but
+    `partition` and `noise_floors` are both exported, and
+
+        noise_floors(partition(read(version, root)), endpoints)
+
+    is one line, needs no argument anybody could get wrong, and reproduces the
+    entire defect the walk field exists to prevent. What that costs is arithmetic
+    and `test_the_floor_that_pooling_would_have_produced` pins it: the same twelve
+    sessions give a floor of 0 within one walk and 8 pooled across two, on a corpus
+    whose real effect is a fall of 4. A rule enforced only at the front door of a
+    module is a rule the module's own exports walk around. `noise_floors` cannot
+    check this itself — it is handed `State`s and never sees a walk — so it is
+    checked at the last point where the information still exists.
     """
 
+    rows = tuple(sessions)
+    named = {item.walk for item in rows}
+    if len(named) > 1:
+        raise GroupingError(
+            "these sessions name "
+            + ", ".join(
+                "no walk" if item is None else repr(item) for item in
+                sorted(named, key=lambda item: (item is None, item or ""))
+            )
+            + ", and a state grouped across two driving protocols is not one "
+            "experiment. Every difference between two runs of it includes the "
+            "difference between the walks — which is what the noise floor is "
+            "derived from, so the floor swallows exactly the effects it exists to "
+            "let through. Select a walk first"
+        )
     groups: dict[ToggleState, list[ObservationSession]] = {}
-    for item in sessions:
+    for item in rows:
         if item.toggles is None:
             continue
         groups.setdefault(item.toggles, []).append(item)
@@ -645,16 +733,35 @@ def classify(
     version: str,
     root: Path | str = ".",
     *,
+    walk: str,
     path: Path | str | None = None,
 ) -> Grouping:
     """Derive the endpoint-to-toggle grouping for `version` from its sessions.
 
+    `walk` is **required and names the driving protocol**, and the answer is over
+    the sessions recorded under exactly that one. It can only *select*: a walk
+    nobody recorded refuses instead of answering, so this is not the
+    operator-supplies-the-safety-property shape — though the value in the store it
+    selects from *was* typed by an operator, which the module docstring says
+    plainly rather than leaving to be assumed. `observation.walks(version, root)`
+    lists what is on record.
+
     Refuses, in this order: nothing recorded; every session vacuous; an evidential
-    session stating no toggle state; no baseline; no single-toggle state; more than
-    one build among the sessions the answer would rest on; and no literal watched
-    by all of them. Each names what is missing, because each has a different fix.
+    session stating no toggle state; no session recorded on the walk that was asked
+    for; a walk whose own captures contradict it; no baseline; no single-toggle
+    state; more than one build among the sessions the answer would rest on; and no
+    literal watched by all of them. Each names what is missing, because each has a
+    different fix.
     """
 
+    if not isinstance(walk, str) or not walk.strip():
+        raise GroupingError(
+            f"walk must be the name of a driving protocol, got {walk!r}. Every "
+            "comparison here is between two states measured the same way, and a "
+            "session that made one pass over three surfaces is not comparable with "
+            "one that made three rounds; `observation.walks(version, root)` lists "
+            "the walks on record"
+        )
     try:
         location = Path(path) if path is not None else store_path(version, root)
         sessions = read(version, root, path=location)
@@ -690,7 +797,44 @@ def classify(
             "row to exclude quietly, it is a corpus whose design cannot be stated"
         )
 
-    states = partition(usable)
+    # Selected before anything is partitioned or measured. A floor derived from
+    # two protocols is not a floor, so there is no stage of this that may see a
+    # session recorded under another walk.
+    on_walk = tuple(item for item in usable if item.walk == walk)
+    if not on_walk:
+        available = sorted({item.walk for item in usable if item.walk is not None})
+        unwalked = sorted(item.session_id for item in usable if item.walk is None)
+        raise GroupingError(
+            f"no session for {version} was recorded on the walk {walk!r}. On record: "
+            + ("; ".join(available) if available else "no walk at all")
+            + (
+                f". {len(unwalked)} evidential session(s) name no walk and cannot be "
+                "compared against anything: " + ", ".join(unwalked)
+                + ". They predate the field. Nothing can fill it in from the capture "
+                "— a capture states which blocks were active and how long it ran, and "
+                "never which script drove it — so where one is committed under "
+                "`manifest/captures/<session_id>.log`, re-record from it with the "
+                "`--walk` you actually ran: that reproduces every count, block and "
+                "toggle and adds the one thing only you know. Where no capture was "
+                "kept, the session has to be walked again"
+                if unwalked
+                else ""
+            )
+        )
+    # Over everything claiming the walk, including the compound states `classify`
+    # goes on to exclude by name. The question here is not "is this answer sound?"
+    # but "does this name mean one thing in this store?", and a two-toggle session
+    # filed under the name on a different protocol is evidence that it does not.
+    contradiction = walk_dispute(on_walk)
+    if contradiction:
+        raise GroupingError(
+            f"the {len(on_walk)} session(s) recorded on {walk!r} for {version} do not "
+            "agree that they ran it: " + contradiction
+            + ". A noise floor derived across two protocols is not a noise floor, and "
+            "it is wrong in the direction that looks like an answer"
+        )
+
+    states = partition(on_walk)
     baselines = [state for state in states if state.is_baseline]
     if not baselines:
         raise GroupingError(
@@ -765,10 +909,42 @@ def classify(
         )
     surfaces = sorted({item.surface for item in used})
     warnings.append(
-        "every verdict is bounded by the surfaces walked: " + ", ".join(surfaces)
+        f"every verdict is bounded by the walk ({walk}) and by the surfaces it "
+        "covered: " + ", ".join(surfaces)
         + ". A path only the Reels player requests is not observed by a session that "
-        "stayed on the feed, and its silence is about the session"
+        "stayed on the feed, and a path only a third round reaches is not observed by "
+        "a walk that made one pass; either silence is about the session"
     )
+    elsewhere = sorted(
+        item.session_id for item in usable if item.walk is not None and item.walk != walk
+    )
+    if elsewhere:
+        warnings.append(
+            f"{len(elsewhere)} evidential session(s) were recorded on another walk and "
+            "are excluded: " + ", ".join(elsewhere)
+            + ". They are not worse evidence, they are evidence about a different "
+            "protocol, and a difference measured across two of those is partly the "
+            "difference between them"
+        )
+    unwalked = sorted(item.session_id for item in usable if item.walk is None)
+    if unwalked:
+        warnings.append(
+            f"{len(unwalked)} evidential session(s) name no walk and are excluded: "
+            + ", ".join(unwalked)
+            + ". They predate the field and nothing in a capture can supply it; "
+            "re-recording them from `manifest/captures/` with the walk that was run "
+            "would make them comparable again"
+        )
+    # The positive control on the one check that guards a typed value. A check
+    # that silently could not have fired is the failure this project keeps
+    # repeating, so when it goes inert it says so where its verdict would go.
+    inert = walk_evidence(on_walk)
+    if inert:
+        warnings.append(
+            f"the walk {walk} is claimed and only partly evidenced: " + inert
+            + ". The name was typed by whoever ran the session; the capture span is "
+            "the only thing that can contradict it"
+        )
 
     if not baseline.counted:
         warnings.append(
@@ -942,6 +1118,7 @@ def classify(
         )
     return Grouping(
         version=version,
+        walk=walk,
         baseline=baseline,
         arms=arms,
         classifications=tuple(classifications),
@@ -1163,7 +1340,11 @@ def _classify_one(
 
 
 def summary(
-    version: str, root: Path | str = ".", *, path: Path | str | None = None
+    version: str,
+    root: Path | str = ".",
+    *,
+    walk: str,
+    path: Path | str | None = None,
 ) -> dict[str, Any]:
     """Everything a report says, in one shape, so both output forms read it.
 
@@ -1174,11 +1355,12 @@ def summary(
     """
 
     try:
-        grouping = classify(version, root, path=path)
+        grouping = classify(version, root, walk=walk, path=path)
     except GroupingError as error:
         return {
             "schema_version": SCHEMA_VERSION,
             "version": version,
+            "walk": walk,
             "unanswerable_reason": str(error),
             "baseline": None,
             "arms": [],
@@ -1191,6 +1373,7 @@ def summary(
     return {
         "schema_version": SCHEMA_VERSION,
         "version": version,
+        "walk": grouping.walk,
         "unanswerable_reason": "",
         "baseline": {
             "toggles_text": grouping.baseline.text,
@@ -1198,6 +1381,7 @@ def summary(
             "counted": grouping.baseline.counted,
             "blocks": list(grouping.baseline.block_totals),
             "blocks_text": grouping.baseline.blocks_text,
+            "spans": list(grouping.baseline.spans),
         },
         "arms": [
             {
@@ -1210,6 +1394,7 @@ def summary(
                 "blocks_text": arm.blocks_text,
                 "blocks_replicate": arm.blocks_replicate,
                 "features": arm.features,
+                "spans": list(arm.spans),
             }
             for arm in grouping.arms
         ],
@@ -1223,8 +1408,16 @@ def summary(
 _ORDER = (BLOCKED, ERASED, UNAFFECTED, UNCLASSIFIABLE, NEVER_REQUESTED)
 
 
+def _spans_text(spans: Sequence[Any]) -> str:
+    """`116s, 118s` — or `unmeasured`, which is not the same as `0s`."""
+
+    return ", ".join("unmeasured" if item is None else f"{item}s" for item in spans)
+
+
 def render(report: Mapping[str, Any]) -> str:
-    lines = [f"GROUPING  {report['version']}", "=" * 72, ""]
+    lines = [
+        f"GROUPING  {report['version']}   walk {report['walk']}", "=" * 72, "",
+    ]
 
     if report["unanswerable_reason"]:
         lines += [
@@ -1239,6 +1432,7 @@ def render(report: Mapping[str, Any]) -> str:
     )
     lines.append(
         f"    {', '.join(baseline['session_ids'])}   blocks {baseline['blocks_text']}"
+        f"   spans {_spans_text(baseline['spans'])}"
     )
     lines.append("")
     lines.append("  ARMS")
@@ -1254,7 +1448,10 @@ def render(report: Mapping[str, Any]) -> str:
                 False: "no block in any session",
                 None: "UNREADABLE (the two sessions disagree)",
             }[arm["blocks_replicate"]]
-        lines.append(f"    {arm['toggle']:<18} {', '.join(arm['session_ids'])}")
+        lines.append(
+            f"    {arm['toggle']:<18} {', '.join(arm['session_ids'])}"
+            f"   spans {_spans_text(arm['spans'])}"
+        )
         lines.append(
             f"      blocks {arm['blocks_text']}   {replicate}"
             + (
@@ -1343,11 +1540,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "report", help="which endpoints belong to which toggle, from measurement"
     )
     report.add_argument("--version", required=True)
+    report.add_argument(
+        "--walk",
+        required=True,
+        help="which driving protocol to compare within, e.g. three-round-v2. "
+        "Required rather than inferred: a comparison across two walks measures the "
+        "walks. `observation report` lists the ones on record",
+    )
     report.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
     try:
-        data = summary(args.version, args.root)
+        data = summary(args.version, args.root, walk=args.walk)
     except (ObservationError, GroupingError, ValueError, OSError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2

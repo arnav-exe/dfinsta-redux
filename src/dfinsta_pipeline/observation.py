@@ -2,7 +2,7 @@
 
     python -m dfinsta_pipeline.observation record --version 441 \
         --build-sha256 <64 hex> --recorded-at 2026-08-09T10:00:00Z \
-        --session-id 441-feed-1 --surface feed_tab \
+        --session-id 441-feed-1 --surface feed_tab --walk three-round-v2 \
         --watched-from watched.txt --capture logcat.txt
     python -m dfinsta_pipeline.observation report --version 441 [--json]
 
@@ -198,6 +198,80 @@ operator-supplied state this design refuses — and it is excluded from every
 toggle-scoped answer, by name, loudly, in both report forms.
 
 ===============================================================================
+  AND A WALK, WHICH THE OPERATOR TYPES. SAYING SO RATHER THAN PRETENDING
+===============================================================================
+
+A count is produced by two things: the app, and the driving. The section above
+pins the first — same build, stated configuration — and until now nothing pinned
+the second. On 2026-08-11 the walk went from one pass over three surfaces to
+**three rounds** over them, and the 440 baseline went from 11–16 observed
+requests to 25. Two sessions of one state, one walked each way, would spread by
+14 for a reason no toggle caused; `grouping` derives its noise floor from exactly
+that spread and would have read the whole difference as noise, and then swallowed
+every real effect underneath it. Nothing in a row said which walk produced it.
+
+So a session names its **walk**: a short, stable identifier for the *protocol* —
+`one-pass-three-surfaces`, `three-round-v2` — not for what came out of it. It is
+the same reasoning as the toggle state one section up. A session that cannot
+state the conditions it was measured under is not evidence for a question that
+depends on them, and a differential between two states depends on both of them.
+
+**And here the operator types it, which the toggle state deliberately does not
+allow.** That is not an oversight and it is not a guarantee wearing a different
+name. The toggle state is a property of the phone, so the build could be made to
+report it and the host could refuse anything else. **The walk is a property of
+the driving script.** It is not on the device, the app never learns it, and no
+line of a capture names it. There is nowhere else for it to come from, so
+`record` grows a required `--walk`, and this docstring says outright that its
+value is worth exactly what the person who typed it is worth. Do not read the
+field as the safety property `toggles` is; `retirement`'s `effective_from` was
+once derived from a `--version` the same person supplied in the same command, and
+the lesson recorded from breaking it is *ask what the operator controls* — here
+the answer is genuinely "this", and the honest response is to label it, not to
+dress it up.
+
+**What is not typed is the evidence beside it.** A capture carries logcat's own
+timestamps, so :func:`parse` measures the **span** — the time from the first line
+it read to the last — and stores it on the session. The span is a fact about the
+driving in a way no request count is: across the twenty-four sessions committed
+for 439 and 440, walked under six different toggle states each, the observed
+request counts run 8 to 39 while the spans run 109s to 153s — 440's twelve all
+inside 7s of one another, and ten of 439's twelve inside 9s. The walk is a script
+with sleeps in it; the counts are the app's answer. A three-round walk takes about
+three times as long, and no toggle makes a two-minute walk take six.
+
+That does not let the value be derived — a span names no protocol — but it lets a
+**wrong** one be caught, which is the part worth having. :func:`walk_dispute`
+asks whether the sessions claiming one walk split into two groups whose spans are
+further apart than either group is wide. There is no constant in it: the corpus
+supplies its own scale, the way `grouping`'s noise floor does, and a claim only
+fails when the evidence separates more sharply than it varies. Both committed
+corpora pass it, the mixed corpus the paragraph above describes fails it, and
+`grouping` **refuses** on it rather than deriving a floor from two protocols.
+
+Its own limits, stated because a check whose reach is not written down gets
+believed past it: it needs two sessions on each side, so a single mislabelled
+session among a dozen is invisible to it; it reads timestamps, so a capture
+carrying none has no span and contributes nothing; and it compares, so it says
+nothing at all about a corpus in which every session is mislabelled the same way.
+That last one is the residual, and the field is what carries it: `--walk` is a
+statement, and a statement can be wrong. Stripping the timestamps out of a
+capture would defeat the check — and that is forging the evidence rather than
+filling in a field, which is the same line the toggle state draws and the most
+any host-side rule is worth.
+
+**`grouping` partitions by walk; :func:`never_observed` does not, and the
+asymmetry is the point.** A grouping is a *differential*: it subtracts one state
+from another, and mixing protocols there manufactures a difference nothing
+caused. `never_observed` makes a *negative* claim — "watched, walked for, never
+once requested" — and pooling a second walk into it can only give a path more
+chances to be seen. It can retract such a claim and can never invent one, so
+pooling there is conservative rather than circular. What it does need is for the
+reader to be told, because "would this session have seen it?" is the question the
+surface list already exists for and the walk bounds the same answer: every report
+names the walks each state was measured on.
+
+===============================================================================
   WHY A SESSION THAT SAW NOTHING IS NOT EVIDENCE
 ===============================================================================
 
@@ -288,6 +362,7 @@ __all__ = [
     "BLOCK_TAG",
     "BLOCK_MESSAGE",
     "UNATTRIBUTED",
+    "UNWALKED",
     "OBSERVATIONS",
     "ToggleState",
     "BlockCount",
@@ -299,7 +374,11 @@ __all__ = [
     "read",
     "evidential",
     "stated",
+    "walked",
     "states",
+    "walks",
+    "walk_dispute",
+    "walk_evidence",
     "never_observed",
     "blocked_endpoints",
     "blocked_and_never_observed",
@@ -386,6 +465,29 @@ _FEATURE_LINE = re.compile(
 #: breakdown must sum to the total, or a reader cannot tell an unattributed block
 #: from one nobody counted.
 UNATTRIBUTED = "(no feature line)"
+
+#: How a report spells a session that named no walk. Parenthesised so it can never
+#: collide with a real one — `_WALK` forbids the bracket — which is the trick
+#: `UNATTRIBUTED` already uses two constants below. It is a *label*, deliberately
+#: not a selector: nothing accepts it as an answer to "which walk?", because a
+#: comparison over sessions whose protocol nobody stated is the thing this field
+#: exists to stop.
+UNWALKED = "(no walk stated)"
+
+#: The shape of a walk name. Stricter than `surface`, which is free text, and the
+#: difference is what the two are for: `surface` is prose a human reads, while
+#: `walk` is a **join key** — `grouping` partitions on it, so `Three-Round` and
+#: `three-round` would be one protocol wearing two names and would halve every
+#: group silently. That is the argument `ToggleState` already makes for sorting
+#: its pairs. Refused rather than lowercased: a value the store rewrites is a
+#: value the operator's notes and the file disagree about.
+_WALK = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+#: `MM-DD HH:MM:SS.mmm`, logcat's `threadtime` stamp, in the position the two line
+#: patterns below allow it. Read for one purpose only — the span between the first
+#: and last line `parse` took — and absent from the bare contract form, where it
+#: simply means no span was measurable.
+_STAMP = re.compile(r"^\s*(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\.(\d+)\b")
 
 #: A preference key the guard reads. Shape only, deliberately: `guards.Rule`
 #: already decides which names are legitimate for a *rule*, and this module
@@ -625,10 +727,73 @@ class Capture:
     #: default is for the hand-made fixtures that predate this field, and it says
     #: "this text held no block header", which is what reading it would find.
     blocks: BlockCount = field(default_factory=lambda: BlockCount(0))
+    #: Whole seconds from the first line this parse read to the last, or `None`
+    #: when fewer than two of them carried a logcat timestamp. `None` and `0` are
+    #: different facts — `0` is a capture whose lines all landed inside one second
+    #: — and they are spelled apart for the reason `blocks` is.
+    #:
+    #: A **lower** bound on how long the walk took: the capture starts at the first
+    #: checked request, not at the first tap, and ends at the last request rather
+    #: than when the operator put the phone down. That is why it is only ever
+    #: compared against another span and never against a number somebody chose.
+    span_seconds: int | None = None
 
     @property
     def stated(self) -> bool:
         return self.toggles is not None
+
+
+#: Days before the first of each month in a non-leap year. A logcat stamp carries
+#: no year, and none is needed: the only question asked of two stamps is how far
+#: apart they are, over a walk that lasts minutes.
+_MONTH_START = (0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+
+
+def _note_stamp(line: str, into: list[float]) -> None:
+    """Record `line`'s logcat timestamp, if it carries one.
+
+    Called only for the lines `parse` actually **read**, never for every line in
+    the text. `tools/redact_capture.py` keeps a superset of those and drops the
+    rest, and its whole guarantee is that `parse` gives the identical answer for
+    the reduction and the original — a span measured over lines the redaction is
+    free to drop would break that guarantee for every capture at once.
+    """
+
+    match = _STAMP.match(line)
+    if match is None:
+        return
+    month, day, hour, minute, second, fraction = match.groups()
+    if not 1 <= int(month) <= 12:
+        return
+    into.append(
+        (_MONTH_START[int(month)] + int(day)) * 86400.0
+        + int(hour) * 3600
+        + int(minute) * 60
+        + int(second)
+        + int(fraction) / (10 ** len(fraction))
+    )
+
+
+def _span(stamps: Sequence[float]) -> int | None:
+    """Whole seconds between the earliest and latest stamp, or `None` under two.
+
+    Extremes rather than first-and-last: logcat interleaves buffers, so two lines
+    can arrive a few milliseconds out of order, and a subtraction that could come
+    out negative is one somebody would have to interpret.
+
+    Truncated to whole seconds. The comparison this feeds is between walks that
+    differ by minutes, and a float would put two spellings of one duration into a
+    store whose readers compare rows for equality.
+
+    A capture that crosses midnight on 31 December reads wrong here, because a
+    logcat stamp carries no year. It is not a refusal: this is corroborating
+    evidence rather than a term of the contract, and a walk that appeared to take
+    a year is loud in every report it reaches rather than quietly plausible.
+    """
+
+    if len(stamps) < 2:
+        return None
+    return int(max(stamps) - min(stamps))
 
 
 def parse(text: str) -> Capture:
@@ -658,6 +823,13 @@ def parse(text: str) -> Capture:
     the shape a toggle changed halfway through a session takes — visible only
     because the line repeats, which is why it repeats.
 
+    **And it measures the span**, from the first line it read to the last. That is
+    the only thing in a capture that constrains which *walk* produced it — the app
+    never learns the protocol, so the walk is typed, and a typed value with no
+    evidence beside it is a value nothing can contradict. See the module docstring
+    and :func:`walk_dispute`. Never a refusal: a capture with no timestamps is the
+    bare contract form, and it records honestly with no span.
+
     **Blocks are counted under the same ordering rule as paths.** A block header
     ahead of any directive belongs to a request this capture did not see begin, and
     it would be added to the count a reader compares against zero — a phantom block
@@ -671,8 +843,10 @@ def parse(text: str) -> Capture:
     blocks = 0
     toggles: ToggleState | None = None
     previous = ""
+    stamps: list[float] = []
     for number, line in enumerate(text.splitlines(), 1):
         if _BLOCK_HEADER.match(line):
+            _note_stamp(line, stamps)
             if toggles is None:
                 raise ObservationError(
                     f"line {number}: a block was reported before any {TOGGLE_DIRECTIVE} "
@@ -691,6 +865,7 @@ def parse(text: str) -> Capture:
         match = _OBSERVE_LINE.match(line)
         if match is None:
             continue
+        _note_stamp(line, stamps)
         literal = match.group("literal")
         if not literal.strip():
             raise ObservationError(
@@ -742,7 +917,10 @@ def parse(text: str) -> Capture:
             )
         counts[literal] = counts.get(literal, 0) + 1
     return Capture(
-        toggles=toggles, counts=counts, blocks=BlockCount.of(blocks, features)
+        toggles=toggles,
+        counts=counts,
+        blocks=BlockCount.of(blocks, features),
+        span_seconds=_span(stamps),
     )
 
 
@@ -815,6 +993,20 @@ class ObservationSession:
     #: no question that depends on the configuration. Required, and deliberately
     #: ahead of `counts`, so that every construction site states it.
     toggles: ToggleState | None
+    #: Which driving script produced this session — the *protocol*, not the
+    #: outcome. `one-pass-three-surfaces` and `three-round-v2` are walks;
+    #: `saw-lots-of-reels` and a session id are not. Two sessions naming one walk
+    #: are a claim that they did the same thing, which is what makes a difference
+    #: between them attributable to the toggle that changed.
+    #:
+    #: **Typed by the operator**, unlike `toggles`, because there is nowhere else
+    #: for it to come from: the walk lives in the driving script, and nothing on the
+    #: phone or in the capture names it. The module docstring says so at length
+    #: rather than implying a guarantee this does not have. `None` means not
+    #: stated, which is the shape every row committed before 2026-08-11 is in;
+    #: `append` refuses it for anything new. Required, and deliberately ahead of
+    #: `counts`, for the reason `toggles` is.
+    walk: str | None
     counts: Mapping[str, int] = field(default_factory=dict)
     #: How many requests the guard refused, as the capture reported them. `None`
     #: means **nobody counted** — the shape of every row written before this host
@@ -826,6 +1018,14 @@ class ObservationSession:
     #: unlike `toggles`, because a row already in the store has to keep reading;
     #: `append` is where the rule that new evidence must state it lives.
     blocks: BlockCount | None = None
+    #: How long the capture ran, as :func:`parse` measured it. The evidence the
+    #: typed `walk` is checked against, and the reason a wrong walk is catchable at
+    #: all. `None` means the capture carried no timestamps — the bare contract
+    #: form, and every row written before this was measured — and it is not `0`,
+    #: which is a capture whose lines all landed inside one second. Defaulted
+    #: rather than required, because it is derived and a row already in the store
+    #: has to keep reading.
+    span_seconds: int | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
@@ -907,6 +1107,46 @@ class ObservationSession:
                 f"session {self.session_id} has toggles {self.toggles!r}; pass a "
                 "ToggleState (ToggleState.of({'disable_feed': True, ...})) or None"
             )
+        if self.walk is not None:
+            if not isinstance(self.walk, str):
+                # Not coerced, for the reason `toggles`, `blocks` and
+                # `span_seconds` are not: `str(123)` would put `"123"` in the one
+                # field this store joins rows on, and a hand-edited `"walk": 123`
+                # would then match a session that typed the digits.
+                raise ObservationError(
+                    f"session {self.session_id} has walk {self.walk!r}; a walk is the "
+                    "name of a driving protocol, as a string"
+                )
+            walk = self.walk
+            if not _WALK.fullmatch(walk):
+                raise ObservationError(
+                    f"session {self.session_id} names the walk {self.walk!r}, which is "
+                    "not a walk identifier. It is lowercase, starts with a letter or a "
+                    "digit, and carries only letters, digits, `.`, `-` and `_` — "
+                    "`three-round-v2`. It is a join key and not prose: `grouping` "
+                    "compares only sessions naming the same walk, so two spellings of "
+                    "one protocol would quietly halve every group. It is not "
+                    "lowercased for you, because a value this store rewrote would stop "
+                    "matching the one in the operator's notes"
+                )
+            if walk == str(self.session_id).strip():
+                raise ObservationError(
+                    f"session {self.session_id} names itself as its walk. A walk is the "
+                    "protocol several sessions share — it is what says two of them did "
+                    "the same thing — so one that is unique to a session names an "
+                    "outcome, and every group it could form has one member"
+                )
+            object.__setattr__(self, "walk", walk)
+        if self.span_seconds is not None and (
+            not isinstance(self.span_seconds, int)
+            or isinstance(self.span_seconds, bool)
+            or self.span_seconds < 0
+        ):
+            raise ObservationError(
+                f"session {self.session_id} has span_seconds {self.span_seconds!r}; a "
+                "span is a whole number of seconds measured from the capture, or None "
+                "when it carried no timestamps"
+            )
         if self.blocks is not None and not isinstance(self.blocks, BlockCount):
             # Not coerced from an int either. `blocks=0` reads as "no blocks" and
             # would be indistinguishable, once stored, from a real measurement —
@@ -950,6 +1190,13 @@ class ObservationSession:
         # the whole file, so the twelve 439 rows written before this field existed
         # come back byte for byte rather than acquiring a zero nobody measured.
         counted = {"blocks": self.blocks.as_dict()} if self.blocks is not None else {}
+        # Same rule a third time. The twenty-four 439 and 440 rows written before
+        # a walk was named come back byte for byte rather than acquiring a walk
+        # nobody stated or a span nobody measured.
+        driven = {"walk": self.walk} if self.walk is not None else {}
+        timed = (
+            {"span_seconds": self.span_seconds} if self.span_seconds is not None else {}
+        )
         return {
             "schema_version": self.schema_version,
             "version": self.version,
@@ -964,6 +1211,8 @@ class ObservationSession:
             # rewrites the whole file, gives that row back byte for byte instead
             # of editing a store nothing is allowed to edit.
             **stated,
+            **driven,
+            **timed,
             **counted,
             "counts": dict(sorted(self.counts.items())),
             # Derived and written anyway, following `SignalCount.to_dict`. It is
@@ -988,6 +1237,8 @@ class ObservationSession:
             "surface",
             "watched",
             "toggles",
+            "walk",
+            "span_seconds",
             "blocks",
             "counts",
             "total",
@@ -1028,6 +1279,45 @@ class ObservationSession:
                     f"{type(raw).__name__}"
                 )
             toggles = ToggleState.of({str(key): value for key, value in raw.items()})
+        walk: str | None = None
+        if "walk" in data:
+            if data["walk"] is None:
+                # The third field to say this, and the reason does not change: an
+                # unstated walk is spelled by the key being absent, which is how
+                # every row committed before 2026-08-11 is spelled, and a null is
+                # a second spelling of absent.
+                raise ObservationError(
+                    "an observation session states walk: null. A walk nobody stated is "
+                    "spelled by the key being absent — the way the rows written before "
+                    "the walk was named are spelled — and a null is a second spelling "
+                    "of absent"
+                )
+            # Passed through, not `str(...)` — unlike `version` and `session_id`
+            # below, which are coerced so that a numeric one produces a legible
+            # refusal instead of a TypeError inside the guard that reads it. This
+            # is the key `grouping` joins rows on, and `123` coerced to `"123"`
+            # would match a session that typed the digits. The constructor owns
+            # the rule and refuses a non-string; a second copy of it here would be
+            # a guard that can be deleted without changing an answer, which is how
+            # the one that matters comes to be deleted beside it.
+            walk = data["walk"]
+        span: int | None = None
+        if "span_seconds" in data:
+            if data["span_seconds"] is None:
+                raise ObservationError(
+                    "an observation session states span_seconds: null. A capture whose "
+                    "span was never measured is spelled by the key being absent, and a "
+                    "null is a second spelling of absent — in a field whose zero is a "
+                    "real measurement"
+                )
+            if not isinstance(data["span_seconds"], int) or isinstance(
+                data["span_seconds"], bool
+            ):
+                raise ObservationError(
+                    f"span_seconds must be a whole number of seconds, got "
+                    f"{data['span_seconds']!r}"
+                )
+            span = data["span_seconds"]
         blocks: BlockCount | None = None
         if "blocks" in data:
             if data["blocks"] is None:
@@ -1047,6 +1337,8 @@ class ObservationSession:
             surface=str(data.get("surface", "")),
             watched=tuple(str(item) for item in watched),
             toggles=toggles,
+            walk=walk,
+            span_seconds=span,
             blocks=blocks,
             counts={str(key): value for key, value in counts.items()},
         )
@@ -1174,6 +1466,16 @@ def append(
     file. Refusing at the write says the fix — record from a capture — at the
     moment it is cheap. The thirteen rows already committed keep their absence and
     keep reading, exactly as the unstated toggle state does.
+
+    **And it refuses a session that does not name its walk.** Same shape, third
+    time — but note what is different about this one: the walk cannot be recovered
+    from the capture the way the toggle state and the block count both were. So
+    there is no regeneration available for a row that arrives without it, only a
+    person remembering, and the refusal is at the write because the write is the
+    last moment the person is still in the room. The twenty-four rows committed
+    before 2026-08-11 keep their absence, keep reading, and are named in every
+    report; refusing here is what keeps that set closed rather than letting it grow
+    one silent row at a time.
     """
 
     location = Path(path) if path is not None else store_path(session.version, root)
@@ -1197,6 +1499,17 @@ def append(
             "one was not read from a capture. A state's blocks are only readable against "
             "a baseline that counted its own, and an uncounted zero cannot serve as that "
             "control"
+        )
+    if session.walk is None:
+        raise ObservationError(
+            f"session {session.session_id} names no walk. Pass --walk with a short, "
+            "stable name for the driving protocol you ran — `three-round-v2`, not what "
+            "came out of it. Two sessions are only comparable if they did the same "
+            "thing, and on 2026-08-11 the walk went from one pass to three rounds and "
+            "took the 440 baseline from 11-16 observed requests to 25; pooled, that "
+            "spread becomes `grouping`'s noise floor and swallows every real effect. "
+            "Nothing on the phone knows which walk you ran, so this one is yours to "
+            "state and yours to get right"
         )
     existing = read(session.version, root, path=location)
     if any(item.session_id == session.session_id for item in existing):
@@ -1255,6 +1568,20 @@ def stated(sessions: Iterable[ObservationSession]) -> tuple[ObservationSession, 
     return tuple(item for item in sessions if item.toggles is not None)
 
 
+def walked(sessions: Iterable[ObservationSession]) -> tuple[ObservationSession, ...]:
+    """The sessions that say which walk produced them.
+
+    The third control, the same shape as the two above: a filter over the row's own
+    content with no constant in it. A session that does not name its protocol is
+    still evidence about what the app asked for — that is the difference from
+    :func:`stated`, where an unknown configuration makes the counts themselves
+    unreadable — but it is not evidence in a *comparison*, because nothing says
+    whether the other side of the comparison did the same thing.
+    """
+
+    return tuple(item for item in sessions if item.walk is not None)
+
+
 def states(
     version: str, root: Path | str = ".", *, path: Path | str | None = None
 ) -> tuple[ToggleState, ...]:
@@ -1270,6 +1597,223 @@ def states(
 
     usable = stated(evidential(read(version, root, path=path)))
     return tuple(sorted({item.toggles for item in usable}, key=lambda item: item.text))
+
+
+def walks(
+    version: str, root: Path | str = ".", *, path: Path | str | None = None
+) -> tuple[str, ...]:
+    """The distinct walks `version` has evidence under, sorted.
+
+    The discovery half of the required argument on `grouping.classify`, and the
+    same reasoning as :func:`states`: a caller cannot name a walk it has no way to
+    learn. Empty is not a refusal — this enumerates, it does not answer — and it is
+    what a store recorded before walks were named says: nothing you can ask for.
+    """
+
+    usable = walked(evidential(read(version, root, path=path)))
+    return tuple(sorted({item.walk or "" for item in usable}))
+
+
+#: How many sessions each side of a split needs before :func:`walk_dispute` will
+#: call it one. **Structural, not a magnitude.** A group's "own range" is
+#: `max - min`, so with two members it is a single difference, and for a scripted
+#: walk it comes out 0 or 1 second — after which any honest five-second variation
+#: reads as two protocols.
+#:
+#: It was two, and an adversarial pass measured what that cost on the corpus this
+#: repository actually holds: **66 of the 495 four-session subsets of 439's twelve
+#: sessions were refused**, every one of them a single walk on a single build,
+#: rising to 145 of 924 at six sessions. Among the refused was the smallest corpus
+#: that yields a finding at all — a baseline pair and one arm pair. A check that
+#: refuses honest data at that rate is a check somebody turns off, which is the
+#: whole lesson of the leak scan that flagged every fixture on legitimate content.
+#: At three a side, **no subset of either committed corpus is refused, at any
+#: size**, and contamination is still caught from three sessions of the second
+#: walk onwards.
+#:
+#: Three is the smallest group whose range is the larger of two differences rather
+#: than the only one there is; the measurement above is why it is not two, and
+#: four was rejected because it stops catching a 3+3 split.
+#:
+#: `derive-the-threshold-never-declare-it` is the standing objection to a constant
+#: here and it is worth saying why this one is not that. That lesson is about a
+#: **magnitude** — `NOISE = 2` requests, `60` seconds — which encodes a judgement
+#: about sufficiency, moves with the data, and can be tuned until the corpus in
+#: front of you passes. This is a **cardinality**: how many samples a range needs
+#: before it is a range. It does not scale with anything, no value of it can make a
+#: particular corpus acceptable, and what it changes is which corpora are
+#: *checkable* rather than which are *right*. The magnitude in this check is still
+#: derived and still has no name. What it costs is stated
+#: in :func:`walk_dispute`: two mislabelled sessions among many are now invisible
+#: where they used to be caught. That is the safe direction to be wrong in — the
+#: `--walk` field carries the residual either way, and it is cheaper to miss a
+#: contamination than to teach an operator to ignore this.
+_MIN_PER_SIDE = 3
+
+
+def _too_few(measured: Sequence[Any]) -> bool:
+    """Is there too little here for a split to mean anything?
+
+    One owner for the question, because :func:`walk_dispute` and its own positive
+    control both ask it. Two copies of it desynchronised is the control reporting
+    "fully evidenced" over a corpus the check structurally cannot read — which is
+    exactly the failure the control exists to prevent, arriving through the
+    control.
+    """
+
+    return len(measured) < 2 * _MIN_PER_SIDE
+
+
+def _rows(sessions: Sequence[ObservationSession], caller: str) -> Sequence[ObservationSession]:
+    """Refuse a one-shot iterator, because these two functions come in a pair.
+
+    :func:`walk_dispute` and :func:`walk_evidence` are asked about the *same*
+    sessions — one says what is wrong, the other says whether anything could have
+    been. A generator handed to both is drained by the first, and the second then
+    answers from nothing: `walk_evidence` returns `""`, which is its way of saying
+    "this could have fired and found nothing", on a corpus it never saw.
+
+    Materialising inside either function does not fix that and reads as though it
+    does: `tuple(sessions)` consumes the caller's generator exactly as iterating it
+    would. The hazard lives at the call site, so it is refused at the boundary —
+    the only place a fix can be real. Everything in this module already passes a
+    tuple or a list.
+    """
+
+    if iter(sessions) is sessions:
+        raise ObservationError(
+            f"{caller} was given a one-shot iterator. It and its companion are asked "
+            "about the same sessions, and the first to read a generator empties it — "
+            "after which the second reports an empty corpus as one it checked. Pass a "
+            "list or a tuple"
+        )
+    return sessions
+
+
+def walk_dispute(sessions: Sequence[ObservationSession]) -> str:
+    """Why these sessions' spans contradict the walk they claim, or `""`.
+
+    The walk is typed and the span is measured, so this is the one place the typed
+    value can be checked against evidence. It asks a question with no magnitude in
+    it: do the spans **split into two groups further apart than either group is
+    wide**? Sorted, at every cut with :data:`_MIN_PER_SIDE` sessions on each side::
+
+        gap    = the smallest span above the cut - the largest below it
+        widest = the wider of the two groups' own ranges
+
+    and a dispute is `gap > widest`. The corpus supplies its own scale, exactly as
+    `grouping.noise_floors` does — a claim fails only when the evidence separates
+    more sharply than it varies — so there is no duration in here to repair in a
+    diff that looks like maintenance.
+
+    Measured against both real corpora: 439's twelve spans run 122-153s and 440's
+    run 109-116s, and neither disputes at any cut, nor does any subset of either.
+    A store holding those twelve beside twelve three-round sessions at ~350s
+    disputes at the obvious one. And **all twenty-four** pooled do not dispute,
+    which is the control that matters: they are the same walk on two builds, and a
+    rule that called them two protocols would be measuring the phone rather than
+    the driving. Stated of the full twenty-four because that is what was measured —
+    subsets of the *pool* do refuse at around 8% near size seven, where 440's tight
+    cluster and 439's tail can be drawn to look like two sittings. No caller can
+    reach that: all three read one version's store.
+
+    **Its reach, so nobody reads it as more than it is.**
+
+    * It needs :data:`_MIN_PER_SIDE` on each side, so fewer than six timed sessions
+      cannot be checked at all and up to two mislabelled ones among many stay
+      invisible. :func:`walk_evidence` reports the first; that constant's own
+      comment gives the measurement behind the number and what the alternative cost.
+    * A capture with no timestamps has no span and is not considered. **Every row
+      committed before 2026-08-11 is in exactly that shape**, so the contamination
+      this most wants to see — twelve old sessions and twelve new ones sharing one
+      name — is invisible to it until those rows are re-recorded. It is `grouping`'s
+      refusal of an unstated walk, not this, that stands between them and an answer.
+    * It compares, so a corpus in which every session is mislabelled the same way is
+      silent. That is the residual the `--walk` flag carries, stated in the module
+      docstring rather than papered over.
+    * And it reads sharpness, not size, so a corpus with **no** within-group
+      variation disputes over nothing: six sessions at 116s and six at 117s split
+      by one second with groups zero seconds wide, and one second is not one pass
+      against three rounds. 440's spans are nearly that tight, so three sessions in
+      a morning and three in an afternoon is a plausible shape for this to refuse.
+      Both real corpora pass because they have outliers, which is to say they pass
+      on their variation rather than on the rule. A floor at the span's own
+      resolution — `_span` truncates to whole seconds, so a one-second gap is
+      quantisation and not evidence — would remove the sharpest case; it is not
+      done here because it is a change to what the rule *means* and belongs to
+      whoever next has a corpus that needs it.
+
+    Returns a sentence, not a bool. Two callers need to say what is wrong and both
+    would otherwise write their own wording of it, which is how a human banner and
+    a machine field come to disagree.
+    """
+
+    measured = sorted(
+        (item.span_seconds, item.session_id)
+        for item in _rows(sessions, "walk_dispute")
+        if item.span_seconds is not None
+    )
+    if _too_few(measured):
+        # Not "no dispute": nothing was asked. A caller that needs to know whether
+        # this could have fired asks `walk_evidence`.
+        #
+        # **This return is a statement, not the guard.** The loop below is empty for
+        # exactly the same inputs — `range(m, n - m + 1)` has no members when
+        # `n < 2m` — so deleting this line changes no answer. It is here so the rule
+        # has one name that `walk_evidence` can ask for too, and it is called out as
+        # inert because a line that reads like a guard and is not one is how a real
+        # guard comes to be deleted beside it.
+        return ""
+    spans = [span for span, _ in measured]
+    for cut in range(_MIN_PER_SIDE, len(spans) - _MIN_PER_SIDE + 1):
+        gap = spans[cut] - spans[cut - 1]
+        widest = max(spans[cut - 1] - spans[0], spans[-1] - spans[cut])
+        if gap > widest:
+            below = ", ".join(f"{name} {span}s" for span, name in measured[:cut])
+            above = ", ".join(f"{name} {span}s" for span, name in measured[cut:])
+            return (
+                f"{len(measured)} session(s) claim one walk and their capture spans "
+                f"fall into two groups {gap}s apart, wider than the {widest}s either "
+                f"group spans on its own: [{below}] against [{above}]. A walk is a "
+                "script with sleeps in it, so its span barely moves between two runs "
+                "and the request counts move a lot; a split this sharp is two "
+                "protocols wearing one name. Whatever difference a comparison found "
+                "between two states here would include the difference between the two "
+                "walks"
+            )
+    return ""
+
+
+def walk_evidence(sessions: Sequence[ObservationSession]) -> str:
+    """Why :func:`walk_dispute` could not have fired on these, or `""` if it could.
+
+    The positive control, as a value rather than as an intention. A check that
+    silently cannot fire is the failure this project keeps repeating — an
+    assertion that still passes with the behaviour it names deleted — so the two
+    ways it goes inert are reported wherever its verdict is, and it asks
+    :func:`_too_few` rather than keeping its own copy of the rule.
+
+    Reads its input twice, which is why :func:`_rows` refuses an iterator here as
+    well: drained between the two comprehensions, `untimed` comes out empty and a
+    corpus with sessions this cannot see reports itself as fully evidenced.
+    """
+
+    rows = _rows(sessions, "walk_evidence")
+    timed = [item for item in rows if item.span_seconds is not None]
+    untimed = sorted(item.session_id for item in rows if item.span_seconds is None)
+    if _too_few(timed):
+        return (
+            f"only {len(timed)} of {len(rows)} session(s) carry a capture span, and "
+            f"the walk check needs {_MIN_PER_SIDE} on each side of a split, so it "
+            "could not have contradicted the claimed walk here"
+            + (f" (no span: {', '.join(untimed)})" if untimed else "")
+        )
+    if untimed:
+        return (
+            f"{len(untimed)} session(s) carry no capture span and are outside the "
+            "walk check: " + ", ".join(untimed)
+        )
+    return ""
 
 
 def never_observed(
@@ -1475,6 +2019,7 @@ def summary(version: str, root: Path | str = ".") -> dict[str, Any]:
     vacuous = [item for item in sessions if item.vacuous]
     configured = stated(usable)
     unstated = [item for item in usable if item.toggles is None]
+    unwalked = [item for item in usable if item.walk is None]
 
     warnings: list[str] = []
     unanswerable = _unanswerable(version, location, sessions)
@@ -1497,6 +2042,43 @@ def summary(version: str, root: Path | str = ".") -> dict[str, Any]:
             + f". A row without a {TOGGLE_DIRECTIVE} line was measured under a "
             "configuration nobody wrote down"
         )
+    if unwalked:
+        # Not a refusal here, and that is the asymmetry with `grouping`. This
+        # report's answers are *negative* — watched, walked for, never seen — and
+        # pooling a second walk into one can only give a path more chances to be
+        # seen, so it retracts such a claim and cannot invent one. A differential
+        # is the opposite way round, which is why `grouping` refuses.
+        warnings.append(
+            f"{len(unwalked)} evidential session(s) name no walk: "
+            + ", ".join(sorted(item.session_id for item in unwalked))
+            + ". They were recorded before a session said which driving protocol "
+            "produced it. Nothing below is wrong because of that — a negative claim "
+            "only gets safer as more walks are pooled into it — but `grouping` will "
+            "not compare states across them, and no walk can be filled in now "
+            "without somebody remembering one"
+        )
+    # Asked once per claimed walk, never over the pool. Pooling two walks and then
+    # asking whether the spans split would find the split every time and call the
+    # honest corpus a liar — the question is only ever "do the sessions claiming
+    # *this* protocol agree that they ran it?".
+    for name in sorted({item.walk for item in usable if item.walk is not None}):
+        claiming = [item for item in usable if item.walk == name]
+        dispute = walk_dispute(claiming)
+        if dispute:
+            warnings.append(f"the walk {name!r} is contradicted by its own captures: "
+                            + dispute)
+        else:
+            # The positive control, in the report that has no other refusal to
+            # hang it on. Saying nothing here would be claiming a check that never
+            # ran — and on this repository's own committed stores it never can,
+            # because not one row carries a span.
+            inert = walk_evidence(claiming)
+            if inert:
+                warnings.append(
+                    f"the walk {name!r} is claimed and only partly evidenced: " + inert
+                    + ". The name was typed by whoever ran the session; the capture "
+                    "span is the only thing that can contradict it"
+                )
 
     # Read once, for every state. It fails for reasons `never_observed` cannot —
     # an unreadable manifest, or one declaring no block at all — and a reader told
@@ -1528,11 +2110,16 @@ def summary(version: str, root: Path | str = ".") -> dict[str, Any]:
         # page whose banner says `feed_tab, reels_tab` while its bound says
         # `feed_tab` is worse than either alone.
         surfaces = sorted({item.surface for item in group})
+        # The same rule as `surfaces`, and computed the same way for the same
+        # reason: named once, placed in the warning and in the field.
+        group_walks = sorted({item.walk or UNWALKED for item in group})
         warnings.append(
             f"{state.text}: never-observed is bounded by the surfaces walked: "
             + ", ".join(surfaces)
+            + ", on walk(s) " + ", ".join(group_walks)
             + ". A path only the Reels player requests is not observed by a session "
-            "that stayed on the feed"
+            "that stayed on the feed, and a path only a third round reaches is not "
+            "observed by a walk that made one pass"
         )
         # Produced once and placed twice: in the state's own entry, where `render`
         # prints it immediately above the list it is about, and in `warnings`,
@@ -1585,6 +2172,7 @@ def summary(version: str, root: Path | str = ".") -> dict[str, Any]:
             "session_ids": sorted(item.session_id for item in group),
             "build_sha256s": builds,
             "surfaces": surfaces,
+            "walks": group_walks,
             "observed": dict(sorted(totals.items())),
             "never_observed": unseen,
             "blocked_never_observed": [item for item in blocked if item in set(unseen)],
@@ -1599,6 +2187,8 @@ def summary(version: str, root: Path | str = ".") -> dict[str, Any]:
         "stated_session_count": len(configured),
         "vacuous_session_ids": sorted(item.session_id for item in vacuous),
         "unstated_session_ids": sorted(item.session_id for item in unstated),
+        "unwalked_session_ids": sorted(item.session_id for item in unwalked),
+        "walks": sorted({item.walk for item in usable if item.walk is not None}),
         # Empty exactly when `states` is non-empty: every question this report can
         # answer is answered under one of them, and when it can answer none this
         # says which of the three reasons applies.
@@ -1625,6 +2215,7 @@ def render(report: Mapping[str, Any]) -> str:
         lines.append(f"  TOGGLES  {state['toggles_text']}")
         lines.append(f"    sessions: {', '.join(state['session_ids'])}")
         lines.append(f"    surfaces: {', '.join(state['surfaces'])}")
+        lines.append(f"    walks:    {', '.join(state['walks'])}")
         lines.append("")
         if state["circular"]:
             # Above the list, not in the WARNINGS block below it.
@@ -1711,6 +2302,13 @@ def _record_parser(sub: Any) -> argparse.ArgumentParser:
     and a test that named `--toggles` would be a denylist of one — which is the
     shape `retirement` replaced with an allowlist after `agent` was denied and
     `claude`, `bot` and `ci` sailed through.
+
+    `--walk` sits in that allowlist and is the one flag here that states something
+    about the measurement rather than about the artefacts. It is there because the
+    walk is genuinely not on the device: no build can report a property of the
+    script that drove it. That is an argument for *this* flag and not a hole in the
+    rule — a `--toggles` would have a different answer available and would be
+    choosing the worse one.
     """
 
     record = sub.add_parser("record", help="turn one logcat capture into a session")
@@ -1721,6 +2319,13 @@ def _record_parser(sub: Any) -> argparse.ArgumentParser:
     )
     record.add_argument("--session-id", required=True)
     record.add_argument("--surface", required=True, help="which surface was walked, e.g. feed_tab")
+    record.add_argument(
+        "--walk",
+        required=True,
+        help="the driving protocol, e.g. three-round-v2. Lowercase, stable across "
+        "sessions and versions, and about the protocol rather than what came out of "
+        "it. Nothing on the phone knows this, so it is yours to state",
+    )
     record.add_argument(
         "--watched", action="append", default=[], help="a watched literal; repeatable"
     )
@@ -1762,6 +2367,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 surface=args.surface,
                 watched=_watch_list(args),
                 toggles=capture.toggles,
+                walk=args.walk,
+                span_seconds=capture.span_seconds,
                 blocks=capture.blocks,
                 counts=capture.counts,
             )
@@ -1782,6 +2389,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"  blocks:  {session.blocks.text}  (Instagram's own error events, "
                 "which go missing)"
             )
+            if session.span_seconds is None:
+                # Said, not swallowed. The span is what a wrong `--walk` would be
+                # caught by, and a capture with no timestamps is outside that check
+                # — which the operator should know at the moment they file it.
+                print(
+                    f"  walk:    {session.walk}  (YOURS TO STATE — and this capture "
+                    "carries no timestamps, so there is no span to contradict it)"
+                )
+            else:
+                print(
+                    f"  walk:    {session.walk}  over {session.span_seconds}s of "
+                    "capture  (the name is yours to state; the span is measured)"
+                )
             if session.toggles is not None and session.toggles.blocking:
                 # The whole reason the field exists, said at the moment the number
                 # is produced rather than only where it is read.
@@ -1800,6 +2420,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "  VACUOUS: nothing at all was observed, so this session is not "
                     "evidence about any path. Check the build is the observing one and "
                     "that the capture covers the app running."
+                )
+            siblings = [
+                item
+                for item in read(args.version, args.root, path=written)
+                if item.walk == session.walk
+            ]
+            contradiction = walk_dispute(siblings)
+            if contradiction:
+                # At the write, where the operator still remembers which script
+                # they ran. `grouping` refuses on the same evidence later, and by
+                # then the fix is archaeology.
+                print(
+                    "  WALK DISPUTED: " + contradiction + ". Either this session ran "
+                    "a different protocol from the ones it was filed beside, or one "
+                    "of them did. `grouping` will refuse to compare states across "
+                    "this walk until the names match what was run."
                 )
             print(f"recorded in {written}")
             print(
