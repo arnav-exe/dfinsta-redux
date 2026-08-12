@@ -1493,72 +1493,49 @@ class CommittedCorpusTests(unittest.TestCase):
     What is pinned now is the answer itself, endpoint by endpoint, because that is
     what a human would act on.
 
-    **And the committed rows now name no walk**, because none existed when they
-    were recorded. `classify` refuses them by name — `test_the_committed_store_is
-    _refused_until_somebody_says_what_was_walked` is that refusal, asserted rather
-    than worked around — so the answer below is pinned over the same counts with a
-    walk **supplied by this test**. That is a fixture transformation and not a
-    back-fill: nothing is written into `manifest/`, and the name here is a label
-    for the comparison rather than a claim about which script the owner ran. The
-    real rows get a real walk when the person who walked them re-records them from
-    `manifest/captures/`, which is the one thing a capture cannot supply.
+    **The rows now name their walk**, re-recorded from `manifest/captures/` by the
+    person who walked them — the one thing a capture cannot supply. 439 carries
+    twelve `one-pass-v1` sessions and twelve `three-round-v2`, and they **do not
+    agree**: `/feed/timeline/` is BLOCKED on the first and unclassifiable on the
+    second, `/clips/discover` ERASED on the first and unaffected on the second.
+    Same app, same version, same day. So every call here names the walk, and
+    pooling them is the defect `walk` exists to prevent.
     """
 
-    #: A label for the comparison below, not a claim about the corpus. Deliberately
-    #: not a plausible protocol name: reading it as the answer to "what was walked?"
-    #: has to be visibly wrong.
-    LABEL = "relabelled-by-this-test"
-
-    @classmethod
-    def relabelled(cls, root: Path) -> Path:
-        """The committed 439 rows, in a temporary store, all naming one walk."""
-
-        rows = read("439", REPOSITORY)
-        path = store_path("439", root)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "".join(
-                json.dumps(replace(item, walk=cls.LABEL).to_dict(), sort_keys=True)
-                + "\n"
-                for item in rows
-            ),
-            encoding="utf-8",
-        )
-        return path
+    WALK = "one-pass-v1"
 
     def setUp(self) -> None:
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name).resolve()
-        self.relabelled(self.root)
-        # The manifest is read for the "declared today" column only, and it is the
-        # repository's real one here because that is the thing being described.
-        (self.root / "manifest" / "hooks.json").write_bytes(
-            (REPOSITORY / "manifest" / "hooks.json").read_bytes()
-        )
-        self.grouped = classify("439", self.root, walk=self.LABEL)
+        self.grouped = classify("439", REPOSITORY, walk=self.WALK)
 
-    def test_the_committed_store_is_refused_until_somebody_says_what_was_walked(
-        self,
-    ) -> None:
-        """The 24 rows' fate, asserted where a reader will find it.
+    def test_the_two_walks_disagree_on_the_same_version(self) -> None:
+        """The finding that matters most, pinned where a reader will meet it.
 
-        Not deleted, not back-filled, and not quietly pooled into an "unstated"
-        bucket that answers in full — that last one would hand back exactly the
-        property naming the walk buys. They stay readable and are named, and the
-        refusal says the fix.
+        The protocol changed the answer more than the version did. A longer walk
+        was adopted to raise counts so an erasure could clear the noise floor; it
+        did that, and it also made the block-accounting identity less
+        discriminating, because larger counts over more live paths give more
+        subsets that coincide with the block total. Both effects are real and they
+        pull opposite ways.
         """
+        def verdicts(walk):
+            return {
+                item.endpoint: item.verdict
+                for item in classify("439", REPOSITORY, walk=walk).classifications
+            }
 
-        with self.assertRaises(GroupingError) as caught:
-            classify("439", REPOSITORY, walk=self.LABEL)
-        message = str(caught.exception)
-        self.assertIn("name no walk", message)
-        self.assertIn("439-isolate-feed", message)
-        self.assertIn("manifest/captures/", message)
-        # And the rows themselves are untouched and still readable: refusing a
-        # comparison is not the same as refusing to read.
-        self.assertEqual(12, len(read("439", REPOSITORY)))
-        self.assertEqual((), walks("439", REPOSITORY))
+        one_pass, three_round = verdicts("one-pass-v1"), verdicts("three-round-v2")
+        self.assertEqual(BLOCKED, one_pass["/feed/timeline/"])
+        self.assertEqual(UNCLASSIFIABLE, three_round["/feed/timeline/"])
+        self.assertEqual(ERASED, one_pass["/clips/discover"])
+        self.assertNotEqual(ERASED, three_round["/clips/discover"])
+        # Not a wholesale disagreement: what both decide, they decide alike.
+        both = {e for e in one_pass if e in three_round}
+        contradictions = {
+            e for e in both
+            if one_pass[e] not in (UNCLASSIFIABLE,) and three_round[e] not in (UNCLASSIFIABLE,)
+            and one_pass[e] != three_round[e]
+        }
+        self.assertEqual({"/clips/discover"}, contradictions)
 
     def test_the_corpus_is_still_twelve_sessions_over_six_states(self) -> None:
         self.assertEqual(2, len(self.grouped.baseline.sessions))
@@ -1677,12 +1654,10 @@ class CommittedCorpusTests(unittest.TestCase):
         """The 36-fabricated-rows defence, asserted rather than intended."""
 
         before = (REPOSITORY / "manifest" / "observations" / "439.jsonl").read_bytes()
-        with contextlib.suppress(GroupingError):
-            classify("439", REPOSITORY, walk=self.LABEL)
-        summary("439", REPOSITORY, walk=self.LABEL)
-        # And the relabelling this class does for its own fixtures reads the real
-        # store too, which is the operation most likely to grow a write by accident.
-        self.relabelled(self.root)
+        for walk in ("one-pass-v1", "three-round-v2", "a-walk-nobody-ran"):
+            with contextlib.suppress(GroupingError):
+                classify("439", REPOSITORY, walk=walk)
+                summary("439", REPOSITORY, walk=walk)
         self.assertEqual(
             before, (REPOSITORY / "manifest" / "observations" / "439.jsonl").read_bytes()
         )

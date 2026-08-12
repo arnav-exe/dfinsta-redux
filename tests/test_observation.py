@@ -171,20 +171,25 @@ def committed_spans() -> dict[str, list[int]]:
     rows written before the field carry none, and a helper that quietly returned
     fewer groups than it names would make the tests below pass by measuring less.
 
-    One group survives: 439's twelve, walked with the one-pass protocol before the
-    field existed, which is a fact from outside the data. 440's twenty-four were
-    withdrawn on 2026-08-11 for a navigation fault; what is still needed of them is
-    written down as the named synthetics above, with their provenance, rather than
-    silently disappearing from the anchors they were supporting.
+    Four groups, all real and all committed: 439 and 440, each walked once with
+    `one-pass-v1` and once with `three-round-v2`. The 440 sessions withdrawn on
+    2026-08-11 for a navigation fault were re-walked on 2026-08-12 with the nav
+    found by resource id, so **the jitter anchor is a measurement again** rather
+    than the synthetic that stood in for it — see `THREE_ROUND_JITTER`.
+
+    The spread within a group is what the rule's derived term is made of, and it
+    varies a lot: 31s across 439's one-pass twelve, 1s across 440's three-round
+    twelve. A check that only worked on tight groups would pass the second and be
+    useless on the first.
     """
 
     groups: dict[str, list[int]] = {}
-    for version in ("439",):
+    for version in ("439", "440"):
         for row in read(version, REPOSITORY):
             capture = REPOSITORY / "manifest" / "captures" / f"{row.session_id}.log"
             span = parse(capture.read_text(encoding="utf-8")).span_seconds
             assert span is not None, row.session_id
-            groups.setdefault(f"{version} {row.walk or 'one-pass'}", []).append(span)
+            groups.setdefault(f"{version} {row.walk}", []).append(span)
     return groups
 
 
@@ -2359,7 +2364,13 @@ class CommittedCorpusTests(unittest.TestCase):
         path = REPOSITORY / OBSERVATIONS / "439.jsonl"
         committed = path.read_text(encoding="utf-8").splitlines()
         rows = read("439", REPOSITORY)
-        self.assertEqual(12, len(rows))
+        # Twenty-four: twelve on each walk. They are kept apart by `walk`, never
+        # pooled — the two do not agree about `/feed/timeline/` or
+        # `/clips/discover`, which is the whole reason the field exists.
+        self.assertEqual(24, len(rows))
+        self.assertEqual({"one-pass-v1": 12, "three-round-v2": 12},
+                         {w: sum(1 for r in rows if r.walk == w)
+                          for w in {r.walk for r in rows}})
         for original, row in zip(committed, rows):
             self.assertIsNotNone(row.blocks, row.session_id)
             self.assertEqual(original, json.dumps(row.to_dict(), sort_keys=True))
@@ -3166,7 +3177,10 @@ class WalkDisputeTests(unittest.TestCase):
         than the driving, and would refuse a corpus that is entirely sound.
         """
         groups = committed_spans()
-        self.assertEqual(["439 one-pass"], sorted(groups))
+        self.assertEqual(
+            ["439 one-pass-v1", "439 three-round-v2", "440 one-pass-v1", "440 three-round-v2"],
+            sorted(groups),
+        )
         for name, spans in sorted(groups.items()):
             with self.subTest(group=name):
                 self.assertEqual(12, len(spans), name)
@@ -3181,7 +3195,7 @@ class WalkDisputeTests(unittest.TestCase):
         synthetic `ONE_PASS_ON_ANOTHER_BUILD`, because that store was withdrawn —
         the property is worth keeping even though the corpus is gone.
         """
-        pooled = committed_spans()["439 one-pass"] + ONE_PASS_ON_ANOTHER_BUILD
+        pooled = committed_spans()["439 one-pass-v1"] + ONE_PASS_ON_ANOTHER_BUILD
         self.assertEqual(24, len(pooled))
         self.assertEqual("", walk_dispute(self.group(*pooled)))
 
@@ -3211,7 +3225,7 @@ class WalkDisputeTests(unittest.TestCase):
         the point where the two anchors are checked against each other: 122-153s
         against 271-273s separates by 118s over 153s, which is 77%.
         """
-        base = committed_spans()["439 one-pass"]
+        base = committed_spans()["439 one-pass-v1"]
         self.assertEqual(31, max(base) - min(base),
                          "premise: the faster group must be the noisy one")
         found = walk_dispute(self.group(*base, *THREE_ROUND_JITTER))
@@ -3227,7 +3241,7 @@ class WalkDisputeTests(unittest.TestCase):
         rather than the faster, so this exercises the other branch of that `max`
         and the contamination must still clear it.
         """
-        base = committed_spans()["439 one-pass"]
+        base = committed_spans()["439 one-pass-v1"]
         found = walk_dispute(self.group(*base, *(span * 3 for span in base)))
         self.assertIn("two groups", found)
         self.assertIn("213s apart", found)
@@ -3543,7 +3557,7 @@ class WalkDisputePrecisionTests(unittest.TestCase):
         carries nothing. The faster group is 439's real twelve; the slower is
         `THREE_ROUND_JITTER`, whose provenance is on the constant itself.
         """
-        base = self.groups["439 one-pass"]
+        base = self.groups["439 one-pass-v1"]
         other = THREE_ROUND_JITTER
         for count in (3, 4, 6, 12):
             with self.subTest(count=count):
