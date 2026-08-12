@@ -7,7 +7,7 @@ previous version. So tabs are found by `content-desc` and settings rows by their
 text, on the version actually installed, and a tab that cannot be found is a
 refusal rather than a tap into empty space.
 
-Usage:  session.py <toggle-name|none> <output.log>
+Usage:  device_session.py <toggle-name|none> <output.log> [walk]
 """
 
 from __future__ import annotations
@@ -22,6 +22,18 @@ from pathlib import Path
 ADB = [str(Path.home() / "Android/Sdk/platform-tools/adb"), "-s", "P3227J000775"]
 PKG = "com.instagram.android"
 WALK = ("Home", "Search and explore", "Reels")
+
+#: The named protocols, as `(rounds, scrolls per surface)`. The name is what a
+#: session records, and two spellings of one protocol silently halve every group,
+#: so they live here rather than being typed at the command line.
+#:
+#: `one-pass-v1` is what 439's committed corpus was measured with, kept exactly so
+#: a later version can be compared against it without the walk being a difference.
+#: `three-round-v2` observes roughly twice as much, which matters because a fall
+#: to zero cannot clear a noise floor unless the baseline was large enough to fall
+#: from — but a comparison between two versions measured differently says nothing
+#: about either.
+WALKS = {"one-pass-v1": (1, 6), "three-round-v2": (3, 5)}
 
 
 def sh(*args: str) -> str:
@@ -160,6 +172,9 @@ def set_toggles(on: set[str], nav: dict[str, tuple[int, int]]) -> dict[str, bool
 
 def main() -> int:
     name, out = sys.argv[1], Path(sys.argv[2])
+    walk = sys.argv[3] if len(sys.argv) > 3 else "three-round-v2"
+    if walk not in WALKS:
+        raise SystemExit(f"refusing: unknown walk {walk!r}; known: {', '.join(WALKS)}")
     on: set[str] = set() if name == "none" else {name}
 
     sh("shell", "am", "force-stop", PKG); time.sleep(3)
@@ -179,25 +194,21 @@ def main() -> int:
     sh("logcat", "-G", "16M"); sh("logcat", "-c")
     sh("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
     time.sleep(18)
-    # THREE rounds, not one pass. Measured on 440: a single pass observed 11 and 16
-    # requests where 439 saw 19 and 21, and the derivation correctly refused to
-    # classify a real erasure because a fall of 1 cannot clear a noise floor of 1.
-    # The cure is signal, not a looser rule.
-    #
-    # Rounds rather than more scrolling, because the actions that cost a request
-    # are re-entering a surface and pulling to refresh. Scrolling inside content
-    # the app has already loaded mostly costs nothing until pagination.
-    for round_number in range(3):
+    rounds, scrolls = WALKS[walk]
+    # Rounds rather than more scrolling: the actions that cost a request are
+    # re-entering a surface and pulling to refresh, whereas scrolling inside
+    # content the app has already loaded costs nothing until pagination.
+    for _ in range(rounds):
         for surface in WALK:
             sh("shell", "input", "tap", *map(str, nav[surface])); time.sleep(8)
             if surface == "Home":
                 sh("shell", "input", "swipe", "540", "900", "540", "1900", "400")
                 time.sleep(11)
-            for _ in range(5):
+            for _ in range(scrolls):
                 sh("shell", "input", "swipe", "540", "1700", "540", "500", "280")
                 time.sleep(3)
     out.write_text(sh("logcat", "-d"), encoding="utf-8")
-    print(f"  {name}: {out.name}  nav={ {k: v for k, v in sorted(nav.items())} }")
+    print(f"  {name} [{walk}]: {out.name}  nav={ {k: v for k, v in sorted(nav.items())} }")
     return 0
 
 
