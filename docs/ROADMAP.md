@@ -214,12 +214,45 @@ convenience.
       observing are run against every literal — plus near-misses and an unrelated path —
       under every toggle state and compared. It refuses any instruction it does not know, so
       it cannot pass by being blind.
-- [ ] **Re-measure 439** and confirm the walk-sensitivity disappears for blocks. Until then
-      the block half of the committed corpus is **unanswerable and says so**: every arm is
-      unreadable by name, `/feed/timeline/` and `/feed/reels_tray/` are no longer called
-      blocked, and nothing can be back-filled. The erasure half is untouched, because an
-      erasure was always a count comparison — and it must **stay** walk-sensitive, which is
-      the control on the claim that re-measuring fixes the other half.
+- [x] **Re-measured 440**, both walks, 24 sessions with the observing build
+      `ccd42be3a8b7`. 440 rather than 439 because it was the version installed, and going
+      back costs `pm uninstall -k` and risks the login; the question is about the
+      instrument, not the version. The 439 corpus is unchanged and its block half stays
+      unanswerable until it is walked again — the signed 439 observing build is at
+      `work/439-observe-v3/`.
+
+      **Every arm is readable on both walks.** That has not happened before: an arm used to
+      go unreadable whenever Instagram's two sessions disagreed about a block count, and on
+      the old 440 one-pass corpus `disable_explore` reporting 0 then 1 made **every path in
+      the corpus** unclassifiable — "unaffected" is a claim about every toggle, so one
+      feature's telemetry going quiet took the whole answer down.
+
+      **Four blocked endpoints, identical on both walks**, each attributed by the guard's own
+      record: `/feed/timeline/` ← `disable_feed`, `/feed/reels_tray/` ← `disable_stories`,
+      `/discover/topical_explore` ← `disable_explore`, `/feed/reels_media_stream/` ←
+      `disable_reels`. Run the two derivations over the **same twelve one-pass sessions** —
+      the new one with `refusals`, the old with that key stripped — and the old names one of
+      the four and declines three. It is not contradicted; it could not answer.
+
+      **What Instagram reported, beside what we recorded:** feed 18/18 against 18/18 and
+      stories 2/3 against 2/3 — exact, and the positive control without which a different
+      number is not a better one. Explore **14/14 against 1/1**. Reels **2/3 against 0/0**.
+
+- [x] **The walk-sensitivity for blocks is gone, and the one remaining difference is a fact
+      about the app.** `/clips/discover` reads ERASED on one-pass and BLOCKED on three-round,
+      and the counts say why: under `disable_reels` the short walk requests it 0 times of a
+      baseline 2, and the long walk requests it 4 times of a baseline 7 and the guard refuses
+      all four. Both mechanisms are live. `replaceReelsEndpoint` blanks the literal at the
+      `const-string` site, and a longer walk reaches a second route to the same path that the
+      erasure does not cover. The previous corpus could only say ERASED versus *undecidable*;
+      now both walks decide, and they decide different mechanisms because the app does
+      different things.
+
+- [x] **The superseded 440 rows were withdrawn.** 24 rows from build `55fa576b3c73`, which
+      could not report refusals. Not a judgement on them: `classify` refuses to compare
+      across builds at all, so leaving both made the version unanswerable, and the newer
+      build measures everything the older did. **Their captures stay in `manifest/captures/`**,
+      so every withdrawn row is one `observation record` away from returning.
 
 ## Open ends that are nobody's bug
 
