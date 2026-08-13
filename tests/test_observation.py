@@ -3898,22 +3898,67 @@ class TheContractIsOneContractTests(unittest.TestCase):
         self.assertIsNotNone(capture.refusals)
 
 
-class TheCommittedCorpusPredatesTheSignalTests(unittest.TestCase):
-    """Every capture in `manifest/captures/` was taken before the guard could speak.
+class TheCommittedCorpusTellsTheTwoBuildsApartTests(unittest.TestCase):
+    """Every committed capture is readable, and says for itself which build took it.
 
-    Recorded as a fact rather than assumed: this is what makes the block half of
-    `grouping` unanswerable for 439 until it is re-walked, and a future reader
-    finding these tests should be able to see that the refusal was measured and
-    not merely declared.
+    Recorded as a fact rather than assumed, and it is a fact with two sides now.
+    Captures taken before 2026-08-13 report `None` — the build could not have
+    written a refusal line, so its silence stays a silence and the block half of
+    those corpora is unanswerable. Captures taken since report a count, including
+    the measured empty. A reader finding these tests should be able to see that
+    the distinction was **measured**, and that the corpus holds both kinds at once.
     """
 
-    def test_no_committed_capture_can_report_refusals(self):
-        captures = sorted((Path(__file__).resolve().parent.parent / "manifest" / "captures").glob("*.log"))
-        if not captures:
+    def captures(self):
+        found = sorted(
+            (Path(__file__).resolve().parent.parent / "manifest" / "captures").glob("*.log")
+        )
+        if not found:
             self.skipTest("no committed captures")
-        for capture in captures:
+        return found
+
+    def test_every_committed_capture_still_parses(self):
+        for capture in self.captures():
             with self.subTest(capture=capture.name):
-                self.assertIsNone(parse(capture.read_text(encoding="utf-8")).refusals)
+                parse(capture.read_text(encoding="utf-8"))
+
+    def test_both_kinds_are_present_and_told_apart_by_the_capture_itself(self):
+        """Not by a filename, a date or a build list — by what the build said.
+
+        The `+blocked` mark is on the toggle line, so this is decided by evidence
+        inside the capture. A reader who had to consult a table of which builds
+        could report would have no way to check a capture they were handed.
+        """
+        silent, reporting = [], []
+        for capture in self.captures():
+            found = parse(capture.read_text(encoding="utf-8"))
+            (reporting if found.refusals is not None else silent).append(capture.name)
+        self.assertTrue(silent, "the corpus should still hold pre-signal captures")
+        self.assertTrue(reporting, "and the ones walked with a build that can report")
+        for name in reporting:
+            text = (Path(__file__).resolve().parent.parent / "manifest" / "captures"
+                    / name).read_text(encoding="utf-8")
+            self.assertIn(f"{REPORTS_MARK}{REPORTS_BLOCKED}", text)
+        for name in silent:
+            text = (Path(__file__).resolve().parent.parent / "manifest" / "captures"
+                    / name).read_text(encoding="utf-8")
+            self.assertNotIn(f"{REPORTS_MARK}{REPORTS_BLOCKED}", text)
+
+    def test_a_reporting_capture_can_state_a_measured_nothing(self):
+        """The baseline is the whole control, so its empty must be a measurement.
+
+        `440b-isolate-none` was walked with every toggle off and refused nothing.
+        That has to come back as an empty `Refusals` and not as `None`, or the
+        control is indistinguishable from a build that could not have answered.
+        """
+        baseline = (Path(__file__).resolve().parent.parent / "manifest" / "captures"
+                    / "440b-isolate-none.log")
+        if not baseline.is_file():
+            self.skipTest("the 440 baseline capture is not committed")
+        found = parse(baseline.read_text(encoding="utf-8"))
+        self.assertIsNotNone(found.refusals)
+        self.assertEqual({}, found.refusals.as_dict())
+        self.assertFalse(found.toggles.blocking)
 
 
 if __name__ == "__main__":

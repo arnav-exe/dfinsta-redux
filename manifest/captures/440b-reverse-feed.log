@@ -1,0 +1,334 @@
+08-13 19:38:12.108 28268 28439 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:12.108 28268 28439 I DFInstaObserve: /feed/reels_tray/
+08-13 19:38:12.158 28268 28431 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:12.158 28268 28431 I DFInstaObserve: /feed/timeline/
+08-13 19:38:12.158 28268 28431 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:12.512 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:12.519 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:12.535 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:12.535 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:12.768 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:12.957 28268 28355 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:12.957 28268 28355 I DFInstaObserve: /feed/reels_media_stream/
+08-13 19:38:13.012 28268 28419 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:13.036 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:13.897 28268 28439 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:13.983 28268 28307 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:14.249 28268 28435 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:14.276 28268 28307 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:14.847 28268 28637 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:14.879 28268 28642 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:15.555 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:15.555 28268 28630 I DFInstaObserve: /feed/timeline/
+08-13 19:38:15.555 28268 28630 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:15.562 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:15.562 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:18.572 28268 28629 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:18.572 28268 28629 I DFInstaObserve: /feed/timeline/
+08-13 19:38:18.573 28268 28629 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:18.578 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:18.578 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:19.254 28268 28435 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:19.339 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:19.816 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:20.810 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:21.593 28268 28435 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:21.593 28268 28435 I DFInstaObserve: /feed/timeline/
+08-13 19:38:21.593 28268 28435 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:21.606 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:21.606 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:29.722 28268 28435 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:29.722 28268 28435 I DFInstaObserve: /feed/timeline/
+08-13 19:38:29.722 28268 28435 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:29.723 28268 28713 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:29.723 28268 28713 I DFInstaObserve: /feed/reels_tray/
+08-13 19:38:29.731 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:29.731 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:32.745 28268 28713 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:32.745 28268 28713 I DFInstaObserve: /feed/timeline/
+08-13 19:38:32.745 28268 28713 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:32.756 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:32.756 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:35.766 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:35.766 28268 28630 I DFInstaObserve: /feed/timeline/
+08-13 19:38:35.766 28268 28630 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:35.773 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:35.773 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:37.855 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:37.855 28268 28630 I DFInstaObserve: /feed/timeline/
+08-13 19:38:37.855 28268 28630 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:37.856 28268 28714 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:37.856 28268 28714 I DFInstaObserve: /feed/reels_tray/
+08-13 19:38:37.863 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:37.863 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:37.879 28268 28435 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:37.879 28268 28435 I DFInstaObserve: /feed/timeline/
+08-13 19:38:37.879 28268 28435 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:37.900 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:37.901 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:37.919 28268 28713 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:37.919 28268 28713 I DFInstaObserve: /feed/timeline/
+08-13 19:38:37.919 28268 28713 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:37.926 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:37.926 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:37.943 28268 28435 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:37.943 28268 28435 I DFInstaObserve: /feed/timeline/
+08-13 19:38:37.943 28268 28435 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:37.957 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:37.957 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:37.973 28268 28435 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:37.973 28268 28435 I DFInstaObserve: /feed/timeline/
+08-13 19:38:37.973 28268 28435 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:37.986 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:37.986 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:38.005 28268 28713 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:38.005 28268 28713 I DFInstaObserve: /feed/timeline/
+08-13 19:38:38.005 28268 28713 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:38.024 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:38.024 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:38.041 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:38.041 28268 28630 I DFInstaObserve: /feed/timeline/
+08-13 19:38:38.041 28268 28630 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:38.049 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:38.049 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:38.064 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:38.064 28268 28630 I DFInstaObserve: /feed/timeline/
+08-13 19:38:38.064 28268 28630 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:38.077 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:38.077 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:38.093 28268 28713 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:38.094 28268 28713 I DFInstaObserve: /feed/timeline/
+08-13 19:38:38.094 28268 28713 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:38.115 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:38.115 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:38.135 28268 28713 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:38.135 28268 28713 I DFInstaObserve: /feed/timeline/
+08-13 19:38:38.135 28268 28713 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:38.150 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:38.150 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:38.175 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:38.175 28268 28630 I DFInstaObserve: /feed/timeline/
+08-13 19:38:38.175 28268 28630 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:38.189 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:38.190 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:38:38.783 28268 28435 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:38:38.783 28268 28435 I DFInstaObserve: /feed/timeline/
+08-13 19:38:38.783 28268 28435 I DFInstaObserve: !blocked /feed/timeline/
+08-13 19:38:38.788 28268 28268 E IgFunctionalErrorEvent: FEED_NOT_LOADING
+08-13 19:38:38.788 28268 28268 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
+08-13 19:39:09.186 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:09.276 28268 28701 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:09.276 28268 28714 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:09.276 28268 28701 I DFInstaObserve: /discover/topical_explore
+08-13 19:39:10.275 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:10.560 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.172 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.179 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.199 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.203 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.248 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.253 28268 28642 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.362 28268 28714 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.394 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.444 28268 28978 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.542 28268 28987 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.542 28268 28986 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.876 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.916 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:13.961 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:14.186 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:14.222 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:14.356 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:14.395 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:14.435 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:14.481 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:14.521 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:15.431 28268 28967 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:15.516 28268 28978 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:17.227 28268 28956 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:17.227 28268 28956 I DFInstaObserve: /discover/topical_explore
+08-13 19:39:17.880 28268 29046 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:17.891 28268 29045 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:19.855 28268 29038 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:19.935 28268 29017 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:19.953 28268 29038 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.004 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.009 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.014 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.068 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.075 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.103 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.146 28268 28630 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.211 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.226 28268 29063 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.298 28268 28956 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.366 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.374 28268 28956 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.454 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.488 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.538 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.579 28268 28956 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.579 28268 28956 I DFInstaObserve: /discover/topical_explore
+08-13 19:39:20.586 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.662 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.711 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.849 28268 29083 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:20.990 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.448 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.453 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.469 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.521 28268 29063 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.560 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.596 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.613 28268 29115 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.654 28268 29060 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.725 28268 29063 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.753 28268 29059 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.803 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.804 28268 29059 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.848 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:22.861 28268 29063 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.077 28268 29089 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.109 28268 29089 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.132 28268 29097 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.189 28268 29097 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.295 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.335 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.376 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.416 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.503 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.877 28268 29115 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:23.877 28268 29115 I DFInstaObserve: /discover/topical_explore
+08-13 19:39:24.167 28268 29155 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:26.423 28268 29160 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:26.458 28268 29160 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:26.488 28268 29167 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:27.500 28268 29205 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:28.368 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:28.372 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:28.439 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:28.472 28268 29115 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:28.505 28268 29005 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:28.531 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:28.566 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:28.937 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:28.971 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:29.232 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:29.479 28268 29195 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:29.500 28268 29195 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:29.544 28268 29204 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:30.559 28268 29209 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:30.559 28268 29209 I DFInstaObserve: /discover/topical_explore
+08-13 19:39:30.966 28268 29239 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:30.973 28268 29241 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:31.096 28268 29250 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.026 28268 29239 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.238 28268 29249 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.579 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.582 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.610 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.627 28268 29245 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.695 28268 29136 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.763 28268 29005 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.768 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.792 28268 29209 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.818 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.824 28268 29115 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.854 28268 29005 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.898 28268 29136 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.903 28268 29245 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.903 28268 29245 I DFInstaObserve: /discover/topical_explore
+08-13 19:39:33.906 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.968 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:33.969 28268 29005 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.000 28268 29136 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.066 28268 29279 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.176 28268 29290 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.177 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.387 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.442 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.486 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.610 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.660 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:34.742 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.347 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.351 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.378 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.400 28268 29296 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.423 28268 29136 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.456 28268 29300 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.515 28268 29136 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.533 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.538 28268 29320 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.577 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.615 28268 29305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.631 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.646 28268 29320 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.682 28268 29300 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.689 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.751 28268 29300 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.775 28268 29320 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.919 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:36.950 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.330 28268 29320 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.345 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.380 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.514 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.520 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.574 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.619 28268 28642 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.634 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.646 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.647 28268 29354 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.737 28268 28642 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.757 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:37.773 28268 29367 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:38.139 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:38.511 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:38.663 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:38.817 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:38.967 28268 28511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:39.867 28268 29390 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:39.867 28268 29389 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:45.304 28268 29136 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:45.304 28268 29136 I DFInstaObserve: /clips/discover
+08-13 19:39:45.304 28268 29136 I DFInstaObserve: /clips/discover/stream/
+08-13 19:39:45.743 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:45.823 28268 29367 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:47.823 28268 29428 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:47.824 28268 29427 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:48.819 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:48.862 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:49.004 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:51.307 28268 29476 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:51.307 28268 29479 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:52.371 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:54.468 28268 29512 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:54.478 28268 29511 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:55.273 28268 29538 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:55.307 28268 29538 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:55.708 28268 29538 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:55.768 28268 29538 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:55.792 28268 29538 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:58.594 28268 29491 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:39:58.594 28268 29491 I DFInstaObserve: /clips/discover
+08-13 19:39:58.594 28268 29491 I DFInstaObserve: /clips/discover/stream/
+08-13 19:40:01.103 28268 29560 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:01.104 28268 29559 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.425 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.432 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.484 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.558 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.575 28268 29442 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.826 28268 28306 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.830 28268 28305 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.876 28268 28642 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.927 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:02.974 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:03.221 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:03.272 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:03.768 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:03.814 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:03.869 28268 28472 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:04.426 28268 29594 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
+08-13 19:40:04.426 28268 29592 I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=0
