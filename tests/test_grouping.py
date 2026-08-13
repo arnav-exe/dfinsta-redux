@@ -1803,3 +1803,142 @@ class MixedBuildStateTests(RootedTestCase):
             next(item for item in grouped.classifications
                  if item.endpoint == "/clips/discover").verdict,
         )
+
+
+class BaselineMustBeAbleToSayTests(RootedTestCase):
+    """A control that could not report is not a control that reported nothing.
+
+    This is the shape re-walking produces if the arms are walked with a build that
+    claims `+blocked` and the baseline rows are left as they were, and it is the
+    shape an adversarial pass found unguarded: `baseline.refusals(endpoint)` is
+    `None` there, and `None or ()` made "the baseline refused nothing" vacuously
+    true. Only `baseline_clean` was stopping the verdict, and nothing tested it.
+    """
+
+    def corpus(self) -> tuple[dict, ...]:
+        arm = {"/feed/timeline/": 10, "/feed/reels_tray/": 3, "/clips/discover": 4}
+        rows = with_refusals(
+            flat_corpus(**{"disable_feed-fwd": arm, "disable_feed-rev": arm}),
+            **{"disable_feed-fwd": {"/feed/timeline/": 10},
+               "disable_feed-rev": {"/feed/timeline/": 10}},
+        )
+        return _unreporting(rows, "base-fwd", "base-rev")
+
+    def test_a_baseline_that_could_not_report_names_no_blocked_path(self) -> None:
+        self.write(*self.corpus())
+        verdicts = self.verdicts()
+        self.assertNotIn(BLOCKED, verdicts.values())
+        self.assertEqual(UNCLASSIFIABLE, verdicts["/feed/timeline/"])
+
+    def test_and_the_report_says_which_baseline_sessions_could_not(self) -> None:
+        """Named, because the repair is to walk the baseline and nothing else."""
+
+        self.write(*self.corpus())
+        warned = [
+            item for item in classify("439", self.root, walk=WALK).warnings
+            if "the control cannot say it refused nothing" in item
+        ]
+        self.assertEqual(1, len(warned), warned)
+        self.assertIn("base-fwd", warned[0])
+
+    def test_the_control_for_that_refusal(self) -> None:
+        """The same corpus with a baseline that CAN report answers in full.
+
+        Without this the test above would pass over a corpus that produces no
+        verdict for some unrelated reason, which is how a guard comes to be
+        credited with an answer it had nothing to do with.
+        """
+
+        arm = {"/feed/timeline/": 10, "/feed/reels_tray/": 3, "/clips/discover": 4}
+        self.write(*with_refusals(
+            flat_corpus(**{"disable_feed-fwd": arm, "disable_feed-rev": arm}),
+            **{"disable_feed-fwd": {"/feed/timeline/": 10},
+               "disable_feed-rev": {"/feed/timeline/": 10}},
+        ))
+        self.assertEqual(BLOCKED, self.verdicts()["/feed/timeline/"])
+
+
+class CoveredPathTests(RootedTestCase):
+    """A refusal names the rule's literal, so a path caught by a broader one reads zero.
+
+    `/clips/discover/stream/` is watched and *contains* `/clips/discover`, which is
+    a `contains` literal under `disable_reels`. A request to it is refused by that
+    rule and recorded under that name, so its own refusal count is a **measured**
+    zero — nothing above refuses it — and the count does not move either, because
+    the observe pass runs before the throw. That reaches `unaffected`, which is a
+    positive claim about a path that was in fact blocked.
+
+    Not live on 439 or 440 today only because `replaceReelsEndpoint` erases both
+    paths upstream, so both come out ERASED. It goes live the moment that stops.
+    """
+
+    def corpus(self) -> tuple[dict, ...]:
+        steady = {"/clips/discover": 4, "/clips/discover/stream/": 3,
+                  "/feed/timeline/": 6}
+        rows = []
+        for item in flat_corpus():
+            item = dict(item)
+            item["watched"] = ["/clips/discover", "/clips/discover/stream/",
+                               "/feed/timeline/"]
+            item["counts"] = dict(steady)
+            item["total"] = sum(steady.values())
+            rows.append(item)
+        return with_refusals(
+            tuple(rows),
+            **{"disable_reels-fwd": {"/clips/discover": 4},
+               "disable_reels-rev": {"/clips/discover": 4}},
+        )
+
+    def test_a_path_covered_by_another_rules_literal_is_not_called_unaffected(self) -> None:
+        self.write(*self.corpus())
+        found = self.verdict_of("/clips/discover/stream/")
+        self.assertEqual(UNCLASSIFIABLE, found.verdict)
+        self.assertIn("covers it", found.reason)
+        self.assertIn("disable_reels", found.reason)
+        # And the literal that WAS named is still called blocked.
+        self.assertEqual(BLOCKED, self.verdicts()["/clips/discover"])
+
+    def test_a_path_no_rule_covers_still_reads_unaffected(self) -> None:
+        """The control: this must not make every quiet path unclassifiable."""
+
+        self.write(*self.corpus())
+        self.assertEqual(UNAFFECTED, self.verdicts()["/feed/timeline/"])
+
+
+class BaselineRefusedSomethingTests(RootedTestCase):
+    """With every toggle off nothing should throw, so anything refused voids the lot.
+
+    Not per-path. A baseline that refuses *any* request means the build's own
+    toggle line and its behaviour disagree, and every comparison in this module is
+    against that baseline. The per-path version of this check could never be the
+    one that fired and was deleted rather than tested, because a guard that cannot
+    fire reads as protection and is a reason not to look for the real one.
+    """
+
+    def corpus(self, baseline_refused: dict[str, int]) -> tuple[dict, ...]:
+        arm = {"/feed/timeline/": 10, "/feed/reels_tray/": 3, "/clips/discover": 4}
+        return with_refusals(
+            flat_corpus(**{"disable_feed-fwd": arm, "disable_feed-rev": arm}),
+            **{"disable_feed-fwd": {"/feed/timeline/": 10},
+               "disable_feed-rev": {"/feed/timeline/": 10},
+               "base-fwd": baseline_refused, "base-rev": baseline_refused},
+        )
+
+    def test_a_baseline_refusing_an_unrelated_path_voids_every_verdict(self) -> None:
+        """The case a per-path check would have let through.
+
+        `/feed/reels_tray/` is refused with everything off — impossible if the
+        build is the one it says it is — and the question asked is about
+        `/feed/timeline/`, which that baseline did *not* refuse.
+        """
+        self.write(*self.corpus({"/feed/reels_tray/": 2}))
+        self.assertNotIn(BLOCKED, self.verdicts().values())
+        warned = [
+            item for item in classify("439", self.root, walk=WALK).warnings
+            if "with every toggle off" in item
+        ]
+        self.assertEqual(1, len(warned), warned)
+
+    def test_the_control_a_clean_baseline_answers(self) -> None:
+        self.write(*self.corpus({}))
+        self.assertEqual(BLOCKED, self.verdicts()["/feed/timeline/"])

@@ -910,6 +910,10 @@ class Capture:
     #: `Refusals()` with nothing in it is the *measured* statement that this
     #: configuration refused nothing, and it is the baseline everything else is
     #: compared against.
+    #: Defaulted to `None` and **not** to an empty `Refusals`: a hand-built capture
+    #: that said nothing about refusals must not come out saying none happened.
+    #: `parse` always sets this explicitly, so the default is reached only by a
+    #: caller constructing one — which is exactly where the rule is easiest to lose.
     refusals: "Refusals | None" = None
     #: Whole seconds from the first line this parse read to the last, or `None`
     #: when fewer than two of them carried a logcat timestamp. `None` and `0` are
@@ -1473,8 +1477,10 @@ class ObservationSession:
                 raise ObservationError(
                     f"session {self.session_id} refused {', '.join(excess)} more often "
                     "than it observed them. Every refusal follows an observation of the "
-                    "same literal in the same call, so this capture lost lines or this "
-                    "row was edited"
+                    "same literal in the same call, so the capture lost lines — logd "
+                    "drops the oldest first and the observation is the older of the two "
+                    "— or the row was edited. The first is the likely one and the repair "
+                    "is a larger buffer and another walk"
                 )
 
     @property

@@ -654,10 +654,57 @@ class RecordsItsOwnRefusalsTests(unittest.TestCase):
                 Rule((Literal("/x/"),), (marked,))
 
     def test_the_recorded_line_is_the_directive_and_the_literal(self):
-        """The exact text the parser joins on, pinned on the emitting side."""
+        """The whole method, instruction for instruction — arguments included.
+
+        Nothing executes the observe class: `decide` covers `throwIfBlocked` and
+        this class is only ever assembled and installed. So a register mistake here
+        survives every other check and is found on the phone. `{v0, v0}` instead of
+        `{v0, p0}` assembles, runs, and logs `!blocked !blocked ` for every refusal
+        — which `observation.parse` then rejects as padded, throwing away a
+        completed walk at record time rather than at build time.
+        """
         body = render_observe_class(("disable_feed",))
-        self.assertIn(f'const-string v0, "{BLOCKED_DIRECTIVE} "', body)
-        self.assertIn("Ljava/lang/String;->concat(Ljava/lang/String;)Ljava/lang/String;", body)
+        method = body[body.index(f".method public static {BLOCKED_METHOD}("):]
+        method = method[: method.index(".end method") + len(".end method")]
+        self.assertEqual(
+            [
+                f".method public static {BLOCKED_METHOD}(Ljava/lang/String;)V",
+                "    .locals 1",
+                f'    const-string v0, "{BLOCKED_DIRECTIVE} "',
+                "    invoke-virtual {v0, p0}, Ljava/lang/String;->concat"
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                "    move-result-object v0",
+                f"    invoke-static {{v0}}, {OBSERVE_DESCRIPTOR}->seen(Ljava/lang/String;)V",
+                "    return-void",
+                ".end method",
+            ],
+            [line for line in method.splitlines() if line.strip()],
+        )
+
+    def test_the_observe_class_reads_the_argument_it_was_given(self):
+        """Stated as a property too, so a future rewrite of the method above fails.
+
+        The literal reaching `blocked` must be the one that comes back out. Pinned
+        against the emitting side because there is no other side: this class has no
+        interpreter and no test that runs it.
+        """
+        body = render_observe_class(("disable_feed",))
+        for name, argument in ((BLOCKED_METHOD, "p0"), ("seen", "p0")):
+            with self.subTest(method=name):
+                span = body[body.index(f".method public static {name}("):]
+                span = span[: span.index(".end method")]
+                self.assertIn(
+                    argument,
+                    span,
+                    f"{name} never reads its argument, so every line it logs is a "
+                    "constant",
+                )
+
+
+#: Every key the device-proved rules read, all off. Spelled once: `decide`
+#: refuses a state that leaves a key out, and four copies of the same dict is
+#: four places for one of them to drift.
+ALL_OFF_STATE = {key: False for key in toggles_of(DEVICE_PROVED_RULES)}
 
 
 class DecideTests(unittest.TestCase):
@@ -670,14 +717,105 @@ class DecideTests(unittest.TestCase):
     """
 
     def test_it_refuses_an_instruction_it_does_not_know(self):
+        """And the refusal must come from the *dispatch*, not from the line regex.
+
+        An earlier version of this test injected `rem-int/lit8 v2, v2, 0x3`, whose
+        `/` the instruction pattern did not admit — so the line was rejected as
+        unreadable and the unknown-opcode branch was never reached. Deleting that
+        branch entirely left this test green. `nop` and `move` are the shape that
+        matters: plain opcodes a future generator could plausibly emit, which
+        would otherwise be silently skipped while `decide` reported the decision
+        the rest of the method makes.
+        """
+        for opcode, line in (("nop", "    nop"), ("move", "    move v2, v1")):
+            with self.subTest(opcode=opcode):
+                method = render_method(DEVICE_PROVED_RULES).replace(
+                    "    return-void", f"{line}\n    return-void", 1
+                )
+                with self.assertRaises(GuardError) as caught:
+                    decide(method, "/api/v1/users/1/info/", ALL_OFF_STATE)
+                self.assertIn(
+                    "does not know the instruction",
+                    str(caught.exception),
+                    "rejected by the line pattern instead of the opcode dispatch",
+                )
+                self.assertIn(opcode, str(caught.exception))
+
+    def test_the_opcode_dispatch_is_reachable_at_all(self):
+        """The positive control for the test above.
+
+        A line pattern narrow enough to reject every unknown opcode would pass it
+        while making the dispatch unreachable, so an opcode with the awkward
+        characters — `/` and digits — must read fine and be refused by name.
+        """
         method = render_method(DEVICE_PROVED_RULES).replace(
             "    return-void", "    rem-int/lit8 v2, v2, 0x3\n    return-void", 1
         )
         with self.assertRaises(GuardError) as caught:
-            decide(method, "/api/v1/users/1/info/", {"disable_feed": False,
-                   "disable_explore": False, "disable_reels": False,
-                   "disable_stories": False, "disable_adds": False})
+            decide(method, "/api/v1/users/1/info/", ALL_OFF_STATE)
+        self.assertIn("does not know the instruction", str(caught.exception))
         self.assertIn("rem-int/lit8", str(caught.exception))
+
+    def test_it_refuses_a_move_result_that_follows_no_invoke(self):
+        """Dalvik rejects the class; a model that moved a stale value would not.
+
+        Without this `decide` reports a decision for a method that could never
+        load — the "reports blocked for something that would not throw" case, and
+        the one that would make the equivalence claim meaningless.
+        """
+        method = render_method(DEVICE_PROVED_RULES).replace(
+            "    invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith"
+            "(Ljava/lang/String;)Z\n\n",
+            "",
+            1,
+        )
+        with self.assertRaises(GuardError) as caught:
+            decide(method, "/api/v1/feed/timeline/", ALL_OFF_STATE)
+        self.assertIn("move-result", str(caught.exception))
+
+    def test_it_refuses_a_label_nobody_defined_even_on_the_branch_not_taken(self):
+        """Checked before anything runs, not when the jump happens.
+
+        A method with a dangling target does not assemble at all, so deciding it
+        on the strength of a path that avoids the jump is modelling a class that
+        could not exist.
+        """
+        method = render_method(DEVICE_PROVED_RULES).replace(
+            "if-nez v2, :cond_block", "if-nez v2, :cond_nowhere", 1
+        )
+        with self.assertRaises(GuardError) as caught:
+            decide(method, "/api/v1/users/1/info/", ALL_OFF_STATE)
+        self.assertIn("cond_nowhere", str(caught.exception))
+
+    def test_an_empty_string_is_a_reference_and_a_null_is_not(self):
+        """`if-eqz` on an object register asks "is this null", not "is this falsey".
+
+        Asserted on `_zero` directly, and deliberately: no path through the
+        device-proved rules distinguishes the two treatments, because a `""` path
+        matches no literal either way. `replaceReelsEndpoint` leaves exactly `""`
+        behind when `disable_reels` is on, so a model that returned early on it
+        would say the guard never saw an erased request — right answer, wrong
+        mechanism, and telling a block from an erasure is the whole job.
+        """
+        from dfinsta_pipeline.guards import _zero
+
+        self.assertFalse(_zero(""), "an empty string is a live reference")
+        self.assertFalse(_zero("/feed/timeline/"))
+        self.assertTrue(_zero(None), "and null is the only null")
+        self.assertTrue(_zero(0))
+        self.assertFalse(_zero(1))
+        self.assertTrue(_zero(False))
+
+    def test_a_shipped_method_decides_nothing_differently_after_all_that(self):
+        """The controls above inject damage; this proves the undamaged form runs."""
+        self.assertTrue(
+            decide(render_method(DEVICE_PROVED_RULES), "/api/v1/feed/timeline/",
+                   {**ALL_OFF_STATE, "disable_feed": True}).blocked
+        )
+        self.assertFalse(
+            decide(render_method(DEVICE_PROVED_RULES), "/api/v1/feed/timeline/",
+                   ALL_OFF_STATE).blocked
+        )
 
     def test_it_refuses_a_register_the_method_never_declared(self):
         """`.locals 3` with a v3 in it does not assemble; this says so first."""
@@ -687,9 +825,7 @@ class DecideTests(unittest.TestCase):
             1,
         )
         with self.assertRaises(GuardError) as caught:
-            decide(method, "/api/v1/feed/timeline/", {"disable_feed": True,
-                   "disable_explore": False, "disable_reels": False,
-                   "disable_stories": False, "disable_adds": False})
+            decide(method, "/api/v1/feed/timeline/", {**ALL_OFF_STATE, "disable_feed": True})
         self.assertIn(".locals 3", str(caught.exception))
 
     def test_it_refuses_a_state_that_leaves_a_key_out(self):
@@ -705,9 +841,7 @@ class DecideTests(unittest.TestCase):
             1,
         )
         with self.assertRaises(GuardError) as caught:
-            decide(method, "/api/v1/users/1/info/", {"disable_feed": False,
-                   "disable_explore": False, "disable_reels": False,
-                   "disable_stories": False, "disable_adds": False})
+            decide(method, "/api/v1/users/1/info/", ALL_OFF_STATE)
         self.assertIn("did not terminate", str(caught.exception))
 
     def test_it_reads_the_diagnostic_form_too(self):
@@ -731,3 +865,22 @@ class DecideTests(unittest.TestCase):
         every = {key: True for key in toggles_of(rules)}
         self.assertEqual((), decide(render_method(rules), "", every).observed)
         self.assertFalse(decide(render_method(rules), None, every).blocked)
+
+    def test_a_null_uri_and_a_null_path_are_two_branches(self):
+        """The guard tests both, so a model that conflated them covered one.
+
+        `p0` is the URI and `v0` is `getPath()`. Modelling p0 *as* the path made
+        `path=None` take the first `if-eqz` and left the second unreachable, so a
+        matrix over paths looked like it exercised a branch it never reached.
+        """
+        rules = DEVICE_PROVED_RULES
+        observing = render_method(rules, observe=watched_literals(rules))
+        every = {key: True for key in toggles_of(rules)}
+        no_uri = decide(observing, "/api/v1/feed/timeline/", every, uri=False)
+        self.assertFalse(no_uri.blocked)
+        self.assertEqual((), no_uri.observed, "a null URI returns before observing")
+        no_path = decide(observing, None, every)
+        self.assertFalse(no_path.blocked)
+        self.assertEqual((), no_path.observed, "and so does a null path")
+        # The control: with both present the very same call blocks.
+        self.assertTrue(decide(observing, "/api/v1/feed/timeline/", every).blocked)

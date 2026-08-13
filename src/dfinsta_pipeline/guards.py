@@ -736,10 +736,23 @@ class Decision:
     observed: tuple[str, ...] = ()
 
 
-_INSTRUCTION = re.compile(r"^\s*(?P<op>[a-z-]+)(?:\s+(?P<rest>.*))?$")
+#: An opcode is lowercase letters, hyphens, digits and `/` — `rem-int/lit8`,
+#: `move-result-object`, `const/4`. Narrower than that and a line this interpreter
+#: cannot execute is rejected as *unreadable* rather than as *unknown*, which puts
+#: it in the wrong branch: the unknown-opcode refusal below then has no way to be
+#: reached, and a mutation deleting it survives every test.
+_INSTRUCTION = re.compile(r"^\s*(?P<op>[a-z][a-z0-9/-]*)(?:\s+(?P<rest>.*))?$")
 _STRING = re.compile(r'^(?P<register>[vp]\d+), "(?P<text>.*)"$')
 _INVOKE = re.compile(r"^\{(?P<args>[^}]*)\}, (?P<target>\S+)$")
 _STEPS = 10_000
+
+
+class _Unset:
+    def __repr__(self) -> str:  # pragma: no cover - trivial
+        return "<no result pending>"
+
+
+_UNSET = _Unset()
 
 
 def _zero(value: Any) -> bool:
@@ -761,7 +774,7 @@ def _zero(value: Any) -> bool:
 
 
 def decide(
-    method: str, path: str | None, toggles: Mapping[str, bool]
+    method: str, path: str | None, toggles: Mapping[str, bool], *, uri: bool = True
 ) -> Decision:
     """Execute a rendered method against one path and one toggle state.
 
@@ -781,6 +794,12 @@ def decide(
     rather than defaulted, because the interesting states here are the ones where
     a single toggle is on and the rest are off, and a default would make "off" and
     "never mentioned" the same answer.
+
+    The URI and its path are **separate**, which is why `uri` exists. The guard
+    tests both — `if-eqz p0` for a null URI and `if-eqz v0` for a null path — and
+    modelling p0 *as* the path collapsed them: `path=None` took the first branch
+    and the second could never run, so a matrix over paths looked like it covered
+    a branch it never reached.
     """
 
     labels: dict[str, int] = {}
@@ -802,8 +821,23 @@ def decide(
             raise GuardError(f"decide cannot read {stripped!r}")
         program.append((found.group("op"), (found.group("rest") or "").strip()))
 
-    registers: dict[str, Any] = {"p0": path}
-    result: Any = None
+    # Every jump target, checked before anything runs. Checking one only when its
+    # branch is taken would let a method that does not assemble be "decided" —
+    # right answer, from a model of a class that could never have existed.
+    for op, rest in program:
+        target = rest[rest.index(":") + 1:] if op == "goto" else (
+            rest.partition(", :")[2] if op in ("if-eqz", "if-nez") else ""
+        )
+        if target and target not in labels:
+            raise GuardError(f"decide: :{target} is jumped to and never defined")
+
+    registers: dict[str, Any] = {"p0": "<uri>" if uri else None}
+    #: What the last value-returning instruction produced. `_UNSET` between them,
+    #: because `move-result` is only legal immediately after an invoke that
+    #: returned something — dalvik rejects the class otherwise, and a model that
+    #: quietly moved a stale value would report a decision for a method that could
+    #: not run.
+    result: Any = _UNSET
     observed: list[str] = []
     recorded: str | None = None
 
@@ -831,6 +865,9 @@ def decide(
             raise GuardError("decide: the method did not terminate; a jump loops")
         op, rest = program[at]
         at += 1
+        if op not in ("move-result", "move-result-object", "invoke-virtual",
+                      "invoke-static", "invoke-direct"):
+            result = _UNSET
         if op == "const-string":
             found = _STRING.match(rest)
             if found is None:
@@ -840,15 +877,21 @@ def decide(
             target, _, source = rest.partition(", ")
             write(target, read(source))
         elif op == "move-result" or op == "move-result-object":
+            if result is _UNSET:
+                raise GuardError(
+                    f"decide: {op} at instruction {at} follows no invoke that returned a "
+                    "value. Dalvik requires it to come straight after one, so this "
+                    "method would be rejected by the verifier and the class would not "
+                    "load"
+                )
             write(rest, result)
+            result = _UNSET
         elif op == "goto":
             at = labels[rest[1:]]
         elif op in ("if-eqz", "if-nez"):
             register, _, label = rest.partition(", ")
             taken = _zero(read(register)) if op == "if-eqz" else not _zero(read(register))
             if taken:
-                if label[1:] not in labels:
-                    raise GuardError(f"decide: {label} is jumped to and never defined")
                 at = labels[label[1:]]
         elif op == "return-void":
             return Decision(False, None, recorded, tuple(observed))
@@ -863,7 +906,10 @@ def decide(
             arguments = [a.strip() for a in found.group("args").split(",") if a.strip()]
             target = found.group("target")
             if target.endswith("getPath()Ljava/lang/String;"):
-                result = read(arguments[0])
+                # Reads through the URI rather than returning it: a URI is not its
+                # path, and the guard branches on each separately.
+                read(arguments[0])
+                result = path
             elif target.endswith("endsWith(Ljava/lang/String;)Z"):
                 subject, argument = read(arguments[0]), read(arguments[1])
                 result = int(subject.endswith(argument))
@@ -883,14 +929,17 @@ def decide(
                 result = int(bool(toggles[key]))
             elif target == f"{OBSERVE_DESCRIPTOR}->seen(Ljava/lang/String;)V":
                 observed.append(read(arguments[0]))
+                result = _UNSET
             elif target == (
                 f"{OBSERVE_DESCRIPTOR}->{BLOCKED_METHOD}(Ljava/lang/String;)V"
             ):
                 recorded = read(arguments[0])
+                result = _UNSET
             elif target == f"{OBSERVE_DESCRIPTOR}->state()V":
-                pass
+                result = _UNSET
             elif target.startswith("Ljava/io/IOException;-><init>"):
                 write(arguments[0], read(arguments[1]))
+                result = _UNSET
             else:
                 raise GuardError(f"decide does not know the method {target}")
         else:

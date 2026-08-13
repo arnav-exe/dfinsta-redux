@@ -1065,9 +1065,17 @@ def _classify_one(
                         "which is what an erasure upstream of the URL looks like"
                     ),
                     corroboration=(
-                        f"{arm.arm} refused it {arm.refusals_text(endpoint)} time(s): an "
-                        "erased path cannot be refused, because nothing ever reaches the "
-                        "code that throws",
+                        (
+                            f"{arm.arm} refused it {arm.refusals_text(endpoint)} time(s): "
+                            "an erased path cannot be refused, because nothing ever "
+                            "reaches the code that throws"
+                        )
+                        if arm.reported
+                        else (
+                            f"{arm.arm} could not report refusals, so nothing here "
+                            "corroborates the mechanism — an erased path cannot be "
+                            "refused, and this build cannot say it was not"
+                        ),
                     ),
                 )
             )
@@ -1082,9 +1090,22 @@ def _classify_one(
         # `/feed/timeline/` had 17 requests and 17 blocks, because `7 + 7 + 3 = 17`
         # among three unrelated paths.
         refusals = arm.refusals(endpoint)
+        # `baseline.refusals` is `None` when the control could not report, and
+        # `None or ()` would make "the baseline refused nothing" vacuously true —
+        # a second check that reads as independent and can never be the one that
+        # answers. It is spelled out, because the corpus shape that reaches here is
+        # exactly the one re-walking produces: new arm sessions beside a baseline
+        # nobody re-walked.
+        # `baseline_clean` is "the baseline refused **nothing at all**", which is
+        # the whole of the control: with every toggle off nothing should throw, so
+        # a baseline that refused anything means the build's own state line and its
+        # behaviour disagree and no verdict taken against it is safe. A per-path
+        # `and the baseline did not refuse this one` used to sit here too and read
+        # as a second, independent check — it could never be the one that fired,
+        # because refusing this path would have made `refused_total` non-zero. A
+        # guard that cannot fire is worse than no guard: it is a reason not to look.
         if baseline_clean and refusals is not None and all(arm_counts):
-            baseline_refusals = baseline.refusals(endpoint) or ()
-            if all(count > 0 for count in refusals) and not any(baseline_refusals):
+            if all(count > 0 for count in refusals):
                 findings.append(
                     Finding(
                         kind=BLOCKED,
@@ -1184,6 +1205,37 @@ def _classify_one(
                 "a toggle moved it beyond the noise floor and no mechanism accounts for "
                 "the movement: " + "; ".join(caveats)
             ),
+            **common,
+        )
+    # A refusal names the literal the *rule* tested, so a watched path caught by a
+    # broader literal has its refusals recorded under that other name and reads
+    # zero under its own. That zero is measured, not absent, so nothing above
+    # refuses it — and `unaffected` is a positive claim, the one verdict here
+    # easiest to reach by accident. `/clips/discover/stream/` is the live example:
+    # it *contains* `/clips/discover`, a `contains` literal under `disable_reels`.
+    covered = [
+        arm.arm
+        for arm in arms
+        if arm.arm
+        and declared
+        and arm.arm in declared
+        and arm.reported
+        and arm.refused_total
+        and not any(arm.refusals(endpoint) or ())
+    ]
+    if covered:
+        return Classification(
+            verdict=UNCLASSIFIABLE,
+            toggle=None,
+            reason=(
+                "nothing moved it and it records no refusal of its own, but "
+                + ", ".join(sorted(covered))
+                + " declares a rule that covers it and did refuse under another literal. "
+                "A refusal names the literal the rule matched, so this path's own zero "
+                "does not mean it was allowed through — and 'unaffected' would say it "
+                "was"
+            ),
+            caveats=tuple(caveats),
             **common,
         )
     if unreadable:

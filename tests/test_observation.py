@@ -3736,6 +3736,35 @@ class RefusalsFromTheGuardItselfTests(unittest.TestCase):
             Refusals.of({"/feed/timeline/": 0})
         self.assertIn("second spelling of absent", str(caught.exception))
 
+    def test_a_capture_built_by_hand_says_nothing_rather_than_nothing_happened(self):
+        """The one place the absent-versus-empty rule is unguarded.
+
+        `parse` always sets `refusals` explicitly, so the field's default is
+        reached only by a caller constructing a `Capture` — a fixture, a test, a
+        future producer. Defaulting it to an empty `Refusals` would make every one
+        of those say "this configuration refused nothing", which is the measured
+        statement the whole store is compared against.
+        """
+        from dfinsta_pipeline.observation import Capture
+
+        self.assertIsNone(Capture(toggles=None).refusals)
+        self.assertIsNone(Capture(toggles=ToggleState.of({"disable_feed": True})).refusals)
+
+    def test_the_erasure_corroboration_does_not_claim_what_it_cannot_say(self):
+        """Grammar is the tell, and the sentence was asserting corroboration.
+
+        With a build that could not report, `refusals_text` returns "not reported"
+        and it was being spliced into "refused it {…} time(s): an erased path
+        cannot be refused" — printed twice, verbatim, by
+        `grouping report --version 439`, over the entire committed corpus.
+        """
+        from dfinsta_pipeline import grouping
+
+        report = grouping.summary("439", REPOSITORY, walk="one-pass-v1")
+        printed = grouping.render(report)
+        self.assertNotIn("refused it not reported time(s)", printed)
+        self.assertIn("could not report refusals", printed)
+
     def test_a_blank_or_padded_literal_is_refused(self):
         for literal in ("", "  ", " /feed/timeline/"):
             with self.subTest(literal=literal):
