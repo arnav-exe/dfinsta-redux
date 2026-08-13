@@ -238,6 +238,23 @@ convenience.
       stories 2/3 against 2/3 — exact, and the positive control without which a different
       number is not a better one. Explore **14/14 against 1/1**. Reels **2/3 against 0/0**.
 
+- [x] **439 re-measured too**, both walks, 24 sessions with `e751d4e9eb33`. Its original 24
+      rows were withdrawn on the same grounds, captures kept. **439's two walks agree on every
+      endpoint** — which is the result this whole change was for, since before it they
+      contradicted each other on one version on one day. All four corpora now have every arm
+      readable, and `/feed/timeline/`, `/feed/reels_tray/` and `/discover/topical_explore` are
+      blocked by the same toggle in all four.
+
+      On 439 `disable_explore` refused `/discover/topical_explore` **8, 8, 14 and 2** times
+      across the four arm-sessions while Instagram reported **0, 0, 0 and 1** — and
+      `/feed/timeline/` reported 18/18 and 19/19 exactly in the same captures, which is what
+      makes those zeroes a measurement rather than an assertion.
+
+      Two endpoints still read differently between the versions and **both are the app**.
+      `/feed/reels_media_stream/` has no 439 baseline at all — requested 0 and 0 with every
+      toggle off, so nothing can be called blocked against it — where 440 requests it every
+      session. And `/clips/discover`, below.
+
 - [x] **The walk-sensitivity for blocks is gone, and the one remaining difference is a fact
       about the app.** `/clips/discover` reads ERASED on one-pass and BLOCKED on three-round,
       and the counts say why: under `disable_reels` the short walk requests it 0 times of a
@@ -247,6 +264,16 @@ convenience.
       erasure does not cover. The previous corpus could only say ERASED versus *undecidable*;
       now both walks decide, and they decide different mechanisms because the app does
       different things.
+
+      **And 439 does not do it.** Its long walk requests `/clips/discover` 0 times under
+      `disable_reels`, exactly like its short one, so the fallback is not merely unobserved
+      there — the longer walk had every chance. 440 added a second route to that endpoint.
+      Seven classes on 440 carry the `clips/discover/` literal and exactly one was patched, on
+      the reasoning that only it builds an outgoing request; the others read as analytics maps
+      and prefetch allowlists. **Worth finding which one now builds a real request.** Until
+      then the `/clips/discover` url_block rule is the only thing catching those four requests
+      a session, so it must not be tidied away as redundant — and the hook's own note, which
+      told a reader to expect zero blocks, was corrected on 2026-08-13.
 
 - [x] **The superseded 440 rows were withdrawn.** 24 rows from build `55fa576b3c73`, which
       could not report refusals. Not a judgement on them: `classify` refuses to compare
