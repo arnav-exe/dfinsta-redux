@@ -168,6 +168,31 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       *"watched, never seen"* in different words — they look identical and mean opposite
       things.
 
+## Next: stop measuring our own block through Instagram's log
+
+The block signal has always been `java.io.IOException: Blocked by DFInsta setting` grepped out of
+logcat — a line that is there **because Instagram catches our exception and logs it**. It costs
+nothing to read, so it became the signal, and an accounting identity and a subset-sum ambiguity
+check were built on top to work out which path an untagged aggregate belonged to.
+
+It under-reports, measurably and consistently. `/discover/topical_explore` under `disable_explore`:
+requested 7 times and reported once; requested 6 times and reported **none**. Eight sessions,
+both versions, both walks, same story — while `/feed/timeline/` reports 20/20, 23/23, 17/17 and so
+on, perfectly, every time. The loss is feature-specific and stable, so no amount of inference
+recovers it.
+
+Whether the app *requests* a path is Instagram's business — that is what we measure. Whether the
+block happens, and whether it is **recorded**, are ours. The second was given away for
+convenience.
+
+- [ ] **Emit the block from our own code**, immediately before the throw:
+      `observe;->blocked("<rule>")` → `I DFInstaObserve: !blocked <rule>`, through the same
+      `android.util.Log.i` used for the toggle line and the observed paths, which has never
+      dropped a line.
+- [ ] **Attribute directly and delete the inference.** The accounting identity, the subset-sum
+      check and the block-count noise floor have nothing left to do.
+- [ ] **Re-measure one version** and confirm the walk-sensitivity disappears for blocks.
+
 ## Open ends that are nobody's bug
 
 - **A recorded `block` on an endpoint cannot be retired.** With the reversal gate gone
