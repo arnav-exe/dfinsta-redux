@@ -7,13 +7,20 @@ problem: `manifest/observations/<version>.jsonl` is committed evidence that
 **nothing committed can be checked against**. A clone gets the counts and no way
 to re-derive them.
 
-So the capture is reduced to exactly three kinds of line and committed alongside
-the store:
+So the capture is reduced to a few kinds of line and committed alongside the store:
 
-  * `DFInstaObserve: !toggles …`  — which blocks were active, as the build reported
+  * `DFInstaObserve: !toggles +blocked …` — which blocks were active, as the build
+    reported them, and what this build's instrumentation is able to state
   * `DFInstaObserve: /some/path/` — one per watched request
+  * `DFInstaObserve: !blocked /some/path/` — one per request the guard refused,
+    naming the literal that matched. This is the block signal; the two below are
+    Instagram's own report of the same event, kept as corroboration
   * the block header `IgFunctionalErrorEvent: java.io.IOException: Blocked by …`
     and the category line immediately above it, which names the failing feature
+
+Every `DFInstaObserve` line is kept whatever it says, so a directive this reducer
+has not heard of survives into the committed capture rather than being filtered
+out by a tool that predates it.
 
 Everything else goes, including `IgFunctionalErrorEvent` lines about unrelated
 failures, cold-start timings and module names.

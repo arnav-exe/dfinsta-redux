@@ -16,7 +16,9 @@ evidence stage 4 has.
 So the app grows an **observe mode**: a generated form of `throwIfBlocked` that
 emits one line per watched path it sees, *before* any rule can throw. It blocks
 exactly what a shipped build blocks — `test_an_observing_build_blocks_exactly_what_a_shipped_one_blocks`
-compares the rule spans of both renderings — and that is the whole reason the
+**executes both renderings** against every watched path under every toggle state
+and compares the decisions, because the two no longer have the same instructions
+and comparing their text would assert only that nobody changed them — and that is the whole reason the
 section below exists, because a build that still blocks suppresses the very
 requests it is counting. This module is the host side: it turns those lines into
 committed evidence, and that evidence into an answer to "which of these paths
@@ -37,13 +39,20 @@ and in a real capture, with the threadtime prefix logcat adds::
 plus a **directive** naming which blocks were active, emitted on *every* checked
 request, ahead of any path line that request produces::
 
-    I DFInstaObserve: !toggles disable_feed=1 disable_explore=0 disable_reels=1 …
+    I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 …
     I DFInstaObserve: /feed/timeline/
 
 `1` is on, meaning blocking. A payload beginning `!` is a directive and never a
 path; an unrecognised one **refuses**, so a host reading a capture from a newer
 build fails loudly instead of counting `!version 442` as a request. Repeats are
 collapsed — a 22-request session states the same thing 22 times.
+
+The `+blocked` token is the build stating **what its instrumentation can report**.
+Tokens marked with `+` are capabilities and the rest are toggles, and the two
+shapes cannot collide because a preference key can never begin with `+`. It rides
+on this line rather than one of its own because this line is written on every
+checked request — 625 times in a three-round session — so a second one would have
+grown every committed capture by half to repeat one constant.
 
 It repeats because the once-per-process version of it failed in the field, and
 failed silently. The protocol is `adb logcat -c` immediately before walking the
@@ -70,7 +79,7 @@ list disagree about what was being watched, and a session whose watch list is
 wrong cannot support a statement about what was *not* seen.
 
 ===============================================================================
-  AND ONE LINE THE APP EMITS, WHICH THE COUNTS CANNOT REPLACE
+  AND ONE LINE THE GUARD EMITS, WHICH THE COUNTS CANNOT REPLACE
 ===============================================================================
 
 The observe line says a request was **made**. It does not say it was **stopped**,
@@ -85,7 +94,17 @@ and the two come apart in both directions:
   literal before the URL is built, so the path never reaches the guard, never
   throws, and never appears in the log at all — `/clips/discover` 4 → 0.
 
-So :func:`parse` also counts the one line Instagram emits when the guard throws::
+So the guard says so itself, immediately before it throws, naming the literal
+that matched::
+
+    I DFInstaObserve: !blocked /feed/timeline/
+
+That is a decision **we** made, recorded by **us**, through the same
+`android.util.Log.i` that has never dropped a line here. "Did this rule fire, and
+how often" is then known rather than derived.
+
+**It replaces a signal that was never ours.** Until 2026-08-13 the only block
+evidence was the line Instagram emits when it catches our exception::
 
     E IgFunctionalErrorEvent: FEED_NOT_LOADING
     E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
@@ -113,8 +132,18 @@ mapping from one to the other has been measured three times.
 missing.** In this corpus `439-reverse-explore` ran with `disable_explore` on,
 asked for `/discover/topical_explore` six times, and reported **no block at all**,
 while `439-isolate-explore` — same state, same walk, other order — reported one.
-A count of 0 here is therefore not proof that nothing was blocked, which is
-exactly why `grouping` will not classify from a state whose two sessions disagree.
+Across eight sessions on two versions and two walks the same path was refused 7,
+6, 12 and 6 times and reported 1, 0, 1 and 0, while `/feed/timeline/` reported
+20/20, 23/23, 17/17 and 16/16 in the very same captures. The loss is
+feature-specific and stable, so no inference over the total recovers it — and a
+whole layer of inference was built to try, an accounting identity and a
+subset-sum ambiguity check, which is now deleted.
+
+:class:`BlockCount` stays because 48 committed sessions carry it and because a
+capture that was read was read. **Nothing derives from it.** Every question about
+which path was refused is answered by :class:`Refusals`, and a build that could
+not report those says so by omitting `+blocked` — so its silence stays a silence
+instead of becoming 48 measured zeroes.
 
 ===============================================================================
   A ZERO IS ONLY READABLE UNDER A STATED CONFIGURATION
@@ -359,6 +388,11 @@ __all__ = [
     "SCHEMA_VERSION",
     "TAG",
     "TOGGLE_DIRECTIVE",
+    "BLOCKED_DIRECTIVE",
+    "REPORTS_MARK",
+    "REPORTS_BLOCKED",
+    "KNOWN_REPORTS",
+    "Refusals",
     "BLOCK_TAG",
     "BLOCK_MESSAGE",
     "UNATTRIBUTED",
@@ -421,6 +455,38 @@ _OBSERVE_LINE = re.compile(
 #: watched literal can begin with one, because `throwIfBlocked` tests
 #: `URI.getPath()`.
 TOGGLE_DIRECTIVE = "!toggles"
+
+#: How an observing build states a refusal **it made itself**, naming the literal
+#: that matched: `!blocked /feed/timeline/`.
+#:
+#: This exists because :data:`BLOCK_MESSAGE` below is *Instagram's* line. It is in
+#: the log only because Instagram catches our IOException and files it into its own
+#: error event, and it under-reports by feature: across eight sessions on two
+#: Instagram versions and two walk protocols, `/discover/topical_explore` was
+#: refused seven times and reported once, and six times and reported **none**,
+#: while `/feed/timeline/` reported 20/20 and 23/23 in the very same captures.
+#: Whether the app requests a path is Instagram's to say and is the thing being
+#: measured; whether our guard refused it is ours, and so is writing that down.
+BLOCKED_DIRECTIVE = "!blocked"
+
+#: What a build says its instrumentation can report, carried on the toggle line as
+#: `!toggles +blocked disable_feed=1 ...`.
+#:
+#: Without it a capture holding no `!blocked` line is ambiguous between "nothing
+#: was refused" and "this build could not have written one", and every session
+#: recorded before 2026-08-13 is the second — so a reader that could not tell them
+#: apart would turn 48 committed sessions into 48 measured zeroes at once. That is
+#: the absent-versus-empty conflation this store spells apart everywhere else.
+#:
+#: The mark cannot collide with a preference key: :data:`_TOGGLE_NAME` constrains
+#: those to `[A-Za-z_][A-Za-z0-9_]*`, so splitting the line on token shape is exact
+#: rather than a convention two modules have to remember.
+REPORTS_MARK = "+"
+
+#: The one capability a build can currently claim. Named rather than numbered, so
+#: a reader needs no table mapping build generations to what they could say.
+REPORTS_BLOCKED = "blocked"
+KNOWN_REPORTS = frozenset({REPORTS_BLOCKED})
 
 #: Instagram's own error-event tag. Not ours: these events are emitted at
 #: Instagram's discretion and can go missing entirely — see the module docstring.
@@ -709,6 +775,111 @@ class BlockCount:
 
 
 @dataclass(frozen=True)
+class Refusals:
+    """Which paths the guard refused in one capture, and how many times.
+
+    Read from the build's own `!blocked` lines, so each count is a decision this
+    build made rather than a report Instagram chose to emit about it. That is the
+    whole difference from :class:`BlockCount`, which counts Instagram's error
+    events: this one cannot be under-reported by a feature we do not control, and
+    it names a **path** where the event names only a feature category.
+
+    A literal with no refusals is **absent**, never a recorded zero — the rule
+    `BlockCount` and `counts` both follow. Absence of the whole object is
+    different again and is spelled by `None`: it means the build never said it
+    could report refusals, which is every build made before 2026-08-13.
+
+    The literal is the one the *rule* tested, which is not always the one the
+    request path would suggest. `/api/v1/clips/discover/stream/` is refused by the
+    `/clips/discover` rule and recorded under that name, because that is the rule
+    that fired. A watched path which no rule names can therefore never appear here,
+    and `grouping` says "covered by" rather than inventing a count for it.
+    """
+
+    #: `(literal, count)`, sorted by literal. A Mapping is accepted and normalised.
+    by_literal: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        given = self.by_literal
+        items = list(given.items()) if isinstance(given, Mapping) else list(given)
+        cleaned: list[tuple[str, int]] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, Sequence) or isinstance(item, (str, bytes)) or len(item) != 2:
+                raise ObservationError(
+                    f"a refusal count is (literal, count) pairs, got {item!r}"
+                )
+            literal, count = item
+            literal = str(literal)
+            if not literal.strip() or literal != literal.strip():
+                raise ObservationError(
+                    f"{literal!r} is not a path literal. It is compared verbatim against "
+                    "the watch list, so a blank or padded one is a refusal attributed to "
+                    "a path no build was testing"
+                )
+            if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+                raise ObservationError(
+                    f"refusals for {literal} count {count!r}; a recorded zero is a second "
+                    "spelling of absent, in the one field whose zero is evidence"
+                )
+            if literal in seen:
+                raise ObservationError(f"a refusal count names {literal} twice")
+            seen.add(literal)
+            cleaned.append((literal, count))
+        object.__setattr__(self, "by_literal", tuple(sorted(cleaned)))
+
+    @classmethod
+    def of(
+        cls, by_literal: Mapping[str, int] | Iterable[tuple[str, int]] = ()
+    ) -> "Refusals":
+        return cls(
+            tuple(by_literal.items()) if isinstance(by_literal, Mapping) else tuple(by_literal)
+        )
+
+    @property
+    def total(self) -> int:
+        return sum(count for _, count in self.by_literal)
+
+    @property
+    def literals(self) -> tuple[str, ...]:
+        return tuple(literal for literal, _ in self.by_literal)
+
+    def get(self, literal: str) -> int:
+        """How many times this literal was refused. Zero is a real answer here.
+
+        Safe *because* the object exists at all: a `Refusals` was only built from a
+        build that said it could report refusals, so a literal missing from it was
+        measured and not refused. The distinction lives one level up, in whether
+        this object is `None`.
+        """
+
+        return dict(self.by_literal).get(literal, 0)
+
+    @property
+    def text(self) -> str:
+        if not self.by_literal:
+            return "0"
+        return f"{self.total} (" + ", ".join(
+            f"{literal} {count}" for literal, count in self.by_literal
+        ) + ")"
+
+    def as_dict(self) -> dict[str, int]:
+        return dict(self.by_literal)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "Refusals":
+        if not isinstance(data, Mapping):
+            raise ObservationError(
+                f"refusals must be an object of literal -> integer, got "
+                f"{type(data).__name__}"
+            )
+        return cls.of({str(key): value for key, value in data.items()})
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return self.text
+
+
+@dataclass(frozen=True)
 class Capture:
     """What one logcat capture says: the configuration, what was asked for, what
     was refused.
@@ -726,7 +897,20 @@ class Capture:
     #: Always a real count, never `None`: a capture that was read was counted. The
     #: default is for the hand-made fixtures that predate this field, and it says
     #: "this text held no block header", which is what reading it would find.
+    #:
+    #: **Superseded by `refusals` for every question about attribution.** It is
+    #: Instagram's count of our refusals and it under-reports by feature; it stays
+    #: because 48 committed sessions carry it and because a capture that was read
+    #: was read, not because anything should still be derived from it.
     blocks: BlockCount = field(default_factory=lambda: BlockCount(0))
+    #: What the guard itself said it refused. `None` — unlike `blocks` — because a
+    #: build that never claimed the capability could not have written a `!blocked`
+    #: line, and reading its silence as "nothing was refused" would make every
+    #: session recorded before 2026-08-13 evidence for a fact none of them measured.
+    #: `Refusals()` with nothing in it is the *measured* statement that this
+    #: configuration refused nothing, and it is the baseline everything else is
+    #: compared against.
+    refusals: "Refusals | None" = None
     #: Whole seconds from the first line this parse read to the last, or `None`
     #: when fewer than two of them carried a logcat timestamp. `None` and `0` are
     #: different facts — `0` is a capture whose lines all landed inside one second
@@ -796,6 +980,37 @@ def _span(stamps: Sequence[float]) -> int | None:
     return int(max(stamps) - min(stamps))
 
 
+def _marks(payload: str, number: int) -> tuple[frozenset[str], str]:
+    """Split a toggle line's payload into what the build *can say* and what it says.
+
+    Exact rather than conventional: a preference key matches :data:`_TOGGLE_NAME`
+    and so can never begin with :data:`REPORTS_MARK`, and `ToggleState.parse`
+    refuses any token that is not `key=0` or `key=1` — so neither reader can
+    swallow the other's tokens even if this split were removed.
+
+    An unknown capability is **refused**, for the reason an unknown directive is:
+    a host that ignored it would read a newer build's capture as though the build
+    had claimed nothing, which is precisely the "could not have said" answer the
+    mark exists to distinguish from "said nothing happened".
+    """
+
+    marks: set[str] = set()
+    rest: list[str] = []
+    for token in payload.split():
+        if not token.startswith(REPORTS_MARK):
+            rest.append(token)
+            continue
+        name = token[len(REPORTS_MARK):]
+        if name not in KNOWN_REPORTS:
+            raise ObservationError(
+                f"line {number}: the build states it can report {name!r}, which this "
+                "host does not know how to read. The build is newer than the reader, "
+                "and a capture whose claims are not all understood cannot be recorded"
+            )
+        marks.add(name)
+    return frozenset(marks), " ".join(rest)
+
+
 def parse(text: str) -> Capture:
     """Read one capture: the state it states, every path it counted, every block.
 
@@ -840,8 +1055,10 @@ def parse(text: str) -> Capture:
 
     counts: dict[str, int] = {}
     features: dict[str, int] = {}
+    refused: dict[str, int] = {}
     blocks = 0
     toggles: ToggleState | None = None
+    reports: frozenset[str] | None = None
     previous = ""
     stamps: list[float] = []
     for number, line in enumerate(text.splitlines(), 1):
@@ -881,6 +1098,38 @@ def parse(text: str) -> Capture:
             )
         if literal.startswith("!"):
             keyword, _, payload = literal.partition(" ")
+            if keyword == BLOCKED_DIRECTIVE:
+                if toggles is None:
+                    raise ObservationError(
+                        f"line {number}: a refusal was reported before any "
+                        f"{TOGGLE_DIRECTIVE} line. A refusal is caused by our own "
+                        "toggles, so one that arrives before the build has said which "
+                        "were active cannot be attributed to a configuration — and "
+                        "counting it would put a refusal into a state that may have "
+                        "had none"
+                    )
+                if reports is None or REPORTS_BLOCKED not in reports:
+                    # Not a tolerable inconsistency: the two facts come from one
+                    # build, and a build that writes refusals it never claimed it
+                    # could write means the reader's model of that build is wrong.
+                    # Believing the lines anyway would be believing a contract
+                    # nobody stated.
+                    raise ObservationError(
+                        f"line {number}: {TAG} reported a refusal, and the build never "
+                        f"stated `{REPORTS_MARK}{REPORTS_BLOCKED}` on its "
+                        f"{TOGGLE_DIRECTIVE} line. The guard and the class it logs "
+                        "through disagree about what this build can report, so nothing "
+                        "in this capture's refusals can be trusted to be all of them"
+                    )
+                if not payload.strip() or payload != payload.strip():
+                    raise ObservationError(
+                        f"line {number}: {TAG} reported the refusal {payload!r}, which "
+                        "names no path or a padded one. The name is compared verbatim "
+                        "against the watch list, so it would count against a path no "
+                        "build was testing"
+                    )
+                refused[payload] = refused.get(payload, 0) + 1
+                continue
             if keyword != TOGGLE_DIRECTIVE:
                 # Forward compatibility that fails closed. A host that ignored an
                 # unknown directive would read a newer build's capture as though
@@ -891,8 +1140,9 @@ def parse(text: str) -> Capture:
                     "host does not know. The build is newer than the reader, and a "
                     "capture whose statements are not all understood cannot be recorded"
                 )
+            claimed, state_text = _marks(payload, number)
             try:
-                stated = ToggleState.parse(payload)
+                stated = ToggleState.parse(state_text)
             except ObservationError as error:
                 raise ObservationError(f"line {number}: {error}") from error
             if toggles is not None and toggles != stated:
@@ -903,7 +1153,20 @@ def parse(text: str) -> Capture:
                     "either way no line says which counts belong to which "
                     "configuration, so this is two experiments at once"
                 )
+            if reports is not None and reports != claimed:
+                # Same argument as two toggle states, and the same cause: one
+                # capture cannot have been taken from two builds. Here it would be
+                # worse than a wrong count — half the capture could report refusals
+                # and half could not, and the zero would be read across both.
+                raise ObservationError(
+                    f"line {number}: this capture states two different sets of build "
+                    f"capabilities, {sorted(reports)} then {sorted(claimed)}. Two "
+                    "builds' logs were concatenated, and a refusal count over both "
+                    "would be a count of one build's refusals divided by the other's "
+                    "requests"
+                )
             toggles = stated
+            reports = claimed
             continue
         if toggles is None:
             raise ObservationError(
@@ -920,6 +1183,14 @@ def parse(text: str) -> Capture:
         toggles=toggles,
         counts=counts,
         blocks=BlockCount.of(blocks, features),
+        # `None` unless the build said it could report them. An empty `Refusals`
+        # is the measured statement that nothing was refused; `None` is a build
+        # that could not have said either way, and the two must never collapse.
+        refusals=(
+            Refusals.of(refused)
+            if reports is not None and REPORTS_BLOCKED in reports
+            else None
+        ),
         span_seconds=_span(stamps),
     )
 
@@ -1018,6 +1289,19 @@ class ObservationSession:
     #: unlike `toggles`, because a row already in the store has to keep reading;
     #: `append` is where the rule that new evidence must state it lives.
     blocks: BlockCount | None = None
+    #: What the **guard itself** said it refused, per path. `None` means the build
+    #: could not have said — it never claimed `+blocked` on its toggle line — which
+    #: is every build made before 2026-08-13 and therefore every row committed
+    #: before then. An empty `Refusals` is the measured statement that this
+    #: configuration refused nothing, and that is the baseline `grouping` compares
+    #: an arm against.
+    #:
+    #: This is what `blocks` was always a proxy for. `blocks` counts the error
+    #: events *Instagram* emitted about our exception, which under-report by
+    #: feature and name a feature category rather than a path, and every derivation
+    #: built on top of them had to work out which path an untagged total belonged
+    #: to. Nothing needs to now.
+    refusals: "Refusals | None" = None
     #: How long the capture ran, as :func:`parse` measured it. The evidence the
     #: typed `walk` is checked against, and the reason a wrong walk is catchable at
     #: all. `None` means the capture carried no timestamps — the bare contract
@@ -1155,6 +1439,43 @@ class ObservationSession:
                 f"session {self.session_id} has blocks {self.blocks!r}; pass a "
                 "BlockCount (BlockCount.of(20, {'FEED_NOT_LOADING': 20})) or None"
             )
+        if self.refusals is not None:
+            if not isinstance(self.refusals, Refusals):
+                # Not coerced from a mapping, for the reason `toggles` and `blocks`
+                # are not: `refusals={}` would be indistinguishable, once stored,
+                # from a build that could not report them — and that is the one
+                # distinction this field exists to keep.
+                raise ObservationError(
+                    f"session {self.session_id} has refusals {self.refusals!r}; pass a "
+                    "Refusals (Refusals.of({'/feed/timeline/': 20})) or None"
+                )
+            unwatched = sorted(set(self.refusals.literals) - set(self.watched))
+            if unwatched:
+                raise ObservationError(
+                    f"session {self.session_id} refused {', '.join(unwatched)}, which it "
+                    "was not watching. The guard blocked a path the build's own watch "
+                    "list does not name, so the two halves of this capture came from "
+                    "different builds"
+                )
+            # The observe pass runs at the top of `throwIfBlocked` and tests every
+            # watched literal with `contains`, so a request the guard refuses under
+            # a literal was necessarily reported under that same literal a few
+            # instructions earlier. More refusals than requests therefore cannot
+            # happen in one build, and where it does it means lines were lost or a
+            # row was edited — the two independent halves of a capture checking
+            # each other, which is the only control a single session has.
+            excess = sorted(
+                literal
+                for literal, count in self.refusals.by_literal
+                if count > self.counts.get(literal, 0)
+            )
+            if excess:
+                raise ObservationError(
+                    f"session {self.session_id} refused {', '.join(excess)} more often "
+                    "than it observed them. Every refusal follows an observation of the "
+                    "same literal in the same call, so this capture lost lines or this "
+                    "row was edited"
+                )
 
     @property
     def total(self) -> int:
@@ -1190,6 +1511,12 @@ class ObservationSession:
         # the whole file, so the twelve 439 rows written before this field existed
         # come back byte for byte rather than acquiring a zero nobody measured.
         counted = {"blocks": self.blocks.as_dict()} if self.blocks is not None else {}
+        # Same rule a fourth time, and the strongest case for it: a build that
+        # could not report refusals must come back with the key absent, never with
+        # an empty object that reads as "refused nothing".
+        refused = (
+            {"refusals": self.refusals.as_dict()} if self.refusals is not None else {}
+        )
         # Same rule a third time. The twelve 439 rows written before a walk was
         # named come back byte for byte rather than acquiring a walk nobody stated
         # or a span nobody measured.
@@ -1214,6 +1541,7 @@ class ObservationSession:
             **driven,
             **timed,
             **counted,
+            **refused,
             "counts": dict(sorted(self.counts.items())),
             # Derived and written anyway, following `SignalCount.to_dict`. It is
             # the number a human reads first, and `from_dict` refuses a row whose
@@ -1240,6 +1568,7 @@ class ObservationSession:
             "walk",
             "span_seconds",
             "blocks",
+            "refusals",
             "counts",
             "total",
         }
@@ -1328,6 +1657,17 @@ class ObservationSession:
                     "spelling of absent, in the one field whose zero is evidence"
                 )
             blocks = BlockCount.from_dict(data["blocks"])
+        refusals: Refusals | None = None
+        if "refusals" in data:
+            if data["refusals"] is None:
+                raise ObservationError(
+                    "an observation session states refusals: null. A build that could "
+                    "not report refusals is spelled by the key being absent — the way "
+                    "every row written before builds recorded their own refusals is "
+                    "spelled — and a null is a second spelling of absent, in the one "
+                    "field whose empty object is a measurement"
+                )
+            refusals = Refusals.from_dict(data["refusals"])
         session = cls(
             schema_version=data.get("schema_version"),
             version=str(data.get("version", "")),
@@ -1340,6 +1680,7 @@ class ObservationSession:
             walk=walk,
             span_seconds=span,
             blocks=blocks,
+            refusals=refusals,
             counts={str(key): value for key, value in counts.items()},
         )
         stated = data.get("total")
@@ -2453,6 +2794,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 walk=args.walk,
                 span_seconds=capture.span_seconds,
                 blocks=capture.blocks,
+                refusals=capture.refusals,
                 counts=capture.counts,
             )
             written = append(session, root=args.root)
@@ -2472,6 +2814,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"  blocks:  {session.blocks.text}  (Instagram's own error events, "
                 "which go missing)"
             )
+            if session.refusals is None:
+                # The operator has to know at the moment they file it: this
+                # session cannot answer "which paths did the guard refuse", and
+                # its silence is not a zero. A build older than 2026-08-13 is the
+                # usual cause, and re-walking is the only repair — unlike the
+                # walk, nothing here can be back-filled from the capture.
+                print(
+                    f"  refused: not reportable — this build never claimed "
+                    f"`{REPORTS_MARK}{REPORTS_BLOCKED}`, so it could not have written a "
+                    f"{BLOCKED_DIRECTIVE} line. This session says nothing about which "
+                    "paths were refused, and its zero is not a measurement"
+                )
+            else:
+                print(
+                    f"  refused: {session.refusals.text}  (the guard's own count, "
+                    "by the literal that matched)"
+                )
             if session.span_seconds is None:
                 # Said, not swallowed. The span is what a wrong `--walk` would be
                 # caught by, and a capture with no timestamps is outside that check

@@ -168,7 +168,7 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       *"watched, never seen"* in different words — they look identical and mean opposite
       things.
 
-## Next: stop measuring our own block through Instagram's log
+## Done 2026-08-13: stopped measuring our own block through Instagram's log
 
 The block signal has always been `java.io.IOException: Blocked by DFInsta setting` grepped out of
 logcat — a line that is there **because Instagram catches our exception and logs it**. It costs
@@ -185,13 +185,41 @@ Whether the app *requests* a path is Instagram's business — that is what we me
 block happens, and whether it is **recorded**, are ours. The second was given away for
 convenience.
 
-- [ ] **Emit the block from our own code**, immediately before the throw:
-      `observe;->blocked("<rule>")` → `I DFInstaObserve: !blocked <rule>`, through the same
-      `android.util.Log.i` used for the toggle line and the observed paths, which has never
-      dropped a line.
-- [ ] **Attribute directly and delete the inference.** The accounting identity, the subset-sum
-      check and the block-count noise floor have nothing left to do.
-- [ ] **Re-measure one version** and confirm the walk-sensitivity disappears for blocks.
+- [x] **Emit the block from our own code**, immediately before the throw:
+      `observe;->blocked("<literal>")` → `I DFInstaObserve: !blocked <literal>`, through the
+      same `android.util.Log.i` used for the toggle line and the observed paths, which has
+      never dropped a line. It names the **literal that matched**, not the rule: a rule may
+      test several, and `/clips/discover` — the path the two walks disagreed about — shares
+      one with `/api/v1/clips/homecoming/`. An observing build takes a fourth register to
+      carry the matched literal from the test that matched it to the throw that refuses it.
+      The message thrown is still the single fixed string, so a per-rule vocabulary never
+      reaches Instagram's error event.
+- [x] **A build states what it can report.** The toggle line reads
+      `!toggles +blocked disable_feed=1 …`. Without it a capture holding no `!blocked` line
+      would be ambiguous between "nothing was refused" and "this build could not have said",
+      and all 48 committed sessions are the second — they would have become 48 measured
+      zeroes at once, in the field whose zero is the control every arm is compared against.
+      On the toggle line rather than a line of its own because `state()` runs on every
+      checked request — 625 times in a three-round session — so a second line would have
+      grown every committed capture by 55% to repeat one constant.
+- [x] **Attribute directly and delete the inference.** `_accounts` and `_attribute` are gone,
+      70 lines of block-accounting identity and subset-sum ambiguity check. A path is BLOCKED
+      when every session of the arm recorded refusing it, the baseline recorded none, and it
+      was still requested. Instagram's count is still parsed and still printed **beside** ours
+      and labelled — a reader seeing 17 refusals recorded and 3 events reported is seeing why
+      this stopped being the basis — and nothing derives from it.
+- [x] **The equivalence claim is executed, not read.** An observing build no longer has the
+      same instructions as a shipped one, so comparing their text would assert only that
+      nobody changed them. `guards.decide` interprets a rendered method, and shipped and
+      observing are run against every literal — plus near-misses and an unrelated path —
+      under every toggle state and compared. It refuses any instruction it does not know, so
+      it cannot pass by being blind.
+- [ ] **Re-measure 439** and confirm the walk-sensitivity disappears for blocks. Until then
+      the block half of the committed corpus is **unanswerable and says so**: every arm is
+      unreadable by name, `/feed/timeline/` and `/feed/reels_tray/` are no longer called
+      blocked, and nothing can be back-filled. The erasure half is untouched, because an
+      erasure was always a count comparison — and it must **stay** walk-sensitive, which is
+      the control on the claim that re-measuring fixes the other half.
 
 ## Open ends that are nobody's bug
 

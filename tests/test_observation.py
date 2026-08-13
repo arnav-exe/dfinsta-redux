@@ -45,6 +45,11 @@ from dfinsta_pipeline import observation
 from dfinsta_pipeline.observation import (
     BLOCK_MESSAGE,
     BLOCK_TAG,
+    BLOCKED_DIRECTIVE,
+    KNOWN_REPORTS,
+    REPORTS_MARK,
+    REPORTS_BLOCKED,
+    Refusals,
     UNATTRIBUTED,
     UNWALKED,
     _WALK,
@@ -204,6 +209,7 @@ def session(
     walk: str | None = WALK,
     span_seconds: int | None = None,
     blocks: BlockCount | None = NO_BLOCKS,
+    refusals: "Refusals | None" = None,
     counts: dict[str, int] | None = None,
 ) -> ObservationSession:
     return ObservationSession(
@@ -218,6 +224,7 @@ def session(
         walk=walk,
         span_seconds=span_seconds,
         blocks=blocks,
+        refusals=refusals,
         counts=dict(counts or {}),
     )
 
@@ -3612,6 +3619,272 @@ class WalkDisputePrecisionTests(unittest.TestCase):
         self.assertIn("outside the walk check", found)
         with self.assertRaises(ObservationError):
             walk_evidence(item for item in rows)
+
+
+def _capture(*payloads: str, state: str = "disable_feed=1 disable_reels=0",
+             reports: str = f"{REPORTS_MARK}{REPORTS_BLOCKED}") -> str:
+    """A capture in the real threadtime shape, one line per payload.
+
+    The toggle line is restated ahead of every payload, which is what the build
+    does: `state()` runs on every checked request.
+    """
+    marked = f"{TOGGLE_DIRECTIVE} {reports} {state}".replace("  ", " ").strip()
+    lines = []
+    for index, payload in enumerate(payloads):
+        stamp = f"08-13 10:00:{index % 60:02d}.100"
+        lines.append(f"{stamp} 11944 12198 I {TAG}: {marked}")
+        lines.append(f"{stamp} 11944 12198 I {TAG}: {payload}")
+    return "\n".join(lines) + "\n"
+
+
+class RefusalsFromTheGuardItselfTests(unittest.TestCase):
+    """The block signal is ours now, and its absence has to stay an absence.
+
+    Until 2026-08-13 a refusal was counted from `IgFunctionalErrorEvent`, which
+    Instagram emits at its own discretion for an event our own `if` generates. It
+    under-reports by feature: `/discover/topical_explore` was refused 7, 6, 12 and
+    6 times across eight sessions and reported 1, 0, 1 and 0, while
+    `/feed/timeline/` reported 20/20 and 23/23 in the very same captures.
+    """
+
+    def test_a_refusal_is_counted_under_the_literal_the_guard_named(self):
+        capture = parse(_capture(
+            "/feed/timeline/",
+            f"{BLOCKED_DIRECTIVE} /feed/timeline/",
+            "/feed/timeline/",
+            f"{BLOCKED_DIRECTIVE} /feed/timeline/",
+            "/feed/reels_tray/",
+        ))
+        self.assertEqual({"/feed/timeline/": 2, "/feed/reels_tray/": 1}, capture.counts)
+        self.assertEqual({"/feed/timeline/": 2}, capture.refusals.as_dict())
+        self.assertEqual(2, capture.refusals.total)
+        self.assertEqual(2, capture.refusals.get("/feed/timeline/"))
+        self.assertEqual(0, capture.refusals.get("/feed/reels_tray/"))
+
+    def test_a_build_that_never_claimed_the_capability_reports_nothing_not_zero(self):
+        """The distinction the whole change rests on.
+
+        A capture from an older build holds no refusal lines, and so does a
+        capture from a new build under a state that refused nothing. Reading the
+        first as the second would turn 48 committed sessions into 48 measured
+        zeroes — and `grouping` calls a toggle a blocking one by comparing an arm
+        against a baseline of zero, so those rows would become the control.
+        """
+        older = parse(_capture("/feed/timeline/", reports=""))
+        self.assertIsNone(older.refusals)
+        current = parse(_capture("/feed/timeline/"))
+        self.assertIsNotNone(current.refusals)
+        self.assertEqual({}, current.refusals.as_dict())
+        self.assertEqual(0, current.refusals.total)
+        self.assertNotEqual(older.refusals, current.refusals)
+
+    def test_a_refusal_before_any_toggle_line_is_refused(self):
+        text = (
+            f"08-13 10:00:00.100 1 2 I {TAG}: {BLOCKED_DIRECTIVE} /feed/timeline/\n"
+            f"08-13 10:00:01.100 1 2 I {TAG}: {TOGGLE_DIRECTIVE} "
+            f"{REPORTS_MARK}{REPORTS_BLOCKED} disable_feed=1\n"
+        )
+        with self.assertRaises(ObservationError) as caught:
+            parse(text)
+        self.assertIn("before any", str(caught.exception))
+
+    def test_a_refusal_the_build_never_said_it_could_report_is_refused(self):
+        """The guard and the class it logs through disagreeing is not a small thing.
+
+        It means the reader's model of the build is wrong, so the refusals present
+        cannot be trusted to be all of them — which is worse than none, because
+        they look like a complete count.
+        """
+        with self.assertRaises(ObservationError) as caught:
+            parse(_capture(f"{BLOCKED_DIRECTIVE} /feed/timeline/", reports=""))
+        self.assertIn(f"{REPORTS_MARK}{REPORTS_BLOCKED}", str(caught.exception))
+
+    def test_a_capability_this_host_does_not_know_is_refused(self):
+        """Fails closed, like an unknown directive: the build is newer than the reader."""
+        with self.assertRaises(ObservationError) as caught:
+            parse(_capture("/feed/timeline/", reports=f"{REPORTS_MARK}wavelength"))
+        self.assertIn("wavelength", str(caught.exception))
+
+    def test_two_different_capability_sets_in_one_capture_are_refused(self):
+        """Two builds' logs concatenated: one half could report and the other could not."""
+        text = _capture("/feed/timeline/") + _capture("/feed/timeline/", reports="")
+        with self.assertRaises(ObservationError) as caught:
+            parse(text)
+        self.assertIn("capabilities", str(caught.exception))
+
+    def test_a_refusal_naming_nothing_or_a_padded_name_is_refused(self):
+        for payload in (BLOCKED_DIRECTIVE, f"{BLOCKED_DIRECTIVE}  /feed/timeline/"):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ObservationError):
+                    parse(_capture(payload))
+
+    def test_the_capability_mark_does_not_disturb_the_toggle_state(self):
+        """The two token shapes share a line and neither reader sees the other's."""
+        with_mark = parse(_capture("/feed/timeline/"))
+        without = parse(_capture("/feed/timeline/", reports=""))
+        self.assertEqual(without.toggles, with_mark.toggles)
+        self.assertEqual("disable_feed=1 disable_reels=0", with_mark.toggles.text)
+
+    def test_a_refusal_line_is_never_counted_as_a_request(self):
+        """It begins with `!`, so it is a directive — and requests are what zeroes are read from."""
+        capture = parse(_capture(f"{BLOCKED_DIRECTIVE} /feed/timeline/"))
+        self.assertEqual({}, capture.counts)
+        self.assertEqual({"/feed/timeline/": 1}, capture.refusals.as_dict())
+
+    def test_a_recorded_zero_is_refused_the_way_every_other_count_is(self):
+        with self.assertRaises(ObservationError) as caught:
+            Refusals.of({"/feed/timeline/": 0})
+        self.assertIn("second spelling of absent", str(caught.exception))
+
+    def test_a_blank_or_padded_literal_is_refused(self):
+        for literal in ("", "  ", " /feed/timeline/"):
+            with self.subTest(literal=literal):
+                with self.assertRaises(ObservationError):
+                    Refusals.of({literal: 1})
+
+
+class SessionRefusalsTests(RootedTestCase):
+    """The store keeps the distinction the parser makes."""
+
+    def test_absence_is_the_key_being_missing_and_never_a_null(self):
+        older = session(refusals=None)
+        self.assertNotIn("refusals", older.to_dict())
+        measured = session(
+            refusals=Refusals.of({"/feed/timeline/": 2}), counts={"/feed/timeline/": 3}
+        )
+        self.assertEqual({"/feed/timeline/": 2}, measured.to_dict()["refusals"])
+        self.assertEqual(measured, ObservationSession.from_dict(measured.to_dict()))
+        self.assertEqual(older, ObservationSession.from_dict(older.to_dict()))
+
+    def test_an_empty_object_is_a_measurement_and_survives_the_round_trip(self):
+        nothing = session(refusals=Refusals.of({}))
+        self.assertEqual({}, nothing.to_dict()["refusals"])
+        back = ObservationSession.from_dict(nothing.to_dict())
+        self.assertIsNotNone(back.refusals)
+        self.assertEqual(nothing, back)
+
+    def test_a_null_is_refused(self):
+        row = session(refusals=Refusals.of({})).to_dict()
+        row["refusals"] = None
+        with self.assertRaises(ObservationError) as caught:
+            ObservationSession.from_dict(row)
+        self.assertIn("second spelling of absent", str(caught.exception))
+
+    def test_a_refusal_outside_the_watch_list_is_refused(self):
+        with self.assertRaises(ObservationError) as caught:
+            session(refusals=Refusals.of({"/nowhere/": 1}))
+        self.assertIn("was not watching", str(caught.exception))
+
+    def test_more_refusals_than_requests_is_refused(self):
+        """The two halves of a capture checking each other.
+
+        The observe pass tests every watched literal with `contains` at the top of
+        `throwIfBlocked`, so a request the guard refuses under a literal was
+        reported under that same literal a few instructions earlier. More
+        refusals than observations therefore cannot happen in one build.
+        """
+        with self.assertRaises(ObservationError) as caught:
+            session(
+                refusals=Refusals.of({"/feed/timeline/": 4}),
+                counts={"/feed/timeline/": 3},
+            )
+        self.assertIn("more often than it observed", str(caught.exception))
+        # And equal is fine: every request to a blocked path is refused.
+        session(
+            refusals=Refusals.of({"/feed/timeline/": 3}), counts={"/feed/timeline/": 3}
+        )
+
+    def test_a_raw_mapping_is_refused_rather_than_coerced(self):
+        with self.assertRaises(ObservationError) as caught:
+            session(refusals={"/feed/timeline/": 1})
+        self.assertIn("pass a Refusals", str(caught.exception))
+
+    def test_recording_a_capture_carries_the_refusals_through(self):
+        capture = _capture(
+            "/feed/timeline/", f"{BLOCKED_DIRECTIVE} /feed/timeline/", state="disable_feed=1"
+        )
+        path = Path(self.root) / "capture.log"
+        path.write_text(capture, encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = main([
+                "--root", str(self.root), "record", "--version", "439",
+                "--build-sha256", BUILD, "--recorded-at", "2026-08-13T10:00:00Z",
+                "--session-id", "439-x", "--surface", "feed_tab", "--walk", WALK,
+                "--watched", "/feed/timeline/", "--capture", str(path),
+            ])
+        self.assertEqual(0, code)
+        self.assertIn("refused:", buffer.getvalue())
+        rows = read("439", self.root)
+        self.assertEqual({"/feed/timeline/": 1}, rows[0].refusals.as_dict())
+
+    def test_a_capture_that_could_not_report_says_so_when_recorded(self):
+        """Told at the moment it is filed, because nothing can back-fill it.
+
+        Unlike the walk — which the captures could not state and the operator
+        could — a refusal count cannot be reconstructed from a capture written by
+        a build that never wrote one. The repair is another walk.
+        """
+        path = Path(self.root) / "old.log"
+        path.write_text(_capture("/feed/timeline/", reports=""), encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            main([
+                "--root", str(self.root), "record", "--version", "439",
+                "--build-sha256", BUILD, "--recorded-at", "2026-08-13T10:00:00Z",
+                "--session-id", "439-old", "--surface", "feed_tab", "--walk", WALK,
+                "--watched", "/feed/timeline/", "--capture", str(path),
+            ])
+        self.assertIn("not reportable", buffer.getvalue())
+        self.assertIsNone(read("439", self.root)[0].refusals)
+
+
+class TheContractIsOneContractTests(unittest.TestCase):
+    """The generator and the reader are separate modules and must not drift.
+
+    `guards` writes these strings into smali and `observation` reads them out of
+    logcat. Nothing at runtime connects the two, so a rename on one side would
+    make every future capture parse to "this build reports nothing" — silently,
+    and in the direction that reads as evidence.
+    """
+
+    def test_the_generator_and_the_reader_spell_the_signal_the_same_way(self):
+        from dfinsta_pipeline import guards
+
+        self.assertEqual(guards.OBSERVE_TAG, TAG)
+        self.assertEqual(guards.TOGGLE_DIRECTIVE, TOGGLE_DIRECTIVE)
+        self.assertEqual(guards.BLOCKED_DIRECTIVE, BLOCKED_DIRECTIVE)
+        self.assertEqual(guards.REPORTS_MARK, REPORTS_MARK)
+        self.assertEqual(set(guards.REPORTS), set(KNOWN_REPORTS))
+        self.assertIn(REPORTS_BLOCKED, guards.REPORTS)
+
+    def test_the_line_the_generator_emits_is_the_line_the_reader_parses(self):
+        """End to end over the real emission, not over two copies of one constant."""
+        from dfinsta_pipeline.guards import REPORTS_LINE
+
+        payload = f"{REPORTS_LINE} disable_feed=1"
+        capture = parse(f"08-13 10:00:00.100 1 2 I {TAG}: {payload}\n"
+                        f"08-13 10:00:00.200 1 2 I {TAG}: /feed/timeline/\n")
+        self.assertEqual("disable_feed=1", capture.toggles.text)
+        self.assertIsNotNone(capture.refusals)
+
+
+class TheCommittedCorpusPredatesTheSignalTests(unittest.TestCase):
+    """Every capture in `manifest/captures/` was taken before the guard could speak.
+
+    Recorded as a fact rather than assumed: this is what makes the block half of
+    `grouping` unanswerable for 439 until it is re-walked, and a future reader
+    finding these tests should be able to see that the refusal was measured and
+    not merely declared.
+    """
+
+    def test_no_committed_capture_can_report_refusals(self):
+        captures = sorted((Path(__file__).resolve().parent.parent / "manifest" / "captures").glob("*.log"))
+        if not captures:
+            self.skipTest("no committed captures")
+        for capture in captures:
+            with self.subTest(capture=capture.name):
+                self.assertIsNone(parse(capture.read_text(encoding="utf-8")).refusals)
 
 
 if __name__ == "__main__":

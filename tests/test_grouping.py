@@ -50,6 +50,7 @@ from dfinsta_pipeline.observation import (
     SCHEMA_VERSION,
     ObservationError,
     BlockCount,
+    Refusals,
     ObservationSession,
     ToggleState,
     read,
@@ -90,6 +91,11 @@ def row(
     toggles: ToggleState = BASE,
     counts: dict[str, int] | None = None,
     blocks: BlockCount | None = BlockCount(0),
+    #: Reports refusals and made none, which is what a build current enough to
+    #: claim `+blocked` says about a state where nothing was refused. `None` is a
+    #: build that could not have said, and it is what every row committed before
+    #: 2026-08-13 carries — so it is a value tests must ask for rather than get.
+    refusals: "Refusals | None" = Refusals.of({}),
     watched: tuple[str, ...] = WATCHED,
     build: str = BUILD,
     at: str = "2026-08-10T19:00:00+00:00",
@@ -110,6 +116,7 @@ def row(
         walk=walk,
         span_seconds=span_seconds,
         blocks=blocks,
+        refusals=refusals,
         counts=dict(counts or {}),
     ).to_dict()
 
@@ -202,8 +209,29 @@ def flat_corpus(**overrides: dict[str, int]) -> tuple[dict, ...]:
     return tuple(rows)
 
 
+def with_refusals(rows: tuple[dict, ...], **named: dict[str, int]) -> tuple[dict, ...]:
+    """Give named sessions the refusals their guard recorded, per path.
+
+    This is what `with_blocks` used to be a lossy stand-in for: a total with no
+    path attached, which had to be matched back to a path by arithmetic. Here the
+    fixture states the same thing the device now states.
+    """
+
+    out = []
+    for item in rows:
+        item = dict(item)
+        if item["session_id"] in named:
+            item["refusals"] = dict(named[item["session_id"]])
+        out.append(item)
+    return tuple(out)
+
+
 def with_blocks(rows: tuple[dict, ...], **totals: int) -> tuple[dict, ...]:
-    """Give named sessions a block count, keeping the rest at a measured zero."""
+    """Give named sessions Instagram's block count, which is corroboration only.
+
+    Nothing derives from it any more. It survives because the committed corpus
+    carries it and because the baseline sanity warning still reads it.
+    """
 
     out = []
     for item in rows:
@@ -215,6 +243,23 @@ def with_blocks(rows: tuple[dict, ...], **totals: int) -> tuple[dict, ...]:
                 if totals[item["session_id"]]
                 else {},
             ).as_dict()
+        out.append(item)
+    return tuple(out)
+
+
+def _unreporting(rows: tuple[dict, ...], *session_ids: str) -> tuple[dict, ...]:
+    """Strip the refusal report from named sessions: a build that could not say.
+
+    The key is *removed*, never set to an empty object — an empty object is the
+    measured statement that nothing was refused, and the two must not be confused
+    in a fixture any more than in the store.
+    """
+
+    out = []
+    for item in rows:
+        item = dict(item)
+        if item["session_id"] in session_ids:
+            item.pop("refusals", None)
         out.append(item)
     return tuple(out)
 
@@ -328,8 +373,9 @@ class NoiseFloorTests(RootedTestCase):
         quiet = flat_corpus(
             **{"disable_feed-fwd": arm, "disable_feed-rev": arm}
         )
-        self.write(*with_blocks(quiet, **{"disable_feed-fwd": 11,
-                                          "disable_feed-rev": 11}))
+        refused = {"/feed/timeline/": 11}
+        self.write(*with_refusals(quiet, **{"disable_feed-fwd": refused,
+                                            "disable_feed-rev": refused}))
         self.assertEqual(BLOCKED, self.verdicts()["/feed/timeline/"])
 
         noisy = flat_corpus(
@@ -340,8 +386,8 @@ class NoiseFloorTests(RootedTestCase):
                                         "/clips/discover": 4},
             }
         )
-        self.write(*with_blocks(noisy, **{"disable_feed-fwd": 11,
-                                          "disable_feed-rev": 11}))
+        self.write(*with_refusals(noisy, **{"disable_feed-fwd": refused,
+                                            "disable_feed-rev": refused}))
         found = self.verdict_of("/feed/timeline/")
         self.assertEqual(54, found.noise_floor, "6 and 60 in one state")
         self.assertEqual(
@@ -425,176 +471,93 @@ class ErasureTests(RootedTestCase):
         self.assertIn("not reliably requested", found.reason)
 
 
-class BlockAttributionTests(RootedTestCase):
-    """The block-accounting identity, and every way it must decline to answer."""
+class RefusalAttributionTests(RootedTestCase):
+    """A path is blocked when the guard says it refused it. Nothing is derived.
 
-    def blocking(self, *, arm_counts: dict[str, int], fwd: int, rev: int,
-                 baseline: int = 0, **overrides) -> None:
+    What this replaced: the block **total** came from `IgFunctionalErrorEvent`,
+    which names a feature and never a path, so a path was named by arithmetic —
+    "this is the only watched path whose count equals the total, and no
+    combination of paths equals it either". That identity was refused by an
+    arithmetic coincidence on real data (`439-3r-reverse-feed`: `/feed/timeline/`
+    had 17 requests and 17 blocks, and `7 + 7 + 3 = 17` among three unrelated
+    paths), and the total it rested on under-reports by feature anyway.
+
+    The guard now names the literal it matched at the moment it throws, so these
+    tests state refusals per path and assert the verdict directly.
+    """
+
+    def blocking(self, *, arm_counts: dict[str, int], refused: dict[str, int],
+                 baseline: dict[str, int] | None = None, **overrides) -> None:
         rows = flat_corpus(
             **{"disable_feed-fwd": arm_counts, "disable_feed-rev": arm_counts,
                **overrides}
         )
         self.write(
-            *with_blocks(
+            *with_refusals(
                 rows,
                 **{
-                    "disable_feed-fwd": fwd,
-                    "disable_feed-rev": rev,
-                    "base-fwd": baseline,
-                    "base-rev": baseline,
+                    "disable_feed-fwd": refused,
+                    "disable_feed-rev": refused,
+                    "base-fwd": baseline or {},
+                    "base-rev": baseline or {},
                 },
             )
         )
 
-    def test_the_path_accounting_for_every_block_is_the_blocked_one(self) -> None:
-        """Different totals in the two sessions, so the identity is checked twice."""
+    def test_the_path_the_guard_named_is_the_blocked_one(self) -> None:
+        """And only that path. One arm's refusals name exactly what they name."""
 
         arm = {"/feed/timeline/": 20, "/feed/reels_tray/": 3, "/clips/discover": 4}
-        other = {"/feed/timeline/": 21, "/feed/reels_tray/": 3, "/clips/discover": 4}
-        rows = flat_corpus(**{"disable_feed-fwd": arm, "disable_feed-rev": other})
-        self.write(*with_blocks(rows, **{"disable_feed-fwd": 20,
-                                         "disable_feed-rev": 21}))
+        self.blocking(arm_counts=arm, refused={"/feed/timeline/": 20})
         found = self.verdict_of("/feed/timeline/")
         self.assertEqual(BLOCKED, found.verdict)
         self.assertEqual("disable_feed", found.toggle)
-        self.assertNotEqual(
-            BLOCKED,
-            self.verdicts()["/feed/reels_tray/"],
-            "only one path may be named by one arm's blocks",
-        )
-
-    def test_nothing_is_attributed_to_an_arm_that_refused_nothing(self) -> None:
-        """`0 == 0` must never name a path, and the guard is in `_accounts`.
-
-        `blocks_replicate is True` and `all(arm_counts)` on the branch each imply the
-        other under the attribution equality, so deleting either alone changes no
-        answer and no test can pin one. That makes it worth stating where the
-        protection actually lives: `_accounts` refuses a zero total outright and drops
-        zero-count paths from every subset. Both of those *are* individually pinnable,
-        and both are what stop "blocked by a toggle that refused nothing".
-        """
-
-        self.assertEqual((frozenset(), False), grouping._accounts({"/a": 0}, 0))
-        self.assertEqual(
-            (frozenset(), False),
-            grouping._accounts({"/a": 0, "/b": 5}, 0),
-            "a zero total attributes nothing, however many paths are on offer",
-        )
-        self.assertEqual(
-            (frozenset({"/b"}), False),
-            grouping._accounts({"/a": 0, "/b": 2}, 2),
-            "and a path nobody requested is never a candidate",
-        )
-
-        gone = {"/feed/timeline/": 6, "/feed/reels_tray/": 3}
-        rows = flat_corpus(**{"disable_adds-fwd": gone, "disable_adds-rev": gone})
-        self.write(*rows)
-        arm = next(
-            item for item in classify("439", self.root, walk=WALK).arms if item.arm == "disable_adds"
-        )
-        self.assertEqual((0, 0), arm.block_totals)
-        self.assertEqual((), grouping._attribute(arm, sorted(WATCHED)))
-        self.assertEqual(NEVER_REQUESTED, self.verdicts()["/never/asked/"])
+        self.assertNotEqual(BLOCKED, self.verdicts()["/feed/reels_tray/"])
 
     def test_a_block_invisible_in_the_counts_is_still_attributed(self) -> None:
-        """The `/feed/reels_tray/` shape: 2 → 3 is nothing, and it is still a block."""
+        """The `/feed/reels_tray/` shape: 2 → 3 is nothing, and it is still a block.
+
+        This is the whole reason a refusal signal exists at all. A path block does
+        not remove the request — the observe pass runs before the guard — so the
+        count is no evidence either way.
+        """
 
         arm = {"/feed/timeline/": 6, "/feed/reels_tray/": 3, "/clips/discover": 4}
-        self.blocking(arm_counts=arm, fwd=3, rev=3)
+        self.blocking(arm_counts=arm, refused={"/feed/reels_tray/": 3})
         found = self.verdict_of("/feed/reels_tray/")
         self.assertEqual(BLOCKED, found.verdict)
         self.assertEqual(0, grouping._gap((3, 3), (3, 3)), "the count did not move")
 
-    def test_one_ambiguous_session_is_resolved_by_the_other(self) -> None:
-        """Intersection, not union. Three paths read 3 in one session, one in both.
+    def test_a_coincidence_in_the_totals_no_longer_refuses_a_real_block(self) -> None:
+        """The measured case the deleted arithmetic got wrong.
 
-        Run **both ways round**. With the unambiguous session first, "look at the
-        first session only" passes this and the property the name claims — *every*
-        session — goes unchecked. The committed 439 corpus has that same ordering
-        (`439-isolate-stories` is the unambiguous one and is first), so the fixture
-        that looks like the real data is exactly the one that proves least.
+        `439-3r-reverse-feed`: `/feed/timeline/` was requested 17 times and refused
+        17 times — perfect — and the old identity declined it because
+        `7 + 7 + 3 = 17` among three unrelated paths. The refusals say which path
+        each one was, so the other paths' counts are not evidence about this one.
         """
 
-        ambiguous = {"/feed/timeline/": 3, "/feed/reels_tray/": 3, "/clips/discover": 3}
-        clear = {"/feed/timeline/": 6, "/feed/reels_tray/": 3, "/clips/discover": 4}
-        for first, second in ((clear, ambiguous), (ambiguous, clear)):
-            with self.subTest(clear_first=first is clear):
-                rows = flat_corpus(
-                    **{"disable_feed-fwd": first, "disable_feed-rev": second}
-                )
-                self.write(
-                    *with_blocks(rows, **{"disable_feed-fwd": 3, "disable_feed-rev": 3})
-                )
-                verdicts = self.verdicts()
-                self.assertEqual(BLOCKED, verdicts["/feed/reels_tray/"])
-                self.assertNotEqual(
-                    BLOCKED,
-                    verdicts["/clips/discover"],
-                    "a candidate in only one session must not survive",
-                )
-
-    def test_two_paths_matching_in_both_sessions_attributes_neither(self) -> None:
-        """Ambiguity in *both* sessions is not resolved by picking one."""
-
-        # Different counts in the two sessions, so intersection, union and
-        # first-only are three different answers here. Identical sessions made all
-        # three agree and the test could not fail for the reason it names.
-        first = {"/feed/timeline/": 3, "/feed/reels_tray/": 3, "/clips/discover": 9}
-        second = {"/feed/timeline/": 3, "/feed/reels_tray/": 3, "/clips/discover": 4}
-        rows = flat_corpus(**{"disable_feed-fwd": first, "disable_feed-rev": second})
-        self.write(*with_blocks(rows, **{"disable_feed-fwd": 3, "disable_feed-rev": 3}))
-        verdicts = self.verdicts()
-        self.assertNotEqual(BLOCKED, verdicts["/feed/timeline/"])
-        self.assertNotEqual(BLOCKED, verdicts["/feed/reels_tray/"])
-        self.assertEqual(
-            ("/feed/reels_tray/", "/feed/timeline/"),
-            grouping._attribute(
-                next(arm for arm in classify("439", self.root, walk=WALK).arms
-                     if arm.arm == "disable_feed"),
-                sorted(verdicts),
-            ),
-            "two candidates survive the intersection, and a pair names nobody",
-        )
-
-    def test_a_total_no_single_path_accounts_for_attributes_nothing(self) -> None:
-        """Dropped events break the equality, which is the identity's own control."""
-
+        arm = {"/feed/timeline/": 17, "/feed/reels_tray/": 7, "/clips/discover": 7}
         self.blocking(
-            arm_counts={"/feed/timeline/": 20, "/feed/reels_tray/": 3,
-                        "/clips/discover": 4},
-            fwd=17,
-            rev=17,
+            arm_counts=arm,
+            refused={"/feed/timeline/": 17},
+            **{"base-fwd": {"/feed/timeline/": 6, "/feed/reels_tray/": 7,
+                            "/clips/discover": 7},
+               "base-rev": {"/feed/timeline/": 6, "/feed/reels_tray/": 7,
+                            "/clips/discover": 7}},
         )
-        found = self.verdict_of("/feed/timeline/")
-        self.assertEqual(UNCLASSIFIABLE, found.verdict, "17 blocks, and nothing reads 17")
-        self.assertEqual((), found.findings)
-        self.assertIn("no mechanism accounts", found.reason)
-        self.assertNotIn(BLOCKED, self.verdicts().values())
+        self.assertEqual(BLOCKED, self.verdicts()["/feed/timeline/"])
 
-    def test_blocks_in_only_one_session_of_the_arm_attribute_nothing(self) -> None:
-        """The 439 `disable_explore` shape: 1 block, then none, same state."""
-
-        self.blocking(
-            arm_counts={"/feed/timeline/": 6, "/feed/reels_tray/": 3,
-                        "/clips/discover": 4},
-            fwd=6,
-            rev=0,
-        )
-        self.assertNotIn(BLOCKED, self.verdicts().values())
-        found = self.verdict_of("/feed/reels_tray/")
-        self.assertEqual(UNCLASSIFIABLE, found.verdict)
-        self.assertIn("disable_feed", found.reason)
-
-    def test_two_blocked_paths_summing_to_a_third_attribute_nothing(self) -> None:
-        """The defect an adversarial pass found, and the reason `_accounts` exists.
+    def test_two_paths_blocked_by_one_toggle_are_both_named(self) -> None:
+        """Which the arithmetic could not do at all, and got backwards.
 
         A toggle may block more than one live path — the real manifest declares
-        three literals under `disable_feed` and five under `disable_reels` — and
-        then the block total is their *sum*. Here `/feed/timeline/` (4) and
-        `/feed/timeline_stream/` (1) are both blocked, the arm reports 5, and
-        `/discover/topical_explore` happens to read 5. Before the combination
-        check that fourth path was reported blocked by `disable_feed`, with no
-        caveat, while the two really blocked read `unaffected`.
+        three literals under `disable_feed`. Then the block total was their *sum*,
+        and a fourth unrelated path whose own count happened to equal that sum was
+        the unique single-path explanation. Measured shape: `/feed/timeline/` 4 and
+        `/feed/timeline_stream/` 1 both refused, and `/discover/topical_explore`
+        reading 5 was named as the blocked one while the two real ones read
+        `unaffected`. Now all three are read from what the guard recorded.
         """
 
         steady = {"/feed/timeline/": 4, "/feed/timeline_stream/": 1,
@@ -606,51 +569,61 @@ class BlockAttributionTests(RootedTestCase):
             item["counts"] = dict(steady)
             item["total"] = sum(steady.values())
             rows.append(item)
-        self.write(*with_blocks(tuple(rows), **{"disable_feed-fwd": 5,
-                                                "disable_feed-rev": 5}))
-        found = self.verdict_of("/discover/topical_explore")
-        self.assertNotEqual(
-            BLOCKED, found.verdict, "5 = 5 and 5 = 4 + 1; two explanations is none"
+        self.write(
+            *with_refusals(
+                tuple(rows),
+                **{
+                    "disable_feed-fwd": {"/feed/timeline/": 4, "/feed/timeline_stream/": 1},
+                    "disable_feed-rev": {"/feed/timeline/": 4, "/feed/timeline_stream/": 1},
+                },
+            )
         )
-        self.assertNotIn(BLOCKED, self.verdicts().values())
+        verdicts = self.verdicts()
+        self.assertEqual(BLOCKED, verdicts["/feed/timeline/"])
+        self.assertEqual(BLOCKED, verdicts["/feed/timeline_stream/"])
+        self.assertNotEqual(
+            BLOCKED,
+            verdicts["/discover/topical_explore"],
+            "5 = 4 + 1 is arithmetic about paths nobody refused",
+        )
 
-    def test_the_control_for_the_combination_check(self) -> None:
-        """Remove the second blocked path and the same arm attributes cleanly.
+    def test_a_refusal_in_only_one_session_of_the_arm_attributes_nothing(self) -> None:
+        """Replication is still required; only the *reason* for it changed.
 
-        Without this, a `_accounts` that always reported a combination would pass
-        the test above and delete the feature.
+        It used to be needed because Instagram's events go missing, so a zero was
+        never proof. Our own line does not go missing — but one walk still cannot
+        tell a finding from an artefact of running order, which is why two are
+        walked in the first place.
         """
 
-        steady = {"/feed/timeline/": 4, "/feed/timeline_stream/": 9,
-                  "/discover/topical_explore": 7, "/feed/reels_tray/": 3}
-        rows = []
-        for item in flat_corpus():
-            item = dict(item)
-            item["watched"] = [*WIDER, "/discover/topical_explore"]
-            item["counts"] = dict(steady)
-            item["total"] = sum(steady.values())
-            rows.append(item)
-        self.write(*with_blocks(tuple(rows), **{"disable_feed-fwd": 4,
-                                                "disable_feed-rev": 4}))
-        self.assertEqual(BLOCKED, self.verdicts()["/feed/timeline/"])
+        rows = flat_corpus()
+        self.write(*with_refusals(rows, **{"disable_feed-fwd": {"/feed/timeline/": 6}}))
+        self.assertNotIn(BLOCKED, self.verdicts().values())
 
-    def test_a_path_nobody_requested_never_joins_a_combination(self) -> None:
-        """A zero would otherwise sum with anything without changing the total."""
+    def test_nothing_is_attributed_to_an_arm_that_refused_nothing(self) -> None:
+        """An arm reporting no refusals names no path, and says so as a measurement."""
 
-        self.assertEqual(
-            (frozenset({"/a"}), False),
-            grouping._accounts({"/a": 3, "/b": 0, "/c": 0}, 3),
+        gone = {"/feed/timeline/": 6, "/feed/reels_tray/": 3}
+        rows = flat_corpus(**{"disable_adds-fwd": gone, "disable_adds-rev": gone})
+        self.write(*rows)
+        arm = next(
+            item for item in classify("439", self.root, walk=WALK).arms
+            if item.arm == "disable_adds"
         )
+        self.assertTrue(arm.reported, "a measured zero, not an absent one")
+        self.assertEqual(0, arm.refused_total)
+        self.assertEqual((0, 0), arm.refusals("/feed/timeline/"))
+        self.assertNotIn(BLOCKED, self.verdicts().values())
+        self.assertEqual(NEVER_REQUESTED, self.verdicts()["/never/asked/"])
 
-    def test_a_baseline_that_blocks_attributes_nothing(self) -> None:
-        """Blocks must be *new* under the arm. With every toggle off nothing throws."""
+    def test_a_baseline_that_refuses_attributes_nothing(self) -> None:
+        """Refusals must be *new* under the arm. With every toggle off nothing throws."""
 
         self.blocking(
             arm_counts={"/feed/timeline/": 20, "/feed/reels_tray/": 3,
                         "/clips/discover": 4},
-            fwd=20,
-            rev=20,
-            baseline=6,
+            refused={"/feed/timeline/": 20},
+            baseline={"/feed/timeline/": 6},
         )
         self.assertNotIn(BLOCKED, self.verdicts().values())
         warned = [
@@ -660,7 +633,13 @@ class BlockAttributionTests(RootedTestCase):
         ]
         self.assertEqual(1, len(warned), warned)
 
-    def test_an_uncounted_arm_attributes_nothing(self) -> None:
+    def test_an_arm_that_cannot_report_refusals_attributes_nothing_and_is_named(self) -> None:
+        """Every row committed before 2026-08-13 is in this shape.
+
+        Its silence is not a zero, and the repair is not a re-record: unlike the
+        walk, which the captures could supply, the build never wrote the lines.
+        """
+
         rows = flat_corpus(
             **{
                 "disable_feed-fwd": {"/feed/timeline/": 20, "/feed/reels_tray/": 3,
@@ -673,7 +652,7 @@ class BlockAttributionTests(RootedTestCase):
         for item in rows:
             item = dict(item)
             if item["session_id"].startswith("disable_feed"):
-                item.pop("blocks")
+                item.pop("refusals")
             stripped.append(item)
         self.write(*stripped)
         found = self.verdict_of("/feed/timeline/")
@@ -683,15 +662,55 @@ class BlockAttributionTests(RootedTestCase):
             found.reason,
             "and the arm that could not answer is named, not silently dropped",
         )
+        self.assertIn(
+            "disable_feed",
+            classify("439", self.root, walk=WALK).unreadable,
+        )
 
     def test_a_path_erased_under_the_arm_is_not_called_blocked(self) -> None:
-        """Blocked means still requested. Zero requests cannot produce blocks."""
+        """Blocked means still requested. Zero requests cannot produce refusals."""
 
         gone = {"/feed/timeline/": 6, "/feed/reels_tray/": 3}
         rows = flat_corpus(**{"disable_reels-fwd": gone, "disable_reels-rev": gone})
-        self.write(*with_blocks(rows, **{"disable_reels-fwd": 4,
-                                         "disable_reels-rev": 4}))
+        self.write(*rows)
         self.assertEqual(ERASED, self.verdicts()["/clips/discover"])
+
+    def test_instagram_under_reporting_no_longer_changes_any_verdict(self) -> None:
+        """The measured failure, as a test: 7 refusals reported as 1, and as 0.
+
+        `/discover/topical_explore` under `disable_explore` was requested 7 times
+        and had one block event, and requested 6 times with **none** — across eight
+        sessions on two Instagram versions and two walks, while `/feed/timeline/`
+        reported 20/20 and 23/23 in the same captures. Whatever Instagram says, the
+        verdict now comes from what the guard recorded.
+        """
+
+        arm = {"/feed/timeline/": 6, "/feed/reels_tray/": 3, "/clips/discover": 4,
+               "/discover/topical_explore": 7}
+        rows = []
+        for item in flat_corpus():
+            item = dict(item)
+            item["watched"] = [*WIDER, "/discover/topical_explore"]
+            counts = dict(arm) if item["session_id"].startswith("disable_explore") else {
+                "/feed/timeline/": 6, "/feed/reels_tray/": 3, "/clips/discover": 4,
+                "/discover/topical_explore": 7,
+            }
+            item["counts"] = counts
+            item["total"] = sum(counts.values())
+            rows.append(item)
+        rows = with_refusals(
+            tuple(rows),
+            **{
+                "disable_explore-fwd": {"/discover/topical_explore": 7},
+                "disable_explore-rev": {"/discover/topical_explore": 6},
+            },
+        )
+        # Instagram's count says 1 and 0 for exactly those sessions.
+        self.write(*with_blocks(rows, **{"disable_explore-fwd": 1,
+                                         "disable_explore-rev": 0}))
+        found = self.verdict_of("/discover/topical_explore")
+        self.assertEqual(BLOCKED, found.verdict)
+        self.assertEqual("disable_explore", found.toggle)
 
 
 class UnaffectedTests(RootedTestCase):
@@ -712,7 +731,7 @@ class UnaffectedTests(RootedTestCase):
     def test_one_unreadable_arm_stops_every_path_being_called_unaffected(self) -> None:
         """`no toggle affects it` is a claim about all five, so all five must speak."""
 
-        self.write(*with_blocks(flat_corpus(), **{"disable_explore-fwd": 2}))
+        self.write(*_unreporting(flat_corpus(), "disable_explore-fwd"))
         verdicts = self.verdicts()
         self.assertNotIn(UNAFFECTED, verdicts.values())
         self.assertEqual(UNCLASSIFIABLE, verdicts["/feed/timeline/"])
@@ -777,7 +796,9 @@ class MultipleFindingTests(RootedTestCase):
             **{"disable_reels-fwd": gone, "disable_reels-rev": gone,
                "disable_feed-fwd": arm, "disable_feed-rev": arm}
         )
-        self.write(*with_blocks(rows, **{"disable_feed-fwd": 4, "disable_feed-rev": 4}))
+        refused = {"/clips/discover": 4}
+        self.write(*with_refusals(rows, **{"disable_feed-fwd": refused,
+                                           "disable_feed-rev": refused}))
         found = self.verdict_of("/clips/discover")
         self.assertEqual(UNCLASSIFIABLE, found.verdict)
         self.assertEqual(2, len(found.findings))
@@ -972,30 +993,28 @@ class ReportTests(RootedTestCase):
             "a line the page warns about that the JSON does not carry",
         )
 
-    def test_an_uncounted_arm_is_not_reported_as_one_that_disagrees(self) -> None:
-        """Three ways to be unreadable, three fixes, and three different sentences.
+    def test_an_unreporting_arm_is_not_reported_as_one_walked_once(self) -> None:
+        """Two ways to be unreadable, two fixes, and two different sentences.
 
-        `grouping report --version 439` printed "does not replicate" over four arms
-        whose blocks were never counted at all — one fact in the words of another,
-        on the only real corpus there is, while the ARMS section of the same page
-        said "never counted".
+        `grouping report --version 439` once printed "does not replicate" over four
+        arms whose blocks were never counted at all — one fact in the words of
+        another, on the only real corpus there is, while the ARMS section of the
+        same page said "never counted". The signal changed and the discipline did
+        not: an arm whose build could not report refusals is not an arm walked once,
+        and the repairs are different — the first needs a new build, the second one
+        more walk.
         """
 
-        rows = []
-        for item in flat_corpus():
-            item = dict(item)
-            if item["session_id"].startswith("disable_feed"):
-                item.pop("blocks")
-            rows.append(item)
+        rows = _unreporting(flat_corpus(), "disable_feed-fwd", "disable_feed-rev")
         self.write(*rows)
         report = summary("439", self.root, walk=WALK)
         self.assertEqual(
-            {"disable_feed": "its blocks were never counted"},
+            {"disable_feed": "its build could not report refusals"},
             report["unreadable_toggles"],
         )
         page = render(report)
-        self.assertIn("UNREADABLE — its blocks were never counted", page)
-        self.assertNotIn("does not replicate", page)
+        self.assertIn("UNREADABLE — its build could not report refusals", page)
+        self.assertNotIn("walked once", page)
 
     def test_a_refusal_reaches_both_forms_and_exits_two(self) -> None:
         self.write()
@@ -1054,8 +1073,9 @@ class ReportTests(RootedTestCase):
     def test_the_page_states_what_each_toggle_governs(self) -> None:
         arm = {"/feed/timeline/": 20, "/feed/reels_tray/": 3, "/clips/discover": 4}
         rows = flat_corpus(**{"disable_feed-fwd": arm, "disable_feed-rev": arm})
-        self.write(*with_blocks(rows, **{"disable_feed-fwd": 20,
-                                         "disable_feed-rev": 20}))
+        refused = {"/feed/timeline/": 20}
+        self.write(*with_refusals(rows, **{"disable_feed-fwd": refused,
+                                           "disable_feed-rev": refused}))
         report = summary("439", self.root, walk=WALK)
         self.assertEqual(["/feed/timeline/"], report["by_toggle"]["disable_feed"])
         self.assertEqual([], report["by_toggle"]["disable_adds"])
@@ -1064,13 +1084,13 @@ class ReportTests(RootedTestCase):
     def test_an_unreadable_toggle_is_not_reported_as_governing_nothing(self) -> None:
         """Two different facts; the report must not say one in the words of the other."""
 
-        self.write(*with_blocks(flat_corpus(), **{"disable_explore-fwd": 2}))
+        self.write(*_unreporting(flat_corpus(), "disable_explore-fwd"))
         report = summary("439", self.root, walk=WALK)
         self.assertEqual(
-            {"disable_explore": "its two sessions report blocks 2, 0 and disagree"},
+            {"disable_explore": "its build could not report refusals"},
             report["unreadable_toggles"],
         )
-        self.assertIn("UNREADABLE — its two sessions report blocks 2, 0", render(report))
+        self.assertIn("UNREADABLE — its build could not report refusals", render(report))
         idle = [item for item in report["warnings"] if "govern nothing observable" in item]
         self.assertTrue(idle)
         self.assertNotIn("disable_explore", idle[0])
@@ -1487,19 +1507,27 @@ class CommittedCorpusTests(unittest.TestCase):
     captures committed beside it, so this corpus is checkable rather than merely
     present.
 
-    It was rewritten once. The rows first landed without block counts, so the
-    BLOCKED half refused by name and this class pinned that refusal. Regenerating
-    from the captures changed exactly one field and made the blocked half readable.
-    What is pinned now is the answer itself, endpoint by endpoint, because that is
-    what a human would act on.
+    **The block half of this corpus is currently unanswerable, and that is not a
+    regression to fix — it is the honest state.** Every one of these sessions was
+    walked with a build that could not report its own refusals, so it never wrote a
+    `!blocked` line, so its silence is not a zero. The BLOCKED verdicts this class
+    used to pin were derived from Instagram's error events by arithmetic over the
+    capture's block total, and that derivation is deleted: the total under-reports
+    by feature (`/discover/topical_explore` refused 7 times and reported once,
+    6 times and reported none) and its ambiguity check refused a perfect 17-of-17
+    on an arithmetic coincidence. Re-walking 439 with a build that claims
+    `+blocked` is what restores the answer, and nothing can be back-filled — unlike
+    the walk, the lines were never written.
 
-    **The rows now name their walk**, re-recorded from `manifest/captures/` by the
+    **What survives untouched is the erasure half**, because an erasure was always
+    a count comparison and never used the block signal at all. So is the negative
+    claim: ten watched paths were never requested in any session.
+
+    **The rows name their walk**, re-recorded from `manifest/captures/` by the
     person who walked them — the one thing a capture cannot supply. 439 carries
-    twelve `one-pass-v1` sessions and twelve `three-round-v2`, and they **do not
-    agree**: `/feed/timeline/` is BLOCKED on the first and unclassifiable on the
-    second, `/clips/discover` ERASED on the first and unaffected on the second.
-    Same app, same version, same day. So every call here names the walk, and
-    pooling them is the defect `walk` exists to prevent.
+    twelve `one-pass-v1` sessions and twelve `three-round-v2`, and on the surviving
+    half they still **do not agree**: `/clips/discover` is ERASED on the first and
+    unclassifiable on the second. Same app, same version, same day.
     """
 
     WALK = "one-pass-v1"
@@ -1507,15 +1535,20 @@ class CommittedCorpusTests(unittest.TestCase):
     def setUp(self) -> None:
         self.grouped = classify("439", REPOSITORY, walk=self.WALK)
 
-    def test_the_two_walks_disagree_on_the_same_version(self) -> None:
-        """The finding that matters most, pinned where a reader will meet it.
+    def test_the_two_walks_still_disagree_about_the_erasure(self) -> None:
+        """The walk-sensitivity that the refusal signal does **not** remove.
 
-        The protocol changed the answer more than the version did. A longer walk
-        was adopted to raise counts so an erasure could clear the noise floor; it
-        did that, and it also made the block-accounting identity less
-        discriminating, because larger counts over more live paths give more
-        subsets that coincide with the block total. Both effects are real and they
-        pull opposite ways.
+        Half of it does go. `/feed/timeline/` read BLOCKED on one walk and
+        unclassifiable on the other only because the identity that named it grew
+        less discriminating as counts rose — larger counts over more live paths
+        give more subsets coinciding with the block total. That is gone with the
+        identity.
+
+        `/clips/discover` is the half that stays, and it should: an erasure is a
+        fall in a request count against a measured noise floor, and it always was.
+        A longer walk raises both the count and the floor. So this is the control
+        on the claim that re-measuring fixes the walk-sensitivity — it fixes the
+        block half and must leave this one exactly where it is.
         """
         def verdicts(walk):
             return {
@@ -1524,18 +1557,18 @@ class CommittedCorpusTests(unittest.TestCase):
             }
 
         one_pass, three_round = verdicts("one-pass-v1"), verdicts("three-round-v2")
-        self.assertEqual(BLOCKED, one_pass["/feed/timeline/"])
-        self.assertEqual(UNCLASSIFIABLE, three_round["/feed/timeline/"])
         self.assertEqual(ERASED, one_pass["/clips/discover"])
         self.assertNotEqual(ERASED, three_round["/clips/discover"])
-        # Not a wholesale disagreement: what both decide, they decide alike.
+        # And what both still *decide*, they decide alike: the disagreement is one
+        # walk deciding and the other declining, never two contradicting verdicts.
         both = {e for e in one_pass if e in three_round}
         contradictions = {
             e for e in both
-            if one_pass[e] not in (UNCLASSIFIABLE,) and three_round[e] not in (UNCLASSIFIABLE,)
+            if one_pass[e] != UNCLASSIFIABLE and three_round[e] != UNCLASSIFIABLE
             and one_pass[e] != three_round[e]
         }
-        self.assertEqual({"/clips/discover"}, contradictions)
+        self.assertEqual(set(), contradictions)
+        self.assertEqual(UNCLASSIFIABLE, three_round["/clips/discover"])
 
     def test_the_corpus_is_still_twelve_sessions_over_six_states(self) -> None:
         self.assertEqual(2, len(self.grouped.baseline.sessions))
@@ -1567,76 +1600,100 @@ class CommittedCorpusTests(unittest.TestCase):
         self.assertEqual(10, len(never), never)
         self.assertIn("delivery/background_prefetch", never)
 
-    def test_two_paths_are_blocked_and_the_toggle_is_derived_not_declared(self) -> None:
-        """The answer a human acts on, and nothing in reaching it reads a name.
+    def test_no_path_is_called_blocked_because_no_session_could_say(self) -> None:
+        """What was lost, pinned so it cannot be lost quietly.
 
-        `/feed/timeline/` and `disable_feed` share a word; `/feed/reels_tray/` and
-        `disable_stories` share none. Both are attributed the same way — by the
-        block-accounting identity, arithmetic over two measurements — which is the
-        whole point of grouping by measurement rather than by what things are called.
+        This corpus used to name `/feed/timeline/` under `disable_feed` and
+        `/feed/reels_tray/` under `disable_stories`. Both were derived from
+        Instagram's block total by arithmetic, and both are very likely right — but
+        "very likely right by an argument we deleted" is not a verdict this module
+        may return. It says so instead, and re-walking with a build that claims
+        `+blocked` is the repair.
         """
-        blocked = {
-            item.endpoint: item.toggle
+        blocked = [
+            item.endpoint
             for item in self.grouped.classifications
             if item.verdict == BLOCKED
-        }
-        self.assertEqual(
-            {"/feed/timeline/": "disable_feed", "/feed/reels_tray/": "disable_stories"},
-            blocked,
-        )
+        ]
+        self.assertEqual([], blocked)
+        # The two arrive by different routes and are told apart in words, which is
+        # the point: `/feed/timeline/` moved 6 → 20 and the report says its arm
+        # could not say whether it refused it, while `/feed/reels_tray/` moved 2 → 3
+        # and the report says `unaffected` cannot be claimed while an arm is silent.
+        # Reading either as "this path is fine" would be the false negative that
+        # deleting the old derivation is meant to avoid, not cause.
+        for endpoint, expected in (
+            ("/feed/timeline/", "could not report refusals"),
+            ("/feed/reels_tray/", "refusal evidence cannot be read"),
+        ):
+            found = next(
+                item for item in self.grouped.classifications
+                if item.endpoint == endpoint
+            )
+            self.assertEqual(UNCLASSIFIABLE, found.verdict)
+            self.assertIn(expected, found.reason)
 
-    def test_the_explore_arm_is_unreadable_because_its_two_sessions_disagree(self) -> None:
-        """Not "never counted" — a different fact, and the report confused the two once.
+    def test_every_arm_is_unreadable_for_the_same_stated_reason(self) -> None:
+        """One reason, named per arm, and it is about the build and not the toggle.
 
-        Both sessions of `disable_explore` ran the same state and asked for
-        `/discover/topical_explore` six or seven times; one reported a single block
-        event and the other reported none at all. So Instagram's error event can be
-        **absent for a block that certainly happened**, and the replication rule
-        refuses to classify from it rather than taking the run that agreed.
+        "Governs nothing" and "could not be read" are different facts and the
+        report keeps them apart. Every arm here is the second: the build predates
+        the refusal signal. A reader must be able to see that no toggle was
+        exonerated by this corpus.
         """
         self.assertEqual(
-            {"disable_explore"}, set(dict(self.grouped.unreadable)),
-            "only the explore arm should be unreadable now",
+            {"disable_feed", "disable_explore", "disable_reels", "disable_stories",
+             "disable_adds"},
+            set(dict(self.grouped.unreadable)),
         )
-        self.assertIn("disagree", dict(self.grouped.unreadable)["disable_explore"])
-        found = next(
-            item for item in self.grouped.classifications
-            if item.endpoint == "/discover/topical_explore"
+        for reason in dict(self.grouped.unreadable).values():
+            self.assertIn("could not report refusals", reason)
+        # And nothing is reported as governing nothing on the strength of it.
+        self.assertEqual(
+            [], [item for item in self.grouped.warnings
+                 if "govern nothing observable" in item]
         )
-        self.assertEqual(UNCLASSIFIABLE, found.verdict)
 
-    def test_an_uncounted_session_still_attributes_nothing(self) -> None:
-        """The guard that used to be pinned by the corpus, now pinned directly.
+    def test_a_session_that_cannot_report_refusals_attributes_nothing(self) -> None:
+        """Asserted against the arm the corpus actually has, and against its opposite.
 
-        The corpus no longer exercises it — every arm is counted — so it is asserted
-        against a session built for the purpose. The earlier version of this test
-        claimed the corpus proved it and caught none of thirty-one mutations.
+        A one-sided version of this test caught none of thirty-one mutations once,
+        because it claimed the corpus proved something the corpus did not exercise.
+        Here the corpus exercises the `None` side directly, and the control
+        constructs the other side from the same rows.
         """
         arm = self.grouped.arms[0]
-        uncounted = replace(arm, sessions=tuple(
-            replace(s, blocks=None) for s in arm.sessions
+        self.assertFalse(arm.reported)
+        self.assertIsNone(arm.refusals("/feed/timeline/"))
+        self.assertIsNone(arm.refused_total)
+        reporting = replace(arm, sessions=tuple(
+            replace(item, refusals=Refusals.of({})) for item in arm.sessions
         ))
-        self.assertFalse(uncounted.counted)
+        self.assertTrue(reporting.reported)
         self.assertEqual(
-            (), grouping._attribute(uncounted, ["/feed/timeline/"]),
-            "a session with no block count must attribute nothing",
+            (0, 0), reporting.refusals("/feed/timeline/"),
+            "and then the zero is a measurement rather than a silence",
         )
 
-    def test_the_timeline_surge_is_explained_by_the_block_that_causes_it(self) -> None:
-        """20 and 23 requests against a baseline of 6 and 7, every one of them blocked.
+    def test_the_timeline_surge_is_visible_and_is_not_a_verdict_on_its_own(self) -> None:
+        """20 and 23 requests against a baseline of 6 and 7, and still not `blocked`.
 
-        The surge is not incidental: a blocked request is retried, so the count
-        rises *because* of the block. Pinned together so a future reading cannot
-        take the surge as evidence on its own — `/feed/reels_tray/` is blocked just
-        as certainly and its count barely moves.
+        The surge is real and it is caused by the block — a refused request is
+        retried. It was never the evidence, though: `/feed/reels_tray/` is blocked
+        just as certainly and moves 2 → 3. So with the refusal signal missing, a
+        movement nothing accounts for is a caveat and not a finding, and this pins
+        that the module does not quietly promote the surge to one.
         """
         found = next(
             item
             for item in self.grouped.classifications
             if item.endpoint == "/feed/timeline/"
         )
-        self.assertEqual(BLOCKED, found.verdict)
-        self.assertEqual("disable_feed", found.toggle)
+        self.assertEqual(UNCLASSIFIABLE, found.verdict)
+        self.assertIsNone(found.toggle)
+        observed = found.observed
+        self.assertEqual((6, 7), tuple(observed["baseline"]))
+        self.assertEqual((20, 23), tuple(observed["disable_feed"]))
         self.assertEqual((20, 23), found.observed["disable_feed"])
         self.assertEqual((6, 7), found.observed["baseline"])
 
@@ -1665,3 +1722,84 @@ class CommittedCorpusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MixedBuildStateTests(RootedTestCase):
+    """A state holding both kinds of session answers from the ones that can answer.
+
+    This is the shape every version is in the moment the refusal signal arrives:
+    twelve sessions already committed from a build that could not report, and new
+    ones from a build that can. Pooling them so that the old rows veto the new
+    measurement would mean adding evidence made the answer worse — and re-walking
+    would never help, because the old rows never leave.
+    """
+
+    def test_two_reporting_sessions_answer_even_beside_two_silent_ones(self) -> None:
+        arm = {"/feed/timeline/": 20, "/feed/reels_tray/": 3, "/clips/discover": 4}
+        base = {"/feed/timeline/": 6, "/feed/reels_tray/": 3, "/clips/discover": 4}
+        old = _unreporting(
+            tuple(
+                {**item, "session_id": f"old-{item['session_id']}"}
+                for item in flat_corpus(
+                    **{"disable_feed-fwd": arm, "disable_feed-rev": arm}
+                )
+            ),
+            *[f"old-{name}-{order}" for name in ("base", *KEYS) for order in ("fwd", "rev")],
+        )
+        new = with_refusals(
+            flat_corpus(**{"disable_feed-fwd": arm, "disable_feed-rev": arm,
+                           "base-fwd": base, "base-rev": base}),
+            **{"disable_feed-fwd": {"/feed/timeline/": 20},
+               "disable_feed-rev": {"/feed/timeline/": 20}},
+        )
+        self.write(*old, *new)
+        grouped = classify("439", self.root, walk=WALK)
+        found = next(
+            item for item in grouped.classifications
+            if item.endpoint == "/feed/timeline/"
+        )
+        self.assertEqual(BLOCKED, found.verdict)
+        self.assertEqual("disable_feed", found.toggle)
+        # And the reader is told the answer rests on two of four, so "in every
+        # session of the state" is not read as four.
+        self.assertEqual(
+            1, len([item for item in grouped.warnings if "2 of 4" in item]),
+            grouped.warnings,
+        )
+
+    def test_one_reporting_session_is_still_not_enough(self) -> None:
+        """The replication rule applies to the sessions that can answer, not to all."""
+
+        rows = _unreporting(flat_corpus(), "disable_feed-fwd")
+        self.write(*rows)
+        arm = next(
+            item for item in classify("439", self.root, walk=WALK).arms
+            if item.arm == "disable_feed"
+        )
+        self.assertEqual(1, len(arm.reporting))
+        self.assertFalse(arm.reported)
+        self.assertTrue(arm.partly_reporting)
+        self.assertIsNone(arm.refusals("/feed/timeline/"))
+
+    def test_a_silent_session_still_supplies_its_request_counts(self) -> None:
+        """Only the refusal questions narrow. An erasure is a count comparison.
+
+        Without this the arrival of the refusal signal would have silently thrown
+        away every request count measured before it, which is the larger half of
+        what these sessions are for.
+        """
+
+        gone = {"/feed/timeline/": 6, "/feed/reels_tray/": 3}
+        rows = _unreporting(
+            flat_corpus(**{"disable_reels-fwd": gone, "disable_reels-rev": gone}),
+            "disable_reels-fwd",
+        )
+        self.write(*rows)
+        grouped = classify("439", self.root, walk=WALK)
+        arm = next(item for item in grouped.arms if item.arm == "disable_reels")
+        self.assertEqual((0, 0), arm.counts("/clips/discover"))
+        self.assertEqual(
+            ERASED,
+            next(item for item in grouped.classifications
+                 if item.endpoint == "/clips/discover").verdict,
+        )

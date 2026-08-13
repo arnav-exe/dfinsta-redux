@@ -68,7 +68,15 @@ __all__ = [
     "Rule",
     "MATCHES",
     "BLOCK_MESSAGE",
+    "BLOCKED_DIRECTIVE",
+    "BLOCKED_METHOD",
+    "TOGGLE_DIRECTIVE",
+    "REPORTS_MARK",
+    "REPORTS",
+    "REPORTS_LINE",
     "normalise",
+    "Decision",
+    "decide",
     "render_method",
     "rules_from_manifest",
     "apply_to_source",
@@ -96,6 +104,61 @@ MATCHES = {
 #: Owner decision, 2026-08-08. Rule-level attribution is done with a throw-away
 #: diagnostic build instead, which never ships.
 BLOCK_MESSAGE = "Blocked by DFInsta setting"
+
+#: How a measurement build says *we* refused a request, and which path it was.
+#:
+#: The block signal used to be `java.io.IOException: Blocked by DFInsta setting`
+#: grepped out of logcat — a line that is there because **Instagram** catches our
+#: exception and files it into its own error event. It cost nothing to read, so it
+#: became the signal, and it under-reports: across eight sessions on two Instagram
+#: versions and two walk protocols, `/discover/topical_explore` was refused seven
+#: times and reported once, and six times and reported **none**, while
+#: `/feed/timeline/` reported 20/20, 23/23 and 17/17 in the very same captures. The
+#: loss is feature-specific and stable, so no inference over the total recovers it.
+#:
+#: Whether the app *requests* a path is Instagram's to say, and that is the thing
+#: being measured. Whether our guard refused it is ours — and so is whether that
+#: was written down. This is us writing it down.
+#:
+#: It carries the **literal that matched**, not the rule, because a rule may test
+#: several: `/api/v1/clips/homecoming/` and `/clips/discover` are one rule under
+#: `disable_reels`, and `/clips/discover` is the exact path two walk protocols
+#: disagreed about. A per-rule name would have merged the contested path into its
+#: neighbour.
+BLOCKED_DIRECTIVE = "!blocked"
+BLOCKED_METHOD = "blocked"
+
+#: What this build's instrumentation is able to state, carried **on the toggle
+#: line** — `!toggles +blocked disable_feed=1 ...`.
+#:
+#: Without it a capture holding no `!blocked` line is ambiguous between "nothing
+#: was refused" and "this build could not have said", and every session recorded
+#: before 2026-08-13 would read as the first. That is the absent-vs-empty
+#: conflation, which has shipped in five modules of this project; here it would
+#: turn 48 committed sessions into 48 false zeroes at once.
+#:
+#: On the toggle line rather than a line of its own because `state()` runs on
+#: **every checked request** — 625 times in a three-round session, not once per
+#: watched path — so a second line would have grown every committed capture by
+#: 55% to repeat one constant. Nine bytes on a line already being written costs
+#: 8%. The `logcat -c` argument that makes `state()` per-request applies to the
+#: capability exactly as it applies to the toggles, so the two belong together.
+#:
+#: Marked with a leading `+` so it can never be read as a preference key: those
+#: match `[A-Za-z_][A-Za-z0-9_]*`, so the two token shapes cannot collide and a
+#: reader needs no table to tell one from the other.
+REPORTS_MARK = "+"
+
+#: Named one by one rather than as a version number, so a build states what it can
+#: do rather than what generation it belongs to — a reader then needs no table
+#: mapping versions to capabilities in order to know whether a zero is a zero.
+REPORTS = ("blocked",)
+
+#: The whole seed of the toggle line: the directive, then what this build can say.
+TOGGLE_DIRECTIVE = "!toggles"
+REPORTS_LINE = " ".join(
+    [TOGGLE_DIRECTIVE] + [f"{REPORTS_MARK}{name}" for name in REPORTS]
+)
 
 PREFERENCE_READER = "Lcom/dfinstagram/dfinstagram;->getBoolTrueEz(Ljava/lang/String;)Z"
 METHOD_NAME = "throwIfBlocked"
@@ -184,9 +247,8 @@ def _toggle_lines(toggle: str, block_label: str = "cond_block") -> list[str]:
     ]
 
 
-def _throw_lines(label: str, message: str) -> list[str]:
+def _throw_body(message: str) -> list[str]:
     return [
-        f"    :{label}",
         "    new-instance v0, Ljava/io/IOException;",
         "",
         f'    const-string v1, "{message}"',
@@ -199,7 +261,13 @@ def _throw_lines(label: str, message: str) -> list[str]:
 
 
 def _rule_lines(
-    index: int, rule: Rule, entry: str | None, fallthrough: str, block_label: str = "cond_block"
+    index: int,
+    rule: Rule,
+    entry: str | None,
+    fallthrough: str,
+    block_label: str = "cond_block",
+    *,
+    record: bool = False,
 ) -> list[str]:
     lines: list[str] = []
     if entry is not None:
@@ -219,6 +287,14 @@ def _rule_lines(
             lines += _test_lines(literal, "if-nez", toggle_label)
     if len(rule.literals) > 1:
         lines.append(f"    :{toggle_label}")
+    if record:
+        # v1 holds whichever literal matched — every route into this point set it
+        # and nothing has overwritten it yet — and the toggle checks below are
+        # about to reuse v1 for the preference key. One instruction, here, is what
+        # lets the throw name a *path* rather than a rule: `/clips/discover` and
+        # `/api/v1/clips/homecoming/` are one rule, and the first is the path two
+        # walk protocols disagreed about.
+        lines += ["    move-object v3, v1", ""]
     for toggle in rule.toggles:
         lines += _toggle_lines(toggle, block_label)
     return lines
@@ -241,10 +317,24 @@ def toggles_of(rules: Sequence[Rule]) -> tuple[str, ...]:
 def render_observe_class(toggles: Sequence[str]) -> str:
     """The class an observing build logs through.
 
-    It emits two kinds of line and the first one is the point:
+    It emits four kinds of line, and the first two are what make the other two
+    readable:
 
-        I DFInstaObserve: !toggles disable_feed=1 disable_explore=0 ...
+        I DFInstaObserve: !toggles +blocked disable_feed=1 disable_explore=0 ...
         I DFInstaObserve: /feed/timeline/
+        I DFInstaObserve: !blocked /feed/timeline/
+
+    **The last line is the one this class exists for now.** `!blocked` is emitted
+    by the guard at the moment it decides to throw, so "did this rule fire, and how
+    often" is *known*. It used to be inferred from how many times Instagram logged
+    our own exception back to us, which under-reports by feature — see
+    :data:`BLOCKED_DIRECTIVE`.
+
+    **`+blocked` is what stops the new signal being worse than none.** A capture
+    with no `!blocked` lines means nothing on its own: it is either a state where
+    nothing was refused, or a build that could not have said. Every session
+    recorded before this mark existed is the second, and a reader that could not
+    tell would read all 48 of them as proof that nothing ever blocked.
 
     **The toggle line is read from the device, not typed by whoever ran the
     session.** A measurement taken with the blocks on cannot answer "is this
@@ -279,11 +369,15 @@ def render_observe_class(toggles: Sequence[str]) -> str:
         "",
         "# GENERATED by src/dfinsta_pipeline/guards.py. Do not edit by hand.",
         "#",
-        "# One line per watched request path, plus one line naming which blocks were",
-        "# active, to android.util.Log. It NEVER throws: the whole point is to learn",
-        "# which paths the app asks for without changing what it receives. Unlike the",
-        "# block message this stays on the device -- Instagram catches our IOException",
-        "# and files it into its own error event, but has no reason to read our log tag.",
+        "# One line per watched request path; one line per request the guard REFUSED;",
+        "# and, ahead of both, one line naming which blocks were active and one naming",
+        "# what this build can report. All to android.util.Log. It NEVER throws: the",
+        "# point is to learn what the app asks for without changing what it receives.",
+        "#",
+        "# Unlike the block message this stays on the device -- Instagram catches our",
+        "# IOException and files it into its own error event, but has no reason to read",
+        "# our log tag. That is exactly why the refusal is recorded here and not left to",
+        "# be read back out of Instagram's telemetry, which under-reports by feature.",
         "",
         "",
         "# direct methods",
@@ -301,6 +395,24 @@ def render_observe_class(toggles: Sequence[str]) -> str:
         f'    const-string v0, "{OBSERVE_TAG}"',
         "",
         "    invoke-static {v0, p0}, Landroid/util/Log;->i(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+        "    return-void",
+        ".end method",
+        "",
+        "# One line per request the guard REFUSED, naming the literal that matched.",
+        "# Called from throwIfBlocked immediately before the throw, so it records the",
+        "# decision rather than Instagram's report of the consequence. Routed through",
+        "# seen() like state() is: one Log call site, one tag, one thing to get wrong.",
+        f".method public static {BLOCKED_METHOD}(Ljava/lang/String;)V",
+        "    .locals 1",
+        "",
+        f'    const-string v0, "{BLOCKED_DIRECTIVE} "',
+        "",
+        "    invoke-virtual {v0, p0}, Ljava/lang/String;->concat(Ljava/lang/String;)Ljava/lang/String;",
+        "",
+        "    move-result-object v0",
+        "",
+        f"    invoke-static {{v0}}, {OBSERVE_DESCRIPTOR}->seen(Ljava/lang/String;)V",
         "",
         "    return-void",
         ".end method",
@@ -336,7 +448,7 @@ def render_observe_class(toggles: Sequence[str]) -> str:
         "",
         "    invoke-direct {v1}, Ljava/lang/StringBuilder;-><init>()V",
         "",
-        '    const-string v2, "!toggles"',
+        f'    const-string v2, "{REPORTS_LINE}"',
         "",
         "    invoke-virtual {v1, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;",
         "",
@@ -425,8 +537,17 @@ def render_method(
 
     `.locals 3` regardless of how many rules there are: v0 holds the path, v1 the
     literal or key under test and v2 the boolean, and every rule reuses all
-    three. This is why adding a guard can never change the register contract, and
-    why the count is a constant here rather than something computed.
+    three. This is why adding a **rule** can never change the register contract,
+    and why the count is not computed from the rules.
+
+    An **observing** build takes a fourth, v3, to carry the literal that matched
+    from the test that matched it down to the throw that refuses it. That is the
+    one thing the shipped register contract cannot express, and it is confined to
+    a build that never ships. What keeps it honest is that observation may not
+    change what the guard *decides*: :func:`decide` executes a rendered method, and
+    the observing and shipped forms are asserted to agree on every watched path
+    under every toggle state, which is the property the old byte-for-byte
+    comparison of the rule span was a proxy for.
 
     `diagnostic=True` gives every rule its own throw carrying its own message, so
     one grep says which rule fired. **This must never ship.** Instagram files our
@@ -448,7 +569,7 @@ def render_method(
 
     lines = [
         f".method public static {METHOD_NAME}(Ljava/net/URI;)V",
-        "    .locals 3",
+        f"    .locals {4 if observe else 3}",
         "",
         "    # GENERATED by src/dfinsta_pipeline/guards.py from the url_block_rules",
         "    # in manifest/hooks.json. Do not edit by hand: the next port regenerates it.",
@@ -476,21 +597,42 @@ def render_method(
         lines += _observe_lines(index, literal)
     if observe:
         lines.append("")
+    # Only a diagnostic build needs a landing site per rule, because only its
+    # message differs per rule. An observing build does NOT: it names the path from
+    # v3, which every rule has already loaded, so one shared `:cond_block` serves
+    # all of them — and the rules themselves keep the shape a shipped build has.
+    per_rule = diagnostic
     for index, rule in enumerate(rules):
         entry = None if index == 0 else f"cond_rule_{index}"
         fallthrough = (
             "cond_return" if index == len(rules) - 1 else f"cond_rule_{index + 1}"
         )
-        block = f"cond_block_{index}" if diagnostic else "cond_block"
-        lines += _rule_lines(index, rule, entry, fallthrough, block)
+        block = f"cond_block_{index}" if per_rule else "cond_block"
+        lines += _rule_lines(index, rule, entry, fallthrough, block, record=bool(observe))
     lines += ["    :cond_return", "    return-void", ""]
-    if diagnostic:
-        for index, rule in enumerate(rules):
-            lines += _throw_lines(
-                f"cond_block_{index}", f"{BLOCK_MESSAGE} [DIAG-{slug(rule)}]"
-            )
+    # Recorded BEFORE the throw, because the throw is the last thing this method
+    # does. The message thrown stays the one fixed string whatever the rule was:
+    # the rule's identity goes to our own log, where Instagram has no reason to
+    # look, and not into an exception Instagram files into its own error event —
+    # owner decision, 2026-08-08.
+    record = (
+        [
+            f"    invoke-static {{v3}}, {OBSERVE_DESCRIPTOR}->"
+            f"{BLOCKED_METHOD}(Ljava/lang/String;)V",
+            "",
+        ]
+        if observe
+        else []
+    )
+    if not per_rule:
+        lines += ["    :cond_block"] + record + _throw_body(BLOCK_MESSAGE)
     else:
-        lines += _throw_lines("cond_block", BLOCK_MESSAGE)
+        for index, rule in enumerate(rules):
+            lines += (
+                [f"    :cond_block_{index}"]
+                + record
+                + _throw_body(f"{BLOCK_MESSAGE} [DIAG-{slug(rule)}]")
+            )
     lines.append(".end method")
     return "\n".join(lines) + "\n"
 
@@ -573,6 +715,187 @@ def normalise(method: str) -> tuple[str, ...]:
 
 
 MANIFEST_KEY = "url_block_rules"
+
+
+# --------------------------------------------------------------- what it does
+
+
+@dataclass(frozen=True)
+class Decision:
+    """What a rendered `throwIfBlocked` did with one path under one toggle state."""
+
+    #: Did it throw? The only thing the app can observe.
+    blocked: bool
+    #: The message thrown, or `None`. A shipped build has exactly one of these.
+    message: str | None = None
+    #: The literal handed to `observe;->blocked`, or `None` in a build that does
+    #: not record refusals. This is the claim the whole change rests on, so it is
+    #: returned rather than inferred: the path named must be the path that matched.
+    recorded: str | None = None
+    #: The literals handed to `observe;->seen`, in order.
+    observed: tuple[str, ...] = ()
+
+
+_INSTRUCTION = re.compile(r"^\s*(?P<op>[a-z-]+)(?:\s+(?P<rest>.*))?$")
+_STRING = re.compile(r'^(?P<register>[vp]\d+), "(?P<text>.*)"$')
+_INVOKE = re.compile(r"^\{(?P<args>[^}]*)\}, (?P<target>\S+)$")
+_STEPS = 10_000
+
+
+def _zero(value: Any) -> bool:
+    """Is this register's content the `if-eqz` sense of zero?
+
+    Type-aware on purpose. `""` is a *reference* and therefore non-zero, while
+    Python would call it falsey — and an empty path is exactly what
+    `replaceReelsEndpoint` leaves behind, so getting this backwards would model
+    the one case the pipeline most needs to reason about.
+    """
+
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, int):
+        return value == 0
+    return False
+
+
+def decide(
+    method: str, path: str | None, toggles: Mapping[str, bool]
+) -> Decision:
+    """Execute a rendered method against one path and one toggle state.
+
+    An interpreter over exactly the instructions :func:`render_method` emits, and
+    it **refuses** anything else — so it cannot quietly skip an instruction and
+    report the decision the rest of the method would have made.
+
+    This exists because the property that matters is *what the guard blocks*, and
+    the observing and shipped forms no longer have the same instructions: an
+    observing build carries a fourth register and a call the shipped one does not.
+    Comparing their text used to stand in for comparing their behaviour, which was
+    honest while the rules were byte-identical and would now be a test asserting
+    that a change nobody made was not made. Running both is the direct statement,
+    and it is the one a device would make.
+
+    `toggles` must name **every** key the method reads: a missing key is refused
+    rather than defaulted, because the interesting states here are the ones where
+    a single toggle is on and the rest are off, and a default would make "off" and
+    "never mentioned" the same answer.
+    """
+
+    labels: dict[str, int] = {}
+    program: list[tuple[str, str]] = []
+    for line in method.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith(".method") or stripped.startswith(".end method"):
+            continue
+        if stripped.startswith(".locals"):
+            locals_count = int(stripped.split()[1])
+            continue
+        if stripped.startswith(":"):
+            labels[stripped[1:]] = len(program)
+            continue
+        found = _INSTRUCTION.match(stripped)
+        if found is None:
+            raise GuardError(f"decide cannot read {stripped!r}")
+        program.append((found.group("op"), (found.group("rest") or "").strip()))
+
+    registers: dict[str, Any] = {"p0": path}
+    result: Any = None
+    observed: list[str] = []
+    recorded: str | None = None
+
+    def read(name: str) -> Any:
+        if name not in registers:
+            raise GuardError(f"decide: {name} is read before it is written")
+        return registers[name]
+
+    def write(name: str, value: Any) -> None:
+        # A register the method never declared assembles nowhere, and this is the
+        # cheapest place to find that out. `.locals 3` with a `v3` in it is the
+        # exact mistake an observing build could make.
+        if name.startswith("v") and int(name[1:]) >= locals_count:
+            raise GuardError(
+                f"{name} is written by a method declaring .locals {locals_count}; "
+                "smali numbers locals from v0, so this method would not assemble"
+            )
+        registers[name] = value
+
+    counter = 0
+    at = 0
+    while at < len(program):
+        counter += 1
+        if counter > _STEPS:
+            raise GuardError("decide: the method did not terminate; a jump loops")
+        op, rest = program[at]
+        at += 1
+        if op == "const-string":
+            found = _STRING.match(rest)
+            if found is None:
+                raise GuardError(f"decide cannot read const-string {rest!r}")
+            write(found.group("register"), found.group("text"))
+        elif op == "move-object":
+            target, _, source = rest.partition(", ")
+            write(target, read(source))
+        elif op == "move-result" or op == "move-result-object":
+            write(rest, result)
+        elif op == "goto":
+            at = labels[rest[1:]]
+        elif op in ("if-eqz", "if-nez"):
+            register, _, label = rest.partition(", ")
+            taken = _zero(read(register)) if op == "if-eqz" else not _zero(read(register))
+            if taken:
+                if label[1:] not in labels:
+                    raise GuardError(f"decide: {label} is jumped to and never defined")
+                at = labels[label[1:]]
+        elif op == "return-void":
+            return Decision(False, None, recorded, tuple(observed))
+        elif op == "new-instance":
+            write(rest.split(",")[0], "(uninitialised)")
+        elif op == "throw":
+            return Decision(True, read(rest), recorded, tuple(observed))
+        elif op in ("invoke-virtual", "invoke-static", "invoke-direct"):
+            found = _INVOKE.match(rest)
+            if found is None:
+                raise GuardError(f"decide cannot read {op} {rest!r}")
+            arguments = [a.strip() for a in found.group("args").split(",") if a.strip()]
+            target = found.group("target")
+            if target.endswith("getPath()Ljava/lang/String;"):
+                result = read(arguments[0])
+            elif target.endswith("endsWith(Ljava/lang/String;)Z"):
+                subject, argument = read(arguments[0]), read(arguments[1])
+                result = int(subject.endswith(argument))
+            elif target.endswith("contains(Ljava/lang/CharSequence;)Z"):
+                subject, argument = read(arguments[0]), read(arguments[1])
+                result = int(argument in subject)
+            elif target.endswith("concat(Ljava/lang/String;)Ljava/lang/String;"):
+                result = read(arguments[0]) + read(arguments[1])
+            elif target == PREFERENCE_READER:
+                key = read(arguments[0])
+                if key not in toggles:
+                    raise GuardError(
+                        f"the method reads the preference {key!r} and the state given to "
+                        "decide does not name it. A state that leaves a key out cannot "
+                        "say whether it was off or simply never considered"
+                    )
+                result = int(bool(toggles[key]))
+            elif target == f"{OBSERVE_DESCRIPTOR}->seen(Ljava/lang/String;)V":
+                observed.append(read(arguments[0]))
+            elif target == (
+                f"{OBSERVE_DESCRIPTOR}->{BLOCKED_METHOD}(Ljava/lang/String;)V"
+            ):
+                recorded = read(arguments[0])
+            elif target == f"{OBSERVE_DESCRIPTOR}->state()V":
+                pass
+            elif target.startswith("Ljava/io/IOException;-><init>"):
+                write(arguments[0], read(arguments[1]))
+            else:
+                raise GuardError(f"decide does not know the method {target}")
+        else:
+            raise GuardError(f"decide does not know the instruction {op!r}")
+    raise GuardError("decide: the method ran off its end without returning or throwing")
 
 
 def rules_from_manifest(

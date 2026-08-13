@@ -32,199 +32,63 @@ reported, because nothing ever reached the code that throws. **This one is only 
 the counts.**
 
 So there are two signals and each is blind to the other's mechanism.
-`observation.parse` now counts both: the watched paths, and the
-`java.io.IOException: Blocked by DFInsta setting` headers Instagram emits when the
-guard throws.
+`observation.parse` reads both: the watched paths the app asked for, and the
+`!blocked <literal>` lines the guard writes as it refuses them.
 
 ===============================================================================
   HOW A BLOCK IS ATTRIBUTED TO A PATH
 ===============================================================================
 
-The block count is per *capture*. Nothing in the event says which path it was —
-the line above the header names a **feature** (`FEED_NOT_LOADING`,
-`STORY_NOT_LOADING`, `EXPLORE_NOT_LOADING`), and a feature is not a path.
+**The guard says so.** An observing build calls
+`observe;->blocked("<literal>")` immediately before it throws, naming the literal
+that matched, so the capture carries a refusal count per path and this module
+reads it. A path is BLOCKED by toggle T when, under the state with only T on,
+every session recorded at least one refusal of it, the baseline recorded none,
+and the path was still requested — that last part is what tells a block from an
+erasure, and it is the only part that comes from the counts.
 
-What attributes it is arithmetic. Under a state where exactly one toggle is on,
-the guard throws once per request to a path that toggle blocks, so
+**What that replaced, and why it had to go.** Until 2026-08-13 the only block
+evidence was `java.io.IOException: Blocked by DFInsta setting` grepped out of
+logcat. That line is there because *Instagram* catches our exception and files it
+into its own error event — it cost nothing to read, so it became the signal. It
+names a **feature** (`FEED_NOT_LOADING`) and never a path, so a path had to be
+named by arithmetic: with one toggle on the guard throws once per request to a
+path that toggle blocks, so
 
     blocks in the capture  ==  sum of the counts of the paths that toggle blocks
 
-and when a single watched path accounts for the whole total *and no combination of
-paths accounts for it too*, that path is the one being blocked. Call it the
-**block-accounting identity**; :func:`_accounts` is both halves of it.
+and a path whose own count equalled the total, uniquely and with no combination
+of other paths also equalling it, was the blocked one. Two things killed it:
 
-Three things make it worth trusting, and one of them is the reason it is used at
-all rather than the feature line:
+* **It under-reports, by feature and consistently.** `/discover/topical_explore`
+  was refused 7, 6, 12 and 6 times across eight sessions on two Instagram
+  versions and two walk protocols, and reported 1, 0, 1 and 0 — while
+  `/feed/timeline/` reported 20/20, 23/23, 17/17 and 16/16 in the very same
+  captures. Explore was simply unmeasurable through that channel.
+* **The ambiguity check refused correct answers on real data.** In
+  `439-3r-reverse-feed` `/feed/timeline/` had 17 requests and 17 blocks — exact —
+  and was declined because `7 + 7 + 3 = 17` among three unrelated paths. Longer
+  walks raise counts, more live paths give more coinciding subsets, so the
+  derivation got *less* reliable exactly as the measurement got better. That is
+  most of why the two walks disagreed about a version they agreed about.
 
-* **It is arithmetic over two measurements**, not a reading of a name. Nothing in
-  it knows that `/feed/timeline/` and `disable_feed` share a word.
-* **It fails when events are dropped.** Instagram emits these at its discretion.
-  If some are missing the equality simply does not hold, and this module says
-  "unattributable" instead of guessing — the identity is its own control.
-* **It is checked in every session of the state and the answers intersected.**
-  In `439-reverse-stories` three watched paths happen to have count 3; in
-  `439-isolate-stories` only `/feed/reels_tray/` has 3. One session would have
-  been ambiguous, two are not, and neither is allowed to answer alone.
+Instagram's count is still parsed and still printed, beside ours and labelled.
+**Nothing is derived from it.** A reader seeing 17 refusals recorded and 3 events
+reported is seeing the reason this module stopped asking.
 
-The feature category is carried and printed and is **never** a basis. It was
-right three times out of three, which is a sample of three.
+**A watched path that no rule names cannot have its own refusal count.** A refusal
+names the literal the *rule* tested, so `/api/v1/clips/discover/stream/` refused by
+the `/clips/discover` rule is recorded under `/clips/discover`. `_declared_for`
+says which rules cover a path, and the report says "covered by" rather than
+inventing a count.
 
-**Where the numbers in this docstring come from.** The 439 sessions committed in
-`manifest/observations/439.jsonl` carry **no block counts** — they were recorded
-before this host counted them, and `grouping report --version 439` accordingly
-returns the erasures and refuses the blocked half by name. Every request count
-quoted here is in that committed file and can be checked. Every *block* count
-quoted here (20/23 under `disable_feed`, 3/3 under `disable_stories`, 1 then 0
-under `disable_explore`) comes from re-reading the captures in `work/observations/`,
-which is gitignored. They are reproducible on the machine that walked the app and
-nowhere else, and they are quoted as the reason the code is shaped this way, not
-as evidence a reader can verify from a clone.
+**A build that could not report refusals says nothing, and that is not zero.** Its
+sessions have `refusals is None`, its arm is unreadable by name, and no path is
+called blocked or unaffected on its evidence. Every row committed before
+2026-08-13 is in that shape, so 439's block half is unanswerable until it is
+walked again — and unlike the walk, which the captures could supply, nothing can
+be back-filled, because the lines were never written.
 
-The residual risk, stated rather than worked around: **a path that equals the
-total in both sessions while the real one does not can still be named wrongly.**
-That now takes a dropped event *and* a coincidence surviving two sessions *and* no
-combination explaining the same total. It is why the count movement and the
-feature category are both printed under every finding: a reader who sees
-`/feed/timeline/` named with `FEED_NOT_LOADING` above every header and a rise of
-13 has three things agreeing, and a reader who sees one of them alone knows it.
-
-===============================================================================
-  THE NOISE FLOOR IS MEASURED, NOT DECLARED
-===============================================================================
-
-A constant here would be the exact failure `expectation`'s docstring is about: a
-threshold whose repair when it is wrong is one character, in a diff that looks
-like maintenance. `NOISE = 2` → `NOISE = 3` is invisible and unarguable.
-
-The corpus measures it instead. Every state was walked **twice**, so for every
-(state, path) pair there is a difference that no toggle caused — the same
-experiment, run again. The floor for a path is the largest of those differences
-anywhere in the corpus:
-
-    floor(path) = max over states with two or more sessions of (max - min)
-
-and a path "moved" under a state only when the state's whole range clears the
-baseline's whole range by more than that. Ranges, not averages: an arm whose
-counts overlap the baseline's has not replicated whatever it is supposed to show,
-and `derive-the-threshold-never-declare-it` is only half the lesson if the
-comparison it feeds is a mean of two numbers.
-
-On 439 the floors come out 1, 1, 2, 2, 1, 3 for the six paths that were ever
-requested. Nobody chose any of them, and re-walking the app changes them.
-
-===============================================================================
-  AND THAT IS EXACTLY WHY A COMPARISON MUST NAME ITS WALK
-===============================================================================
-
-*"The same experiment, run again"* is doing all the work in the paragraph above.
-It is true only if the two sessions did the same thing, and on 2026-08-11 the
-driving script went from one pass over three surfaces to **three rounds** over
-them: the 440 baseline went from 11–16 observed requests to 25. Two sessions of
-one state, one short-walk and one long-walk, spread by 14 for a reason no toggle
-caused — and this module would have taken that spread as its floor, called it
-noise, and then swallowed every real effect underneath it. A measured threshold
-is only better than a declared one while the thing it measures is what it claims
-to measure.
-
-So :func:`classify` takes the **walk as a required argument** and answers over the
-sessions recorded under exactly that one. A required argument rather than "group,
-and refuse when mixed", for the reason `observation.never_observed` states about
-toggle states: a call that answers today and refuses tomorrow because somebody
-filed a session on a new walk is indistinguishable, from the caller's side, from a
-corpus that broke. `observation.walks()` says which are on record.
-
-Two things this deliberately does *not* do. It does not pool the sessions that
-name no walk, and it does not offer a way to ask for them: 439's twelve rows
-predate the field, and a comparison over sessions whose protocol nobody wrote
-down is the thing the argument exists to prevent — a bucket named "unstated" that
-answered in full would hand back exactly the property naming the walk buys.
-`observation.summary` is the other way round and says why: a negative claim only
-gets safer as walks are pooled into it, a differential does not.
-
-And the walk is **typed**, which the toggle state is not, because nothing on the
-phone knows which script drove it. The check that makes a typed value worth
-something is `observation.walk_dispute`: the spans of the sessions claiming one
-walk must not split into two groups further apart than either group is wide. The
-scale in it is derived, exactly as the floor above is — the only number written
-down is how many sessions a group needs to *have* a range, and its own comment
-gives the measurement behind that. It refuses here rather than warning, because a
-floor derived across two protocols is wrong in the direction that looks like an
-answer.
-
-===============================================================================
-  WHAT A PATH CAN BE CALLED, AND WHAT IT TAKES
-===============================================================================
-
-`never_requested`
-    Zero in every session of every state. The owner's "recorded, not built"
-    group: watched, walked for, and never once asked for. Ten of 439's sixteen.
-
-`erased` by T
-    Observed in **every** baseline session, zero in **every** session of T's, and
-    the fall larger than the floor. Categorical in both directions, which is what
-    an upstream erasure looks like and what a block never does.
-
-`blocked` by T
-    T's state reports blocks in every one of its sessions and the baseline reports
-    **none** in any of its own, the path is still observed under T, and the
-    block-accounting identity names it uniquely across all of T's sessions.
-
-`unaffected`
-    No toggle moved it beyond its floor, no toggle erased it, no toggle blocked
-    it — **and every arm was readable**, because that is a claim about all five
-    toggles and it cannot be made while one of them is unreadable. This is the
-    verdict that is easiest to reach by accident, so it is the one with the
-    positive control on it.
-
-`unclassifiable`
-    Everything else, always with the reason. A path not reliably observed in the
-    baseline is here first: if the baseline itself sometimes sees zero, a zero
-    under an arm says nothing, and neither does a rise. `/feed/reels_media_stream/`
-    on 439 is 1 in one baseline session and 0 in the other.
-
-===============================================================================
-  IT REFUSES RATHER THAN RETURNING A TIDY EMPTY ANSWER
-===============================================================================
-
-Seven refusals, each naming a different missing thing, because each has a
-different fix — and none of them returns "nothing was affected", which is what
-this would otherwise say when it had measured nothing at all. That is
-`absence-assertions-need-positive-controls`, and `observation.never_observed`
-refuses in the same place for the same reason.
-
-Nothing recorded; every session vacuous; an evidential session that states no
-toggle state; no session on the walk that was asked for; a walk its own captures
-contradict; no baseline; no single-toggle state; sessions from more than one
-build; and no literal watched by all of them. The last two are checked late
-because they are the ones that have to know which sessions the answer would have
-rested on. The build one is a refusal here and only a
-warning in `observation.summary`, and the difference is real: that report answers
-*within* one state, where two builds are usually one rebuild, while this compares
-*across* states, where a toggle name is not a rule and two builds can put
-different literals under the same key. Then the difference between two states
-would be a difference between two builds.
-
-A state with two or more toggles on is not a refusal — it is excluded, by name,
-because it cannot attribute an effect to either of them. A state walked only once
-is excluded the same way, and that is `require replication` doing its job: two of
-the five findings a human took from this corpus by hand appeared in one running
-order only.
-
-===============================================================================
-  THIS IS A VIEW, AND IT DECIDES NOTHING
-===============================================================================
-
-**Nothing is written.** The grouping is recomputed from the sessions every time it
-is asked for, the way `expectation` recomputes its bar from the previous port's
-evidence rather than storing it. A file recording the answer would be a second
-copy that rots against the store the moment another session is walked, and it
-would be the thing people read.
-
-Acting on it means a human editing `url_block_rules` in `manifest/hooks.json`.
-That stays a human act and there is deliberately no machinery for it. What each
-path is declared under **today** is printed beside what was measured, as context
-and not as a proposal; a difference between the two is a question for a person,
-and this module has no opinion about which side is wrong.
 """
 
 from __future__ import annotations
@@ -414,24 +278,84 @@ class State:
         return dict(sorted(totals.items()))
 
     @property
-    def blocks_replicate(self) -> bool | None:
-        """`True` every session blocked, `False` none did, `None` they disagree.
+    def reporting(self) -> tuple[ObservationSession, ...]:
+        """The sessions of this state whose build could report its own refusals.
 
-        The third answer is the one that matters and it is not hypothetical:
-        `disable_explore` on 439 reported one block in one session and none at all
-        in the other, same state, same walk, opposite order. Instagram emits these
-        at its discretion, so a zero is not proof that nothing was refused — and a
-        state that cannot agree with itself classifies nothing.
+        A build that never claimed `+blocked` could not have written a refusal
+        line, so its silence is not a zero — `ObservationSession.refusals` is
+        `None` and it is not here. Every row committed before 2026-08-13 is in
+        that shape.
+
+        **Answering from a subset is not cherry-picking, and the difference is
+        that the subset is chosen before any answer is looked at.** These sessions
+        are selected by a property of the build that produced them, exactly as
+        `observation.stated` selects the sessions that named their toggle state
+        and `walked` those that named their walk. A session with no refusal report
+        does not disagree with one that has it; it says nothing, and pooling
+        silence with evidence would let an old row veto a measurement rather than
+        contribute to it.
+
+        Its **counts** are still used, by every comparison in this module that
+        rests on counts. Only the refusal questions are narrowed.
         """
 
-        if not self.counted or not self.replicated:
+        return tuple(item for item in self.sessions if item.refusals is not None)
+
+    @property
+    def reported(self) -> bool:
+        """Can this state answer a refusal question, replicated?
+
+        Two sessions at least, because one running order cannot tell a finding
+        from an artefact — the same rule the count side has, applied to the
+        sessions that can actually answer.
+        """
+
+        return len(self.reporting) > 1
+
+    @property
+    def partly_reporting(self) -> bool:
+        """Some sessions can report refusals and some cannot.
+
+        A different fact from "none can", with a different repair: the older rows
+        are silent and can be withdrawn, where a state none of whose sessions can
+        report needs walking again. The report says which.
+        """
+
+        return 0 < len(self.reporting) < len(self.sessions)
+
+    def refusals(self, endpoint: str) -> tuple[int, ...] | None:
+        """How often each *reporting* session refused `endpoint`, in recorded order.
+
+        `None` when fewer than two sessions could report at all — absent, not
+        zero. Otherwise every entry is a measurement, including the zeroes: a
+        literal missing from a session's refusals was watched, requested or not,
+        and not refused.
+        """
+
+        if not self.reported:
             return None
-        totals = [item.blocks.total for item in self.sessions]  # type: ignore[union-attr]
-        if all(total > 0 for total in totals):
-            return True
-        if all(total == 0 for total in totals):
-            return False
-        return None
+        return tuple(item.refusals.get(endpoint) for item in self.reporting)  # type: ignore[union-attr]
+
+    def refusals_text(self, endpoint: str) -> str:
+        """`20, 23` — or `not reported`, which is not the same as `0, 0`."""
+
+        measured = self.refusals(endpoint)
+        if measured is None:
+            return "not reported"
+        return ", ".join(str(count) for count in measured)
+
+    @property
+    def refused_total(self) -> int | None:
+        """Every refusal this state made, across all paths. `None` if unreportable.
+
+        The baseline's is the one that matters: with every toggle off nothing
+        should throw, so anything but zero means the build's own state line and
+        its behaviour disagree and no verdict taken against it is safe.
+        """
+
+        if not self.reported:
+            return None
+        return sum(item.refusals.total for item in self.reporting)  # type: ignore[union-attr]
 
 
 @dataclass(frozen=True)
@@ -617,76 +541,6 @@ def _gap(inner: Sequence[int], outer: Sequence[int]) -> int:
     if not inner or not outer:
         return 0
     return max(min(inner) - max(outer), min(outer) - max(inner), 0)
-
-
-def _accounts(
-    counts: Mapping[str, int], total: int
-) -> tuple[frozenset[str], bool]:
-    """The paths that alone equal `total`, and whether several together could too.
-
-    The second half is the one that matters, and it was missing until an
-    adversarial pass produced the corpus that breaks without it. A toggle may block
-    **more than one** live path — `manifest/hooks.json` declares three literals
-    under `disable_feed` and five under `disable_reels` — and then the block total
-    is their *sum*. A fourth, unrelated path whose own count happens to equal that
-    sum is then the unique single-path explanation, and naming it is wrong twice
-    over: it is not blocked, and the two that are read `unaffected`.
-
-    Measured example, from live manifest shapes: `/feed/timeline/` 4 and
-    `/feed/timeline_stream/` 1 both blocked gives 5 blocks, and
-    `/discover/topical_explore` reading 5 was named as the blocked path.
-
-    So a subset of two or more that also sums to the total makes the arm
-    **unattributable**. Counted by the usual subset-sum table rather than
-    enumerated, which is `O(paths x total)` and needs no cap on the watch list.
-    Paths with no requests are excluded — a path nobody asked for cannot have been
-    refused, and a zero would otherwise join any subset without changing its sum.
-    """
-
-    if total <= 0:
-        return frozenset(), False
-    live = {path: count for path, count in counts.items() if 0 < count <= total}
-    singles = frozenset(path for path, count in live.items() if count == total)
-    ways = [0] * (total + 1)
-    ways[0] = 1
-    for count in live.values():
-        for value in range(total, count - 1, -1):
-            ways[value] += ways[value - count]
-    return singles, (ways[total] - len(singles)) > 0
-
-
-def _attribute(arm: State, endpoints: Sequence[str]) -> tuple[str, ...]:
-    """Which single path could account for every block this state reported.
-
-    The block-accounting identity: with one toggle on, the guard throws once per
-    request to a path that toggle blocks, so a path whose count equals the block
-    total accounts for all of them. Two conditions, and both are needed.
-
-    **Checked in every session and intersected**, because one session is routinely
-    ambiguous — three of 439's watched paths read 3 in `439-reverse-stories`, and
-    only one of them also reads 3 in the other.
-
-    **And no combination of paths may explain the same total**, or the single-path
-    answer is one explanation among several rather than the explanation. See
-    :func:`_accounts`.
-
-    Every watched path is a candidate, including ones no verdict could be given to.
-    Filtering them out first could only turn an ambiguous answer into a confident
-    wrong one.
-    """
-
-    candidates: set[str] | None = None
-    for item in arm.sessions:
-        if item.blocks is None:
-            return ()
-        singles, several = _accounts(
-            {endpoint: item.counts.get(endpoint, 0) for endpoint in endpoints},
-            item.blocks.total,
-        )
-        if several:
-            return ()
-        candidates = set(singles) if candidates is None else (candidates & singles)
-    return tuple(sorted(candidates or ()))
 
 
 def _declared_for(rules: Sequence[Any], endpoint: str) -> tuple[str, ...]:
@@ -946,25 +800,53 @@ def classify(
             "the only thing that can contradict it"
         )
 
-    if not baseline.counted:
+    if not baseline.reported:
         warnings.append(
-            f"the baseline {baseline.text} has session(s) with no block count: "
+            f"the baseline {baseline.text} has session(s) whose build could not report "
+            "refusals: "
             + ", ".join(
-                item.session_id for item in baseline.sessions if item.blocks is None
+                item.session_id for item in baseline.sessions if item.refusals is None
             )
-            + ". Nothing can be called blocked while the control was never counted; "
-            "re-record those sessions from their captures"
+            + ". Nothing can be called blocked while the control cannot say it refused "
+            "nothing — and unlike the walk, this cannot be back-filled from the "
+            "captures, because the build never wrote the lines. Walk it again with a "
+            "build that claims `+blocked`"
         )
-    elif any(total for total in baseline.block_totals):
+    elif baseline.refused_total:
         warnings.append(
-            f"the baseline {baseline.text} reports blocks "
+            f"the baseline {baseline.text} refused "
+            + str(baseline.refused_total)
+            + " request(s) with every toggle off. Nothing should throw in that state, so "
+            "either the capture spans a configuration change or the build is not the one "
+            "it says. No path is called blocked while this holds"
+        )
+    if baseline.counted and any(total for total in baseline.block_totals):
+        # Instagram's own count, kept as a second opinion and never as a basis.
+        # It disagreeing with ours is worth saying; it is not worth deciding on.
+        warnings.append(
+            f"the baseline {baseline.text} also has Instagram reporting blocks "
             + baseline.blocks_text
-            + " with every toggle off. Nothing should throw in that state, so either the "
-            "capture spans a configuration change or the build is not the one it says. "
-            "No path is called blocked while this holds"
+            + " with every toggle off — corroboration only, and these events go missing"
         )
 
-    baseline_clean = baseline.counted and not any(baseline.block_totals)
+    baseline_clean = baseline.reported and not baseline.refused_total
+
+    # Said once, over every state, and deliberately not as a refusal. A state with
+    # both kinds of session answers from the ones that can answer, and the reader
+    # has to be told how many that was — otherwise "blocked, in every session of
+    # the state" reads as four sessions when it was two.
+    mixed = [item for item in states if item.partly_reporting]
+    if mixed:
+        warnings.append(
+            f"{len(mixed)} state(s) hold sessions from builds that report refusals and "
+            "builds that cannot, so every refusal answer rests on the first kind only: "
+            + "; ".join(
+                f"{item.label} {len(item.reporting)} of {len(item.sessions)}"
+                for item in mixed
+            )
+            + ". The silent rows still supply their request counts. Withdrawing them "
+            "would make the two populations one again"
+        )
 
     # The population: what every session the answer rests on was watching. A path
     # one session watched and another did not has a zero in the second that means
@@ -1024,30 +906,18 @@ def classify(
                 f"{arm.arm}: only {', '.join(arm.session_ids)} — one running order "
                 "cannot show whether a finding is a finding or an artefact"
             )
-        elif not arm.counted:
-            unreadable_arms[arm.arm or ""] = "its blocks were never counted"
-            blind.append(f"{arm.arm} (no block count)")
+        elif not arm.reported:
+            unreadable_arms[arm.arm or ""] = "its build could not report refusals"
+            blind.append(f"{arm.arm} (refusals not reported)")
             detail.append(
-                f"{arm.arm}: no block count in "
+                f"{arm.arm}: {len(arm.reporting)} of {len(arm.sessions)} session(s) can "
+                "report refusals, and two are needed — "
                 + ", ".join(
-                    item.session_id for item in arm.sessions if item.blocks is None
+                    item.session_id for item in arm.sessions if item.refusals is None
                 )
-                + " — recorded before this host counted them; re-record from the capture"
-            )
-        elif arm.blocks_replicate is None:
-            unreadable_arms[arm.arm or ""] = (
-                f"its two sessions report blocks {arm.blocks_text} and disagree"
-            )
-            blind.append(f"{arm.arm} (blocks {arm.blocks_text})")
-            detail.append(
-                f"{arm.arm}: blocks "
-                + ", ".join(
-                    f"{item.session_id} {item.blocks.total}"  # type: ignore[union-attr]
-                    for item in arm.sessions
-                )
-                + " — the block signal does not replicate across the two running orders, "
-                "and Instagram emits these events at its discretion, so the zero is not "
-                "proof that nothing was refused"
+                + " never claimed `+blocked`, so they could not have written a refusal "
+                "line and their silence is not a zero. Nothing can be re-recorded from "
+                "those captures; only re-measuring repairs it"
             )
     # The baseline is every arm's control, so a hole in it is a hole in all of them.
     # It does not go in `unreadable_arms`, which names toggles.
@@ -1059,7 +929,7 @@ def classify(
             "single number"
         )
     elif not baseline_clean:
-        blind.append("the baseline (block evidence unusable)")
+        blind.append("the baseline (refusal evidence unusable)")
     if detail:
         warnings.append(
             f"evidence is unreadable for {len(detail)} state(s), so no path can be "
@@ -1072,7 +942,6 @@ def classify(
         classifications.append(
             _classify_one(
                 endpoint=endpoint,
-                population=endpoints,
                 baseline=baseline,
                 arms=arms,
                 states=states,
@@ -1130,10 +999,6 @@ def classify(
 def _classify_one(
     *,
     endpoint: str,
-    #: Every path the answer is over. The block-accounting identity is a statement
-    #: about *all* of them — "this is the only one whose count is the whole total" —
-    #: so it cannot be computed from the one path being classified.
-    population: Sequence[str],
     baseline: State,
     arms: Sequence[State],
     states: Sequence[State],
@@ -1200,42 +1065,43 @@ def _classify_one(
                         "which is what an erasure upstream of the URL looks like"
                     ),
                     corroboration=(
-                        f"{arm.arm} reported {arm.blocks_text} block(s): an erased "
-                        "path cannot be blocked, because nothing "
-                        "ever reaches the code that throws",
+                        f"{arm.arm} refused it {arm.refusals_text(endpoint)} time(s): an "
+                        "erased path cannot be refused, because nothing ever reaches the "
+                        "code that throws",
                     ),
                 )
             )
             continue
 
-        if (
-            baseline_clean
-            and arm.blocks_replicate is True
-            and all(arm_counts)
-        ):
-            attributed = _attribute(arm, population)
-            if attributed == (endpoint,):
-                totals = arm.blocks_text
-                features = arm.features
+        # No arithmetic. The guard names the literal it refused at the moment it
+        # refuses, so "did this rule fire on this path" is read rather than
+        # derived. What replaced: an accounting identity over the capture's block
+        # *total* plus a subset-sum check for other explanations of that total —
+        # which existed only because the total came from Instagram's error events
+        # and carried no path. It refused `439-3r-reverse-feed`, where
+        # `/feed/timeline/` had 17 requests and 17 blocks, because `7 + 7 + 3 = 17`
+        # among three unrelated paths.
+        refusals = arm.refusals(endpoint)
+        if baseline_clean and refusals is not None and all(arm_counts):
+            baseline_refusals = baseline.refusals(endpoint) or ()
+            if all(count > 0 for count in refusals) and not any(baseline_refusals):
                 findings.append(
                     Finding(
                         kind=BLOCKED,
                         toggle=arm.arm or "",
                         reason=(
-                            f"{arm.label} reported {totals} block(s) and the baseline "
-                            "reported none; this is the only watched path whose own count "
-                            f"({', '.join(str(item) for item in arm_counts)}) accounts for "
-                            "the whole total in every session of the state. The path is "
-                            "still requested, which is what a block does and an erasure "
-                            "does not"
+                            f"the guard itself recorded refusing it "
+                            f"{arm.refusals_text(endpoint)} time(s) in {arm.label} and "
+                            f"{baseline.refusals_text(endpoint)} in the baseline, against "
+                            f"{', '.join(str(item) for item in arm_counts)} request(s). "
+                            "The path is still requested, which is what a block does and "
+                            "an erasure does not"
                         ),
                         corroboration=tuple(
                             [
-                                "the feature named above each block header was "
-                                + ", ".join(
-                                    f"{name} {count}" for name, count in features.items()
-                                )
-                                + " — corroboration only; a feature is not a path"
+                                f"Instagram reported {arm.blocks_text} block event(s) "
+                                "across the whole state, over all paths — corroboration "
+                                "only, and these go missing by feature"
                             ]
                             + (
                                 [
@@ -1245,7 +1111,7 @@ def _classify_one(
                                 if moved
                                 else [
                                     "the count did not move beyond noise, which is why "
-                                    "the block signal is needed at all"
+                                    "the refusal signal is needed at all"
                                 ]
                             )
                         ),
@@ -1254,10 +1120,20 @@ def _classify_one(
                 continue
 
         if moved:
+            # Two different sentences, because they are two different facts. A
+            # movement no *measured* mechanism explains is a finding waiting for a
+            # reader; a movement whose arm could not report refusals at all is a
+            # session waiting to be walked again, and calling the second "nothing
+            # accounts for it" would read as evidence about the app.
             caveats.append(
                 f"{arm.label} moved it by {gap}, more than its floor of {floor}, and "
-                "nothing here accounts for that: "
-                + f"{arm.arm} reported {arm.blocks_text} block(s)"
+                + (
+                    "nothing here accounts for that: "
+                    f"{arm.arm} refused it {arm.refusals_text(endpoint)} time(s)"
+                    if arm.reported
+                    else "its build could not report refusals, so whether the guard "
+                    f"refused it is unknown rather than no: {arm.arm}"
+                )
                 + f", counts {', '.join(str(item) for item in arm_counts)} against a "
                 f"baseline of {', '.join(str(item) for item in baseline_counts)}"
             )
@@ -1316,8 +1192,8 @@ def _classify_one(
             toggle=None,
             reason=(
                 "no toggle moved its count beyond the noise floor, but 'no toggle affects "
-                "it' is a claim about every toggle, and the block evidence cannot be read "
-                "for " + ", ".join(unreadable)
+                "it' is a claim about every toggle, and the refusal evidence cannot be "
+                "read for " + ", ".join(unreadable)
                 + ". A path is only unaffected when every arm could have shown otherwise; "
                 "see the warnings for what each arm is missing"
             ),
@@ -1378,6 +1254,10 @@ def summary(
         "baseline": {
             "toggles_text": grouping.baseline.text,
             "session_ids": list(grouping.baseline.session_ids),
+            "reported": grouping.baseline.reported,
+            "refused_total": grouping.baseline.refused_total,
+            # Instagram's own count, carried so a reader can see the two side by
+            # side. Nothing is derived from it.
             "counted": grouping.baseline.counted,
             "blocks": list(grouping.baseline.block_totals),
             "blocks_text": grouping.baseline.blocks_text,
@@ -1389,10 +1269,11 @@ def summary(
                 "toggles_text": arm.text,
                 "session_ids": list(arm.session_ids),
                 "replicated": arm.replicated,
+                "reported": arm.reported,
+                "refused_total": arm.refused_total,
                 "counted": arm.counted,
                 "blocks": list(arm.block_totals),
                 "blocks_text": arm.blocks_text,
-                "blocks_replicate": arm.blocks_replicate,
                 "features": arm.features,
                 "spans": list(arm.spans),
             }
@@ -1430,36 +1311,41 @@ def render(report: Mapping[str, Any]) -> str:
     lines.append(
         f"  BASELINE  {baseline['toggles_text']}"
     )
+    refused = (
+        "not reported" if baseline["refused_total"] is None
+        else f"{baseline['refused_total']} refusal(s)"
+    )
     lines.append(
-        f"    {', '.join(baseline['session_ids'])}   blocks {baseline['blocks_text']}"
+        f"    {', '.join(baseline['session_ids'])}   {refused}"
         f"   spans {_spans_text(baseline['spans'])}"
     )
     lines.append("")
     lines.append("  ARMS")
     lines.append("")
     for arm in report["arms"]:
-        if not arm["counted"]:
-            replicate = "UNREADABLE (never counted)"
+        if not arm["reported"]:
+            state = "UNREADABLE (the build could not report refusals)"
         elif not arm["replicated"]:
-            replicate = "UNREADABLE (walked once)"
+            state = "UNREADABLE (walked once)"
         else:
-            replicate = {
-                True: "blocks in every session",
-                False: "no block in any session",
-                None: "UNREADABLE (the two sessions disagree)",
-            }[arm["blocks_replicate"]]
+            state = f"{arm['refused_total']} refusal(s) across every path"
         lines.append(
             f"    {arm['toggle']:<18} {', '.join(arm['session_ids'])}"
             f"   spans {_spans_text(arm['spans'])}"
         )
+        # Ours first and Instagram's second, in that order and labelled, because
+        # the two disagree by design: `/discover/topical_explore` was refused 7
+        # times and reported once. A reader who sees only one number cannot tell
+        # which signal a verdict rested on.
         lines.append(
-            f"      blocks {arm['blocks_text']}   {replicate}"
+            f"      {state}"
+            + f"   (Instagram reported {arm['blocks_text']}"
             + (
-                "   "
-                + ", ".join(f"{k} {v}" for k, v in sorted(arm["features"].items()))
+                "   " + ", ".join(f"{k} {v}" for k, v in sorted(arm["features"].items()))
                 if arm["features"]
                 else ""
             )
+            + ")"
         )
     lines.append("")
 

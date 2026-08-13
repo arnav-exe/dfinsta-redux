@@ -23,6 +23,11 @@ from pathlib import Path
 
 from dfinsta_pipeline.guards import (
     BLOCK_MESSAGE,
+    BLOCKED_DIRECTIVE,
+    BLOCKED_METHOD,
+    REPORTS,
+    REPORTS_LINE,
+    REPORTS_MARK,
     OBSERVE_CLASS_PATH,
     OBSERVE_DESCRIPTOR,
     OBSERVE_TAG,
@@ -35,6 +40,7 @@ from dfinsta_pipeline.guards import (
     Literal,
     Rule,
     apply_to_source,
+    decide,
     normalise,
     read_method,
     render_method,
@@ -280,22 +286,45 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def _rules_span(method: str) -> tuple[str, ...]:
-    """The block rules only, with the preamble and any observation pass removed.
+#: Every state with exactly one toggle on, plus all-off and all-on. The
+#: single-toggle states are the ones the exploration protocol actually walks, and
+#: all-on is where two rules under different toggles could interfere.
+def _states(rules) -> tuple[dict, ...]:
+    keys = toggles_of(rules)
+    return (
+        {key: False for key in keys},
+        {key: True for key in keys},
+        *({key: key == one for key in keys} for one in keys),
+    )
 
-    Needed because `normalise` numbers labels by first appearance, so an
-    observation pass shifts every label after it — a renumbering, not a change.
-    Cutting both methods at the point the rules begin and normalising each span
-    independently compares the rules themselves, jump targets included.
-    """
-    marker = ":cond_observed_"
-    if marker in method:
-        cut = method.rindex(marker)
-        cut = method.index("\n", cut) + 1
-    else:
-        cut = method.rindex("if-eqz v0, :cond_return")
-        cut = method.index("\n", cut) + 1
-    return normalise(method[cut:])
+
+#: Request paths a decision is compared over: every literal the rules test, each
+#: one under a realistic `/api/v1` prefix and bare, plus near-misses that must NOT
+#: match and a path no rule mentions. Near-misses are the point — a generator that
+#: turned every `endsWith` into a `contains` would pass a test that only tried
+#: paths which are supposed to block.
+def _paths(rules) -> tuple[str, ...]:
+    out: list[str] = ["/api/v1/users/1/info/", "/", ""]
+    for rule in rules:
+        for literal in rule.literals:
+            out += [
+                literal.text,
+                f"/api/v1{literal.text}",
+                f"{literal.text}extra/",
+                f"/prefixed{literal.text}",
+                literal.text.rstrip("/"),
+                literal.text.upper(),
+            ]
+    return tuple(dict.fromkeys(out))
+
+
+def _behaviour(method: str, rules) -> dict:
+    """What a rendered method decides, over every path and every state."""
+    return {
+        (path, tuple(sorted(state.items()))): decide(method, path, state).blocked
+        for path in _paths(rules)
+        for state in _states(rules)
+    }
 
 
 class ObserveModeTests(unittest.TestCase):
@@ -307,32 +336,53 @@ class ObserveModeTests(unittest.TestCase):
     """
 
     def test_an_observing_build_blocks_exactly_what_a_shipped_one_blocks(self):
-        """The property everything else rests on, as a subsequence check.
+        """The property everything else rests on, **run** rather than read.
 
-        If observation could alter a single instruction of the guard, then every
-        measurement taken with it would be a measurement of a different app —
-        and the numbers would be quoted about the shipped one.
+        If observation could alter what the guard decides, then every measurement
+        taken with it would be a measurement of a different app — and the numbers
+        would be quoted about the shipped one.
+
+        This used to compare the two methods' instructions. It cannot any more:
+        an observing build carries a fourth register and a call the shipped one
+        does not, so their text differs by construction and a text comparison
+        would only be asserting that a change nobody made was not made. So both
+        are executed against every path under every toggle state, which is what
+        the phone would do and what the claim actually says.
         """
         rules = DEVICE_PROVED_RULES
-        shipped = render_method(rules)
-        observing = render_method(rules, observe=watched_literals(rules))
-        self.assertEqual(
-            _rules_span(shipped),
-            _rules_span(observing),
-            "observation changed the guard's own rules",
+        shipped = _behaviour(render_method(rules), rules)
+        observing = _behaviour(render_method(rules, observe=watched_literals(rules)), rules)
+        self.assertEqual(shipped, observing, "observation changed what the guard blocks")
+        # Not vacuous in either direction: the comparison is over a real matrix in
+        # which both answers occur, and the two methods genuinely do differ.
+        self.assertGreater(len(shipped), 200)
+        self.assertEqual({True, False}, set(shipped.values()))
+        self.assertNotEqual(
+            normalise(render_method(rules)),
+            normalise(render_method(rules, observe=watched_literals(rules))),
         )
-        # Not vacuous, in both directions: the spans are real, and the whole
-        # methods genuinely differ.
-        self.assertGreater(len(_rules_span(shipped)), 40)
-        self.assertNotEqual(normalise(shipped), normalise(observing))
 
-    def test_the_span_comparison_would_catch_a_changed_rule(self):
-        """The control for the test above, which is otherwise unfalsifiable."""
+    def test_the_comparison_would_catch_a_changed_rule(self):
+        """The control for the test above, which is otherwise unfalsifiable.
+
+        `endsWith` to `contains` on one literal is the smallest change that alters
+        behaviour without altering the instruction count, and it is exactly the
+        mistake `MATCHES` exists to make impossible by hand.
+        """
         rules = list(DEVICE_PROVED_RULES)
-        shipped = render_method(rules)
+        shipped = _behaviour(render_method(tuple(rules)), tuple(rules))
         rules[3] = Rule((Literal("/feed/reels_tray/", "contains"),), ("disable_stories",))
-        tampered = render_method(rules, observe=watched_literals(tuple(rules)))
-        self.assertNotEqual(_rules_span(shipped), _rules_span(tampered))
+        tampered = _behaviour(
+            render_method(tuple(rules), observe=watched_literals(tuple(rules))), tuple(rules)
+        )
+        self.assertNotEqual(shipped, tampered)
+
+    def test_dropping_a_rule_entirely_is_caught_too(self):
+        """The other direction of the same control: fewer rules, same shape."""
+        rules = DEVICE_PROVED_RULES
+        shipped = _behaviour(render_method(rules), rules)
+        fewer = _behaviour(render_method(rules[:-1], observe=watched_literals(rules)), rules)
+        self.assertNotEqual(shipped, fewer)
 
     def test_observation_runs_before_any_rule_can_throw(self):
         """Order is behaviour: a blocked path throws, and a throw ends the method.
@@ -380,7 +430,7 @@ class ObserveModeTests(unittest.TestCase):
         because an operator-typed answer is a formality, not a safety property.
         """
         body = render_observe_class(("disable_feed", "disable_reels"))
-        self.assertIn('const-string v2, "!toggles"', body)
+        self.assertIn('const-string v2, "!toggles', body)
         self.assertEqual(2, body.count("->one(Ljava/lang/StringBuilder;"))
         for toggle in ("disable_feed", "disable_reels"):
             self.assertIn(f'const-string v2, "{toggle}"', body)
@@ -447,3 +497,237 @@ class ObserveModeTests(unittest.TestCase):
         if not REAL_MANIFEST.is_file():
             self.skipTest("manifest not present")
         self.assertIn("delivery/background_prefetch", watch_from_manifest(REAL_MANIFEST))
+
+
+class RecordsItsOwnRefusalsTests(unittest.TestCase):
+    """A measurement build says which path it refused, instead of asking Instagram.
+
+    The block signal used to be `java.io.IOException: Blocked by DFInsta setting`
+    grepped out of logcat, which is there only because Instagram catches our
+    exception and files it into its own error event. Across eight sessions on two
+    Instagram versions and two walks, `/discover/topical_explore` was refused
+    seven times and reported once, and six times and reported none, while
+    `/feed/timeline/` reported 20/20 and 23/23 in the very same captures. The
+    event is Instagram's to emit; the decision is ours, and so is recording it.
+    """
+
+    def test_the_refusal_names_the_literal_that_matched_not_the_rule(self):
+        """The reason a register is spent on this at all.
+
+        `/api/v1/clips/homecoming/` and `/clips/discover` are ONE rule under
+        `disable_reels`, and `/clips/discover` is the exact path that read ERASED
+        under one walk protocol and unaffected under another. Naming the rule
+        would merge the contested path into its neighbour and lose the question.
+        """
+        rules = DEVICE_PROVED_RULES
+        observing = render_method(rules, observe=watched_literals(rules))
+        reels = {key: key == "disable_reels" for key in toggles_of(rules)}
+        homecoming = decide(observing, "/api/v1/clips/homecoming/", reels)
+        discover = decide(observing, "/api/v1/clips/discover/stream/", reels)
+        self.assertTrue(homecoming.blocked and discover.blocked)
+        self.assertEqual("/api/v1/clips/homecoming/", homecoming.recorded)
+        self.assertEqual("/clips/discover", discover.recorded)
+
+    def test_every_literal_can_be_named_by_a_refusal_it_caused(self):
+        """Not one rule, all of them — and the name must be one that matches.
+
+        A property rather than a re-derivation of the emission: whatever literal
+        comes back, the path really does match it under that literal's own kind.
+        A generator that recorded a fixed string, or the wrong rule's, fails here.
+        """
+        rules = DEVICE_PROVED_RULES
+        observing = render_method(rules, observe=watched_literals(rules))
+        every = {key: True for key in toggles_of(rules)}
+        by_text = {
+            literal.text: literal for rule in rules for literal in rule.literals
+        }
+        for text in by_text:
+            path = f"/api/v1{text}"
+            with self.subTest(path=path):
+                outcome = decide(observing, path, every)
+                self.assertTrue(outcome.blocked)
+                self.assertIn(outcome.recorded, by_text)
+                named = by_text[outcome.recorded]
+                self.assertTrue(
+                    named.text in path
+                    if named.match == "contains"
+                    else path.endswith(named.text),
+                    f"{outcome.recorded!r} was recorded for {path!r}, which does not "
+                    f"match it under {named.match}",
+                )
+
+    def test_nothing_is_recorded_when_nothing_is_refused(self):
+        """A path that is watched, requested and allowed records no refusal.
+
+        This is the zero the whole store is compared against, so it has to be a
+        measured zero rather than a line nobody emitted for another reason.
+        """
+        rules = DEVICE_PROVED_RULES
+        observing = render_method(rules, observe=watched_literals(rules))
+        allowed = decide(
+            observing, "/api/v1/feed/timeline/", {key: False for key in toggles_of(rules)}
+        )
+        self.assertFalse(allowed.blocked)
+        self.assertIsNone(allowed.recorded)
+        self.assertEqual(("/feed/timeline/",), allowed.observed)
+
+    def test_a_shipped_build_records_nothing_and_names_nothing(self):
+        """It must carry neither the call nor the directive nor the class."""
+        out = render_method(DEVICE_PROVED_RULES)
+        self.assertNotIn(BLOCKED_DIRECTIVE, out)
+        self.assertNotIn(BLOCKED_METHOD, out)
+        self.assertNotIn(OBSERVE_DESCRIPTOR, out)
+        every = {key: True for key in toggles_of(DEVICE_PROVED_RULES)}
+        refused = decide(out, "/api/v1/feed/timeline/", every)
+        self.assertTrue(refused.blocked)
+        self.assertIsNone(refused.recorded)
+
+    def test_the_message_thrown_stays_one_string_whichever_rule_fired(self):
+        """Owner decision, 2026-08-08, and the new signal is what makes it free.
+
+        Instagram files our IOException into its own error event, which names
+        `logview_group_by`, so a per-rule vocabulary in the message would tell
+        Meta which rules a modified client carries. Rule identity now goes to our
+        own log instead, where Instagram has no reason to look — so an observing
+        build attributes every refusal AND throws the same string a shipped one
+        does.
+        """
+        rules = DEVICE_PROVED_RULES
+        observing = render_method(rules, observe=watched_literals(rules))
+        every = {key: True for key in toggles_of(rules)}
+        thrown = {
+            decide(observing, f"/api/v1{literal.text}", every).message
+            for rule in rules
+            for literal in rule.literals
+        }
+        self.assertEqual({BLOCK_MESSAGE}, thrown)
+        self.assertEqual(1, observing.count("throw v0"))
+
+    def test_an_observing_build_declares_the_register_it_records_through(self):
+        """`.locals` is part of the method, and smali will not assemble a lie.
+
+        The shipped register contract is three — path, literal-or-key, boolean —
+        and observation takes a fourth to carry the matched literal from the test
+        that matched it down to the throw. Confined to a build that never ships,
+        and stated here so a future edit that adds v3 to the shipped form fails a
+        test rather than an apktool run.
+        """
+        rules = DEVICE_PROVED_RULES
+        self.assertIn("    .locals 3\n", render_method(rules))
+        self.assertIn("    .locals 4\n", render_method(rules, observe=watched_literals(rules)))
+
+    def test_the_observe_class_states_that_it_can_report_refusals(self):
+        """Without this line a capture's zero is unreadable.
+
+        A capture with no `!blocked` line is either a state where nothing was
+        refused or a build that could not have said, and every session recorded
+        before 2026-08-13 is the second. A reader that could not tell them apart
+        would read 48 committed sessions as proof that nothing ever blocked —
+        which is the absent-versus-empty conflation this project has shipped in
+        five modules.
+        """
+        body = render_observe_class(("disable_feed",))
+        self.assertIn(f'const-string v2, "{REPORTS_LINE}"', body)
+        for name in REPORTS:
+            self.assertIn(f"{REPORTS_MARK}{name}", REPORTS_LINE)
+        # Carried ON the toggle line, which `state()` emits on every checked
+        # request — 625 times in a three-round session. A line of its own would
+        # have grown every committed capture by 55% to repeat one constant, and it
+        # cannot be emitted once per process: `logcat -c` runs immediately before
+        # every walk, which is what lost the toggle line itself the first time.
+        self.assertNotIn("sget-boolean", body)
+        self.assertEqual(1, body.count("!toggles"))
+        self.assertIn(f".method public static {BLOCKED_METHOD}(Ljava/lang/String;)V", body)
+
+    def test_a_capability_mark_can_never_be_read_as_a_preference_key(self):
+        """Why the two token shapes can share one line without a delimiter.
+
+        `Rule` already refuses any toggle that does not start with `disable_`, and
+        a preference key is `[A-Za-z_][A-Za-z0-9_]*` besides. A `+` cannot begin
+        either, so splitting the line on token shape is exact rather than a
+        convention two modules have to remember.
+        """
+        for name in REPORTS:
+            marked = f"{REPORTS_MARK}{name}"
+            self.assertFalse(marked[0].isalnum() and marked[0] != "_")
+            with self.assertRaises(GuardError):
+                Rule((Literal("/x/"),), (marked,))
+
+    def test_the_recorded_line_is_the_directive_and_the_literal(self):
+        """The exact text the parser joins on, pinned on the emitting side."""
+        body = render_observe_class(("disable_feed",))
+        self.assertIn(f'const-string v0, "{BLOCKED_DIRECTIVE} "', body)
+        self.assertIn("Ljava/lang/String;->concat(Ljava/lang/String;)Ljava/lang/String;", body)
+
+
+class DecideTests(unittest.TestCase):
+    """The interpreter is load-bearing, so it has to fail loudly on what it cannot do.
+
+    Every equivalence claim about the guard now runs through `decide`. An
+    interpreter that silently skipped an instruction would report the decision the
+    *rest* of the method makes, and two methods that differ only in the skipped
+    instruction would compare equal — the comparison would pass by being blind.
+    """
+
+    def test_it_refuses_an_instruction_it_does_not_know(self):
+        method = render_method(DEVICE_PROVED_RULES).replace(
+            "    return-void", "    rem-int/lit8 v2, v2, 0x3\n    return-void", 1
+        )
+        with self.assertRaises(GuardError) as caught:
+            decide(method, "/api/v1/users/1/info/", {"disable_feed": False,
+                   "disable_explore": False, "disable_reels": False,
+                   "disable_stories": False, "disable_adds": False})
+        self.assertIn("rem-int/lit8", str(caught.exception))
+
+    def test_it_refuses_a_register_the_method_never_declared(self):
+        """`.locals 3` with a v3 in it does not assemble; this says so first."""
+        method = render_method(DEVICE_PROVED_RULES).replace(
+            '    const-string v1, "/feed/timeline/"',
+            '    const-string v3, "/feed/timeline/"',
+            1,
+        )
+        with self.assertRaises(GuardError) as caught:
+            decide(method, "/api/v1/feed/timeline/", {"disable_feed": True,
+                   "disable_explore": False, "disable_reels": False,
+                   "disable_stories": False, "disable_adds": False})
+        self.assertIn(".locals 3", str(caught.exception))
+
+    def test_it_refuses_a_state_that_leaves_a_key_out(self):
+        """Off and never-mentioned are different answers, and the arms are single-toggle."""
+        with self.assertRaises(GuardError) as caught:
+            decide(render_method(DEVICE_PROVED_RULES), "/api/v1/feed/timeline/", {})
+        self.assertIn("disable_feed", str(caught.exception))
+
+    def test_it_refuses_a_method_that_never_terminates(self):
+        method = render_method(DEVICE_PROVED_RULES).replace(
+            "    :cond_return\n    return-void",
+            "    :cond_return\n    goto :cond_return",
+            1,
+        )
+        with self.assertRaises(GuardError) as caught:
+            decide(method, "/api/v1/users/1/info/", {"disable_feed": False,
+                   "disable_explore": False, "disable_reels": False,
+                   "disable_stories": False, "disable_adds": False})
+        self.assertIn("did not terminate", str(caught.exception))
+
+    def test_it_reads_the_diagnostic_form_too(self):
+        """Which is what makes the diagnostic build checkable rather than trusted."""
+        rules = DEVICE_PROVED_RULES
+        every = {key: True for key in toggles_of(rules)}
+        outcome = decide(render_method(rules, diagnostic=True), "/api/v1/feed/reels_tray/", every)
+        self.assertTrue(outcome.blocked)
+        self.assertIn("DIAG-", outcome.message)
+        self.assertIn(BLOCK_MESSAGE, outcome.message)
+
+    def test_an_empty_path_is_a_reference_and_not_a_null(self):
+        """`replaceReelsEndpoint` leaves `""` behind, and `if-eqz` must not take it.
+
+        A guard that treated an empty path as null would return early and every
+        erased request would read as "the guard never saw it" for the wrong
+        reason — right answer, wrong mechanism, and the two are the whole point of
+        telling a block from an erasure.
+        """
+        rules = DEVICE_PROVED_RULES
+        every = {key: True for key in toggles_of(rules)}
+        self.assertEqual((), decide(render_method(rules), "", every).observed)
+        self.assertFalse(decide(render_method(rules), None, every).blocked)

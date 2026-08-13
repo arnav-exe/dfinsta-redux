@@ -208,26 +208,54 @@ build reports zero for those paths too. A Reels literal reading zero with
 2 in the session above is consistent with `replace_reels_discover_endpoint` being
 one of the three hooks that has never passed a probe on this device.)
 
-## Two instruments, and what each is good for
+## Two instruments, and both of them are ours
 
 **The observe line counts what the app asked for.** It is emitted by our code, in
 the request path, before anything can interfere with it, and it is the only
 signal in this system that cannot rot into a false pass.
 
-**`IgFunctionalErrorEvent` counts what Instagram chose to report.** These are
-Instagram's own error events, emitted at its discretion, and `probes.py` exists
-largely because counting them correctly is harder than it looks: a payload has a
-message body, an indented stack, and indented `field = value` entries, and a
-field value that spans lines logs its continuations *un-indented* under the same
-tag. Raw grep over-counts by roughly two, and the app flushes some of that
-narration at a later cold start, so one phase inherits hits belonging to the
-previous one. Block counts are not request counts. Use the observe line for "was
-this requested"; use the error event only for the thing it is genuinely good at,
-which is attributing a block to a feature category — the line immediately above
-the exception names it (`FEED_NOT_LOADING`, `STORY_NOT_LOADING`), which was
-validated against a positive control on two endpoints and two only.
+**The `!blocked` line counts what we refused.** Also ours, emitted by the guard at
+the moment it decides to throw, naming the literal that matched. "Did this rule
+fire, and how often" is therefore known.
 
-**UI judgement is a third instrument and the least reliable of the three.** A
+That second one is new as of **2026-08-13** and it replaced a dependency that
+should never have existed. Ask, of any instrument: **who generates the event, and
+who records it?** Whether the app *requests* a path is Instagram's and is the
+thing being measured. Whether our guard refused it is ours — and so is whether
+that was written down. The third was given away for convenience, because
+`java.io.IOException: Blocked by DFInsta setting` was already in logcat and cost
+nothing to read.
+
+**What it cost.** `IgFunctionalErrorEvent` is emitted at Instagram's discretion,
+and it under-reports **by feature**. `/discover/topical_explore` under
+`disable_explore` was refused 7, 6, 12 and 6 times across eight sessions on two
+Instagram versions and two walk protocols, and reported 1, 0, 1 and 0 — while
+`/feed/timeline/` reported 20/20, 23/23, 17/17 and 16/16 in the very same
+captures. Explore was simply unmeasurable through that channel, and the loss was
+stable rather than noisy, so no amount of inference recovered it.
+
+It also names a **feature** and never a path, so a path had to be named by
+arithmetic over the capture's block total. That derivation is deleted. It refused
+a perfect 17-refusals-of-17-requests on `/feed/timeline/` because `7 + 7 + 3 = 17`
+among three unrelated paths, and it got *less* discriminating as walks got longer
+and counts got higher — which is most of why two walks of one version disagreed.
+
+`probes.py` still exists, and counting those events correctly is still harder than
+it looks: a payload has a message body, an indented stack, and indented
+`field = value` entries, and a field value that spans lines logs its continuations
+*un-indented* under the same tag, so raw grep over-counts by roughly two. The
+count is still parsed and still printed beside ours, labelled, so a reader can see
+the two disagree. **Nothing is derived from it.**
+
+**A build says what it can report.** The toggle line reads
+`!toggles +blocked disable_feed=1 …`, and a capture with no `+blocked` mark is a
+build that could not have written a refusal line. Its silence is not a zero. Every
+session recorded before 2026-08-13 is in that shape, so the block half of the 439
+corpus is unanswerable until it is walked again — and unlike the walk, which the
+captures could supply, nothing can be back-filled, because the lines were never
+written.
+
+**UI judgement is a third instrument and the least reliable of them.** A
 warm cache renders a blocked feed as populated until the process restarts. The
 user's own story stays in the tray with `disable_stories` on, so "the tray is
 still there" is not a failure and the assertion has to be about *other* entries.
