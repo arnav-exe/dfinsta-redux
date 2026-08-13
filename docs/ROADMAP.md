@@ -80,7 +80,8 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       verified redaction of each session — `tools/redact_capture.py` refuses unless the
       reduction parses identically to the original — so a clone can re-derive every count.
       Regenerating the store from them changed exactly one field.
-- [ ] **Carry the protocol to 440, then 441.** Owner decision 2026-08-10: starting at 439
+- [x] **Carried to 440**, and to 439 again under the direct signal — 48 sessions, four
+      corpora, two walks each. **441 is the one left.** Owner decision 2026-08-10: starting at 439
       makes two "future" versions available immediately instead of waiting for Instagram to
       ship 442, so "this survives a version bump" is checkable today. 440 and 441 are
       upgrades from 439 and need no re-login; going *back* to 439 later needs
@@ -145,7 +146,13 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       claims, and `disable_reels` is exactly the signal that came from there. 439 is
       unaffected: it ran an earlier driver with hand-verified tab coordinates.
 
-- [ ] **Re-record 439's twelve committed sessions with their walk.** They predate the
+- [x] **Moot 2026-08-14: those twelve rows were withdrawn**, not repaired. They came from a
+      build that could not report its own refusals, and 439 was re-walked with one that can;
+      `classify` refuses to compare across builds, so keeping both made the version
+      unanswerable. Their captures are still committed, so the rows are one `observation
+      record` away from returning — and their spans, the noisiest real group in the project at
+      122–153s, still anchor `walk_dispute`'s derived term through `withdrawn_spans()`. The
+      original item read: re-record them with their walk, because they predate the
       field, so `grouping` refuses them by name and says so. Deliberately **not**
       back-filled by anyone else: unlike the toggle state and the block count, which were
       re-derived from `manifest/captures/` because the evidence was in the capture, the
@@ -161,8 +168,11 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       full was considered and rejected: it would hand back exactly the property naming the
       walk buys.
 
-- [ ] **Re-walk 440 with the fixed driver**, which also restores the lower anchor of
-      `_MIN_SEPARATION` to a measurement.
+- [x] **440 re-walked with the fixed driver** on 2026-08-12, and again on 2026-08-13 with a
+      build that records its own refusals. `_MIN_SEPARATION`'s lower anchor is a measurement
+      again — and the *upper* one, the noisy real group, now comes from the withdrawn 439
+      captures rather than the store, because every corpus the current driver produces lands
+      within 3s and none of them can play that part.
 
 - [ ] **Present observation evidence at the feature gate**, and say *"never watched"* and
       *"watched, never seen"* in different words — they look identical and mean opposite

@@ -4004,3 +4004,89 @@ class TheCommittedCorpusTellsTheTwoBuildsApartTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CorpusToolsTests(unittest.TestCase):
+    """The two tools an exploration run is made of, which lived in a scratch dir.
+
+    Both corpora measured on 2026-08-13/14 were walked and recorded by scripts that
+    existed nowhere but one session's temporary directory. The measurement was
+    real, reproducible by nobody. These tests exist so the tools stay honest about
+    the two things a corpus most easily gets wrong: walking a state the phone never
+    reached, and recording a watch list the build was not using.
+    """
+
+    def tool(self, name: str):
+        import importlib.util
+
+        path = Path(__file__).resolve().parent.parent / "tools" / name
+        spec = importlib.util.spec_from_file_location(name.replace(".py", ""), path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_runner_walks_the_baseline_first_and_then_reverses(self) -> None:
+        """Order is the control, so the order is part of the contract.
+
+        A single forward pass confounds every arm with its position: leftover cache
+        or drift across an afternoon would look exactly like an effect of whichever
+        toggle ran last. The reverse pass is what tells the two apart, so a runner
+        that quietly dropped it would leave every finding unreplicated.
+        """
+        runner = self.tool("run_corpus.py")
+        self.assertEqual("none", runner.ARMS[0], "the baseline is walked first")
+        self.assertEqual(6, len(runner.ARMS))
+        self.assertEqual(
+            {"disable_feed", "disable_explore", "disable_reels", "disable_stories",
+             "disable_adds"},
+            set(runner.ARMS[1:]),
+        )
+        self.assertEqual("feed", runner.short("disable_feed"))
+        self.assertEqual("none", runner.short("none"))
+
+    def test_the_runner_refuses_a_walk_it_does_not_know(self) -> None:
+        runner = self.tool("run_corpus.py")
+        with contextlib.redirect_stderr(io.StringIO()) as noise:
+            self.assertEqual(2, runner.main(["three-round-v2", "x", "/tmp", "sideways"]))
+        self.assertIn("sideways", noise.getvalue())
+
+    def test_the_recorder_reads_the_watch_list_from_the_manifest(self) -> None:
+        """Not from a file somebody wrote out, which is how the two come apart.
+
+        `guards` renders the observing build's watch list from `url_block_rules`
+        plus `observe_watch`. A recorder taking that list from anywhere else could
+        file a session claiming to watch paths the build never looked for, and
+        every zero in it would read as "asked for and not seen" rather than "never
+        looked for".
+        """
+        recorder = self.tool("record_corpus.py")
+        from dfinsta_pipeline.guards import (
+            rules_from_manifest,
+            watch_from_manifest,
+            watched_literals,
+        )
+
+        manifest = Path(__file__).resolve().parent.parent / "manifest" / "hooks.json"
+        self.assertEqual(
+            watched_literals(rules_from_manifest(manifest), watch_from_manifest(manifest)),
+            recorder.watch_list(),
+        )
+
+    def test_the_recorder_takes_no_toggle_or_refusal_flag(self) -> None:
+        """The two things that must come out of the capture, and one that cannot.
+
+        A `--toggles` would let whoever ran the session state what the session
+        measured, which is the shape of safety property this project shipped and
+        broke the next day. A `--refusals` would be worse: it could turn a build's
+        silence into a measured zero. `--walk` is the exception and is required,
+        because nothing on the phone knows which protocol drove it.
+        """
+        recorder = self.tool("record_corpus.py")
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                recorder.main(["--version", "440", "--captures", "/tmp"])
+        source = (Path(__file__).resolve().parent.parent / "tools" / "record_corpus.py"
+                  ).read_text(encoding="utf-8")
+        self.assertNotIn('"--toggles"', source)
+        self.assertNotIn('"--refusals"', source)
+        self.assertIn('"--walk", required=True', source)
