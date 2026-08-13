@@ -198,6 +198,40 @@ def committed_spans() -> dict[str, list[int]]:
     return groups
 
 
+def withdrawn_spans() -> list[int]:
+    """The spans of committed captures whose store rows were withdrawn.
+
+    A row can be withdrawn and its capture kept, and that is exactly what happened
+    on 2026-08-13: 439 and 440 were re-walked with a build that reports its own
+    refusals, and the older rows were withdrawn because `grouping` refuses to
+    compare across builds and leaving both made each version unanswerable. The
+    captures stayed, so every withdrawn row is one `observation record` away from
+    returning — and these spans are still **measurements** rather than a
+    construction someone typed.
+
+    They matter to `walk_dispute` for one reason: the earlier driver used
+    hand-verified coordinates and its twelve 439 sessions span **122–153s**, while
+    the current one has fixed sleeps and lands inside 3s every time. A rule tuned
+    only on tight groups would pass today's corpus and be useless on anything a
+    person walked. This is the noisiest real group there is.
+    """
+
+    live = {row.session_id for version in ("439", "440")
+            for row in read(version, REPOSITORY)}
+    spans: list[int] = []
+    for capture in sorted((REPOSITORY / "manifest" / "captures").glob("*.log")):
+        # 439's original one-pass twelve. Named by prefix rather than by a list,
+        # so a capture withdrawn later joins the group it belongs to.
+        if capture.stem in live or not capture.stem.startswith("439-"):
+            continue
+        if "-3r-" in capture.stem:
+            continue
+        span = parse(capture.read_text(encoding="utf-8")).span_seconds
+        assert span is not None, capture.stem
+        spans.append(span)
+    return spans
+
+
 
 def session(
     session_id: str = "s1",
@@ -3232,7 +3266,8 @@ class WalkDisputeTests(unittest.TestCase):
         the point where the two anchors are checked against each other: 122-153s
         against 271-273s separates by 118s over 153s, which is 77%.
         """
-        base = committed_spans()["439 one-pass-v1"]
+        base = withdrawn_spans()
+        self.assertEqual(12, len(base), "premise: the whole withdrawn group")
         self.assertEqual(31, max(base) - min(base),
                          "premise: the faster group must be the noisy one")
         found = walk_dispute(self.group(*base, *THREE_ROUND_JITTER))
@@ -3248,7 +3283,7 @@ class WalkDisputeTests(unittest.TestCase):
         rather than the faster, so this exercises the other branch of that `max`
         and the contamination must still clear it.
         """
-        base = committed_spans()["439 one-pass-v1"]
+        base = withdrawn_spans()
         found = walk_dispute(self.group(*base, *(span * 3 for span in base)))
         self.assertIn("two groups", found)
         self.assertIn("213s apart", found)
@@ -3760,10 +3795,16 @@ class RefusalsFromTheGuardItselfTests(unittest.TestCase):
         """
         from dfinsta_pipeline import grouping
 
-        report = grouping.summary("439", REPOSITORY, walk="one-pass-v1")
-        printed = grouping.render(report)
+        printed = grouping.render(
+            grouping.summary("439", REPOSITORY, walk="one-pass-v1")
+        )
         self.assertNotIn("refused it not reported time(s)", printed)
-        self.assertIn("could not report refusals", printed)
+        # The positive half, so this cannot pass by the report being empty: with a
+        # build that CAN report, the same sentence carries a real count. The
+        # `not reported` wording only ever appears for a build that could not say,
+        # and it must never be spliced into a sentence claiming corroboration.
+        self.assertIn("refused it 0, 0 time(s)", printed)
+        self.assertIn("an erased path cannot be refused", printed)
 
     def test_a_blank_or_padded_literal_is_refused(self):
         for literal in ("", "  ", " /feed/timeline/"):

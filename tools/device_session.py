@@ -159,15 +159,28 @@ def set_toggles(on: set[str], nav: dict[str, tuple[int, int]]) -> dict[str, bool
         raise SystemExit("refusing: no Options control on the profile")
     x, y = next(iter(options.values()))
     sh("shell", "input", "swipe", str(x), str(y), str(x), str(y), "900"); time.sleep(4)
-    for _ in range(4):
+    # Generous, because the budget is per *attempt* and an attempt can be spent on
+    # nothing: a dump taken while the dialog is still animating reads the state it
+    # had before the last tap, so the same toggle gets flipped twice and flipped
+    # back. Four attempts was enough for a warm app and not for the first launch
+    # after a fresh install, which is where a corpus starts. Twenty costs seconds
+    # when it is not needed and an hour of walking when it is.
+    seen: dict[str, bool] = {}
+    for _ in range(20):
         current = rows()
         if not current:
             raise SystemExit("refusing: the settings dialog did not open")
+        seen = {k: s for k, (_, s) in current.items()}
         wrong = [k for k, (_, state) in current.items() if (k in on) != state]
         if not wrong:
-            return {k: s for k, (_, s) in current.items()}
-        sh("shell", "input", "tap", "540", str(current[wrong[0]][0])); time.sleep(2)
-    raise SystemExit(f"refusing: could not reach the toggle state {on or 'all off'}")
+            return seen
+        sh("shell", "input", "tap", "540", str(current[wrong[0]][0])); time.sleep(3)
+    # What it saw, not just what it wanted. A refusal naming only the target tells
+    # the next person nothing about which toggle would not move.
+    raise SystemExit(
+        f"refusing: could not reach the toggle state {on or 'all off'}; the dialog "
+        f"last read {seen}"
+    )
 
 
 def main() -> int:

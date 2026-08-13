@@ -1535,40 +1535,93 @@ class CommittedCorpusTests(unittest.TestCase):
     def setUp(self) -> None:
         self.grouped = classify("439", REPOSITORY, walk=self.WALK)
 
-    def test_the_two_walks_still_disagree_about_the_erasure(self) -> None:
-        """The walk-sensitivity that the refusal signal does **not** remove.
+    def test_the_two_walks_now_agree_on_every_endpoint(self) -> None:
+        """The result the refusal signal was built for, pinned where it will be read.
 
-        Half of it does go. `/feed/timeline/` read BLOCKED on one walk and
-        unclassifiable on the other only because the identity that named it grew
-        less discriminating as counts rose — larger counts over more live paths
-        give more subsets coinciding with the block total. That is gone with the
-        identity.
+        Before 2026-08-13 these two walks of one version **contradicted each
+        other**: `/feed/timeline/` read BLOCKED on one and unclassifiable on the
+        other, `/clips/discover` ERASED on one and unaffected on the other. Same
+        app, same day. The protocol moved the answer more than the version did.
 
-        `/clips/discover` is the half that stays, and it should: an erasure is a
-        fall in a request count against a measured noise floor, and it always was.
-        A longer walk raises both the count and the floor. So this is the control
-        on the claim that re-measuring fixes the walk-sensitivity — it fixes the
-        block half and must leave this one exactly where it is.
+        The cause was never the protocol. Attribution rested on Instagram's block
+        *total* plus a check that no other subset of paths explained it, and a
+        longer walk raises counts over more live paths, so more subsets coincide —
+        the derivation got less reliable exactly as the measurement got better. The
+        guard now names the literal it refused, so walk length changes how much is
+        seen and no longer changes what it means.
         """
         def verdicts(walk):
             return {
-                item.endpoint: item.verdict
+                item.endpoint: (item.verdict, item.toggle)
                 for item in classify("439", REPOSITORY, walk=walk).classifications
             }
 
         one_pass, three_round = verdicts("one-pass-v1"), verdicts("three-round-v2")
-        self.assertEqual(ERASED, one_pass["/clips/discover"])
-        self.assertNotEqual(ERASED, three_round["/clips/discover"])
-        # And what both still *decide*, they decide alike: the disagreement is one
-        # walk deciding and the other declining, never two contradicting verdicts.
-        both = {e for e in one_pass if e in three_round}
-        contradictions = {
-            e for e in both
-            if one_pass[e] != UNCLASSIFIABLE and three_round[e] != UNCLASSIFIABLE
-            and one_pass[e] != three_round[e]
-        }
-        self.assertEqual(set(), contradictions)
-        self.assertEqual(UNCLASSIFIABLE, three_round["/clips/discover"])
+        self.assertEqual(one_pass, three_round)
+        # Not vacuous: the corpora really do differ in size, and the agreement is
+        # over real verdicts rather than over two sets of `unclassifiable`.
+        self.assertIn(BLOCKED, [verdict for verdict, _ in one_pass.values()])
+        self.assertIn(ERASED, [verdict for verdict, _ in one_pass.values()])
+
+    def test_the_walks_are_genuinely_different_protocols(self) -> None:
+        """The control for the agreement above, which is otherwise unfalsifiable.
+
+        Two walks that agreed because they did the same thing would prove nothing.
+        Three rounds observes roughly twice what one pass does, and the spans say
+        so: about 112s against about 273s.
+        """
+        short = classify("439", REPOSITORY, walk="one-pass-v1")
+        long = classify("439", REPOSITORY, walk="three-round-v2")
+        short_spans = [s for state in (short.baseline, *short.arms) for s in state.spans]
+        long_spans = [s for state in (long.baseline, *long.arms) for s in state.spans]
+        self.assertLess(max(short_spans), min(long_spans))
+        self.assertGreater(min(long_spans) / max(short_spans), 2.0)
+        timeline = next(
+            item for item in long.classifications if item.endpoint == "/feed/timeline/"
+        )
+        short_timeline = next(
+            item for item in short.classifications if item.endpoint == "/feed/timeline/"
+        )
+        self.assertGreater(
+            sum(timeline.observed["baseline"]),
+            sum(short_timeline.observed["baseline"]),
+            "the longer walk must actually observe more",
+        )
+
+    def test_where_440_still_differs_it_is_the_app_and_not_the_protocol(self) -> None:
+        """One endpoint, one version, and the counts say why.
+
+        `/clips/discover` reads ERASED on 440's short walk and BLOCKED on its long
+        one. That is not the derivation wobbling: under `disable_reels` the short
+        walk requests it **0** times against a baseline of 2, and the long walk
+        requests it **4** against a baseline of 7 and the guard refuses all four.
+        Both mechanisms are live on 440. `replaceReelsEndpoint` blanks the literal
+        at the `const-string` site, and turning Reels off makes the app fall back
+        to a route the erasure does not cover.
+
+        **439 does not do this** — its long walk requests it 0 times under the arm,
+        exactly like its short one — so the fallback is something 440 added. That
+        is a behavioural difference between two Instagram versions, found by
+        measurement, and it is why the `/clips/discover` url_block rule is
+        load-bearing rather than redundant.
+        """
+        def arm_counts(version, walk):
+            grouped = classify(version, REPOSITORY, walk=walk)
+            found = next(
+                item for item in grouped.classifications
+                if item.endpoint == "/clips/discover"
+            )
+            reels = next(item for item in grouped.arms if item.arm == "disable_reels")
+            return found.verdict, tuple(found.observed["disable_reels"]), reels.refusals(
+                "/clips/discover"
+            )
+
+        self.assertEqual((ERASED, (0, 0), (0, 0)), arm_counts("440", "one-pass-v1"))
+        self.assertEqual((BLOCKED, (4, 4), (4, 4)), arm_counts("440", "three-round-v2"))
+        # 439 erases it on both walks, so the fallback is not merely unobserved
+        # there — the longer walk had every chance to see it.
+        self.assertEqual((ERASED, (0, 0), (0, 0)), arm_counts("439", "one-pass-v1"))
+        self.assertEqual((ERASED, (0, 0), (0, 0)), arm_counts("439", "three-round-v2"))
 
     def test_the_corpus_is_still_twelve_sessions_over_six_states(self) -> None:
         self.assertEqual(2, len(self.grouped.baseline.sessions))
@@ -1600,102 +1653,98 @@ class CommittedCorpusTests(unittest.TestCase):
         self.assertEqual(10, len(never), never)
         self.assertIn("delivery/background_prefetch", never)
 
-    def test_no_path_is_called_blocked_because_no_session_could_say(self) -> None:
-        """What was lost, pinned so it cannot be lost quietly.
+    def test_three_paths_are_blocked_and_the_toggle_is_derived_not_declared(self) -> None:
+        """The answer a human acts on, and nothing in reaching it reads a name.
 
-        This corpus used to name `/feed/timeline/` under `disable_feed` and
-        `/feed/reels_tray/` under `disable_stories`. Both were derived from
-        Instagram's block total by arithmetic, and both are very likely right — but
-        "very likely right by an argument we deleted" is not a verdict this module
-        may return. It says so instead, and re-walking with a build that claims
-        `+blocked` is the repair.
+        `/feed/timeline/` and `disable_feed` share a word; `/feed/reels_tray/` and
+        `disable_stories` share none. Both are attributed the same way — the guard
+        wrote down which literal it refused — which is the whole point of grouping
+        by measurement rather than by what things are called.
+
+        This class used to assert the opposite: that **no** path could be called
+        blocked, because every session came from a build that could not report its
+        own refusals. Re-walking 439 with one that can is what changed it, and the
+        earlier state was honest rather than broken.
         """
-        blocked = [
-            item.endpoint
+        blocked = {
+            item.endpoint: item.toggle
             for item in self.grouped.classifications
             if item.verdict == BLOCKED
-        ]
-        self.assertEqual([], blocked)
-        # The two arrive by different routes and are told apart in words, which is
-        # the point: `/feed/timeline/` moved 6 → 20 and the report says its arm
-        # could not say whether it refused it, while `/feed/reels_tray/` moved 2 → 3
-        # and the report says `unaffected` cannot be claimed while an arm is silent.
-        # Reading either as "this path is fine" would be the false negative that
-        # deleting the old derivation is meant to avoid, not cause.
-        for endpoint, expected in (
-            ("/feed/timeline/", "could not report refusals"),
-            ("/feed/reels_tray/", "refusal evidence cannot be read"),
-        ):
-            found = next(
-                item for item in self.grouped.classifications
-                if item.endpoint == endpoint
-            )
-            self.assertEqual(UNCLASSIFIABLE, found.verdict)
-            self.assertIn(expected, found.reason)
-
-    def test_every_arm_is_unreadable_for_the_same_stated_reason(self) -> None:
-        """One reason, named per arm, and it is about the build and not the toggle.
-
-        "Governs nothing" and "could not be read" are different facts and the
-        report keeps them apart. Every arm here is the second: the build predates
-        the refusal signal. A reader must be able to see that no toggle was
-        exonerated by this corpus.
-        """
+        }
         self.assertEqual(
-            {"disable_feed", "disable_explore", "disable_reels", "disable_stories",
-             "disable_adds"},
-            set(dict(self.grouped.unreadable)),
-        )
-        for reason in dict(self.grouped.unreadable).values():
-            self.assertIn("could not report refusals", reason)
-        # And nothing is reported as governing nothing on the strength of it.
-        self.assertEqual(
-            [], [item for item in self.grouped.warnings
-                 if "govern nothing observable" in item]
+            {
+                "/feed/timeline/": "disable_feed",
+                "/feed/reels_tray/": "disable_stories",
+                "/discover/topical_explore": "disable_explore",
+            },
+            blocked,
         )
 
-    def test_a_session_that_cannot_report_refusals_attributes_nothing(self) -> None:
-        """Asserted against the arm the corpus actually has, and against its opposite.
+    def test_explore_is_named_although_instagram_reported_nothing_at_all(self) -> None:
+        """The endpoint that made the old signal untenable, now decided.
 
-        A one-sided version of this test caught none of thirty-one mutations once,
-        because it claimed the corpus proved something the corpus did not exercise.
-        Here the corpus exercises the `None` side directly, and the control
-        constructs the other side from the same rows.
-        """
-        arm = self.grouped.arms[0]
-        self.assertFalse(arm.reported)
-        self.assertIsNone(arm.refusals("/feed/timeline/"))
-        self.assertIsNone(arm.refused_total)
-        reporting = replace(arm, sessions=tuple(
-            replace(item, refusals=Refusals.of({})) for item in arm.sessions
-        ))
-        self.assertTrue(reporting.reported)
-        self.assertEqual(
-            (0, 0), reporting.refusals("/feed/timeline/"),
-            "and then the zero is a measurement rather than a silence",
-        )
-
-    def test_the_timeline_surge_is_visible_and_is_not_a_verdict_on_its_own(self) -> None:
-        """20 and 23 requests against a baseline of 6 and 7, and still not `blocked`.
-
-        The surge is real and it is caused by the block — a refused request is
-        retried. It was never the evidence, though: `/feed/reels_tray/` is blocked
-        just as certainly and moves 2 → 3. So with the refusal signal missing, a
-        movement nothing accounts for is a caveat and not a finding, and this pins
-        that the module does not quietly promote the surge to one.
+        `disable_explore` refused `/discover/topical_explore` **8 times in each of
+        two sessions** and Instagram reported **zero blocks in both**. Under the
+        previous derivation that arm read "no block in any session" and could name
+        nothing; worse, an arm whose two sessions disagreed made *every* path in
+        the corpus unclassifiable, because "unaffected" is a claim about every
+        toggle.
         """
         found = next(
-            item
-            for item in self.grouped.classifications
+            item for item in self.grouped.classifications
+            if item.endpoint == "/discover/topical_explore"
+        )
+        self.assertEqual(BLOCKED, found.verdict)
+        self.assertEqual("disable_explore", found.toggle)
+        arm = next(item for item in self.grouped.arms if item.arm == "disable_explore")
+        self.assertEqual((8, 8), arm.refusals("/discover/topical_explore"))
+        self.assertEqual((0, 0), arm.block_totals, "Instagram reported none of them")
+
+    def test_every_arm_is_readable(self) -> None:
+        """Which has never been true of a committed corpus before.
+
+        An arm used to go unreadable whenever Instagram's two sessions disagreed
+        about a block count — it is not a property of the app, it is a property of
+        whose telemetry was being read.
+        """
+        self.assertEqual({}, dict(self.grouped.unreadable))
+        for arm in self.grouped.arms:
+            self.assertTrue(arm.reported, f"{arm.arm} cannot report refusals")
+            self.assertEqual(2, len(arm.reporting))
+
+    def test_the_baseline_refused_nothing_and_that_is_a_measurement(self) -> None:
+        """The control every arm is compared against, and it has to be evidence.
+
+        An empty `Refusals` from a build that claimed `+blocked` says "nothing was
+        refused". `None` from a build that could not say would be a silence, and
+        comparing an arm against a silence proves nothing.
+        """
+        self.assertTrue(self.grouped.baseline.reported)
+        self.assertEqual(0, self.grouped.baseline.refused_total)
+        self.assertEqual((0, 0), self.grouped.baseline.refusals("/feed/timeline/"))
+
+    def test_the_timeline_surge_is_corroboration_and_never_the_finding(self) -> None:
+        """18 and 18 requests against a baseline of 7, every one of them refused.
+
+        The surge is caused by the block — a refused request is retried — but it
+        was never the evidence. `/feed/reels_tray/` is blocked just as certainly
+        and moves 3 → 3. Pinned together so a future reading cannot promote the
+        surge to a finding on its own.
+        """
+        found = next(
+            item for item in self.grouped.classifications
             if item.endpoint == "/feed/timeline/"
         )
-        self.assertEqual(UNCLASSIFIABLE, found.verdict)
-        self.assertIsNone(found.toggle)
-        observed = found.observed
-        self.assertEqual((6, 7), tuple(observed["baseline"]))
-        self.assertEqual((20, 23), tuple(observed["disable_feed"]))
-        self.assertEqual((20, 23), found.observed["disable_feed"])
-        self.assertEqual((6, 7), found.observed["baseline"])
+        self.assertEqual(BLOCKED, found.verdict)
+        self.assertEqual((18, 18), tuple(found.observed["disable_feed"]))
+        self.assertEqual((7, 7), tuple(found.observed["baseline"]))
+        tray = next(
+            item for item in self.grouped.classifications
+            if item.endpoint == "/feed/reels_tray/"
+        )
+        self.assertEqual(BLOCKED, tray.verdict)
+        self.assertEqual((3, 3), tuple(tray.observed["disable_stories"]))
+        self.assertEqual((3, 3), tuple(tray.observed["baseline"]))
 
     def test_reels_media_stream_is_unclassifiable_for_the_baseline_it_lacks(self) -> None:
         found = next(
