@@ -63,13 +63,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from .assessment import Evidence, Strength, spellings
+from .assessment import Evidence, Strength, normalise, spellings
 from .feature_gate import (
     DEVICE_NEVER_REQUESTED,
     DEVICE_REQUESTED,
     DEVICE_UNWATCHED,
 )
-from .observation import OBSERVATIONS
+from .observation import OBSERVATIONS, ObservationError
 
 __all__ = [
     "DeviceReading",
@@ -120,6 +120,11 @@ class DeviceReading:
     def as_dict(self) -> dict[str, object]:
         return {
             "literal": self.literal,
+            # The state, not only the counts. This module exists because a count
+            # cannot tell "nobody looked" from "looked and saw nothing", and a
+            # machine-readable view that emitted only counts would reproduce the
+            # very conflation it was written to end.
+            "kind": self.kind,
             "watched": self.watched,
             "corpora": [list(item) for item in self.corpora],
             "watched_in": [list(item) for item in self.watched_in],
@@ -127,6 +132,24 @@ class DeviceReading:
             "seen": self.seen,
             "verdicts": [list(item) for item in self.verdicts],
         }
+
+
+def _watched_forms(watched: Sequence[str]) -> set[str]:
+    """Every spelling of every literal a session watched.
+
+    The watch list carries the guard's spelling and a candidate carries the
+    index's, and `/api/v1/clips/homecoming/` is watched in a form no slash
+    variant of `clips/homecoming/` reaches. Expanding both sides is what lets the
+    two meet — `assessment.normalise` is the function that knows `api/v1/` is a
+    prefix, and comparing without it reported "no device has looked for this"
+    about a path watched in seventy-two sessions.
+    """
+
+    forms: set[str] = set()
+    for item in watched:
+        forms.update(spellings(item))
+        forms.update(spellings(normalise(item)))
+    return forms
 
 
 def corpora(root: Path | str = ".") -> tuple[tuple[str, str], ...]:
@@ -138,14 +161,30 @@ def corpora(root: Path | str = ".") -> tuple[tuple[str, str], ...]:
     the project holds without saying so.
     """
 
+    from .history import _NUMERIC  # noqa: PLC0415
     from .observation import read, walks  # noqa: PLC0415
 
-    found: list[tuple[str, str]] = []
     directory = Path(root) / OBSERVATIONS
-    if not directory.is_dir():
+    if not directory.exists():
         return ()
+    if not directory.is_dir():
+        # Present and not a directory is a broken store, not an empty one. The
+        # digest beside this makes the same distinction, and `observation.read`
+        # goes to some length to keep "unreadable" from reading as "absent".
+        raise ObservationError(
+            f"{directory} exists and is not a directory, so the observation store "
+            "cannot be read. That is not the same as there being none"
+        )
+    found: list[tuple[str, str]] = []
     for store in sorted(directory.glob("*.jsonl")):
+        # `439.bak.jsonl`, `notes.jsonl`, an editor's leftover: not a version, and
+        # not a reason to take out stage 4a. `read` refuses a non-numeric stem,
+        # and that refusal would escape `record` untranslated, from a module the
+        # caller never imported. `history` filters the same way for the same
+        # reason.
         version = store.stem
+        if not _NUMERIC.fullmatch(version):
+            continue
         if not read(version, root):
             continue
         for walk in walks(version, root):
@@ -185,25 +224,39 @@ def reading_for(
     exactly one joins by equality and all six join through the spellings.
     """
 
-    from .observation import read  # noqa: PLC0415
+    from .observation import evidential, read  # noqa: PLC0415
 
     computed = grid(root) if computed is None else computed
+    # `spellings` returns nothing for a blank literal, and an empty form set
+    # intersects to nothing, so a blank literal matches no session and falls out
+    # as `device_unwatched` — without an early return. There was one here; it
+    # could not fire, because deleting it changed no answer, and a guard that
+    # cannot fire reads as protection. The behaviour is pinned by
+    # `test_a_blank_literal_matches_nothing_where_there_is_something_to_match`.
     forms = set(spellings(literal))
-    if not forms:
-        return DeviceReading(literal=literal, corpora=tuple(computed))
+    normalised = {normalise(item) for item in forms}
 
     watched_in: list[tuple[str, str]] = []
     verdicts: list[tuple[str, str, str, str | None]] = []
     sessions = seen = 0
     for (version, walk), report in sorted(computed.items()):
-        rows = [item for item in read(version, root) if item.walk == walk]
-        matching = [item for item in rows if forms & set(item.watched)]
+        # `evidential` first, for the reason `grouping`, `walks` and `states` all
+        # apply it: a session that observed nothing at all is equally well
+        # explained by a build that was not observing, a capture that was empty
+        # and an app that never ran. Counting one as "a device looked" would
+        # unlock `block` on the strength of a session that measured nothing.
+        rows = [item for item in evidential(read(version, root)) if item.walk == walk]
+        matching = [item for item in rows if forms & _watched_forms(item.watched)]
         if not matching:
             continue
         watched_in.append((version, walk))
         sessions += len(matching)
         for item in matching:
-            seen += sum(count for key, count in item.counts.items() if key in forms)
+            seen += sum(
+                count
+                for key, count in item.counts.items()
+                if normalise(key) in normalised
+            )
         for verdict in report.get("verdicts", ()):  # type: ignore[union-attr]
             if verdict.get("endpoint") in forms:
                 verdicts.append(

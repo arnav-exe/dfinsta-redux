@@ -589,17 +589,33 @@ def measured_candidates(assessment: Mapping[str, Any]) -> frozenset[str]:
 
     if not isinstance(assessment, Mapping):
         raise TypeError("Feature assessment must be a mapping")
+    listed = assessment.get("candidates", ()) or ()
+    if isinstance(listed, (str, bytes, Mapping)):
+        raise TypeError("Feature assessment candidates must be a list")
     measured: set[str] = set()
-    for candidate in assessment.get("candidates", ()) or ():
+    for candidate in listed:
         if not isinstance(candidate, Mapping):
             raise TypeError("Feature assessment candidate must be a mapping")
-        kinds = {
-            item.get("kind")
-            for item in candidate.get("measured", ()) or ()
-            if isinstance(item, Mapping)
-        }
+        # As strict as `assessment.candidate_ids`, which decodes the same field
+        # into the gate request. Two decoders of one field with different
+        # strictness is a shape this project has been bitten by: `str(None)` is
+        # `"None"`, which matches `CANDIDATE_ID_PATTERN` and would name a
+        # candidate nobody minted.
+        name = candidate.get("candidate_id")
+        if type(name) is not str:
+            raise TypeError("Feature assessment candidate id must be a string")
+        items = candidate.get("measured", ()) or ()
+        if isinstance(items, (str, bytes, Mapping)):
+            raise TypeError("Feature assessment evidence must be a list")
+        kinds = set()
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            kind = item.get("kind")
+            if isinstance(kind, str):
+                kinds.add(kind)
         if kinds & {DEVICE_NEVER_REQUESTED, DEVICE_REQUESTED}:
-            measured.add(str(candidate.get("candidate_id", "")))
+            measured.add(name)
     return frozenset(measured)
 
 
@@ -659,8 +675,9 @@ def validate_submission(
     6. no candidate is ruled on twice;
     7. every candidate is ruled on and no unknown candidate is;
     8. every non-`ignore` verdict carries a rationale;
-    9. no candidate is *blocked* or *given a toggle* unless a device looked for
-       it — see :func:`_require_measurement_before_acting`.
+    9. the assessment is the one this request pins, by hash;
+    10. no candidate is *blocked* or *given a toggle* unless a device looked for
+        it — see :func:`_require_measurement_before_acting`.
 
     `assessment` is the recorded assessment document, which both callers already
     hold: the admitting Activity from `resolve_with`, the client from the same
@@ -713,6 +730,13 @@ def validate_submission(
         ruled.add(item.candidate_id)
 
     _require_every_candidate_ruled(request, dispositions)
+    # The evidence must be *this* request's evidence. Every other clause here is
+    # a re-derivation or a hash comparison, and this one was neither: both real
+    # callers happen to pass a document `resolve_with` verified, so the tie lived
+    # in a caller rather than in the authority. A gate whose safety depends on
+    # who called it is one clause away from not having it.
+    if canonical_sha256(assessment) != request.assessment.sha256:
+        raise ValueError("Assessment does not bind the gate request")
     _require_measurement_before_acting(dispositions, assessment)
 
     for item in dispositions.dispositions:

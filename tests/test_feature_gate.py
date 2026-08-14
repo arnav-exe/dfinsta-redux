@@ -79,7 +79,12 @@ CANDIDATES = (
     "gap:feed/timeline_stream/",
 )
 
-ASSESSMENT_BODY = b'{"schema_version":1,"grouping":"LX/03Ez","candidates":4}'
+#: The assessment the request pins. It is the canonical encoding of
+#: `make_assessment()` rather than an opaque blob, because `validate_submission`
+#: now checks that the evidence it reads hashes to what the request pins — so a
+#: fixture whose request and document disagree is refused, correctly, before
+#: reaching any clause a test is about.
+ASSESSMENT_BODY = b""  # replaced below, once `make_assessment` is defined
 
 
 def make_assessment(
@@ -114,6 +119,10 @@ def make_assessment(
     }
 
 
+#: Now that `make_assessment` exists, the body the request pins is its encoding.
+ASSESSMENT_BODY = canonical_json(make_assessment()).encode("utf-8")
+
+
 class Forbidden:
     """Any attribute access is a purity violation."""
 
@@ -135,8 +144,12 @@ def cas_ref(
     return ArtifactRef(1, kind, digest, len(body), f"cas://sha256/{digest}", producer, input_hashes)
 
 
-def assessment_ref(body: bytes = ASSESSMENT_BODY) -> ArtifactRef:
-    return cas_ref(ASSESSMENT_ARTIFACT_KIND, body, "stage4-assess-439")
+def assessment_ref(body: bytes | None = None) -> ArtifactRef:
+    return cas_ref(
+        ASSESSMENT_ARTIFACT_KIND,
+        ASSESSMENT_BODY if body is None else body,
+        "stage4-assess-439",
+    )
 
 
 def make_request(
@@ -251,15 +264,24 @@ class GateTestCase(unittest.TestCase):
         decision: GateDecision | None = None,
         assessment: dict | None = None,
     ) -> None:
-        request = self.request if request is None else request
+        # A request pins its assessment by hash, so a caller supplying one gets a
+        # request that pins *it* — otherwise every test of the measurement rule
+        # would be refused by the binding clause before reaching the rule.
+        if assessment is None:
+            request = self.request if request is None else request
+            # Every candidate measured by default, so a test about some other
+            # clause is not silently a test of the measurement rule.
+            assessment = make_assessment(request.candidate_ids)
+        elif request is None:
+            request = make_request(
+                assessment=assessment_ref(canonical_json(assessment).encode("utf-8"))
+            )
         document = self.document if document is None else document
         validate_submission(
             request,
             submission_for(request, document, decision=decision),
             document,
-            # Every candidate measured by default, so a test about some other
-            # clause is not silently a test of the measurement rule.
-            make_assessment(request.candidate_ids) if assessment is None else assessment,
+            assessment,
         )
 
 
@@ -848,19 +870,30 @@ class MutationTests(GateTestCase):
         exactly the stale-approval failure the request-side hash pinning
         prevents in the other direction.
         """
-        revised = assessment_ref(b'{"schema_version":1,"grouping":"LX/03Ez","candidates":5}')
-        revised_request = make_request(assessment=revised)
+        # A real revision — one more candidate found on a fresh decode — rather
+        # than an opaque blob, because the request pins its assessment by hash and
+        # the validator now reads the document behind it. A fixture whose request
+        # and document disagree is refused by that clause before reaching this one.
+        revised_document = make_assessment(CANDIDATES + ("gap:feed/new_surface/",))
+        revised = assessment_ref(canonical_json(revised_document).encode("utf-8"))
+        revised_request = make_request(
+            assessment=revised, candidate_ids=CANDIDATES + ("gap:feed/new_surface/",)
+        )
         self.assertNotEqual(revised.sha256, self.request.assessment.sha256)
 
         stale = dispositions_document(
             revised_request, assessment_sha256=self.request.assessment.sha256
         )
         with self.assertRaises(ValueError):
-            self.admit(stale, request=revised_request)
+            self.admit(stale, request=revised_request, assessment=revised_document)
 
         # Everything else about the submission is already correct: the one field
         # between these verdicts and the wrong assessment is `assessment_sha256`.
-        self.admit(dispositions_document(revised_request), request=revised_request)
+        self.admit(
+            dispositions_document(revised_request),
+            request=revised_request,
+            assessment=revised_document,
+        )
 
     def test_the_subject_hash_cannot_be_supplied_by_the_caller(self) -> None:
         """Mutation: take `request_sha256` as an argument instead of deriving it.
@@ -949,13 +982,31 @@ class MeasurementBeforeActingTests(ValidateSubmissionTests):
     sees is server-side.
     """
 
-    def rule_all(self, verdict: str, kind: str) -> None:
-        rulings = tuple(
-            ruling(name, verdict, "because the evidence says so") for name in CANDIDATES
+    def chain(self, assessment: dict, rulings: tuple):
+        """A request, dispositions and assessment that all bind each other.
+
+        Three things now have to agree — the request pins the assessment by hash
+        and the dispositions bind the same hash — so a fixture that changes one
+        must rebuild the other two. That is the point of the binding clauses, and
+        a helper that let a test change one in isolation would be testing a state
+        the gate refuses to reach.
+        """
+        request = make_request(
+            assessment=assessment_ref(canonical_json(assessment).encode("utf-8"))
         )
         self.admit(
-            dispositions_document(self.request, rulings),
-            assessment=make_assessment(kind=kind),
+            dispositions_document(request, rulings),
+            request=request,
+            assessment=assessment,
+        )
+
+    def rule_all(self, verdict: str, kind: str) -> None:
+        self.chain(
+            make_assessment(kind=kind),
+            tuple(
+                ruling(name, verdict, "because the evidence says so")
+                for name in CANDIDATES
+            ),
         )
 
     def test_blocking_an_unwatched_candidate_is_refused_by_name(self) -> None:
@@ -1005,12 +1056,9 @@ class MeasurementBeforeActingTests(ValidateSubmissionTests):
         applied to what dispositions are about.
         """
         with self.assertRaises(ValueError):
-            self.admit(
-                dispositions_document(
-                    self.request,
-                    tuple(ruling(name, "block", "why") for name in CANDIDATES),
-                ),
-                assessment={"schema_version": 1, "candidates": []},
+            self.chain(
+                {"schema_version": 1, "candidates": []},
+                tuple(ruling(name, "block", "why") for name in CANDIDATES),
             )
 
     def test_only_the_acting_candidate_is_refused_not_the_whole_gate(self) -> None:
@@ -1034,7 +1082,7 @@ class MeasurementBeforeActingTests(ValidateSubmissionTests):
         rulings = (ruling(CANDIDATES[0], "ignore"),) + tuple(
             ruling(name, "block", "measured and real") for name in CANDIDATES[1:]
         )
-        self.admit(dispositions_document(self.request, rulings), assessment=document)
+        self.chain(document, rulings)
 
     def test_measured_means_a_device_looked_not_that_it_saw(self) -> None:
         """The distinction the whole clause turns on, asserted directly."""
@@ -1055,3 +1103,113 @@ class MeasurementBeforeActingTests(ValidateSubmissionTests):
             with self.subTest(document=bad):
                 with self.assertRaises(TypeError):
                     measured_candidates(bad)
+
+
+class TheEvidenceMustBeThisRequestsEvidenceTests(ValidateSubmissionTests):
+    """Clause 9, and the one clause that was neither a derivation nor a hash.
+
+    Every other clause in `validate_submission` binds two things that were
+    recorded separately. The measurement rule read an `assessment` argument and
+    checked nothing about where it came from — both real callers happened to pass
+    a document `resolve_with` had verified, so the tie lived in a caller. A gate
+    whose safety depends on who called it is one refactor away from not having it.
+    """
+
+    def test_an_assessment_the_request_does_not_pin_is_refused(self) -> None:
+        """A document saying every candidate was measured, which the request never
+        pinned — the shape that would turn the measurement rule off."""
+        forged = {
+            "schema_version": 1,
+            "candidates": [
+                {"candidate_id": name, "literal": "x/",
+                 "measured": [{"kind": DEVICE_REQUESTED, "strength": "strong"}]}
+                for name in CANDIDATES
+            ],
+        }
+        self.assertNotEqual(
+            canonical_sha256(forged), self.request.assessment.sha256,
+            "premise: this must not be the document the request pins",
+        )
+        with self.assertRaises(ValueError) as caught:
+            validate_submission(
+                self.request,
+                submission_for(self.request, self.document),
+                self.document,
+                forged,
+            )
+        self.assertIn("does not bind", str(caught.exception))
+
+    def test_the_control_the_pinned_assessment_is_admitted(self) -> None:
+        """So the refusal above is about the binding and not about the fixture."""
+        self.assertIsNone(
+            validate_submission(
+                self.request,
+                submission_for(self.request, self.document),
+                self.document,
+                make_assessment(),
+            )
+        )
+
+
+class MeasuredCandidatesIsAsStrictAsTheDecoderTests(unittest.TestCase):
+    """Two decoders of one field must not disagree about what it accepts.
+
+    `assessment.candidate_ids` builds the request's candidate list and refuses
+    anything that is not a `str`. `measured_candidates` reads the same field to
+    decide what may be blocked, and coerced with `str()` — so `None` became
+    `"None"`, which matches `CANDIDATE_ID_PATTERN`. Unreachable today, because a
+    request cannot be built from such a document; but this project has been bitten
+    by exactly this shape, and the looser of two readers is the one that decides
+    what may ship.
+    """
+
+    def document(self, candidate_id: object) -> dict:
+        return {
+            "schema_version": 1,
+            "candidates": [
+                {"candidate_id": candidate_id, "literal": "x/",
+                 "measured": [{"kind": DEVICE_REQUESTED}]}
+            ],
+        }
+
+    def test_a_candidate_id_that_is_not_a_string_is_refused(self) -> None:
+        for bad in (None, 5, ["gap:x/"], {"id": "gap:x/"}, True):
+            with self.subTest(candidate_id=bad):
+                with self.assertRaises(TypeError):
+                    measured_candidates(self.document(bad))
+
+    def test_a_missing_candidate_id_is_refused_rather_than_read_as_blank(self) -> None:
+        with self.assertRaises(TypeError):
+            measured_candidates({"schema_version": 1, "candidates": [{"measured": []}]})
+
+    def test_the_control_a_well_formed_document_reads(self) -> None:
+        self.assertEqual(
+            frozenset({"gap:x/"}), measured_candidates(self.document("gap:x/"))
+        )
+
+    def test_a_candidates_field_that_is_not_a_list_is_refused(self) -> None:
+        for bad in ({"a": 1}, "gap:x/", b"x"):
+            with self.subTest(candidates=bad):
+                with self.assertRaises(TypeError):
+                    measured_candidates({"schema_version": 1, "candidates": bad})
+
+    def test_an_evidence_list_that_is_not_a_list_is_refused(self) -> None:
+        with self.assertRaises(TypeError):
+            measured_candidates({
+                "schema_version": 1,
+                "candidates": [{"candidate_id": "gap:x/", "measured": "device_requested"}],
+            })
+
+    def test_a_kind_that_is_not_a_string_does_not_crash_the_gate(self) -> None:
+        """It must not count, and it must not raise an unhandled `TypeError` from
+        a set comprehension either — a refusal that names no field teaches a
+        reader nothing."""
+        self.assertEqual(
+            frozenset(),
+            measured_candidates({
+                "schema_version": 1,
+                "candidates": [
+                    {"candidate_id": "gap:x/", "measured": [{"kind": ["device_requested"]}]}
+                ],
+            }),
+        )

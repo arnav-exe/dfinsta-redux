@@ -35,7 +35,7 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPOSITORY / "src"))
 
-from dfinsta_pipeline.assessment import assess  # noqa: E402
+from dfinsta_pipeline.assessment import assess, normalise  # noqa: E402
 from dfinsta_pipeline.guards import WATCH_KEY  # noqa: E402
 from dfinsta_pipeline.hook_index import HookIndex  # noqa: E402
 from dfinsta_pipeline.hook_manifest import load_manifest  # noqa: E402
@@ -76,10 +76,19 @@ def missing(literals: tuple[str, ...], manifest_path: Path) -> tuple[str, ...]:
     for rule in hook.get("url_block_rules") or ():
         for literal in rule.get("literals") or ():
             watched.add(str(literal.get("text", "")))
-    # Slash-insensitive, because the index writes `feed/x/` where the guard tests
-    # `/feed/x/` — the same join `device_evidence` makes, for the same reason.
-    seen = {item.strip("/") for item in watched}
-    return tuple(item for item in literals if item.strip("/") not in seen)
+    # Through `normalise`, not `strip("/")`. The guard watches
+    # `/api/v1/clips/homecoming/` where the index writes `clips/homecoming/`, and
+    # comparing on slashes alone would call that unwatched and add a second entry
+    # for a path already on the list — which counts one request twice, the exact
+    # thing this function exists to prevent.
+    # `normalise` strips the leading slash and an `api/v1/` prefix; the trailing
+    # slash it leaves, and the app writes both. `is_blocked` compares the same
+    # two ways for the same reason.
+    def key(item: str) -> str:
+        return normalise(item).strip("/")
+
+    seen = {key(item) for item in watched}
+    return tuple(item for item in literals if key(item) not in seen)
 
 
 def main(argv: list[str] | None = None) -> int:

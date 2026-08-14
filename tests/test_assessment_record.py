@@ -832,3 +832,93 @@ class ObservationsRootIsNamedNotGuessedTests(unittest.TestCase):
             with self.subTest(function=function.__name__):
                 default = inspect.signature(function).parameters["observations_root"].default
                 self.assertIsNone(default, "the default must be None, not a path")
+
+
+class RecordedDocumentsCarryDeviceEvidenceTests(AssessmentRecordFixture):
+    """`record` must actually *use* the store it is handed. Asserted on the bytes.
+
+    The first version of this change forwarded every argument to `_record` except
+    this one, and the suite stayed green: the only test naming the parameter
+    pinned its **signature**, so it passed while the body ignored it. The feature
+    was inert, and worse than inert — with no candidate ever measured,
+    `feature_gate._require_measurement_before_acting` refused `block` and
+    `offer_toggle` at every gate, which is exactly the "unanswerable without a
+    phone" outcome that was weighed and rejected.
+
+    So this asserts the observable a human would see at the gate, not the shape
+    of a call.
+    """
+
+    def observations(self) -> Path:
+        """A root holding one session that watched the fixture's candidates.
+
+        Written here rather than borrowed from `manifest/observations/`: a test
+        whose answer depends on the committed corpus changes meaning whenever
+        someone walks a phone.
+        """
+        root = Path(self.tmp) / "device"
+        store = root / "manifest" / "observations"
+        store.mkdir(parents=True, exist_ok=True)
+        watched = [f"/{literal}" for literal in NOVEL_MEMBERS]
+        row = {
+            "schema_version": 1,
+            "version": "439",
+            "build_sha256": "b" * 64,
+            "recorded_at": "2026-08-14T00:00:00Z",
+            "session_id": "439-fixture-none",
+            "surface": "feed_explore_reels",
+            "watched": watched,
+            "toggles": {"disable_feed": False},
+            "walk": "one-pass-v1",
+            "counts": {watched[0]: 3},
+            "total": 3,
+            "refusals": {},
+        }
+        (store / "439.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+        return root
+
+    def test_a_store_that_was_named_reaches_the_recorded_document(self) -> None:
+        recorded = self.record(observations_root=self.observations())
+        kinds = {
+            item["kind"]
+            for candidate in recorded.document["candidates"]
+            for item in candidate["measured"]
+        }
+        self.assertIn(
+            "device_never_requested", kinds,
+            "the recorded bytes must carry what the store said",
+        )
+        self.assertEqual(
+            set(recorded.candidate_ids),
+            set(feature_gate.measured_candidates(recorded.document)),
+            "and every candidate must then be rulable",
+        )
+
+    def test_no_store_named_means_nothing_is_measured(self) -> None:
+        """The control, and the fail-safe direction: a run that names no store
+        produces candidates nothing may be blocked on, rather than candidates
+        that look measured."""
+        recorded = self.record(run_id="run-no-store-1")
+        kinds = {
+            item["kind"]
+            for candidate in recorded.document["candidates"]
+            for item in candidate["measured"]
+        }
+        self.assertEqual({"app_declared_grouping", "coverage_gap"}, kinds)
+        self.assertEqual(frozenset(), feature_gate.measured_candidates(recorded.document))
+
+    def test_the_two_differ_in_their_bytes_and_in_their_operation_key(self) -> None:
+        """Which is why `observations_sha256` is in the key.
+
+        Same run inputs, different store, different document. If the key did not
+        move with it, the second record would refuse about two derivations
+        disagreeing and name the wrong cause.
+        """
+        with_store = self.record(
+            run_id="run-key-a", observations_root=self.observations()
+        )
+        without = self.record(run_id="run-key-b")
+        self.assertNotEqual(
+            canonical_json(with_store.document), canonical_json(without.document)
+        )
+        self.assertNotEqual(with_store.input_sha256, without.input_sha256)

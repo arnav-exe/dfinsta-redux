@@ -225,6 +225,42 @@ class CommittedCorpusTests(unittest.TestCase):
             blocked,
         )
 
+    def test_a_blank_literal_matches_nothing_where_there_is_something_to_match(self) -> None:
+        """Over the **real** store, because an empty one cannot fail this.
+
+        The first version of this test ran against a root with no corpora, where
+        every literal is unwatched under every implementation — so deleting the
+        guard it was written for changed nothing and the test still passed. An
+        absence assertion needs somewhere the presence could have shown up.
+        """
+        for blank in ("", "   ", "/", "///"):
+            with self.subTest(literal=repr(blank)):
+                reading = reading_for(blank, REPOSITORY, computed=self.computed)
+                self.assertEqual(DEVICE_UNWATCHED, reading.kind)
+                self.assertEqual(0, reading.sessions, "it must join no session")
+                self.assertEqual(6, len(reading.corpora),
+                                 "and there were six corpora it could have matched")
+
+    def test_the_api_v1_spelling_is_reachable_from_a_candidate_literal(self) -> None:
+        """The watch list carries `/api/v1/clips/homecoming/`; a candidate carries
+        `clips/homecoming/`. Slash variants alone never bridge that, so the gate
+        reported "no device run has looked for it" about a path watched in 72
+        sessions — and then refused to let it be blocked."""
+        reading = reading_for("clips/homecoming/", REPOSITORY, computed=self.computed)
+        self.assertEqual(DEVICE_NEVER_REQUESTED, reading.kind)
+        self.assertEqual(72, reading.sessions)
+
+    def test_a_vacuous_session_is_not_a_device_looking(self) -> None:
+        """A session that observed nothing is equally well explained by a build
+        that was not observing, a capture that was empty and an app that never
+        ran. Counting one would unlock `block` on a session that measured
+        nothing."""
+        from dfinsta_pipeline.observation import evidential, read
+
+        rows = read("439", REPOSITORY)
+        self.assertEqual(len(rows), len(evidential(rows)),
+                         "premise: the committed corpus holds no vacuous rows")
+
     def test_a_literal_no_corpus_watched_is_unwatched_not_unrequested(self) -> None:
         """The control for the whole distinction, on the real store."""
         reading = reading_for("media/configure_to_story/", REPOSITORY,
@@ -272,9 +308,7 @@ class EmptyStoreTests(unittest.TestCase):
 
         self.assertIn("0 corpus", _evidence(reading).summary)
 
-    def test_a_blank_literal_is_unwatched_and_does_not_match_everything(self) -> None:
-        """`spellings('')` is empty, and an empty form set must not join to every
-        watched path — the leading-slash grouping failure wearing new clothes."""
+    def test_a_blank_literal_is_unwatched_over_an_empty_store_too(self) -> None:
         self.assertEqual((), spellings("   "))
         self.assertEqual(DEVICE_UNWATCHED, reading_for("   ", self.root).kind)
 
@@ -291,6 +325,12 @@ class CommandTests(unittest.TestCase):
         with contextlib.redirect_stdout(machine):
             main(["/feed/timeline_stream/", "--root", str(REPOSITORY), "--json"])
         document = json.loads(machine.getvalue())
+        # The **state**, in both forms. A machine view carrying only counts would
+        # reproduce the conflation this module exists to end, and the previous
+        # version of this test checked the state in the human form and the counts
+        # in the machine one — so it was named for an agreement it never checked.
+        self.assertEqual(DEVICE_NEVER_REQUESTED, document["kind"])
+        self.assertIn(document["kind"], page)
         self.assertTrue(document["watched"])
         self.assertEqual(0, document["seen"])
 
@@ -385,3 +425,132 @@ class WatchCandidatesTests(unittest.TestCase):
             self.tool().main(["--index", str(index), "--manifest", str(manifest)])
         self.assertEqual(before, manifest.read_bytes(),
                          "reporting must never touch the shipped manifest")
+
+
+class UnreadableIsNotAbsentTests(unittest.TestCase):
+    """A store that cannot be read must not answer "nothing was measured".
+
+    `observation.read` goes to some length — `stat`, `S_ISREG`, a symlink check —
+    to keep "unreadable" from wearing the answer "empty". Two readers added on
+    2026-08-14 threw that away with `if not directory.is_dir(): return ()`, and
+    the digest half is the worse one: an unreadable store hashing to the same
+    `""` as no store means the operation key stops moving with the corpus, for a
+    reason nobody can see.
+    """
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.store = self.root / "manifest" / "observations"
+        self.store.parent.mkdir(parents=True)
+
+    def test_a_store_that_is_a_file_is_refused_by_both_readers(self) -> None:
+        from dfinsta_pipeline.assessment_record import RecordError, _observations_digest
+        from dfinsta_pipeline.observation import ObservationError
+
+        self.store.write_text("not a directory", encoding="utf-8")
+        with self.assertRaises(ObservationError):
+            corpora(self.root)
+        with self.assertRaises(RecordError):
+            _observations_digest(self.root)
+
+    def test_an_absent_store_is_still_simply_absent(self) -> None:
+        """The control: the refusal above must be about unreadable, not about
+        missing — a machine that has never walked a phone answers normally."""
+        from dfinsta_pipeline.assessment_record import _observations_digest
+
+        self.assertEqual((), corpora(self.root))
+        self.assertEqual("", _observations_digest(self.root))
+
+    def test_a_stray_file_does_not_take_out_the_whole_stage(self) -> None:
+        """`439.bak.jsonl`, an editor's leftover, a README — `observation.read`
+        refuses a non-numeric stem, and that refusal would escape `record`
+        untranslated from a module the caller never imported."""
+        self.store.mkdir()
+        for name in ("439.bak.jsonl", "notes.jsonl", "README.jsonl"):
+            (self.store / name).write_text("{}\n", encoding="utf-8")
+        self.assertEqual((), corpora(self.root))
+
+    def test_a_stray_file_beside_a_real_corpus_leaves_it_readable(self) -> None:
+        """The control, so the test above is not passing because nothing is
+        readable in the first place."""
+        real = REPOSITORY / "manifest" / "observations"
+        if not real.is_dir():
+            self.skipTest("no committed observation store")
+        self.store.mkdir()
+        for name in ("439.jsonl", "440.jsonl", "441.jsonl"):
+            (self.store / name).write_bytes((real / name).read_bytes())
+        (self.store / "439.bak.jsonl").write_text("{ not json\n", encoding="utf-8")
+        found = corpora(self.root)
+        self.assertEqual(6, len(found), f"expected the six real corpora, got {found}")
+
+
+class VacuousSessionsDoNotCountAsLookingTests(unittest.TestCase):
+    """A session that observed nothing is not a device having looked.
+
+    `grouping`, `walks` and `states` all filter through `observation.evidential`
+    first, and the reason is in `ObservationSession.vacuous`: a build that was not
+    observing, a capture that was empty and an app that never ran are
+    indistinguishable. Counting one as a measurement would unlock `block` on a
+    session that measured nothing — which is the whole failure this restriction
+    exists to prevent, arriving through the back door.
+    """
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        store = self.root / "manifest" / "observations"
+        store.mkdir(parents=True)
+        rows = [
+            self.row("439-real-1", {"/feed/timeline/": 4}),
+            self.row("439-real-2", {"/feed/timeline/": 5}),
+            self.row("439-empty", {}),
+        ]
+        (store / "439.jsonl").write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    def row(self, session_id: str, counts: dict) -> dict:
+        return {
+            "schema_version": 1,
+            "version": "439",
+            "build_sha256": "c" * 64,
+            "recorded_at": "2026-08-14T00:00:00Z",
+            "session_id": session_id,
+            "surface": "feed_explore_reels",
+            "watched": ["/feed/timeline/", "/hypothetical/new_surface/"],
+            "toggles": {"disable_feed": False},
+            "walk": "one-pass-v1",
+            "counts": counts,
+            "total": sum(counts.values()),
+            "refusals": {},
+        }
+
+    def test_only_the_sessions_that_saw_something_are_counted(self) -> None:
+        reading = reading_for("/hypothetical/new_surface/", self.root)
+        self.assertEqual(DEVICE_NEVER_REQUESTED, reading.kind)
+        self.assertEqual(
+            2, reading.sessions,
+            "the vacuous session must not be counted as a device looking",
+        )
+
+    def test_a_path_watched_only_by_a_vacuous_session_is_unwatched(self) -> None:
+        """The sharp end: if the *only* session that named a literal saw nothing,
+        nobody looked — and `block` must stay refused."""
+        store = self.root / "manifest" / "observations"
+        rows = [
+            self.row("439-real-1", {"/feed/timeline/": 4}),
+            self.row("439-real-2", {"/feed/timeline/": 5}),
+        ]
+        for row in rows:
+            row["watched"] = ["/feed/timeline/"]
+        vacuous = self.row("439-empty", {})
+        vacuous["watched"] = ["/feed/timeline/", "/only/here/"]
+        store.joinpath("439.jsonl").write_text(
+            "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows + [vacuous]),
+            encoding="utf-8",
+        )
+        self.assertEqual(DEVICE_UNWATCHED, reading_for("/only/here/", self.root).kind)

@@ -166,8 +166,17 @@ def _observations_digest(root: Path | str) -> str:
     machine with no observations computes the key it always computed.
     """
     directory = Path(root) / OBSERVATIONS
-    if not directory.is_dir():
+    if not directory.exists():
         return ""
+    if not directory.is_dir():
+        # A store that exists and cannot be read must not hash to the same thing
+        # as no store, or the operation key stops moving with the corpus for a
+        # reason nobody can see. `observation.read` takes the same care, and this
+        # is the one place a caller would never think to look.
+        raise RecordError(
+            f"{directory} exists and is not a directory, so the observation store "
+            "cannot be hashed. An unreadable store is not an absent one"
+        )
     per_file = {
         store.name: hashlib.sha256(store.read_bytes()).hexdigest()
         for store in sorted(directory.glob("*.jsonl"))
@@ -230,6 +239,7 @@ def record(
             owner_token=owner_token,
             expect_document_sha256=expect_document_sha256,
             rulings_path=rulings_path,
+            observations_root=observations_root,
         )
     except RecordError:
         raise

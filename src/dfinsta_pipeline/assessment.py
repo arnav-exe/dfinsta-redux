@@ -426,13 +426,19 @@ def assess_gap(
 ) -> Assessment:
     """Measured evidence for one unblocked endpoint inside a declared group.
 
-    `extra` is measured evidence this module cannot compute, appended verbatim.
+    `extra` is measured evidence this module cannot compute, placed **first** and
+    otherwise untouched.
     Today that is what a phone did with the endpoint, which `device_evidence`
     mints because answering it means globbing `manifest/observations/` — and this
     module reads no filesystem, which is what keeps it deterministic under
     Temporal replay.
 
-    Appended rather than merged, and typed as `Evidence`, so the boundary
+    First because it is what a reader should meet first: "the phone asked for this
+    seventeen times" bears on the decision more directly than "the app groups it
+    with things you block". `strongest` scans for a level rather than reading a
+    position, so the order is display and never weight.
+
+    Placed rather than merged, and typed as `Evidence`, so the boundary
     `Assessment.__post_init__` enforces still holds: a *reading of* the evidence
     is a `Judgement` and has nowhere to hide in here.
     """
