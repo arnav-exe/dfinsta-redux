@@ -179,9 +179,36 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       captures rather than the store, because every corpus the current driver produces lands
       within 3s and none of them can play that part.
 
-- [ ] **Present observation evidence at the feature gate**, and say *"never watched"* and
-      *"watched, never seen"* in different words — they look identical and mean opposite
-      things.
+- [x] **Observation evidence reaches the feature gate**, 2026-08-14. Each candidate carries
+      one item from `device_evidence.py`, and the three states are named apart because two of
+      them look identical and mean opposite things: `device_unwatched` (nobody looked),
+      `device_never_requested` (looked across N sessions, never seen), `device_requested`.
+
+      **Only the third is STRONG.** A zero stays WEAK however large the corpus, because the
+      argument is about what a zero can mean rather than how many sessions produced it:
+      `feed/timeline_stream/` is requested zero times and blocking it is still right, since
+      the routing that decides what an account sees is server-side.
+
+      **And `block` / `offer_toggle` now require that a device looked** —
+      `feature_gate._require_measurement_before_acting`, beside the completeness rule it
+      mirrors. `ignore` and `defer` are unrestricted, so the gate stays answerable without a
+      phone; only the two verdicts that change the shipped app are withheld. The refusal
+      happens in the client too, before anything is sent, because the client runs the
+      admitting side's own validator on its own payload.
+
+      Checked against the six candidates the gate really admitted on 441: five come back
+      `device_never_requested` and `feed/reels_media_stream/` comes back `device_requested`,
+      blocked by `disable_reels` on 440. None of that was visible when they were ruled.
+
+      Absence of the evidence counts as unmeasured, which is the completeness rule applied
+      one level up: a missing *disposition* is never a pass, and neither is a missing
+      *measurement*.
+
+- [ ] **`offer_toggle` still does exactly what `block` does.** Both append the endpoint to
+      `semantic_deps`; nothing writes a preference key, a settings row or a toggle, and
+      `RulingPlan.custom_code` only tells a human which endpoints need hand-written smali.
+      The verdict exists in the vocabulary and its distinguishing behaviour does not exist in
+      code. `unenforced-endpoints.json` is what makes that visible per build.
 
 ## Done 2026-08-13: stopped measuring our own block through Instagram's log
 

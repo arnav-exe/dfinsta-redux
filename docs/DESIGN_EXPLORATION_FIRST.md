@@ -110,6 +110,45 @@ true)`, so a fresh install of an observing build blocks everything until somebod
 switches all five off and restarts the process. Setting changes are not effective
 until a process restart; Instagram's own caches keep serving the previous state.
 
+## Where the device run sits in the pipeline
+
+Added 2026-08-14, and it changes the shape of a port: **the phone is walked
+between finding the candidates and ruling on them.**
+
+```
+driver --stop-after index                     find the candidates
+tools/watch_candidates.py --index … --apply   put them on the watch list
+driver --observe --stop-after build           an observing APK that watches them
+  ; sign ; adb install -r
+tools/run_corpus.py one-pass-v1    … both     walk the phone, twice
+tools/run_corpus.py three-round-v2 …
+tools/record_corpus.py --version … --walk …   commit rows + verified redactions
+driver --stop-after assess                    the assessment now carries what the phone did
+assessment_record raise ; submission submit   the human rules
+rulings --apply                               the rulings reach manifest/hooks.json
+driver                                        the shipped build
+```
+
+The candidate list is computed **twice** on purpose — once by
+`watch_candidates.py` to know what to watch, once inside `assessment.document`
+to record with evidence. `assess` is pure and pinned deterministic, so the second
+derivation cannot disagree with the first, and the alternative is handing
+`assessment` a callback that reads the disk, which is exactly what its
+determinism under Temporal replay depends on it not having.
+
+**Why the phone is on the critical path at all.** Because the gate now refuses to
+`block` or `offer_toggle` a candidate no device has looked for. That restriction
+is narrow on purpose: `ignore` and `defer` stay available, so a port can still
+reach a decision without a phone — it just cannot reach a decision that *changes
+what ships*. The cost was weighed on 2026-08-08 and accepted on 2026-08-14.
+
+**What the restriction is not.** It is about *looking*, never about what was
+found. A path watched across seventy-two sessions and never once requested is
+measured, and stays fully blockable — `feed/timeline_stream/` is requested zero
+times and blocking it is right, because it is in Instagram's own list of
+continuous-feed paths and the routing that decides what an account sees is
+server-side. A zero is weak evidence, not a veto.
+
 ## The protocol
 
 **1. Find candidates as before.** The string scan stays. It is a cheap net and
