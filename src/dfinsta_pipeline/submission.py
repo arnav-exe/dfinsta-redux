@@ -842,7 +842,7 @@ def _feature_assessment_payload(
     )
     try:
         submission = FeatureGateSubmissionV1(1, decision, reference)
-        validate_submission(request, submission, document)
+        validate_submission(request, submission, document, recorded.document)
     except (TypeError, ValueError) as error:
         raise SubmissionRefused(
             f"This client cannot admit its own answer, so it will not send it: {error}"

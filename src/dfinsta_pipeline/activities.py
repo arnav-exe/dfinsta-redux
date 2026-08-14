@@ -3940,7 +3940,7 @@ async def admit_feature_dispositions_activity(
             non_retryable=True,
         ) from error
     try:
-        validate_submission(request, admission.submission, document)
+        validate_submission(request, admission.submission, document, recorded.document)
     except (TypeError, ValueError) as error:
         # Non-retryable on purpose. A submission that does not bind its gate will
         # not start binding it on a second attempt, and retrying would turn a

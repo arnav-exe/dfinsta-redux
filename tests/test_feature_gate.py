@@ -37,7 +37,11 @@ from unittest import mock
 from dfinsta_pipeline import feature_gate
 from dfinsta_pipeline.contracts import ArtifactRef, GateDecision, canonical_json, canonical_sha256
 from dfinsta_pipeline.feature_gate import (
+    ACTING_VERDICTS,
     ASSESSMENT_ARTIFACT_KIND,
+    DEVICE_NEVER_REQUESTED,
+    DEVICE_REQUESTED,
+    DEVICE_UNWATCHED,
     DISPOSITIONS_ARTIFACT_KIND,
     GATE_ID_SUFFIX,
     MAX_RATIONALE,
@@ -51,6 +55,7 @@ from dfinsta_pipeline.feature_gate import (
     derive_assessment_gate,
     derive_feature_gate_request,
     derived_gate_id,
+    measured_candidates,
     validate_submission,
 )
 
@@ -75,6 +80,38 @@ CANDIDATES = (
 )
 
 ASSESSMENT_BODY = b'{"schema_version":1,"grouping":"LX/03Ez","candidates":4}'
+
+
+def make_assessment(
+    candidate_ids: tuple[str, ...] = CANDIDATES,
+    *,
+    kind: str = DEVICE_NEVER_REQUESTED,
+) -> dict:
+    """The recorded assessment document, as `validate_submission` reads it.
+
+    Only the fields that clause actually uses: a candidate id and its evidence
+    kinds. The default gives every candidate a device measurement, because most
+    tests here are about some other clause and would otherwise all be testing the
+    measurement rule by accident.
+
+    `kind=DEVICE_UNWATCHED` — or a candidate absent from the document entirely —
+    is the shape that refuses `block` and `offer_toggle`.
+    """
+
+    return {
+        "schema_version": 1,
+        "candidates": [
+            {
+                "candidate_id": candidate,
+                "literal": candidate.removeprefix("gap:"),
+                "measured": [
+                    {"kind": "app_declared_grouping", "strength": "strong"},
+                    {"kind": kind, "strength": "weak"},
+                ],
+            }
+            for candidate in candidate_ids
+        ],
+    }
 
 
 class Forbidden:
@@ -212,11 +249,17 @@ class GateTestCase(unittest.TestCase):
         *,
         request: FeatureGateRequestV1 | None = None,
         decision: GateDecision | None = None,
+        assessment: dict | None = None,
     ) -> None:
         request = self.request if request is None else request
         document = self.document if document is None else document
         validate_submission(
-            request, submission_for(request, document, decision=decision), document
+            request,
+            submission_for(request, document, decision=decision),
+            document,
+            # Every candidate measured by default, so a test about some other
+            # clause is not silently a test of the measurement rule.
+            make_assessment(request.candidate_ids) if assessment is None else assessment,
         )
 
 
@@ -607,7 +650,11 @@ class FeatureGateSubmissionTests(GateTestCase):
 
 class ValidateSubmissionTests(GateTestCase):
     def test_a_complete_well_bound_submission_is_admitted(self) -> None:
-        self.assertIsNone(validate_submission(self.request, self.submission, self.document))
+        self.assertIsNone(
+            validate_submission(
+                self.request, self.submission, self.document, make_assessment()
+            )
+        )
 
     def test_arguments_must_be_exact_types(self) -> None:
         for arguments in (
@@ -627,7 +674,7 @@ class ValidateSubmissionTests(GateTestCase):
             1, decision_for(self.request), dispositions_ref(other)
         )
         with self.assertRaises(ValueError):
-            validate_submission(self.request, mismatched, self.document)
+            validate_submission(self.request, mismatched, self.document, make_assessment())
 
     def test_a_same_size_substitution_is_still_refused(self) -> None:
         """Length is a weak witness; the digest is the clause that binds.
@@ -650,8 +697,8 @@ class ValidateSubmissionTests(GateTestCase):
             1, decision_for(self.request), dispositions_ref(blocked)
         )
         with self.assertRaises(ValueError):
-            validate_submission(self.request, signed, deferred)
-        validate_submission(self.request, signed, blocked)
+            validate_submission(self.request, signed, deferred, make_assessment())
+        validate_submission(self.request, signed, blocked, make_assessment())
 
     def test_dispositions_artifact_size_must_match_the_document(self) -> None:
         """A size that disagrees with the bytes means the reference was hand-built."""
@@ -660,7 +707,7 @@ class ValidateSubmissionTests(GateTestCase):
             1, decision_for(self.request), replace(reference, size=reference.size + 1)
         )
         with self.assertRaises(ValueError):
-            validate_submission(self.request, resized, self.document)
+            validate_submission(self.request, resized, self.document, make_assessment())
 
     def test_decision_subject_must_be_the_derived_request_hash(self) -> None:
         other = make_request(candidate_ids=CANDIDATES[:2])
@@ -746,6 +793,7 @@ class ValidateSubmissionTests(GateTestCase):
                     decision=rejection,
                 ),
                 dispositions_document(self.request, (ruling(CANDIDATES[0], "block"),)),
+                make_assessment(),
             )
         deferred = dispositions_document(
             self.request, tuple(ruling(name, "defer", "revisit next version") for name in CANDIDATES)
@@ -829,7 +877,14 @@ class MutationTests(GateTestCase):
         )
         self.assertEqual(
             tuple(inspect.signature(validate_submission).parameters),
-            ("request", "submission", "dispositions"),
+            ("request", "submission", "dispositions", "assessment"),
+            "every parameter here is a *document* or the derived request; the "
+            "moment one is a hash, the gate agrees with whatever it is told",
+        )
+        # And the new one is no exception: the assessment arrives as bytes whose
+        # digest the request already pins, not as a claim about them.
+        self.assertNotIn(
+            "assessment_sha256", inspect.signature(validate_submission).parameters
         )
 
         # A well-formed hash of a *different* derived request is still refused,
@@ -866,12 +921,137 @@ class MutationTests(GateTestCase):
 
         submission = FeatureGateSubmissionV1(1, decision_for(self.request), reference)
         with self.assertRaises(ValueError):
-            validate_submission(self.request, submission, substituted)
+            validate_submission(self.request, submission, substituted, make_assessment())
 
         # Both documents are individually admissible; the binding is what says
         # which one the human actually signed.
-        validate_submission(self.request, submission, signed)
+        validate_submission(self.request, submission, signed, make_assessment())
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MeasurementBeforeActingTests(ValidateSubmissionTests):
+    """`block` and `offer_toggle` need a device to have looked. Nothing else does.
+
+    On 2026-08-08 six candidates were ruled `block` in one sitting, on the two
+    static evidence items that were all this gate could offer: the app groups
+    this literal with things you block, and no hook blocks it. Across the 72
+    device sessions recorded since, five of the six are requested zero times and
+    one — `delivery/background_prefetch` — is not an endpoint at all but an event
+    name passed to a stub whose every method is `return-void`.
+
+    The rule restricts **looking**, never what was found. A path watched and never
+    once requested is measured, and stays fully blockable: `feed/timeline_stream/`
+    is requested zero times and blocking it is right, because it is in Instagram's
+    own list of continuous-feed paths and the routing that decides what an account
+    sees is server-side.
+    """
+
+    def rule_all(self, verdict: str, kind: str) -> None:
+        rulings = tuple(
+            ruling(name, verdict, "because the evidence says so") for name in CANDIDATES
+        )
+        self.admit(
+            dispositions_document(self.request, rulings),
+            assessment=make_assessment(kind=kind),
+        )
+
+    def test_blocking_an_unwatched_candidate_is_refused_by_name(self) -> None:
+        for verdict in ACTING_VERDICTS:
+            with self.subTest(verdict=verdict):
+                with self.assertRaises(ValueError) as caught:
+                    self.rule_all(verdict, DEVICE_UNWATCHED)
+                message = str(caught.exception)
+                self.assertIn(CANDIDATES[0], message, "the candidate must be named")
+                self.assertIn("no device has looked for it", message)
+                self.assertIn("observe_watch", message, "and the repair must be stated")
+
+    def test_the_same_candidate_may_be_ignored_or_deferred(self) -> None:
+        """The gate stays answerable without a phone, which was the condition.
+
+        Only the two verdicts that change the shipped app are withheld. A human
+        can still record that they looked and chose to do nothing, or that they
+        are not deciding yet — both are rulings and both satisfy completeness.
+        """
+        for verdict in ("ignore", "defer"):
+            with self.subTest(verdict=verdict):
+                self.rule_all(verdict, DEVICE_UNWATCHED)
+
+    def test_a_measured_zero_is_still_blockable(self) -> None:
+        """The control, and the one this rule most easily gets wrong.
+
+        `feed/timeline_stream/` fires zero times and blocking it is still right.
+        A rule that read "never requested" as "do not block" would have left it
+        open, and the routing that decides whether an account sees it is
+        server-side and can change.
+        """
+        for verdict in ACTING_VERDICTS:
+            with self.subTest(verdict=verdict):
+                self.rule_all(verdict, DEVICE_NEVER_REQUESTED)
+
+    def test_a_requested_candidate_is_blockable(self) -> None:
+        for verdict in ACTING_VERDICTS:
+            with self.subTest(verdict=verdict):
+                self.rule_all(verdict, DEVICE_REQUESTED)
+
+    def test_a_candidate_absent_from_the_assessment_counts_as_unlooked_for(self) -> None:
+        """Absence of the evidence is not evidence of measurement.
+
+        A document produced before device evidence existed carries none, and a
+        forged one could simply omit it. Either way nobody looked, and the same
+        refusal applies — the rule this project applies to a missing disposition,
+        applied to what dispositions are about.
+        """
+        with self.assertRaises(ValueError):
+            self.admit(
+                dispositions_document(
+                    self.request,
+                    tuple(ruling(name, "block", "why") for name in CANDIDATES),
+                ),
+                assessment={"schema_version": 1, "candidates": []},
+            )
+
+    def test_only_the_acting_candidate_is_refused_not_the_whole_gate(self) -> None:
+        """A mixed answer is admitted when the acting half is measured.
+
+        Otherwise one unwatched candidate would make the gate unanswerable, which
+        is the outcome that was weighed and rejected on 2026-08-08.
+        """
+        document = {
+            "schema_version": 1,
+            "candidates": [
+                {"candidate_id": CANDIDATES[0], "literal": "a/",
+                 "measured": [{"kind": DEVICE_UNWATCHED, "strength": "weak"}]},
+                *[
+                    {"candidate_id": name, "literal": "b/",
+                     "measured": [{"kind": DEVICE_REQUESTED, "strength": "strong"}]}
+                    for name in CANDIDATES[1:]
+                ],
+            ],
+        }
+        rulings = (ruling(CANDIDATES[0], "ignore"),) + tuple(
+            ruling(name, "block", "measured and real") for name in CANDIDATES[1:]
+        )
+        self.admit(dispositions_document(self.request, rulings), assessment=document)
+
+    def test_measured_means_a_device_looked_not_that_it_saw(self) -> None:
+        """The distinction the whole clause turns on, asserted directly."""
+        self.assertEqual(
+            set(CANDIDATES),
+            set(measured_candidates(make_assessment(kind=DEVICE_NEVER_REQUESTED))),
+        )
+        self.assertEqual(
+            set(CANDIDATES),
+            set(measured_candidates(make_assessment(kind=DEVICE_REQUESTED))),
+        )
+        self.assertEqual(
+            frozenset(), measured_candidates(make_assessment(kind=DEVICE_UNWATCHED))
+        )
+
+    def test_a_document_that_is_not_a_mapping_is_refused(self) -> None:
+        for bad in ([], "candidates", None, 7):
+            with self.subTest(document=bad):
+                with self.assertRaises(TypeError):
+                    measured_candidates(bad)

@@ -44,7 +44,7 @@ import dataclasses
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from .gate_contract import bind_decision, bind_document
 from .contracts import (
@@ -76,6 +76,25 @@ VERDICTS = ("block", "offer_toggle", "ignore", "defer")
 #: The one verdict a human may leave unexplained, because it is the no-op.
 #: Removing a candidate from consideration any other way costs a sentence.
 SILENT_VERDICT = "ignore"
+
+#: The two verdicts that change the shipped app. Both add the endpoint to the
+#: url-block hook's `semantic_deps`; nothing downstream tells them apart yet.
+ACTING_VERDICTS = ("block", "offer_toggle")
+
+#: The evidence kinds `device_evidence` mints, named here rather than there so
+#: that `validate_submission` can key on one without importing a module that
+#: reads the filesystem, and without parsing a `detail` blob whose shape would
+#: then be load-bearing in the authority.
+#:
+#: `DEVICE_UNWATCHED` is the one with teeth. It says no device run has ever
+#: looked for this literal -- not that the app does not request it, which is a
+#: different and much stronger claim. On 2026-08-08 six candidates were ruled
+#: `block` on static evidence alone; five of them are requested zero times
+#: across the 72 sessions since recorded, and one is not an endpoint at all.
+DEVICE_UNWATCHED = "device_unwatched"
+DEVICE_NEVER_REQUESTED = "device_never_requested"
+DEVICE_REQUESTED = "device_requested"
+DEVICE_KINDS = (DEVICE_UNWATCHED, DEVICE_NEVER_REQUESTED, DEVICE_REQUESTED)
 
 #: Matched to `GateDecision.rationale`, so a per-candidate rationale can say no
 #: less and no more than a whole-gate one.
@@ -550,10 +569,81 @@ def _require_every_candidate_ruled(
         raise ValueError(f"Disposition names an unknown candidate: {unknown[0]}")
 
 
+def measured_candidates(assessment: Mapping[str, Any]) -> frozenset[str]:
+    """Candidate ids whose evidence includes a device looking for the endpoint.
+
+    **Measured means a device looked**, not that it saw anything. A candidate
+    watched across seventy-two sessions and never once requested is measured; the
+    zero is the measurement. A candidate no watch list has ever carried is not,
+    and neither is one whose evidence says nothing about a device at all —
+    absence of the evidence is not evidence of measurement, which is the rule
+    `_require_every_candidate_ruled` applies to dispositions and this applies to
+    what they are dispositions *about*.
+
+    Reads the assessment document rather than the gate request on purpose. The
+    request already pins that document by hash and `validate_submission` already
+    refuses dispositions that do not bind it, so the evidence arrives
+    cryptographically tied to the subject. Copying a summary of it into the
+    request would create a second place that has to agree with the first.
+    """
+
+    if not isinstance(assessment, Mapping):
+        raise TypeError("Feature assessment must be a mapping")
+    measured: set[str] = set()
+    for candidate in assessment.get("candidates", ()) or ():
+        if not isinstance(candidate, Mapping):
+            raise TypeError("Feature assessment candidate must be a mapping")
+        kinds = {
+            item.get("kind")
+            for item in candidate.get("measured", ()) or ()
+            if isinstance(item, Mapping)
+        }
+        if kinds & {DEVICE_NEVER_REQUESTED, DEVICE_REQUESTED}:
+            measured.add(str(candidate.get("candidate_id", "")))
+    return frozenset(measured)
+
+
+def _require_measurement_before_acting(
+    dispositions: FeatureDispositionsV1, assessment: Mapping[str, Any]
+) -> None:
+    """Refuse `block` and `offer_toggle` for a candidate no device looked for.
+
+    These are the two verdicts that change the shipped app; `ignore` and `defer`
+    change nothing, so an unmeasured candidate stays fully answerable and only
+    the acting half is withheld. The gate does not become unanswerable without a
+    phone, which was the owner's condition when this was weighed on 2026-08-08.
+
+    **This is the 2026-08-08 failure, made structurally impossible.** Six
+    candidates were ruled `block` in one sitting on static evidence alone — the
+    app groups this literal with things you block, and no hook blocks it. Across
+    the seventy-two device sessions recorded since, five of the six are requested
+    zero times and one is not an endpoint at all but an event name passed to a
+    stub whose every method is `return-void`.
+
+    It does **not** restrict a candidate that was watched and never seen.
+    `feed/timeline_stream/` is requested zero times and blocking it is still
+    right: it sits in Instagram's own list of continuous-feed paths and the
+    routing that decides what an account sees is server-side and can change. A
+    zero is weak evidence, not a veto — the rule here is about *looking*, never
+    about what was found.
+    """
+
+    measured = measured_candidates(assessment)
+    for item in dispositions.dispositions:
+        if item.verdict in ACTING_VERDICTS and item.candidate_id not in measured:
+            raise ValueError(
+                f"Candidate {item.candidate_id} is ruled {item.verdict} and no device "
+                "has looked for it. Add the endpoint to `observe_watch` in "
+                "manifest/hooks.json, walk the phone and record the sessions; until "
+                "then it may be ignored or deferred, but not blocked or given a toggle"
+            )
+
+
 def validate_submission(
     request: FeatureGateRequestV1,
     submission: FeatureGateSubmissionV1,
     dispositions: FeatureDispositionsV1,
+    assessment: Mapping[str, Any],
 ) -> None:
     """Decide whether a submission may authorise anything. Raise if it may not.
 
@@ -568,7 +658,14 @@ def validate_submission(
     5. the document's policy revision is the request's;
     6. no candidate is ruled on twice;
     7. every candidate is ruled on and no unknown candidate is;
-    8. every non-`ignore` verdict carries a rationale.
+    8. every non-`ignore` verdict carries a rationale;
+    9. no candidate is *blocked* or *given a toggle* unless a device looked for
+       it — see :func:`_require_measurement_before_acting`.
+
+    `assessment` is the recorded assessment document, which both callers already
+    hold: the admitting Activity from `resolve_with`, the client from the same
+    call. It is required rather than optional because a safety clause a caller
+    can omit is one a caller will omit.
 
     There is deliberately no `request_sha256` parameter. The subject hash is
     recomputed from `request`, which the caller obtained from
@@ -616,6 +713,7 @@ def validate_submission(
         ruled.add(item.candidate_id)
 
     _require_every_candidate_ruled(request, dispositions)
+    _require_measurement_before_acting(dispositions, assessment)
 
     for item in dispositions.dispositions:
         if item.verdict != SILENT_VERDICT and not item.rationale.strip():

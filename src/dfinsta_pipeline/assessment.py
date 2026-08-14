@@ -218,7 +218,7 @@ class Assessment:
 # ---------------------------------------------------------------- normalising
 
 
-def _spellings(literal: str) -> tuple[str, ...]:
+def spellings(literal: str) -> tuple[str, ...]:
     """The forms one endpoint is written in, for an exact index lookup.
 
     `normalise` exists so a manifest rule and an index literal *compare* equal.
@@ -382,7 +382,7 @@ def find_groupings(
     # looking exactly like "no new features".
     candidates: set[str] = set()
     for literal in wanted:
-        for spelling in _spellings(literal):
+        for spelling in spellings(literal):
             candidates.update(index.descriptors_with_literal(spelling))
 
     groupings: list[Grouping] = []
@@ -421,13 +421,26 @@ def coverage_gaps(groupings: Sequence[Grouping], blocked: set[str]) -> list[tupl
     return out
 
 
-def assess_gap(literal: str, grouping: Grouping) -> Assessment:
-    """Measured evidence for one unblocked endpoint inside a declared group."""
+def assess_gap(
+    literal: str, grouping: Grouping, extra: Sequence[Evidence] = ()
+) -> Assessment:
+    """Measured evidence for one unblocked endpoint inside a declared group.
+
+    `extra` is measured evidence this module cannot compute, appended verbatim.
+    Today that is what a phone did with the endpoint, which `device_evidence`
+    mints because answering it means globbing `manifest/observations/` — and this
+    module reads no filesystem, which is what keeps it deterministic under
+    Temporal replay.
+
+    Appended rather than merged, and typed as `Evidence`, so the boundary
+    `Assessment.__post_init__` enforces still holds: a *reading of* the evidence
+    is a `Judgement` and has nowhere to hide in here.
+    """
     peers = ", ".join(grouping.known[:4])
     return Assessment(
         candidate_id=f"gap:{literal}",
         literal=literal,
-        measured=(
+        measured=tuple(extra) + (
             Evidence(
                 "app_declared_grouping",
                 Strength.STRONG,
@@ -453,15 +466,26 @@ def assess(
     index: HookIndex,
     hooks: Sequence[Hook],
     min_seeds: int = 2,
+    *,
+    extra_evidence: Mapping[str, Sequence[Evidence]] | None = None,
 ) -> tuple[list[Assessment], list[Grouping]]:
     """Every unblocked endpoint the app groups with ones we block.
 
     Returns the assessments and the groupings they came from, because a reader
     at the gate needs to see the grouping to judge whether the inference holds.
+
+    `extra_evidence` is keyed by literal and supplied by the caller, following
+    `suppressed` exactly: this module reads no filesystem, so anything measured
+    off a phone or a store arrives already computed. A literal with no entry gets
+    none, which is the shape a candidate had before device evidence existed.
     """
     blocked = blocked_endpoints(hooks)
     groupings = find_groupings(index, blocked, min_seeds=min_seeds)
-    return [assess_gap(lit, g) for lit, g in coverage_gaps(groupings, blocked)], groupings
+    supplied = dict(extra_evidence or {})
+    return [
+        assess_gap(lit, g, supplied.get(lit, ()))
+        for lit, g in coverage_gaps(groupings, blocked)
+    ], groupings
 
 
 def report(
@@ -509,6 +533,8 @@ def document(
     hooks: Sequence[Hook],
     min_seeds: int = 2,
     suppressed: Mapping[str, Mapping[str, Any]] | None = None,
+    *,
+    extra_evidence: Mapping[str, Sequence[Evidence]] | None = None,
 ) -> dict[str, Any]:
     """The whole of stage 4a as one call: index and hooks in, gate document out.
 
@@ -528,8 +554,17 @@ def document(
     explanation would leave a human unable to see what a predecessor decided, and
     `candidate_ids` reads only `candidates`, so the gate covers what is still
     open while the document still carries the record of what is closed.
+
+    ``extra_evidence`` is measured evidence from outside the decode, keyed by
+    literal — today, what a phone did with the endpoint. Same rule as
+    ``suppressed``: computed by the caller, never read here. It **must** join the
+    operation key of whatever records this document, or an input that changes the
+    output without changing the key makes `record` refuse with a message about
+    two derivations disagreeing that names the wrong cause.
     """
-    assessments, groupings = assess(index, hooks, min_seeds=min_seeds)
+    assessments, groupings = assess(
+        index, hooks, min_seeds=min_seeds, extra_evidence=extra_evidence
+    )
     return report(assessments, groupings, suppressed)
 
 

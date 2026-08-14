@@ -323,14 +323,25 @@ class FeatureAssessmentRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
         assessment_sha256: str | None = None,
         candidate_ids: tuple[str, ...] | None = None,
         policy_revision: str | None = None,
-        verdict: str = "offer_toggle",
+        verdict: str = "defer",
     ) -> FeatureDispositionsV1:
+        """A dispositions document for every candidate this run covers.
+
+        `defer` rather than `offer_toggle`, and the reason is load-bearing: these
+        tests record against a state root with no observation store, so every
+        candidate reaches the gate reading "no device has looked for this", and
+        `block` and `offer_toggle` are refused for such a candidate. `defer` is
+        not — it is a ruling, it satisfies completeness, and it still carries a
+        rationale — so every clause these tests are about is exercised unchanged.
+        The refusal itself is covered in `tests/test_feature_gate.py` and end to
+        end in `tests/test_submission_feature_gate.py`.
+        """
         return FeatureDispositionsV1(
             1,
             assessment_sha256 or self.recorded.assessment.sha256,
             policy_revision or self.recorded.policy_revision,
             tuple(
-                FeatureDispositionV1(1, candidate, verdict, f"a switch for {candidate}")
+                FeatureDispositionV1(1, candidate, verdict, f"revisit {candidate}")
                 for candidate in (
                     self.recorded.candidate_ids if candidate_ids is None else candidate_ids
                 )
@@ -573,13 +584,18 @@ class FeatureAssessmentRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(intruder.dispositions.sha256, document.sha256)
         self.assertEqual(self.request.allowed_actor, ALLOWED_ACTOR)
         with self.assertRaises(ValueError) as raised:
-            feature_gate.validate_submission(self.request, intruder, document)
+            feature_gate.validate_submission(
+                self.request, intruder, document, self.recorded.document
+            )
         self.assertIn("actor", str(raised.exception))
         # Positive control: the same call with the allowed actor is admitted, so
         # the refusal above is about the actor and not about the fixture.
         self.assertIsNone(
             feature_gate.validate_submission(
-                self.request, self.submission(gate, decision_id="control-1"), document
+                self.request,
+                self.submission(gate, decision_id="control-1"),
+                document,
+                self.recorded.document,
             )
         )
 
@@ -636,6 +652,7 @@ class FeatureAssessmentRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
                         self.request,
                         self.submission(gate, decision_id=f"authority-{field}", **override),
                         document,
+                        self.recorded.document,
                     )
                 self.assertIn("does not bind", str(raised.exception))
         # Positive control: with every field bound, the same call is admitted —
@@ -645,6 +662,7 @@ class FeatureAssessmentRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.request,
                 self.submission(gate, decision_id="authority-control"),
                 document,
+                self.recorded.document,
             )
         )
 

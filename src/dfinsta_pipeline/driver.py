@@ -446,10 +446,20 @@ class AssessmentRequest:
     owner_token: str
     manifest_path: Path | None = None
     rulings_path: Path | None = None
+    #: Where `manifest/observations/` lives, for the device evidence each
+    #: candidate carries. Explicit rather than relying on the working directory,
+    #: because a driver run from anywhere else would silently produce candidates
+    #: reading `device_unwatched` — which is not "we looked and saw nothing" but
+    #: "nobody looked", and it is the one state that restricts what may be ruled.
+    observations_root: Path | None = None
 
     @property
     def manifest(self) -> Path:
         return self.manifest_path or (REPOSITORY / "manifest" / "hooks.json")
+
+    @property
+    def observations(self) -> Path:
+        return self.observations_root or REPOSITORY
 
 
 def record_assessment(request: AssessmentRequest, index_dir: Path):
@@ -472,6 +482,7 @@ def record_assessment(request: AssessmentRequest, index_dir: Path):
             allowed_actor=request.allowed_actor,
             owner_token=request.owner_token,
             rulings_path=request.rulings_path,
+            observations_root=request.observations,
         )
     except RecordError as error:
         # "Nothing to gate on" is a SUCCESS, not a failure, and it took blocking
@@ -1475,6 +1486,15 @@ def main(argv: list[str] | None = None) -> int:
     assess_group.add_argument(
         "--rulings", type=Path, default=None, help="ruling store; default manifest/rulings.jsonl"
     )
+    assess_group.add_argument(
+        "--observations-root",
+        type=Path,
+        default=None,
+        help="where manifest/observations/ lives; default this repository. Each "
+        "candidate carries what a phone did with it, and a root with no store "
+        "makes every candidate read 'nobody looked' — which is honest, and which "
+        "the gate then refuses to let you block on",
+    )
     parser.add_argument(
         "--observe",
         action="store_true",
@@ -1584,6 +1604,7 @@ def main(argv: list[str] | None = None) -> int:
                 owner_token=args.owner_token,
                 manifest_path=args.manifest,
                 rulings_path=args.rulings,
+                observations_root=args.observations_root,
             )
         if args.discover_hosts:
             if not args.version.strip():

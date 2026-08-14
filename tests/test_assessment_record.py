@@ -44,10 +44,11 @@ from dfinsta_pipeline.assessment_record import (
     ASSESSMENT_ARTIFACT_KIND,
     ASSESSMENT_OPERATION_KIND,
     RecordError,
+    operation_input,
     record,
     resolve,
 )
-from dfinsta_pipeline.contracts import ArtifactRef, canonical_json
+from dfinsta_pipeline.contracts import ArtifactRef, canonical_json, canonical_sha256
 from dfinsta_pipeline.hook_index import (
     API_SURFACE_FILENAME,
     HEADER_FILENAME,
@@ -737,3 +738,97 @@ class ResolveRefusalTests(AssessmentRecordFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ObservationsJoinTheOperationKeyTests(unittest.TestCase):
+    """Device evidence is *in* the document, so it must be *in* the key.
+
+    `rulings_sha256` was added to `operation_input` for exactly this reason, and
+    the comment beside it says what happens without it: a store that grew since
+    the last record computes the same operation key and a different document, and
+    `record` refuses with a message about two derivations disagreeing — which is
+    true, and names the wrong cause. A corpus walked between two records does the
+    same thing one argument further along.
+
+    These are unit tests on the pure key function, deliberately. The failure they
+    describe only shows up on the *second* record of one run, which no test that
+    records once can reach.
+    """
+
+    def test_a_walked_corpus_changes_the_key(self) -> None:
+        before = operation_input("r", "a" * 64, "b" * 64, "2026-08-01", "", "")
+        after = operation_input("r", "a" * 64, "b" * 64, "2026-08-01", "", "c" * 64)
+        self.assertNotEqual(before, after)
+        self.assertNotEqual(
+            canonical_sha256(before), canonical_sha256(after),
+            "a corpus walked between two records must not reuse the key",
+        )
+
+    def test_the_field_is_present_even_when_nothing_was_measured(self) -> None:
+        """Absent is spelled `""`, the way `rulings_sha256` spells it, so a
+        machine with no observations computes a stable key rather than a
+        differently-shaped one."""
+        payload = operation_input("r", "a" * 64, "b" * 64, "2026-08-01")
+        self.assertIn("observations_sha256", payload)
+        self.assertEqual("", payload["observations_sha256"])
+
+    def test_the_digest_is_over_contents_and_not_a_listing(self) -> None:
+        """Rows are rewritten in place. On 2026-08-13 superseded 440 sessions were
+        withdrawn from a file that kept its name, and a digest over a directory
+        listing would not have noticed."""
+        from dfinsta_pipeline.assessment_record import _observations_digest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = root / "manifest" / "observations"
+            store.mkdir(parents=True)
+            self.assertEqual("", _observations_digest(root), "no store is no digest")
+
+            (store / "439.jsonl").write_text('{"a": 1}\n', encoding="utf-8")
+            first = _observations_digest(root)
+            self.assertTrue(first)
+
+            (store / "439.jsonl").write_text('{"a": 2}\n', encoding="utf-8")
+            self.assertNotEqual(first, _observations_digest(root),
+                                "the same filename with different rows is a different corpus")
+
+            (store / "440.jsonl").write_text('{"a": 2}\n', encoding="utf-8")
+            self.assertNotEqual(_observations_digest(root), first,
+                                "a version measured is a different corpus too")
+
+    def test_an_empty_store_directory_reads_as_no_store(self) -> None:
+        from dfinsta_pipeline.assessment_record import _observations_digest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "manifest" / "observations").mkdir(parents=True)
+            self.assertEqual("", _observations_digest(Path(tmp)))
+
+
+class ObservationsRootIsNamedNotGuessedTests(unittest.TestCase):
+    """Omitting the store means no device evidence, never "look in the CWD".
+
+    The first version of this defaulted to `Path(".")`, which made every test that
+    records an assessment read the **real** committed corpus: the document then
+    depended on the process's working directory and on whether anyone had walked
+    a phone since. A recorded assessment is the thing a human signs, and it must
+    not vary with either.
+
+    "Nobody looked" is also the fail-safe answer, because the gate refuses to
+    `block` or `offer_toggle` on it.
+    """
+
+    def test_the_field_is_absent_from_the_key_when_no_store_is_named(self) -> None:
+        payload = operation_input("r", "a" * 64, "b" * 64, "2026-08-01", "")
+        self.assertEqual("", payload["observations_sha256"])
+
+    def test_the_digest_helper_is_never_called_with_a_bare_default(self) -> None:
+        """A regression pin on the signature itself: the parameter has no
+        filesystem default, so a caller cannot omit it and get the CWD."""
+        import inspect
+
+        from dfinsta_pipeline.assessment_record import _record, record
+
+        for function in (record, _record):
+            with self.subTest(function=function.__name__):
+                default = inspect.signature(function).parameters["observations_root"].default
+                self.assertIsNone(default, "the default must be None, not a path")

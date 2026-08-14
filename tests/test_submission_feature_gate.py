@@ -126,8 +126,16 @@ from tests.test_submission import (
 CANDIDATES = tuple(f"gap:{literal}" for literal in NOVEL_MEMBERS)
 
 #: What a human's `rulings.json` holds for those candidates.
+#:
+#: `defer` rather than `offer_toggle`, and the reason is load-bearing: this file
+#: records against a state root with no observation store, so every candidate
+#: reaches the gate reading "no device has looked for this". `block` and
+#: `offer_toggle` are refused for such a candidate — see
+#: `feature_gate._require_measurement_before_acting` — while `defer` is not, and
+#: still carries a rationale, so every clause these tests are actually about is
+#: exercised unchanged. `AnsweringWithoutMeasurementTests` covers the refusal.
 RULINGS = {
-    candidate: {"verdict": "offer_toggle", "rationale": f"a switch for {candidate}"}
+    candidate: {"verdict": "defer", "rationale": f"revisit {candidate} next version"}
     for candidate in CANDIDATES
 }
 
@@ -837,7 +845,11 @@ class RecordedFeatureGateTests(unittest.TestCase):
 
         # The admitting side's own check, against the independently derived
         # request. This is the only evidence the two halves of the design meet.
-        self.assertIsNone(feature_gate.validate_submission(self.request, payload, document))
+        self.assertIsNone(
+            feature_gate.validate_submission(
+                self.request, payload, document, self.recorded.document
+            )
+        )
 
         # And a case it rejects, so the pass above is about agreement rather than
         # about a validator that never fires. Only `validate_submission` can
@@ -940,11 +952,11 @@ class RecordedFeatureGateTests(unittest.TestCase):
 
         # Different rulings, different document, therefore a different id: the id
         # follows the bytes rather than being a constant that happens to be safe.
+        # `ignore` rather than `block`, because no device has looked for these
+        # candidates in this state root and the client refuses to send an answer
+        # the admitting side would reject — which is `AnsweringWithoutMeasurementTests`.
         other = self.build_payload(
-            {
-                candidate: {"verdict": "block", "rationale": "not shipping this"}
-                for candidate in CANDIDATES
-            }
+            {candidate: {"verdict": "ignore", "rationale": ""} for candidate in CANDIDATES}
         ).dispositions
         self.assertNotEqual(other.sha256, first.sha256)
         self.assertNotEqual(other.producer_operation_id, first.producer_operation_id)
@@ -1043,3 +1055,68 @@ class ReadRulingsTests(TemporaryRootTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnsweringWithoutMeasurementTests(RecordedFeatureGateTests):
+    """The client will not send a `block` for a candidate no device looked for.
+
+    This is the 2026-08-08 failure caught end to end, at the earliest point it
+    can be caught. Six candidates were ruled `block` in one sitting on the two
+    static evidence items that were all the gate could offer; across the 72
+    device sessions recorded since, five are requested zero times and one is not
+    an endpoint at all.
+
+    The refusal happens **in the client**, before anything is sent, because the
+    client runs the admitting side's own validator on its own payload. A human
+    finds out while they still have the editor open, rather than after a
+    round trip to a worker.
+    """
+
+    def acting(self, verdict: str) -> dict:
+        return {
+            candidate: {"verdict": verdict, "rationale": "the app groups it with reels"}
+            for candidate in CANDIDATES
+        }
+
+    def test_an_acting_verdict_on_an_unmeasured_candidate_is_refused(self) -> None:
+        for verdict in ("block", "offer_toggle"):
+            with self.subTest(verdict=verdict):
+                with self.assertRaises(SubmissionRefused) as caught:
+                    self.build_payload(self.acting(verdict))
+                message = str(caught.exception)
+                self.assertIn("no device has looked for it", message)
+                self.assertIn("observe_watch", message, "the repair must be named")
+                self.assertIn(
+                    "cannot admit its own answer", message,
+                    "and it must be clear the client stopped itself",
+                )
+
+    def test_the_same_candidates_may_be_ignored_or_deferred(self) -> None:
+        """The gate stays answerable without a phone, which was the condition on
+        which this restriction was accepted."""
+        for verdict, rationale in (("ignore", ""), ("defer", "next version")):
+            with self.subTest(verdict=verdict):
+                payload = self.build_payload(
+                    {c: {"verdict": verdict, "rationale": rationale} for c in CANDIDATES}
+                )
+                self.assertTrue(payload.dispositions.sha256)
+
+    def test_the_refusal_names_the_candidate_to_go_and_watch(self) -> None:
+        """A refusal that says only "not allowed" leaves a human guessing which of
+        a hundred candidates to do something about."""
+        with self.assertRaises(SubmissionRefused) as caught:
+            self.build_payload(
+                {
+                    **RULINGS,
+                    CANDIDATES[1]: {"verdict": "block", "rationale": "kill it"},
+                }
+            )
+        self.assertIn(CANDIDATES[1], str(caught.exception))
+
+    def test_a_mixed_answer_is_refused_only_for_the_acting_candidate(self) -> None:
+        """One unmeasured candidate must not make the whole gate unanswerable —
+        that outcome was weighed and rejected when this was designed."""
+        payload = self.build_payload(
+            {**RULINGS, CANDIDATES[0]: {"verdict": "ignore", "rationale": ""}}
+        )
+        self.assertTrue(payload.dispositions.sha256)

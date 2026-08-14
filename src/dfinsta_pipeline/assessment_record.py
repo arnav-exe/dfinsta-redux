@@ -62,6 +62,7 @@ from .assessment import (
     policy_revision as read_policy_revision,
 )
 from .contracts import ID_PATTERN, ArtifactRef, canonical_json, canonical_sha256
+from .observation import OBSERVATIONS
 from .hook_index import API_SURFACE_FILENAME, HEADER_FILENAME, HookIndex
 from .hook_manifest import ManifestError, load_manifest
 from .ledger import Ledger, assessment_identity
@@ -119,6 +120,7 @@ def operation_input(
     manifest_sha256: str,
     policy_revision: str,
     rulings_sha256: str = "",
+    observations_sha256: str = "",
 ) -> dict[str, str]:
     """What this operation is *of*. Its canonical hash is the operation key.
 
@@ -142,7 +144,35 @@ def operation_input(
         # about two derivations disagreeing — which would be true, and would name
         # the wrong cause.
         "rulings_sha256": rulings_sha256,
+        # And the observation store joins it for exactly the same reason, one
+        # argument further along: device evidence is *in* the document, so a
+        # corpus walked since the last record changes what a human is shown while
+        # leaving the key identical. The failure would be the same one — a refusal
+        # naming two derivations rather than the walk that happened between them.
+        "observations_sha256": observations_sha256,
     }
+
+
+def _observations_digest(root: Path | str) -> str:
+    """One hash over the whole observation store, or `""` when there is none.
+
+    Over the **file contents**, keyed by name, so a version measured, a corpus
+    withdrawn and a row re-recorded all move it. Not over a directory listing: the
+    440 rows were rewritten in place on 2026-08-13 when superseded sessions were
+    withdrawn, and a listing would not have noticed.
+
+    `""` for an absent store is the same spelling absent uses everywhere here —
+    `rulings_sha256` does it for a store that does not exist yet — and it means a
+    machine with no observations computes the key it always computed.
+    """
+    directory = Path(root) / OBSERVATIONS
+    if not directory.is_dir():
+        return ""
+    per_file = {
+        store.name: hashlib.sha256(store.read_bytes()).hexdigest()
+        for store in sorted(directory.glob("*.jsonl"))
+    }
+    return canonical_sha256(per_file) if per_file else ""
 
 
 def _bare_hash(value: str) -> str:
@@ -177,6 +207,7 @@ def record(
     owner_token: str,
     expect_document_sha256: str | None = None,
     rulings_path: Path | str | None = None,
+    observations_root: Path | str | None = None,
 ) -> RecordedAssessment:
     """Admit the API surface, recompute the assessment, record the operation.
 
@@ -220,6 +251,7 @@ def _record(
     owner_token: str,
     expect_document_sha256: str | None = None,
     rulings_path: Path | str | None = None,
+    observations_root: Path | str | None = None,
 ) -> RecordedAssessment:
     """The body. Everything it raises is translated by `record` above.
 
@@ -270,7 +302,34 @@ def _record(
         hashlib.sha256(store.read_bytes()).hexdigest() if store.exists() else ""
     )
 
-    document = build_document(index, hooks, suppressed=settled)
+    # What a phone did with each candidate. Read here for the reason the rulings
+    # are: `assessment` reads no filesystem. The candidates are derived twice —
+    # once to learn which literals to ask about, once inside `build_document` —
+    # because `assess` is pure and pinned deterministic, so the second derivation
+    # cannot disagree with the first, and the alternative is handing `assessment`
+    # a callback that reads the disk.
+    from .assessment import assess  # noqa: PLC0415
+    from .device_evidence import evidence_for_all  # noqa: PLC0415
+
+    literals = [item.literal for item in assess(index, hooks)[0]]
+    # `None` means no store was named, and therefore no device evidence — not
+    # "look in the working directory". Defaulting to the CWD made every test that
+    # records an assessment read the *real* committed corpus, so a document
+    # depended on where the process was started and on whether someone had walked
+    # a phone since. The caller says where it is or accepts that nobody looked,
+    # and "nobody looked" is the fail-safe answer: the gate refuses to block on it.
+    measured = (
+        evidence_for_all(literals, observations_root)
+        if observations_root is not None
+        else {}
+    )
+    observations_sha256 = (
+        _observations_digest(observations_root) if observations_root is not None else ""
+    )
+
+    document = build_document(
+        index, hooks, suppressed=settled, extra_evidence=measured
+    )
     body = canonical_bytes(document)
     names = candidate_ids(document)
     digest = canonical_sha256(document)
@@ -285,7 +344,8 @@ def _record(
     # also a number stored under a name no human could check.
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
     payload = operation_input(
-        run_id, decode_content_hash, manifest_sha256, revision, rulings_sha256
+        run_id, decode_content_hash, manifest_sha256, revision, rulings_sha256,
+        observations_sha256,
     )
     operation_key = canonical_sha256({"kind": ASSESSMENT_OPERATION_KIND, "input": payload})
     input_sha256 = canonical_sha256(payload)

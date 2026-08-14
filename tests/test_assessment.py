@@ -84,6 +84,7 @@ from dfinsta_pipeline.assessment import (
     normalise,
     policy_revision,
     report,
+    spellings,
 )
 from dfinsta_pipeline.contracts import ID_PATTERN, canonical_json
 from dfinsta_pipeline.feature_gate import CANDIDATE_ID_PATTERN, MAX_CANDIDATE_ID
@@ -1003,6 +1004,11 @@ class NoScoreTests(AssessmentTestCase):
             "looks_like_uri_rule",
             "normalise",
             "report",
+            # Made public 2026-08-14 so `device_evidence` can join a candidate
+            # literal to the observation store's watch list, which is written in
+            # the guard's spelling (leading slash) while a candidate carries the
+            # index's. Six of the six real candidates join only through this.
+            "spellings",
             # The bytes the gate pins, and the readers of the two files it needs.
             # `document` is `report(*assess(...))` under one name; `canonical_bytes`
             # is the exact byte string whose digest a human signs; `candidate_ids`
@@ -1086,6 +1092,7 @@ class NoScoreTests(AssessmentTestCase):
             "assess": lambda: assess(index, hooks),
             "report": lambda: report(*assess(index, hooks)),
             "looks_like_uri_rule": lambda: looks_like_uri_rule("/feed/timeline/"),
+            "spellings": lambda: spellings("feed/timeline_stream/"),
             "document": lambda: document(index, hooks),
             "canonical_bytes": lambda: canonical_bytes(document(index, hooks)),
             "candidate_ids": lambda: candidate_ids(document(index, hooks)),
@@ -1701,7 +1708,7 @@ class MutationTests(AssessmentTestCase):
 
         This used to assert that the stage found *nothing* — a clean, confident,
         empty run indistinguishable from "nothing changed". It no longer does,
-        and the reason is worth recording: `_spellings` now strips slashes for
+        and the reason is worth recording: `spellings` now strips slashes for
         the index lookup, so the seed search survives the mutation and what
         `normalise` uniquely carries is the `api/v1/` prefix strip.
 
@@ -1892,3 +1899,93 @@ class KnownGapTests(AssessmentTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtraEvidenceTests(AssessmentTestCase):
+    """Evidence this module cannot compute, appended verbatim by the caller.
+
+    `assessment` reads no filesystem — that is what keeps it deterministic under
+    Temporal replay — so what a phone did with an endpoint arrives already
+    measured, exactly as `suppressed` does. What matters here is that the seam
+    stays a seam: the caller supplies `Evidence`, not a reading of it, and a
+    literal nobody supplied anything for is unchanged rather than defaulted.
+    """
+
+    def grouping_for(self) -> Grouping:
+        return Grouping("LX/05jj;", KNOWN_MEMBERS, NOVEL_MEMBERS)
+
+    def device(self, kind: str = "device_never_requested") -> Evidence:
+        return Evidence(kind, Strength.WEAK, "watched 72 times, never requested",
+                        {"sessions": 72})
+
+    def test_extra_evidence_is_appended_for_the_literal_that_asked_for_it(self) -> None:
+        index = self.curated_index()
+        hooks = blocking_hooks()
+        literals = [item.literal for item in assess(index, hooks)[0]]
+        self.assertTrue(literals, "premise: the fixture must produce candidates")
+        target = literals[0]
+
+        plain = assess(index, hooks)[0]
+        rich = assess(index, hooks, extra_evidence={target: (self.device(),)})[0]
+        self.assertEqual(len(plain), len(rich), "no candidate may appear or vanish")
+        for old, new in zip(plain, rich):
+            with self.subTest(literal=new.literal):
+                if new.literal == target:
+                    self.assertEqual(len(old.measured) + 1, len(new.measured))
+                    self.assertIn("device_never_requested",
+                                  [item.kind for item in new.measured])
+                else:
+                    self.assertEqual(old.measured, new.measured)
+
+    def test_a_literal_with_no_entry_is_exactly_what_it_was_before(self) -> None:
+        """Absent must not become an empty measurement. A candidate nobody
+        supplied device evidence for looks the way every candidate looked before
+        device evidence existed — and `device_evidence` is what decides whether
+        that means 'nobody looked', not this module."""
+        index, hooks = self.curated_index(), blocking_hooks()
+        self.assertEqual(
+            assess(index, hooks)[0],
+            assess(index, hooks, extra_evidence={"nothing/here/": (self.device(),)})[0],
+        )
+
+    def test_a_judgement_cannot_arrive_as_extra_evidence(self) -> None:
+        """The boundary `Assessment.__post_init__` enforces, from the new door.
+
+        A `Judgement` once serialised into the `measured` array while `judgement`
+        stayed null, because `strongest`'s scan short-circuited past it. The
+        caller-supplied channel is a second way in and must be refused the same
+        way — otherwise 'the phone says' and 'I think' become one list.
+        """
+        judgement = Judgement("agent", Verdict.BLOCK, "it looks addictive")
+        with self.assertRaises(TypeError):
+            assess_gap("feed/x/", self.grouping_for(), (judgement,))
+
+    def test_the_document_carries_it_through(self) -> None:
+        index, hooks = self.curated_index(), blocking_hooks()
+        target = assess(index, hooks)[0][0].literal
+        built = document(index, hooks, extra_evidence={target: (self.device(),)})
+        found = next(c for c in built["candidates"] if c["literal"] == target)
+        self.assertIn("device_never_requested", [e["kind"] for e in found["measured"]])
+
+    def test_extra_evidence_changes_the_bytes_a_human_signs(self) -> None:
+        """Which is why it must join the operation key.
+
+        `assessment_record.operation_input` gained `observations_sha256` for this
+        reason: an input that changes the document and not the key makes `record`
+        refuse about two derivations disagreeing and name the wrong cause.
+        """
+        index, hooks = self.curated_index(), blocking_hooks()
+        target = assess(index, hooks)[0][0].literal
+        self.assertNotEqual(
+            canonical_bytes(document(index, hooks)),
+            canonical_bytes(document(index, hooks,
+                                     extra_evidence={target: (self.device(),)})),
+        )
+
+    def test_a_weak_item_does_not_become_the_strongest(self) -> None:
+        """`strongest` reports a level and never a total, so adding a WEAK item
+        beside two STRONG ones must not move it. A composite of mostly-weak
+        signals reading as authority is the measured failure this guards."""
+        built = assess_gap("feed/x/", self.grouping_for(), (self.device(),))
+        self.assertEqual(Strength.STRONG, built.strongest)
+        self.assertEqual(3, len(built.measured))
