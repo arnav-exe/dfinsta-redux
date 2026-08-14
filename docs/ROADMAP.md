@@ -366,6 +366,37 @@ runtime because a MobileConfig flag picked the other implementation. What is mea
 **440's install did it and the others' did not**, and `ThreeVersionsTests` pins that wording so
 the stronger claim cannot creep back.
 
+## `PortRunWorkflow` is a harness, not a blocked orchestrator
+
+Its `phase-a-approval` gate is unanswerable — a circular dependency documented in six
+places: you need the `RunSpec` to compute the operation key that would give you the
+`RunSpec`. The feature gate escaped the same trap with a run-keyed authority row
+(`recorded_assessments_v1`), and the same move would work here.
+
+**It is not worth making.** The workflow ports nothing. Its three activities write
+placeholders — `admit` echoes `canonical_json(spec)`, `prepare` writes the literal
+string `prepared:<run>:<hash>`, `apply` writes `applied:<run>:<hash>:<hash>` — and
+`docs/ADK_PIPELINE_PLAN.md:247` says so by design: *"build one **synthetic**
+`PortRunWorkflow` … this phase contains no APK build, ADK agent, child workflow,
+signing, or device action."* Answering the gate would give an answerable gate on a
+workflow that produces a string.
+
+The cost is not small either. `workflow.py` is `PINNED`, byte-frozen, and its SHA-256 is
+asserted by `tests/test_phase_a_history_corpus.py`; two committed Histories replay against
+it; `test_history_corpus` requires any new workflow class to arrive with an open History, a
+closed one and a negative control. And three tests assert the gate is unanswerable and say
+that absence is the point.
+
+**What Temporal is actually for here is already met.** The reason this project uses it is
+durable multi-day *human gates*, and `FeatureAssessmentRunWorkflow` is registered,
+answerable and has been answered for real (`feat-441`). The mechanical steps are resumable
+in `tools/port.py`, and the expensive one — a device walk — cannot be retried without a
+human plugging a phone in.
+
+So the workflow stays as it is: replay-corpus ground truth and a durable-gate harness. What
+it is **not** is the port pipeline waiting to be unblocked, and this section exists because
+this roadmap implied otherwise.
+
 ## Open ends that are nobody's bug
 
 - **A recorded `block` on an endpoint cannot be retired.** With the reversal gate gone
