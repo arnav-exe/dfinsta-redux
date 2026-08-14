@@ -387,9 +387,10 @@ the stronger claim cannot creep back.
   gets — was answered by committing the redacted captures first, so the regeneration is
   reproducible by anyone.
 
-- **`IgFunctionalErrorEvent` can be absent for a block that happened.** `439-reverse-explore`
-  ran with `disable_explore` on, asked for `/discover/topical_explore` six times and reported
-  **no block at all**; `439-isolate-explore` reported one. So `/discover/topical_explore` is
-  `unclassifiable` rather than blocked, and every count taken from this signal needs its own
-  replication. `DESIGN_EXPLORATION_FIRST.md` previously described this instrument as good at
-  attribution on the strength of two endpoints.
+- ~~**`IgFunctionalErrorEvent` can be absent for a block that happened.**~~ Closed
+  2026-08-13 by not using it. It was true and it was worse than recorded: across six corpora
+  `disable_explore` refused `/discover/topical_explore` **8, 8, 14, 2, 7, 7, 15 and 15** times
+  while Instagram reported **0, 0, 0, 1, 1, 0, 0 and 0**. The guard now records its own
+  refusals and `/discover/topical_explore` reads `blocked` on five of the six corpora — the
+  sixth declines on a cold baseline, not on the signal. The count is still parsed and printed
+  beside ours, labelled; nothing derives from it.
