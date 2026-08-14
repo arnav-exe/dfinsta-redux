@@ -366,6 +366,22 @@ runtime because a MobileConfig flag picked the other implementation. What is mea
 **440's install did it and the others' did not**, and `ThreeVersionsTests` pins that wording so
 the stronger claim cannot creep back.
 
+## A port is one command, up to the judgement
+
+`tools/port.py --apk … --version … --run` runs the nine mechanical steps: index, watch,
+observing build, sign, install, two device walks, two recordings. It reports by default and
+writes nothing without `--run`; it is resumable from artefacts rather than a state file,
+because two walks are about a hundred minutes and a failure at step seven must not redo six;
+and it never reads, defaults or prints the signing secrets.
+
+It stops before the two steps that are judgement: ruling at the feature gate, and writing the
+`url_block_rules` entry afterwards. Neither is derivable — see the three refusals in
+`rulings.py`, one of whose supporting regularities has since inverted.
+
+Until 2026-08-14 that sequence existed only as a paragraph in
+`DESIGN_EXPLORATION_FIRST.md`, which is where `run_corpus.py` and `record_corpus.py` lived the
+day before, and the two device corpora they produced were reproducible by nobody.
+
 ## `PortRunWorkflow` is a harness, not a blocked orchestrator
 
 Its `phase-a-approval` gate is unanswerable — a circular dependency documented in six

@@ -115,6 +115,10 @@ until a process restart; Instagram's own caches keep serving the previous state.
 Added 2026-08-14, and it changes the shape of a port: **the phone is walked
 between finding the candidates and ruling on them.**
 
+**`tools/port.py` runs the mechanical half of this**, resumably and stopping before the
+judgement — it reports by default and executes with `--run`. The sequence below is what it
+does, and what to type if you would rather do it a step at a time.
+
 ```
 driver --stop-after index                     find the candidates
 tools/watch_candidates.py --index … --apply   put them on the watch list
