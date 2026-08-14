@@ -1991,3 +1991,71 @@ class BaselineRefusedSomethingTests(RootedTestCase):
     def test_the_control_a_clean_baseline_answers(self) -> None:
         self.write(*self.corpus({}))
         self.assertEqual(BLOCKED, self.verdicts()["/feed/timeline/"])
+
+
+class ThreeVersionsTests(unittest.TestCase):
+    """439, 440 and 441, each walked two ways, all under the guard's own signal.
+
+    Three versions is this project's own minimum for calling anything a trend, and
+    six corpora is the first time it has had one. What they agree on is the answer
+    a human acts on; what they do not is where the app itself differs.
+    """
+
+    CORPORA = tuple(
+        (version, walk)
+        for version in ("439", "440", "441")
+        for walk in ("one-pass-v1", "three-round-v2")
+    )
+
+    def verdicts(self, version: str, walk: str) -> dict[str, tuple[str, str | None]]:
+        grouped = classify(version, REPOSITORY, walk=walk)
+        self.assertEqual({}, dict(grouped.unreadable), f"{version} {walk}")
+        return {
+            item.endpoint: (item.verdict, item.toggle)
+            for item in grouped.classifications
+        }
+
+    def test_three_endpoints_are_blocked_by_the_same_toggle_everywhere(self) -> None:
+        """The stable core, across three versions and two protocols.
+
+        `/feed/timeline/` and `disable_feed` share a word; `/feed/reels_tray/` and
+        `disable_stories` share none, and neither attribution reads a name.
+        """
+        for version, walk in self.CORPORA:
+            with self.subTest(version=version, walk=walk):
+                found = self.verdicts(version, walk)
+                self.assertEqual(("blocked", "disable_feed"), found["/feed/timeline/"])
+                self.assertEqual(
+                    ("blocked", "disable_stories"), found["/feed/reels_tray/"]
+                )
+                self.assertEqual(
+                    ("erased", "disable_reels"), found["/clips/discover/stream/"]
+                )
+
+    def test_only_440_falls_back_to_the_plain_discover_endpoint(self) -> None:
+        """The one place the three versions genuinely disagree about behaviour.
+
+        `replaceReelsEndpoint` blanks `clips/discover/stream/` on all three — that
+        row is erased in all six corpora. Only 440, and only on the longer walk,
+        then asks for `clips/discover/` instead: 4 requests against a baseline of
+        7, all refused by the url_block rule. 439 and 441 request it 0 times under
+        `disable_reels` on **both** walks, so the long walk had every chance to
+        show the fallback on those versions and it is not there.
+
+        That matters for what may be claimed. "440 added a second route" is not
+        supported: a behaviour present in 440 and absent from the version either
+        side of it looks at least as much like server-side configuration, which
+        this project has already been caught by once — a statically perfect 430
+        settings hook was dead at runtime because a MobileConfig flag picked the
+        other implementation. What is measured is that 440's install did it and
+        the others' did not.
+        """
+        for version, walk in self.CORPORA:
+            with self.subTest(version=version, walk=walk):
+                found = self.verdicts(version, walk)["/clips/discover"]
+                expected = (
+                    ("blocked", "disable_reels")
+                    if (version, walk) == ("440", "three-round-v2")
+                    else ("erased", "disable_reels")
+                )
+                self.assertEqual(expected, found)

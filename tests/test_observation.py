@@ -2326,51 +2326,81 @@ class CommandLineTests(RootedTestCase):
 
 
 class CommittedCorpusTests(unittest.TestCase):
-    """The one row on record, and what it is allowed to be used for.
+    """441, measured properly at last, and the row that used to stand for it.
 
-    It says 52 requests across 4 of 16 watched paths, and it does **not** say
-    which blocks were active — it was recorded on 2026-08-08, before the build
-    reported itself. From the design note written the same week: it was walked
-    with the blocks on, which is the configuration in which `/feed/timeline/`
-    being blocked stops `/feed/injected_reels_media/` from ever being requested.
+    Until 2026-08-14 this version had exactly one session: 52 requests across 4 of
+    16 watched paths, recorded 2026-08-08, and it did **not** say which blocks were
+    active because it predates builds reporting themselves. It was walked with the
+    blocks on, which is the configuration in which `/feed/timeline/` being blocked
+    stops `/feed/injected_reels_media/` from ever being requested — so every zero
+    in it measured our own settings.
 
-    This test used to pin the twelve literals that session "never observed". That
-    list was a measurement of our own configuration, and it is no longer an
-    answer this module will give.
+    **It was withdrawn rather than repaired**, and it is the only withdrawal in
+    this project that lost something. The 439 and 440 rows retired the same day
+    were superseded by better measurements of the same thing and their captures
+    stay committed, so each is one `observation record` away from returning. This
+    row's captures never parsed under the current contract — they predate the
+    toggle directive entirely — so `redact_capture --verify` could not commit them
+    and nothing can bring it back. What it said is written into the roadmap, which
+    is the most that was available: `/feed/timeline/` 28, `/feed/reels_tray/` 20,
+    `/clips/discover` 2, `/discover/topical_explore` 2, under an unknown state.
+
+    What replaced it is 24 sessions over two walks from a build that reports its
+    own refusals.
     """
 
-    def test_the_committed_session_is_readable_and_is_not_evidence(self) -> None:
+    def test_the_corpus_is_two_walks_of_twelve_from_one_build(self) -> None:
         sessions = read("441", REPOSITORY)
-        self.assertTrue(sessions, "the committed session went missing")
-        # Non-vacuous — it really did see traffic — and still unusable, which is
-        # the whole point: vacuity was never the only way to be unreadable.
-        self.assertTrue(evidential(sessions), "every committed session is vacuous")
-        self.assertEqual((), stated(sessions))
-        seen = {k: v for s in sessions for k, v in s.counts.items()}
-        self.assertGreater(seen.get("/feed/timeline/", 0), 20)
+        self.assertEqual(24, len(sessions))
+        self.assertEqual(1, len({item.build_sha256 for item in sessions}))
+        self.assertEqual(
+            {"one-pass-v1": 12, "three-round-v2": 12},
+            {walk: sum(1 for s in sessions if s.walk == walk)
+             for walk in {s.walk for s in sessions}},
+        )
 
-    def test_no_toggle_scoped_question_is_answered_from_it(self) -> None:
-        """Including the two states somebody is most likely to try.
+    def test_every_session_states_its_configuration_and_its_refusals(self) -> None:
+        """Which is exactly what the withdrawn row could not do.
 
-        A refusal that only covered "all off" would let the same circular list
-        out under any other spelling of the experiment.
+        `stated` was empty for this version for six days. A session that cannot
+        name the blocks it ran under answers no question that depends on them, and
+        one that cannot report refusals answers nothing about what was blocked.
         """
-        for state in (ALL_OFF, ALL_ON, FEED_ON):
-            with self.subTest(state=state.text):
-                with self.assertRaises(ObservationError) as caught:
-                    never_observed("441", REPOSITORY, toggles=state)
-                self.assertIn("states which blocks were active", str(caught.exception))
-                with self.assertRaises(ObservationError):
-                    blocked_and_never_observed("441", REPOSITORY, toggles=state)
-        self.assertEqual((), states("441", REPOSITORY))
+        sessions = read("441", REPOSITORY)
+        self.assertEqual(len(sessions), len(stated(sessions)))
+        self.assertEqual(len(sessions), len(evidential(sessions)))
+        for item in sessions:
+            self.assertIsNotNone(item.refusals, item.session_id)
 
-    def test_the_report_says_what_is_wrong_with_it_rather_than_going_quiet(self) -> None:
+    def test_the_all_off_baseline_refused_nothing_and_measured_it(self) -> None:
+        """The control, and it has to be a measurement rather than a silence."""
+        baseline = [
+            item for item in read("441", REPOSITORY)
+            if item.toggles is not None and not item.toggles.blocking
+        ]
+        self.assertEqual(4, len(baseline), "two walks, forward and reverse each")
+        for item in baseline:
+            self.assertIsNotNone(item.refusals)
+            self.assertEqual({}, item.refusals.as_dict(), item.session_id)
+
+    def test_a_toggle_scoped_question_is_now_answerable(self) -> None:
+        """It refused under every spelling of the experiment for six days."""
+        state = ToggleState.parse(
+            "disable_adds=0 disable_explore=0 disable_feed=0 disable_reels=0 "
+            "disable_stories=0"
+        )
+        self.assertIn(state, states("441", REPOSITORY))
+        never = never_observed("441", REPOSITORY, toggles=state)
+        self.assertTrue(never, "something should be watched and never seen")
+        self.assertNotIn("/feed/timeline/", never, "the feed is requested")
+
+    def test_the_report_answers_rather_than_explaining_why_it_cannot(self) -> None:
         report = summary("441", REPOSITORY)
-        self.assertEqual([], report["states"])
-        self.assertEqual(1, report["evidential_session_count"])
-        self.assertEqual(0, report["stated_session_count"])
-        self.assertEqual(["441-long-multisurface"], report["unstated_session_ids"])
-        self.assertIn("states which blocks were active", report["unanswerable_reason"])
+        self.assertEqual("", report["unanswerable_reason"])
+        self.assertEqual(24, report["evidential_session_count"])
+        self.assertEqual(24, report["stated_session_count"])
+        self.assertEqual([], report["unstated_session_ids"])
+        self.assertTrue(report["states"])
 
     def test_reading_the_committed_row_does_not_rewrite_it(self) -> None:
         """`append` rewrites the whole file from `to_dict`, so a round trip that

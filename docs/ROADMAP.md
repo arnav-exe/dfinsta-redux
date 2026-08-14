@@ -66,10 +66,15 @@ decisions are made cost 12% of the source and none of the hard-won knowledge.
       lists what is on record and `observation report` answers each separately. The one
       committed 441 session predates the field: it stays readable, is named in every
       report, and answers nothing.
-- [ ] **Re-take the 441 exploration session.** The committed row cannot say what was
-      active, so every zero in it — including the twelve literals it used to be quoted
-      for — is unusable. Nothing can be back-filled: that would be inventing the
-      measurement from memory.
+- [x] **441 measured 2026-08-14** — 24 sessions, both walks, build `667894e15984`, 7 of 7
+      hooks resolved mechanically. The old row was **withdrawn, and it is the one withdrawal
+      this project cannot undo**: unlike the 439 and 440 rows retired the same day, whose
+      captures stay committed and are one `observation record` from returning, its captures
+      predate the toggle directive and do not parse, so `redact_capture --verify` could not
+      commit them. It answered nothing — no toggle state, so every number belonged to a
+      configuration nobody can name — and what it said is recorded here so it is not simply
+      gone: `/feed/timeline/` 28, `/feed/reels_tray/` 20, `/clips/discover` 2,
+      `/discover/topical_explore` 2, recorded 2026-08-08T18:05Z.
 - [x] **The exploration protocol runs end to end on 439.** Twelve sessions over six
       toggle states, every state measured twice — once forward, once back-to-front — and
       `grouping` derives from them: `/feed/timeline/` BLOCKED by `disable_feed`,
@@ -290,6 +295,49 @@ convenience.
       across builds at all, so leaving both made the version unanswerable, and the newer
       build measures everything the older did. **Their captures stay in `manifest/captures/`**,
       so every withdrawn row is one `observation record` away from returning.
+
+## Three versions, six corpora
+
+Measured 2026-08-13/14 with builds that record their own refusals. **Every arm readable in
+all six**, which had never been true of any corpus before — an arm used to go unreadable
+whenever Instagram's two sessions disagreed about a block count.
+
+| endpoint | 439 1p | 439 3r | 440 1p | 440 3r | 441 1p | 441 3r |
+|---|---|---|---|---|---|---|
+| `/feed/timeline/` | blocked feed | blocked feed | blocked feed | blocked feed | blocked feed | blocked feed |
+| `/feed/reels_tray/` | blocked stories | blocked stories | blocked stories | blocked stories | blocked stories | blocked stories |
+| `/clips/discover/stream/` | erased reels | erased reels | erased reels | erased reels | erased reels | erased reels |
+| `/discover/topical_explore` | blocked explore | blocked explore | blocked explore | blocked explore | unclassifiable | blocked explore |
+| `/clips/discover` | erased reels | erased reels | erased reels | **blocked reels** | erased reels | erased reels |
+| `/feed/reels_media_stream/` | unclassifiable | unclassifiable | blocked reels | blocked reels | unclassifiable | unclassifiable |
+
+**Three endpoints carry the same toggle in all six.** Nothing reaching that reads a name:
+`/feed/reels_tray/` and `disable_stories` share no words.
+
+**The explore under-reporting is a trend now, not a coincidence.** Across the six corpora
+`disable_explore` recorded refusing `/discover/topical_explore` **8, 8, 14, 2, 7, 7, 15 and
+15** times, and Instagram reported **0, 0, 0, 1, 1, 0, 0 and 0**. In the same captures
+`/feed/timeline/` reported 16/16, 17/17, 18/18, 19/19 — exactly. Feed agreeing is what makes
+those zeroes a measurement rather than an assertion.
+
+**Two cells are unclassifiable for a stated reason, and neither is the derivation wobbling.**
+441's one-pass explore has a baseline of **0 and 7**: the first session of the corpus ran on a
+freshly upgraded app and Explore had not loaded, so a zero under an arm cannot be told from a
+zero the baseline produces on its own. The rule was not loosened to make it classify — the
+three-round walk supplies a proper baseline and it lands. And `/feed/reels_media_stream/` has
+no 439 or 441 baseline at all, being requested 0 times with every toggle off.
+
+**Only 440 falls back to `clips/discover/`, and the honest claim is narrower than it looks.**
+`replaceReelsEndpoint` blanks `clips/discover/stream/` on all three versions — that row is
+erased in all six corpora. Only 440, and only on the longer walk, then requests
+`clips/discover/` instead: 4 against a baseline of 7, all refused by the url_block rule. 439
+and 441 request it 0 times under `disable_reels` on **both** walks, so the long walk had every
+chance on the versions either side. A behaviour present in 440 and absent from both its
+neighbours looks at least as much like server-side configuration as app code — this project
+has been caught by that once already, when a statically perfect 430 settings hook was dead at
+runtime because a MobileConfig flag picked the other implementation. What is measured is that
+**440's install did it and the others' did not**, and `ThreeVersionsTests` pins that wording so
+the stronger claim cannot creep back.
 
 ## Open ends that are nobody's bug
 
