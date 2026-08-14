@@ -74,10 +74,16 @@ the *verifier* that refuses, not this module.
 The guard block is ten instructions and looks generable. Three measured reasons
 it is emitted for review instead:
 
-* **The match method is not derivable.** Every literal ending `/` uses
-  `endsWith` and every one that does not uses `contains` — 13 of 13 across both
-  source trees — but that is a record of a per-endpoint judgement about whether
-  the live request path carries a suffix, not a rule. Guess `endsWith` wrongly
+* **The match method is not derivable.** When this was written, every literal
+  ending `/` used `endsWith` and every one that did not used `contains` — 13 of
+  13 across both source trees — but that is a record of a per-endpoint judgement
+  about whether the live request path carries a suffix, not a rule. **As of
+  2026-08-14 five of eleven break it**, all the same way: `/feed/timeline_stream/`,
+  `/feed/injected_reels_media/`, `/feed/reels_media/`, `/feed/reels_media_stream/`
+  and `/feed/text_post_app_timeline/` end in `/` and are `contains`. A generator
+  built on the old regularity would today render five of eleven rules into silent
+  no-ops. It did not merely fail to generalise — it inverted, while the note
+  recording it still said 13 of 13. Guess `endsWith` wrongly
   and the rule never fires: the patch assembles, static verification passes, and
   the toggle silently does nothing.
 * **The preference key is not derivable either**, and for the candidates
@@ -141,8 +147,16 @@ DEFAULT_STORE_PATH = Path("manifest/rulings.jsonl")
 #: Verdicts that mean the endpoint should stop reaching the network. Both, not
 #: just `block`: the project's feature policy makes `offer_toggle` the default
 #: shape for anything judged addictive — a switch rather than a silent removal —
-#: so the endpoint is guarded either way and the difference is whether the
-#: preference defaults on.
+#: so the endpoint is guarded either way.
+#:
+#: This once said the difference was "whether the preference defaults on".
+#: **There is nowhere for that to be true**: `getBoolTrueEz` is a single
+#: hardcoded `getBoolean(key, true)` for every key, and no per-key default exists
+#: anywhere in the shipped tree. A key with no settings row is not off by
+#: default — it is blocked permanently, with no switch to change it.
+#: `dfinsta_pipeline.settings_ui` refuses a build in that state; until
+#: 2026-08-14 nothing did. What separates the two verdicts today is nothing:
+#: both append the endpoint to `semantic_deps` and a human writes the rule.
 BLOCKING_VERDICTS = frozenset({"block", "offer_toggle"})
 
 #: Verdicts that stop a candidate being surfaced again. `defer` is deliberately

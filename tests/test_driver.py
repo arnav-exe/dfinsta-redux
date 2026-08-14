@@ -67,6 +67,12 @@ import threading
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+
+#: The shipped settings dialog. The build stage refuses a custom-code tree
+#: whose dialog does not offer every toggle the guard reads, so the fixture
+#: below uses the real one rather than a one-line stub.
+_REPOSITORY = Path(__file__).resolve().parent.parent
+SETTINGS_WRAPPER = Path("newCode") / "com" / "dfinstagram" / "SettingsWrapper.smali"
 from typing import Any, Mapping, Sequence
 
 from dfinsta_pipeline import driver
@@ -368,8 +374,18 @@ class DriverCase(unittest.TestCase):
         (classes / "startapp.smali").write_text(
             ".class public Lcom/dfinstagram/startapp;\n", encoding="utf-8"
         )
+        # The **real** settings dialog, not a one-line stub. The build stage
+        # refuses a tree whose dialog does not offer every toggle
+        # `throwIfBlocked` reads, and it is right to: `getBoolTrueEz` is
+        # `getBoolean(key, true)` for every key, so a key with no row is an
+        # endpoint blocked with no switch to turn it off. A stub here would make
+        # these tests exercise a tree that could never ship.
+        shipped = _REPOSITORY / "dfinsta_source_439" / SETTINGS_WRAPPER
         (classes / "SettingsWrapper.smali").write_text(
-            ".class public Lcom/dfinstagram/SettingsWrapper;\n", encoding="utf-8"
+            shipped.read_text(encoding="utf-8")
+            if shipped.is_file()
+            else ".class public Lcom/dfinstagram/SettingsWrapper;\n",
+            encoding="utf-8",
         )
 
     def _record_command(self, command: Sequence[Any], label: str) -> None:

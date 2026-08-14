@@ -1215,6 +1215,21 @@ def _run_stages(
             f"throwIfBlocked, so not required of this build: {', '.join(unenforced)}",
             flush=True,
         )
+    # Every toggle `throwIfBlocked` reads must have a settings row that both shows
+    # it and writes it. This is a **refusal**, not a report, because the failure it
+    # catches cannot be recovered from by the user: `getBoolTrueEz` is
+    # `getBoolean(key, true)` for every key — there is no per-key default — so a
+    # key the dialog has never heard of leaves its endpoint blocked with no switch
+    # to turn it off. The build would assemble, verify and ship.
+    from .settings_ui import SettingsError, check as check_settings  # noqa: PLC0415
+
+    try:
+        rows = check_settings(manifest_path, custom_code)
+    except SettingsError as error:
+        raise DriverError(f"the settings dialog does not match the guard: {error}") from error
+    print(f"[build] {len(rows.keys)} toggle(s), each with a row that shows and writes it",
+          flush=True)
+
     artifacts["custom_tree"] = custom_tree
     artifacts["replace_dex"] = ",".join(replace_dex)
     artifacts["host_hooks"] = str(paths.host_hooks)
