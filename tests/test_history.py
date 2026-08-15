@@ -755,7 +755,7 @@ class BaselineFloorTests(HistoryTestCase):
         self.assertIn("340", versions)
         self.assertIn("430", versions)
         self.assertEqual(
-            [point.version for point in series(REPO)], ["439", "440", "441"]
+            [point.version for point in series(REPO)], ["439", "440", "441", "442"]
         )
 
     def test_the_default_is_the_constant_and_the_constant_is_439(self):
@@ -816,7 +816,7 @@ class ReleaseOrderTests(HistoryTestCase):
         Recorded so the reach of the sort defect is unambiguous: today's data is
         correct, and it is correct by luck.
         """
-        self.assertEqual([p.version for p in series(REPO)], ["439", "440", "441"])
+        self.assertEqual([p.version for p in series(REPO)], ["439", "440", "441", "442"])
 
     def test_a_version_past_999_is_in_the_series_because_the_floor_compares_numbers(self):
         """`int(v) >= int(baseline)`, not `v >= baseline`.
@@ -1068,7 +1068,9 @@ class CommittedDataTests(unittest.TestCase):
 
     def test_the_series_is_exactly_439_440_441(self):
         """Three points, in release order, floor included, nothing before it."""
-        self.assertEqual([point.version for point in self.points], ["439", "440", "441"])
+        self.assertEqual(
+            [point.version for point in self.points], ["439", "440", "441", "442"]
+        )
 
     def test_series_of_a_dot_is_the_same_as_series_of_the_repository(self):
         """The documented invocation. `python -m dfinsta_pipeline.history` uses `"."`.
@@ -1080,7 +1082,7 @@ class CommittedDataTests(unittest.TestCase):
             from_cwd = series(".")
 
         self.assertEqual(
-            [point.version for point in from_cwd], ["439", "440", "441"]
+            [point.version for point in from_cwd], ["439", "440", "441", "442"]
         )
 
     def test_hooks_runtime_passed_is_two_four_four(self):
@@ -1089,11 +1091,17 @@ class CommittedDataTests(unittest.TestCase):
         Counting claims instead of hooks reads `2, 13, 6` from the same files and
         makes 440 look like the best port of the three.
         """
+        # 442 has NO runtime record at all — its probes have not been replayed —
+        # which is `None`, not zero. A zero would say the probes ran and none
+        # passed, and the table prints those two as `0` and `—` for the same
+        # reason.
         self.assertEqual(
-            [point.runtime["passed"] for point in self.points], [2, 4, 4]
+            [p.runtime["passed"] if p.runtime else None for p in self.points],
+            [2, 4, 4, None],
         )
         self.assertEqual(
-            [point.runtime["no_pass"] for point in self.points], [5, 3, 3]
+            [p.runtime["no_pass"] if p.runtime else None for p in self.points],
+            [5, 3, 3, None],
         )
 
     def test_the_claim_counts_are_seven_twenty_three_and_nine(self):
@@ -1103,7 +1111,10 @@ class CommittedDataTests(unittest.TestCase):
         positive control for the test above: if the three versions all held one
         claim per hook, `2, 4, 4` would be what a claim-counter printed too.
         """
-        self.assertEqual([point.runtime["claims"] for point in self.points], [7, 23, 9])
+        self.assertEqual(
+            [p.runtime["claims"] if p.runtime else None for p in self.points],
+            [7, 23, 9, None],
+        )
 
     def test_agent_invocations_are_two_zero_zero(self):
         """The central falsifiable claim of the project, read off the arc.
@@ -1113,9 +1124,9 @@ class CommittedDataTests(unittest.TestCase):
         twice.
         """
         self.assertEqual(
-            [point.agent_invocations for point in self.points], [2, 0, 0]
+            [point.agent_invocations for point in self.points], [2, 0, 0, 0]
         )
-        self.assertEqual([point.hooks_costed for point in self.points], [7, 7, 7])
+        self.assertEqual([point.hooks_costed for point in self.points], [7, 7, 7, 7])
 
     def test_439_recorded_no_identity_claim_for_any_hook(self):
         """The recorded fact that bounded the first differential to 2 of 7.
@@ -1163,10 +1174,14 @@ class CommittedDataTests(unittest.TestCase):
             point.selectivity["replace_reels_discover_endpoint"] for point in self.points
         ]
 
-        self.assertEqual(margins, ["5 -> 1", "7 -> 1", "4 -> 1"])
+        # 442 reads `4 -> 0`: the literal search found four candidate classes and
+        # NONE of them matched, because 442 pooled the literal out of its host. The
+        # host came from the `by_anchor` fingerprint instead. A margin of zero hits
+        # is the shape of that, and it is a fact about the build, not a failure.
+        self.assertEqual(margins, ["5 -> 1", "7 -> 1", "4 -> 1", "4 -> 0"])
         self.assertEqual(
             [point.selectivity["install_settings_long_click"] for point in self.points],
-            ["10 -> 1", "10 -> 1", "10 -> 1"],
+            ["10 -> 1", "10 -> 1", "10 -> 1", "11 -> 1"],
         )
 
     def test_the_rendered_table_carries_the_same_numbers_as_the_objects(self):
@@ -1178,12 +1193,12 @@ class CommittedDataTests(unittest.TestCase):
         """
         text = render(self.points)
 
-        self.assertEqual(row_cells(text, "agent invocations"), ["2", "0", "0"])
-        self.assertEqual(row_cells(text, "hooks costed"), ["7", "7", "7"])
-        self.assertEqual(row_cells(text, "hooks runtime-passed"), ["2", "4", "4"])
-        self.assertEqual(row_cells(text, "hooks without a pass"), ["5", "3", "3"])
-        self.assertEqual(row_cells(text, "  (claims recorded)"), ["7", "23", "9"])
-        self.assertEqual(row_cells(text, "differential passed"), ["—", "2", "4"])
+        self.assertEqual(row_cells(text, "agent invocations"), ["2", "0", "0", "0"])
+        self.assertEqual(row_cells(text, "hooks costed"), ["7", "7", "7", "7"])
+        self.assertEqual(row_cells(text, "hooks runtime-passed"), ["2", "4", "4", "—"])
+        self.assertEqual(row_cells(text, "hooks without a pass"), ["5", "3", "3", "—"])
+        self.assertEqual(row_cells(text, "  (claims recorded)"), ["7", "23", "9", "—"])
+        self.assertEqual(row_cells(text, "differential passed"), ["—", "2", "4", "—"])
 
     def test_the_real_history_is_three_points_and_says_so(self):
         """Three, which is below the threshold, which is why the guard is visible."""

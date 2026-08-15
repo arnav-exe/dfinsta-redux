@@ -577,18 +577,35 @@ class RealLedgerTests(unittest.TestCase):
         shutil.copy2(REAL_LEDGER, self.copy)
         self.ledger = open_ledger(self.copy)
 
-    def test_the_ledger_holds_the_three_ports_this_verdict_was_added_for(self):
-        """439 -> 2, 440 -> 0, 441 -> 0, one run each for the two that matter."""
-        self.assertEqual(self.ledger.versions, ("439", "440", "441"))
+    def test_the_ledger_holds_the_ports_this_verdict_was_added_for(self):
+        """439 -> 2, 440 -> 0, 441 -> 0, 442 -> 0, one run each for the later three."""
+        self.assertEqual(self.ledger.versions, ("439", "440", "441", "442"))
         latest = {
             version: self.ledger.latest_run(version) for version in self.ledger.versions
         }
         self.assertEqual(
             {version: run.agent_invocations for version, run in latest.items()},
-            {"439": 2, "440": 0, "441": 0},
+            {"439": 2, "440": 0, "441": 0, "442": 0},
         )
         self.assertEqual({version: len(run.costs) for version, run in latest.items()},
-                         {"439": 7, "440": 7, "441": 7})
+                         {"439": 7, "440": 7, "441": 7, "442": 7})
+
+    def test_442_is_at_floor_and_that_is_the_reading_to_distrust(self):
+        """The sharpest case for this whole verdict, and it is real data.
+
+        442 cost no agent invocations, so it reads exactly like 441 — and it is
+        the one port that could not be done with the pipeline as it stood. It had
+        pooled a literal out of its host class, the anchor stopped matching, and a
+        person had to design a second anchor form before any of these seven hooks
+        resolved. Nothing in the ledger can say that. `at the floor` is a true
+        statement about what the pipeline spent and says nothing about what the
+        port cost.
+        """
+        report = cost_report(self.ledger, "442")
+        self.assertEqual(report["verdict"], VERDICT_AT_FLOOR)
+        self.assertEqual(report["now"]["agent_invocations"], 0)
+        self.assertEqual(report["previous_version"], "441")
+        self.assertNotIn("not learning", text_of(report))
 
     def test_441_is_at_floor(self):
         """The port that produced `FLAT` and "not learning" while needing no agent."""
