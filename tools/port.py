@@ -3,18 +3,20 @@
     tools/port.py --apk apks/instagram-442-….apk --version 442        # report
     tools/port.py --apk … --version 442 --run                          # do it
 
-Eleven steps stand between a new Instagram release and a shipped DFInsta build.
-Two of them are judgement and the other nine are typing, and until now the nine
-lived only in a paragraph of `docs/DESIGN_EXPLORATION_FIRST.md` — which is where
-`run_corpus.py` and `record_corpus.py` lived until the day before this was
-written, and the measurement they drove was reproducible by nobody.
+Fourteen steps stand between a new Instagram release and a shipped DFInsta build.
+Nine of them are typing this tool runs, and until now they lived only in a
+paragraph of `docs/DESIGN_EXPLORATION_FIRST.md` — which is where `run_corpus.py`
+and `record_corpus.py` lived until the day before this was written, and the
+measurement they drove was reproducible by nobody.
 
-**It stops before the judgement, deliberately.** The last thing it does is raise
-the feature gate. Ruling on the candidates is yours, and so is writing the
-`url_block_rules` entry afterwards: `rulings` refuses to guess a match kind or a
-preference key, and the regularity that once made the match kind look derivable
-has since inverted — five of eleven literals now break it, so a generator built
-on it would render five rules into silent no-ops.
+**It stops before the judgement, deliberately.** The last thing it does is record
+the second device corpus; the five it then prints are yours. Three of those five
+are typing too, but they need a run id, an actor and an owner token, and a tool
+that invented those would be signing a document on somebody's behalf. The other
+two are judgement: ruling on the candidates, and writing the `url_block_rules`
+entry afterwards — `rulings` refuses to guess a match kind or a preference key,
+and the regularity that once made the match kind look derivable has since
+inverted, so a generator built on it would render five rules into silent no-ops.
 
 ===============================================================================
   RESUMABLE, BECAUSE ONE STEP TAKES AN HOUR AND A HALF
@@ -51,6 +53,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -76,6 +79,11 @@ class Step:
     needs_device: bool = False
     #: Minutes, roughly, so an operator knows what they are starting.
     minutes: int = 1
+    #: What a *failed* attempt at this step leaves behind. The driver and the
+    #: builder both refuse to overwrite their own outputs — deliberately, and
+    #: `build.py` says why — so a step that died half-way cannot simply be run
+    #: again, which is the one thing a resumable runbook must allow.
+    stale: Callable[["Port"], list[Path]] = field(default=lambda port: [])
     env: Callable[["Port"], dict] = field(default=lambda port: {})
 
 
@@ -99,6 +107,15 @@ class Port:
         resumable tool exists to avoid.
         """
         return self.reuse_index or (self.out / "index")
+
+    @property
+    def decode(self) -> Path:
+        """Where the decoded tree is — produced by `index`, read by every step after.
+
+        `--reuse-decode` points at an earlier run's, exactly as `--reuse-index`
+        does.
+        """
+        return self.reuse_decode or (self.out / "analysis-decode")
 
     @property
     def unsigned(self) -> Path:
@@ -140,10 +157,15 @@ def _driver(port: Port, *extra: str) -> list[str]:
         "--out", str(port.out),
         "--framework-apk", str(REPOSITORY / "work" / "430-port" / "framework-res-api36.apk"),
     ]
-    if port.reuse_decode:
-        command += ["--reuse-decode", str(port.reuse_decode)]
-    if port.reuse_index:
-        command += ["--reuse-index", str(port.reuse_index)]
+    # Every driver step after `index` reads the decode that `index` produced, and
+    # must say so: the driver extracts unless told to reuse, and refuses to
+    # extract over an occupied directory. Without this the second invocation of
+    # the run — `observe-build` — died on the first version this tool was ever
+    # run against, and the first three steps could never run in sequence.
+    if port.decode.is_dir():
+        command += ["--reuse-decode", str(port.decode)]
+    if port.index_dir.is_dir():
+        command += ["--reuse-index", str(port.index_dir)]
     return command + list(extra)
 
 
@@ -166,6 +188,21 @@ def _sign(port: Port) -> list[str]:
 
 def _adb() -> list[str]:
     return [str(Path.home() / "Android" / "Sdk" / "platform-tools" / "adb")]
+
+
+def _build_leavings(port: Port) -> list[Path]:
+    """What a failed build left in the run directory.
+
+    Stated as everything *except* the three things earlier steps produced,
+    rather than as a list of the build's outputs: the builder refuses to
+    overwrite seven paths today and the driver three more, and a list here
+    would be a fourth place to keep in step with them. The decode, the index
+    and the framework are the expensive ones and are never touched.
+    """
+    keep = {port.decode, port.index_dir, port.out / "framework"}
+    if not port.out.is_dir():
+        return []
+    return sorted(path for path in port.out.iterdir() if path not in keep)
 
 
 STEPS: tuple[Step, ...] = (
@@ -193,6 +230,7 @@ STEPS: tuple[Step, ...] = (
         lambda port: _driver(port, "--observe", "--stop-after", "build"),
         lambda port: port.unsigned.is_file(),
         minutes=15,
+        stale=_build_leavings,
     ),
     Step(
         "sign",
@@ -296,6 +334,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.apk.is_file():
         print(f"refusing: {args.apk} is not a file", file=sys.stderr)
         return 2
+    if args.reuse_decode is not None and not args.reuse_decode.is_dir():
+        # Carrying on would extract into the default location instead, so the
+        # run would succeed while measuring a decode of nobody's choosing.
+        print(f"refusing: --reuse-decode {args.reuse_decode} is not a directory",
+              file=sys.stderr)
+        return 2
     port = Port(
         apk=args.apk,
         version=args.version,
@@ -333,6 +377,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"refusing: {missing[0]} is not set. This tool never reads, defaults or "
                   "prints the signing secrets; export them and re-run", file=sys.stderr)
             return 2
+        for path in step.stale(port):
+            # Announced, because removing a build tree silently is how a tool
+            # loses the trust that lets it be run unattended.
+            print(f"           removing {path}, left by an attempt that did not finish")
+            shutil.rmtree(path) if path.is_dir() else path.unlink()
         command = step.command(port)
         print(f"           $ {' '.join(command)}", flush=True)
         result = subprocess.run(command, cwd=REPOSITORY, env={**os.environ, **step.env(port)})
