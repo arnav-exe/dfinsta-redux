@@ -9,8 +9,9 @@ section 6, whose "exact continuation point" is one of them.
 
 1. **The replay chain IS registered.** Nine statements here say it is deliberately not
    (`:34`, `:49`, `:59`, `:399`, `:404-415`, `:553`, `:596-600`). Registration landed 2026-07-31,
-   and there are now three registered workflows — `PortRunWorkflow`, `ReplayRunWorkflow`,
-   `FeatureAssessmentRunWorkflow` — with 340 and 430 both completed
+   and there are now two registered workflows — `ReplayRunWorkflow` and
+   `FeatureAssessmentRunWorkflow` (`PortRunWorkflow` was registered here too until it was
+   deleted on 2026-08-15: it ported nothing) — with 340 and 430 both completed
    through `ReplayRunWorkflow` against a live server on 2026-08-04. **An agent following the
    continuation point in section 6 would redo finished work.**
 2. **`docs/FINDINGS.md` and `docs/adk_pipeline_design.md` are tracked**, not untracked
@@ -69,7 +70,6 @@ Major pipeline stages are: admit immutable inputs and capabilities; install fram
 | Path | Responsibility | Authority / important symbols |
 |---|---|---|
 | `src/dfinsta_pipeline/contracts.py` | Phase A canonical artifacts, gates, run contracts | `canonical_json`, `canonical_sha256`, `RunSpec`, `GateDecision` |
-| `src/dfinsta_pipeline/workflow.py` | Currently registered Phase A Workflow | `PortRunWorkflow`; only admit/prepare/decision/apply is orchestrated |
 | `src/dfinsta_pipeline/worker.py` | Worker entry point and registered Activities | `run_worker`; currently excludes all replay checkpoint Activities |
 | `src/dfinsta_pipeline/executor.py` | Admitted subprocess execution with exact argv/environment/mutation policy | `execute`; no shell, bounded direct-child cleanup, not an OS sandbox |
 | `src/dfinsta_pipeline/store.py` | Immutable filesystem content-addressed store | no-clobber publication and strict blob reads |

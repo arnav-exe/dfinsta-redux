@@ -109,13 +109,6 @@ from tests.history_search import history_search_surface
 # control cannot be constructed at all otherwise. Verified by mutation.
 
 
-@temporal_workflow.defn(name="PortRunWorkflow", versioning_behavior=VersioningBehavior.PINNED)
-class IncompatiblePortRunWorkflow:
-    @temporal_workflow.run
-    async def run(self, spec: RunSpec) -> str:
-        return spec.run_id
-
-
 @temporal_workflow.defn(name="ReplayRunWorkflow", versioning_behavior=VersioningBehavior.PINNED)
 class IncompatibleReplayRunWorkflow:
     @temporal_workflow.run
@@ -137,7 +130,6 @@ class IncompatibleFeatureAssessmentRunWorkflow:
 #: asserts these keys are exactly the registered names, so a fourth Workflow
 #: cannot arrive with a fixture and no control.
 CONTROLS = {
-    "PortRunWorkflow": IncompatiblePortRunWorkflow,
     "ReplayRunWorkflow": IncompatibleReplayRunWorkflow,
     "FeatureAssessmentRunWorkflow": IncompatibleFeatureAssessmentRunWorkflow,
 }

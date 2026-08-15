@@ -68,8 +68,11 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
         """
         registered = {cls.__name__ for cls in worker.REGISTERED_WORKFLOWS}
         self.assertEqual(
+            # `PortRunWorkflow` was here until 2026-08-15. The sentences this rule
+            # strikes were written when NOTHING was registered, so they are still
+            # false while these two are — which is what the rule needs. Deleting a
+            # workflow does not make "registration remains pending" true again.
             {
-                "PortRunWorkflow",
                 "ReplayRunWorkflow",
                 "FeatureAssessmentRunWorkflow",
             },

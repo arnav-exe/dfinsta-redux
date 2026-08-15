@@ -69,13 +69,9 @@ from temporalio.worker import Worker, WorkerDeploymentConfig  # noqa: E402
 
 from dfinsta_pipeline import activities, assessment_record  # noqa: E402
 from dfinsta_pipeline.activities import (  # noqa: E402
-    admit_activity,
     admit_feature_dispositions_activity,
-    apply_activity,
     configure_runtime,
-    prepare_activity,
     prepare_feature_gate_activity,
-    record_decision_activity,
     runtime,
 )
 from dfinsta_pipeline.contracts import GateDecision, canonical_json  # noqa: E402
@@ -89,12 +85,10 @@ from dfinsta_pipeline.feature_gate import (  # noqa: E402
 from dfinsta_pipeline.feature_workflow import FeatureAssessmentRunWorkflow  # noqa: E402
 from dfinsta_pipeline.replay_contracts import REPLAY_STAGE_ORDER  # noqa: E402
 from dfinsta_pipeline.replay_workflow import ReplayRunWorkflow  # noqa: E402
-from dfinsta_pipeline.workflow import PortRunWorkflow  # noqa: E402
 
 from tests.history_corpus import CAPTURE_IDENTITY, FIXTURES, histories_directory, leaks  # noqa: E402
 from tests.test_assessment import write_manifest  # noqa: E402
 from tests.test_assessment_record import write_fake_index  # noqa: E402
-from tests.test_phase_a_temporal import run_spec  # noqa: E402
 from tests.test_phase_b_replay_workflow import (  # noqa: E402
     ReplayStubs,
     replay_request,
@@ -251,36 +245,6 @@ def _decision(gate, *, decision_id: str, gate_id: str | None = None) -> GateDeci
     )
 
 
-# --------------------------------------------------------------------- Phase A
-
-
-async def capture_phase_a_open(environment: WorkflowEnvironment) -> str:
-    """`PortRunWorkflow` parked at the approval gate.
-
-    The state a worker restart has to survive, and the one Phase A had no fixture
-    for: the committed `phase_a_completed_v1.json` covers only a run that had
-    already ended.
-    """
-
-    spec = run_spec("corpus-phase-a-open", "1" * 64, gate_timeout_seconds=GATE_TIMEOUT_SECONDS)
-    task_queue = _task_queue("corpus-phase-a-open")
-    async with _worker(
-        environment.client,
-        task_queue,
-        [PortRunWorkflow],
-        [admit_activity, prepare_activity, record_decision_activity, apply_activity],
-    ):
-        handle = await environment.client.start_workflow(
-            PortRunWorkflow.run,
-            spec,
-            id=spec.run_id,
-            task_queue=task_queue,
-            versioning_override=PinnedVersioningOverride(CORPUS_DEPLOYMENT_VERSION),
-        )
-        await _wait_for_state(environment, handle, PortRunWorkflow.status, "awaiting-approval")
-        return await _history_json(handle)
-
-
 # ---------------------------------------------------------------------- replay
 
 
@@ -393,7 +357,6 @@ async def capture_all(root: Path) -> dict[str, str]:
     environment = await WorkflowEnvironment.start_time_skipping(identity=CAPTURE_IDENTITY)
     try:
         return {
-            "phase_a_open_at_approval_gate_v1.json": await capture_phase_a_open(environment),
             "replay_run_completed_v1.json": await _capture_replay(
                 environment, "corpus-replay-completed", approve=True
             ),

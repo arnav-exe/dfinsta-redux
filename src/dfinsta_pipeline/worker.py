@@ -11,16 +11,12 @@ from temporalio.common import VersioningBehavior, WorkerDeploymentVersion
 from temporalio.worker import Worker, WorkerDeploymentConfig
 
 from .activities import (
-    admit_activity,
     admit_feature_dispositions_activity,
     admit_replay_verification_grant_activity,
-    apply_activity,
     configure_runtime,
-    prepare_activity,
     prepare_feature_gate_activity,
     prepare_replay_plan_activity,
     prepare_replay_verification_gate_activity,
-    record_decision_activity,
     replay_apply_tree_stage_activity,
     replay_build_patched_apk_stage_activity,
     replay_decode_stage_activity,
@@ -30,7 +26,6 @@ from .activities import (
 )
 from .feature_workflow import FeatureAssessmentRunWorkflow
 from .replay_workflow import ReplayRunWorkflow
-from .workflow import PortRunWorkflow
 
 # Only stage wrappers are registered. The proven checkpoint Activities
 # (replay_*_checkpoint_activity) are deliberately absent: they take a full
@@ -39,10 +34,6 @@ from .workflow import PortRunWorkflow
 # History on every stage. The wrappers take a hash-pinned handle instead and
 # load the same authority from the ledger.
 REGISTERED_ACTIVITIES = (
-    admit_activity,
-    prepare_activity,
-    record_decision_activity,
-    apply_activity,
     prepare_replay_plan_activity,
     replay_install_frameworks_stage_activity,
     replay_decode_stage_activity,
@@ -57,7 +48,6 @@ REGISTERED_ACTIVITIES = (
 )
 
 REGISTERED_WORKFLOWS = (
-    PortRunWorkflow,
     ReplayRunWorkflow,
     FeatureAssessmentRunWorkflow,
 )

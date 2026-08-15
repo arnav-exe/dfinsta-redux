@@ -138,8 +138,10 @@ read-only pass *plus* a control write that moves all three, the pattern from
 ## E. What would make this gate unanswerable by `submission.py`
 
 The client gets exactly one input from the world: `published.run_id`
-(`submission.py:646-647`). `PortRunWorkflow`'s `phase-a-approval` is unanswerable
-because you need the spec to find the operation that would give you the spec.
+(`submission.py:646-647`). `PortRunWorkflow`'s `phase-a-approval` was unanswerable
+because you needed the spec to find the operation that would give you the spec.
+That workflow was deleted on 2026-08-15 and the trap is kept here as the worked
+example, because it is the shape to avoid rather than a thing to go and read.
 Conditions that would reproduce that trap:
 
 - **U1 — no run-id-keyed row.** `operation_events`/`operation_claims` have no

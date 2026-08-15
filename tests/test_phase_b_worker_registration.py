@@ -38,10 +38,12 @@ STAGE_WRAPPERS = (
 # when `FeatureAssessmentRunWorkflow` did — the gate had been complete and
 # unraisable until something could raise it.
 EXPECTED_REGISTERED = {
-    "admit_activity",
-    "prepare_activity",
-    "record_decision_activity",
-    "apply_activity",
+    # The four Phase A Activities — admit, prepare, record_decision, apply — sat
+    # here until 2026-08-15, when `PortRunWorkflow` was deleted. They existed to
+    # serve it and it ported nothing: `prepare_activity` wrote the string
+    # `prepared:<run_id>:<sha>` and its gate was unanswerable. The durable
+    # machinery they demonstrated is exercised for real by the replay chain and
+    # the feature gate, which is why deleting them costs no coverage.
     "prepare_replay_plan_activity",
     # Joined when the single-shot verification grant got an exit: a re-driven run
     # must read the answer its gate already has rather than ask a question that
@@ -90,7 +92,6 @@ class WorkerRegistrationTests(unittest.TestCase):
         self.assertEqual(
             names,
             {
-                "PortRunWorkflow",
                 "ReplayRunWorkflow",
                 "FeatureAssessmentRunWorkflow",
             },
@@ -168,12 +169,6 @@ class WorkerRegistrationTests(unittest.TestCase):
         )
         for forbidden in ("340", "430", ".frameworks", ".apk"):
             self.assertNotIn(forbidden, source)
-
-    def test_phase_a_workflow_is_not_referenced_by_the_replay_chain(self) -> None:
-        """Registration had to stay additive; PortRunWorkflow keeps its own file."""
-        source = (_repo_root() / "src/dfinsta_pipeline/workflow.py").read_text(encoding="utf-8")
-        for name in (*CHECKPOINT_ACTIVITIES, *STAGE_WRAPPERS, "ReplayRunWorkflow"):
-            self.assertNotIn(name, source)
 
 
 class WorkerRuntimeBindingTests(unittest.TestCase):

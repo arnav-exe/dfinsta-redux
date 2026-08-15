@@ -10,11 +10,20 @@ does that mechanically: discover what changed, re-map each hook onto the new
 obfuscated code, apply, build, sign, verify — leaving humans to decide *policy* at
 durable gates rather than to do the mechanical work.
 
-**Where it stands.** Instagram 441 ported with **zero agent invocations**: all
-seven hooks resolved deterministically, the build was signed and installed, and
-four of the seven are backed by complete post-build evidence. 440 did the same
-before it. The 103 GB of intermediate work is disposable; the 280 KB in
-`manifest/` is the project.
+**Where it stands.** Instagram 439, 440, 441 and 442 are ported, and 442 is the
+first that ran the whole sequence from one command — decode, re-map, build, sign,
+install, walk the phone, record. All seven hooks resolve deterministically on all
+four versions with **zero agent invocations**.
+
+That number is worth reading carefully. 442 also **broke** mechanical resolution:
+it moved a literal out of the class that builds the Reels request into a shared
+string table read by integer index, so the anchor pinning it stopped matching. The
+repair was a second *anchor form* keyed on a name Instagram does not obfuscate,
+and a person had to design it. The pipeline spent no agent invocations; the port
+was not free. See `docs/ROADMAP.md`.
+
+The 103 GB of intermediate work is disposable; the 280 KB in `manifest/` is the
+project.
 
 ## Prerequisites
 
@@ -43,9 +52,11 @@ hook needs after a build come from a device session, and **they cannot be
 recomputed later**. Instagram decides behaviour server-side, so re-measuring an
 old version today measures it against a current server.
 
-**Optional:** a Temporal dev server (`temporal server start-dev`) for the durable
-orchestration and the human decision gates. Every stage also runs directly through
-the driver with no server at all.
+**Optional:** a Temporal dev server (`temporal server start-dev`), needed only to
+raise and answer a **durable human gate** — ruling on which endpoints to block.
+That is all it carries: two registered workflows, `ReplayRunWorkflow` and
+`FeatureAssessmentRunWorkflow`. A port needs no server, and the 442 port ran
+without one.
 
 Full detail, including how to verify each item and what to copy when moving
 machines: **[`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md)**.
@@ -53,7 +64,7 @@ machines: **[`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md)**.
 ## Running it
 
 ```bash
-# the suite — 3134 tests, one expected skip
+# the suite — one expected skip, everything else must pass
 PYTHONPATH=src .venv/bin/python -W error -m unittest discover -s tests
 
 # what each port owed the last one; exit 3 if a hook was lost
@@ -62,11 +73,24 @@ PYTHONPATH=src .venv/bin/python -m dfinsta_pipeline.expectation
 # the version series, 439 forward
 PYTHONPATH=src .venv/bin/python -m dfinsta_pipeline.history
 
-# port a stock APK
+# port a new version — THE ENTRYPOINT. Nine mechanical steps: decode, index,
+# watch, build an observing APK, sign, install, two device walks, record. It is
+# resumable, and without --run it changes nothing and only reports where the port
+# stands. It stops before the judgement and prints what is left for a human.
+PYTHONPATH=src .venv/bin/python tools/port.py \
+    --apk apks/<stock>.apk --version <version>          # report
+PYTHONPATH=src .venv/bin/python tools/port.py \
+    --apk apks/<stock>.apk --version <version> --run    # do it
+
+# just a build, no device and no measurement
 PYTHONPATH=src .venv/bin/python -m dfinsta_pipeline.driver apks/<stock>.apk \
     --out work/<version>-port --framework-apk <path>/framework-res-api36.apk \
-    --version <version> --recorded-at <ISO8601>
+    --version <version> --recorded-at <ISO8601> --stop-after build
 ```
+
+The two steps that stay human by design: **ruling** on candidate endpoints at the
+gate, and **writing** the `url_block_rules` entry afterwards — the match kind and
+the preference key are both refused as underivable.
 
 ## Where to read next
 

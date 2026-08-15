@@ -1,7 +1,7 @@
 """The committed replay-History corpus: what is in it, and what may not be.
 
-`tests/test_phase_a_history_corpus.py` says why a corpus exists at all, and it is
-worth repeating because it is the whole point: a test that *generates* the
+`tests/test_history_corpus.py` says why a corpus exists at all, and it is worth
+repeating because it is the whole point: a test that *generates* the
 History it replays can only confirm that a Workflow agrees with itself. Every
 Workflow here is `versioning_behavior=PINNED`, so a change to a command sequence
 breaks replay of Histories that were already durably recorded — and nothing
@@ -83,16 +83,6 @@ class Fixture(NamedTuple):
 #: with the directory in both directions, so a file added without a row here (or
 #: a row without a file) fails rather than being quietly skipped.
 FIXTURES = (
-    Fixture(
-        "phase_a_completed_v1.json",
-        "run-history",
-        "aab03cb8104e5ef5351d26afb2ab03d4583650ce6088b08ca89fd3f2f8adcb40",
-    ),
-    Fixture(
-        "phase_a_open_at_approval_gate_v1.json",
-        "corpus-phase-a-open",
-        "f3c7bfef02c08efdfdcf25157d2e26389359163729e9680f03d48f4042fd8ce7",
-    ),
     Fixture(
         "replay_run_completed_v1.json",
         "corpus-replay-completed",

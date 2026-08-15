@@ -82,10 +82,13 @@ class HeartbeatWiringTests(unittest.TestCase):
                 visit(child, enclosing)
 
         visit(tree, None)
-        # `beat` is the loop-side task inside `_with_heartbeat`; `apply_activity`
-        # is Phase A's, which heartbeats from the loop of an async activity and is
-        # the working precedent this was written from.
-        self.assertEqual(callers, {"beat", "apply_activity"}, sorted(callers))
+        # `beat` is the loop-side task inside `_with_heartbeat`, and after
+        # `PortRunWorkflow` was deleted on 2026-08-15 it is the only caller.
+        # `apply_activity` used to be the other: Phase A's, which heartbeated from
+        # the loop of an async activity and was the working precedent this was
+        # written from. The rule it demonstrated is what this test holds, and the
+        # rule does not need the precedent to keep standing.
+        self.assertEqual(callers, {"beat"}, sorted(callers))
 
         # And nothing that a thread runs may call it. `to_thread` takes the
         # callable as its first argument; collect those names and check.

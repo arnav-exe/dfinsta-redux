@@ -868,7 +868,9 @@ REPLAY_VERIFICATION_GATE = GateKind(
 
 #: Registered gate kinds, in match order.
 #:
-#: `PortRunWorkflow`'s `phase-a-approval` is deliberately absent. Its subject is
+#: `PortRunWorkflow`'s `phase-a-approval` is deliberately absent. **That workflow
+#: was deleted on 2026-08-15 — it ported nothing — so do not go looking for it;
+#: the rule it illustrates is why this comment keeps its name.** Its subject was
 #: `canonical_sha256(spec)` plus two operation outputs, and the ledger indexes
 #: operations by content hash rather than by run, so a client holding only a run
 #: id cannot reach them. Registering it with a weaker check -- or with none --

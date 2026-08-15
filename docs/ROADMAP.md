@@ -382,36 +382,29 @@ Until 2026-08-14 that sequence existed only as a paragraph in
 `DESIGN_EXPLORATION_FIRST.md`, which is where `run_corpus.py` and `record_corpus.py` lived the
 day before, and the two device corpora they produced were reproducible by nobody.
 
-## `PortRunWorkflow` is a harness, not a blocked orchestrator
+## `PortRunWorkflow` was a harness, not a blocked orchestrator — deleted 2026-08-15
 
-Its `phase-a-approval` gate is unanswerable — a circular dependency documented in six
-places: you need the `RunSpec` to compute the operation key that would give you the
-`RunSpec`. The feature gate escaped the same trap with a run-keyed authority row
-(`recorded_assessments_v1`), and the same move would work here.
+It ported nothing. Its four activities wrote placeholders — `admit` echoed
+`canonical_json(spec)`, `prepare` wrote the literal string `prepared:<run>:<hash>`, `apply`
+wrote `applied:<run>:<hash>:<hash>` — and `docs/ADK_PIPELINE_PLAN.md:247` said so by design:
+*"build one **synthetic** `PortRunWorkflow` … this phase contains no APK build, ADK agent,
+child workflow, signing, or device action."* Its `phase-a-approval` gate was unanswerable
+through a circular dependency: you needed the `RunSpec` to compute the operation key that
+would give you the `RunSpec`. Answering it would have given an answerable gate on a workflow
+that produced a string.
 
-**It is not worth making.** The workflow ports nothing. Its three activities write
-placeholders — `admit` echoes `canonical_json(spec)`, `prepare` writes the literal
-string `prepared:<run>:<hash>`, `apply` writes `applied:<run>:<hash>:<hash>` — and
-`docs/ADK_PIPELINE_PLAN.md:247` says so by design: *"build one **synthetic**
-`PortRunWorkflow` … this phase contains no APK build, ADK agent, child workflow,
-signing, or device action."* Answering the gate would give an answerable gate on a
-workflow that produces a string.
+**What went with it:** its own module file (`workflow.py`, now deleted — do not go looking
+for it), the four Phase A activities, two committed Histories, their negative control, and
+the two test files that pinned them: about 1,750 lines. Nothing else imported it.
 
-The cost is not small either. `workflow.py` is `PINNED`, byte-frozen, and its SHA-256 is
-asserted by `tests/test_phase_a_history_corpus.py`; two committed Histories replay against
-it; `test_history_corpus` requires any new workflow class to arrive with an open History, a
-closed one and a negative control. And three tests assert the gate is unanswerable and say
-that absence is the point.
-
-**What Temporal is actually for here is already met.** The reason this project uses it is
-durable multi-day *human gates*, and `FeatureAssessmentRunWorkflow` is registered,
-answerable and has been answered for real (`feat-441`). The mechanical steps are resumable
-in `tools/port.py`, and the expensive one — a device walk — cannot be retried without a
+**What Temporal is for here is unaffected**, which is why deleting this cost no coverage.
+The reason this project uses Temporal is durable multi-day *human gates*, and
+`FeatureAssessmentRunWorkflow` is registered, answerable, and has been answered for real
+(`feat-441`). `ReplayRunWorkflow` keeps its own two Histories and its own control, so the
+PINNED-replay safety net that catches a non-deterministic edit still stands over both
+workflows that do work. The mechanical steps of a port are resumable in `tools/port.py`
+with no server at all, and the expensive one — a device walk — cannot be retried without a
 human plugging a phone in.
-
-So the workflow stays as it is: replay-corpus ground truth and a durable-gate harness. What
-it is **not** is the port pipeline waiting to be unblocked, and this section exists because
-this roadmap implied otherwise.
 
 ## Open ends that are nobody's bug
 
