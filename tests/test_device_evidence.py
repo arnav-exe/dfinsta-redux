@@ -189,7 +189,8 @@ class CommittedCorpusTests(unittest.TestCase):
         self.assertEqual(
             {("439", "one-pass-v1"), ("439", "three-round-v2"),
              ("440", "one-pass-v1"), ("440", "three-round-v2"),
-             ("441", "one-pass-v1"), ("441", "three-round-v2")},
+             ("441", "one-pass-v1"), ("441", "three-round-v2"),
+             ("442", "one-pass-v1"), ("442", "three-round-v2")},
             set(found),
         )
 
@@ -214,14 +215,14 @@ class CommittedCorpusTests(unittest.TestCase):
     def test_a_watched_literal_reports_every_corpus_that_watched_it(self) -> None:
         reading = reading_for("feed/timeline/", REPOSITORY, computed=self.computed)
         self.assertEqual(DEVICE_REQUESTED, reading.kind)
-        self.assertEqual(6, len(reading.watched_in))
-        self.assertEqual(("439", "440", "441"), reading.versions)
-        self.assertEqual(72, reading.sessions)
+        self.assertEqual(8, len(reading.watched_in))
+        self.assertEqual(("439", "440", "441", "442"), reading.versions)
+        self.assertEqual(96, reading.sessions)
         self.assertGreater(reading.seen, 100)
         blocked = {(v, verdict, toggle) for v, _, verdict, toggle in reading.verdicts}
         self.assertEqual(
             {("439", "blocked", "disable_feed"), ("440", "blocked", "disable_feed"),
-             ("441", "blocked", "disable_feed")},
+             ("441", "blocked", "disable_feed"), ("442", "blocked", "disable_feed")},
             blocked,
         )
 
@@ -238,17 +239,20 @@ class CommittedCorpusTests(unittest.TestCase):
                 reading = reading_for(blank, REPOSITORY, computed=self.computed)
                 self.assertEqual(DEVICE_UNWATCHED, reading.kind)
                 self.assertEqual(0, reading.sessions, "it must join no session")
-                self.assertEqual(6, len(reading.corpora),
-                                 "and there were six corpora it could have matched")
+                self.assertEqual(len(corpora(REPOSITORY)), len(reading.corpora),
+                                 "and it reports every corpus it could have matched")
 
     def test_the_api_v1_spelling_is_reachable_from_a_candidate_literal(self) -> None:
         """The watch list carries `/api/v1/clips/homecoming/`; a candidate carries
         `clips/homecoming/`. Slash variants alone never bridge that, so the gate
-        reported "no device run has looked for it" about a path watched in 72
-        sessions — and then refused to let it be blocked."""
+        reported "no device run has looked for it" about a path watched in every
+        session on record — and then refused to let it be blocked."""
         reading = reading_for("clips/homecoming/", REPOSITORY, computed=self.computed)
         self.assertEqual(DEVICE_NEVER_REQUESTED, reading.kind)
-        self.assertEqual(72, reading.sessions)
+        # Every session of every corpus, so the join is what is being tested and
+        # not the size of the store on the day it was written.
+        self.assertEqual(96, reading.sessions)
+        self.assertEqual(len(corpora(REPOSITORY)), len(reading.watched_in))
 
     def test_a_vacuous_session_is_not_a_device_looking(self) -> None:
         """A session that observed nothing is equally well explained by a build
@@ -267,7 +271,7 @@ class CommittedCorpusTests(unittest.TestCase):
                               computed=self.computed)
         self.assertEqual(DEVICE_UNWATCHED, reading.kind)
         self.assertEqual((), reading.watched_in)
-        self.assertEqual(6, len(reading.corpora),
+        self.assertEqual(len(corpora(REPOSITORY)), len(reading.corpora),
                          "it still reports how much was on record to look in")
 
     def test_one_pass_over_the_grid_answers_every_literal(self) -> None:
