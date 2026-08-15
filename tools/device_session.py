@@ -8,6 +8,7 @@ text, on the version actually installed, and a tab that cannot be found is a
 refusal rather than a tap into empty space.
 
 Usage:  device_session.py <toggle-name|none> <output.log> [walk]
+        device_session.py --warm
 """
 
 from __future__ import annotations
@@ -206,7 +207,37 @@ def set_toggles(on: set[str], nav: dict[str, tuple[int, int]]) -> dict[str, bool
     )
 
 
+def warm() -> int:
+    """Launch the app once and wait until the nav can be read. No session.
+
+    **Why this exists as a step of its own.** `adb install -r` is followed by
+    Android compiling the new build, so the first launch after an install is far
+    slower than any later one — slower than the ~38 seconds `tabs()` allows. On
+    442 the first walk refused 68 seconds after the install and the message read
+    exactly like the ids having been renamed, which is a thing that really
+    happened on 440. It cost a walk and half an hour.
+
+    It reads the nav with `tabs()` — the same function every session uses, not a
+    copy — so a warm-up that succeeds is a precondition the sessions have already
+    passed once. Nothing about the walk protocol changes: this runs *before* the
+    corpus, and a session still force-stops and relaunches for itself, so what a
+    session measures is what it measured before this existed.
+    """
+    sh("shell", "am", "force-stop", PKG)
+    time.sleep(3)
+    sh("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
+    time.sleep(16)
+    nav = tabs()
+    missing = [tab for tab in WALK if tab not in nav]
+    if missing:
+        raise SystemExit(f"refusing: nav is missing {missing}; found {sorted(nav)}")
+    print(f"  warm: nav reads {sorted(nav)}")
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--warm":
+        return warm()
     name, out = sys.argv[1], Path(sys.argv[2])
     walk = sys.argv[3] if len(sys.argv) > 3 else "three-round-v2"
     if walk not in WALKS:

@@ -397,8 +397,211 @@ class RefusalTests(unittest.TestCase):
         self.assertIn("unknown state", err)
 
 
-class ItStopsBeforeTheJudgementTests(unittest.TestCase):
-    """The last thing it does is raise the gate. Ruling is the human's."""
+class ShippingTests(unittest.TestCase):
+    """The last three steps: the build you would actually use, and getting it on.
+
+    Added 2026-08-15. Until then the runbook ended at the recorded corpus and the
+    shippable build was a command somebody typed by hand — so the tool that exists
+    to make a port one command stopped one step short of the thing the project is
+    for.
+    """
+
+    def setUp(self) -> None:
+        self.port_module = load()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.apk = self.root / "stock.apk"
+        self.apk.write_bytes(b"PK\x03\x04")
+        self.port = self.port_module.Port(
+            apk=self.apk, version="442",
+            out=self.root / "work" / "442-port",
+            captures=self.root / "captures",
+        )
+
+    def step(self, name: str):
+        return next(s for s in self.port_module.STEPS if s.name == name)
+
+    def test_the_shippable_build_gets_its_own_run_directory(self) -> None:
+        """Not the port's: the builder refuses to overwrite seven of its own
+        outputs and the observing build already wrote them there."""
+        self.assertNotEqual(self.port.out, self.port.ship_out)
+        command = self.step("ship-build").command(self.port)
+        self.assertIn(str(self.port.ship_out), command)
+        self.assertNotIn("--observe", command)
+
+    def test_the_shipped_build_reuses_the_decode_the_port_already_made(self) -> None:
+        (self.port.out / "analysis-decode").mkdir(parents=True)
+        (self.port.out / "index").mkdir(parents=True)
+        command = self.step("ship-build").command(self.port)
+        self.assertIn(str(self.port.out / "analysis-decode"), command)
+        self.assertIn(str(self.port.out / "index"), command)
+
+    def test_a_half_finished_ship_build_is_cleared_but_the_framework_is_kept(self) -> None:
+        self.port.ship_out.mkdir(parents=True)
+        for name in ("framework", "build-decode", "work-tree"):
+            (self.port.ship_out / name).mkdir()
+        leavings = set(self.step("ship-build").stale(self.port))
+        self.assertEqual(
+            {self.port.ship_out / "build-decode", self.port.ship_out / "work-tree"},
+            leavings,
+        )
+
+    def test_installed_is_false_when_it_cannot_tell(self) -> None:
+        """The safety property, and the reason this is not a version check.
+
+        Both builds report the same versionName, are signed by the same key, and
+        on 442 came out the same number of bytes. Answering "yes" for the
+        observing build would silently skip the step that replaces it, so every
+        way of not knowing must answer no.
+        """
+        checked = self.port_module._shipped_is_installed
+        # No signed APK at all.
+        self.assertFalse(checked(self.port))
+        # A signed APK with no release report to name its digest.
+        self.port.ship_out.mkdir(parents=True)
+        self.port.ship_signed.write_bytes(b"PK\x03\x04")
+        self.assertFalse(checked(self.port))
+        # A report that does not carry one.
+        report = self.port.ship_signed.with_suffix(".release.json")
+        report.write_text(json.dumps({"outputs": {}}), encoding="utf-8")
+        self.assertFalse(checked(self.port))
+        # A report that is not JSON at all.
+        report.write_text("{ not json", encoding="utf-8")
+        self.assertFalse(checked(self.port))
+        # And the case the file checks exist for: a perfectly good report naming a
+        # digest the phone really is carrying, while the APK it describes is not
+        # on disk. "Installed" would be true and useless — there is nothing here
+        # to install, so the run must not report the step done.
+        report.write_text(
+            json.dumps({"outputs": {"apk_sha256": "abc123"}}), encoding="utf-8"
+        )
+        self.port.ship_signed.unlink()
+
+        class Present:
+            def __init__(self, command, **kwargs):
+                self.stdout = (
+                    "package:/data/app/~~x==/base.apk\n" if "pm" in command
+                    else "abc123  /data/app/~~x==/base.apk\n"
+                )
+
+        patcher = mock.patch.object(self.port_module.subprocess, "run", Present)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertFalse(checked(self.port))
+
+    def test_installed_compares_the_digest_the_device_reports(self) -> None:
+        self.port.ship_out.mkdir(parents=True)
+        self.port.ship_signed.write_bytes(b"PK\x03\x04")
+        self.port.ship_signed.with_suffix(".release.json").write_text(
+            json.dumps({"outputs": {"apk_sha256": "abc123"}}), encoding="utf-8"
+        )
+
+        class Result:
+            def __init__(self, command, **kwargs):
+                if "pm" in command:
+                    self.stdout = "package:/data/app/~~x==/base.apk\n"
+                else:
+                    self.stdout = f"{Result.digest}  /data/app/~~x==/base.apk\n"
+
+        patcher = mock.patch.object(self.port_module.subprocess, "run", Result)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        Result.digest = "abc123"
+        self.assertTrue(self.port_module._shipped_is_installed(self.port))
+        Result.digest = "deadbeef"  # the observing build, or anything else
+        self.assertFalse(self.port_module._shipped_is_installed(self.port))
+
+
+class RulingBlocksTheShippedBuildTests(unittest.TestCase):
+    """A candidate nobody ruled on must not be shipped past.
+
+    The shippable build renders `url_block_rules`. Building it before the human
+    has ruled ships a decision nobody took — silently, and with every static check
+    passing, which is this project's most repeated failure shape.
+
+    Driven through a temporary repository rather than by mocking the dynamic
+    import: the loading is part of what is being tested, and a stub in front of it
+    would pass whether or not the real path works.
+    """
+
+    def setUp(self) -> None:
+        self.port_module = load()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        apk = self.root / "stock.apk"
+        apk.write_bytes(b"PK\x03\x04")
+        self.port = self.port_module.Port(
+            apk=apk, version="442", out=self.root / "out", captures=self.root / "captures",
+        )
+        (self.port.out / "index").mkdir(parents=True)
+        (self.root / "tools").mkdir()
+        (self.root / "manifest").mkdir()
+        (self.root / "manifest" / "hooks.json").write_text("{}", encoding="utf-8")
+        patcher = mock.patch.object(self.port_module, "REPOSITORY", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def given(self, found, ruled=()):
+        (self.root / "tools" / "watch_candidates.py").write_text(
+            f"def candidates(index, manifest):\n    return {list(found)!r}\n",
+            encoding="utf-8",
+        )
+        if ruled:
+            (self.root / "manifest" / "rulings.jsonl").write_text(
+                "".join(
+                    json.dumps({"record": {"candidate_id": f"gap:{item}"}}) + "\n"
+                    for item in ruled
+                ),
+                encoding="utf-8",
+            )
+
+    def test_an_unruled_candidate_blocks_and_names_it(self) -> None:
+        self.given(["feed/reels_media/"])
+        reason = self.port_module._unruled_candidates(self.port)
+        self.assertIn("feed/reels_media/", reason)
+        self.assertIn("no ruling", reason)
+
+    def test_no_candidates_blocks_nothing(self) -> None:
+        self.given([])
+        self.assertEqual("", self.port_module._unruled_candidates(self.port))
+
+    def test_a_candidate_that_was_ruled_no_longer_blocks(self) -> None:
+        """ANY verdict answers it. An endpoint ruled `ignore` is still an
+        uncovered gap and stays a candidate for ever — waiting for it to stop
+        being one would block every future port."""
+        self.given(["feed/reels_media/"], ruled=["feed/reels_media/"])
+        self.assertEqual("", self.port_module._unruled_candidates(self.port))
+
+    def test_one_ruled_and_one_not_still_blocks_on_the_one(self) -> None:
+        self.given(["a/", "b/"], ruled=["a/"])
+        reason = self.port_module._unruled_candidates(self.port)
+        self.assertIn("b/", reason)
+        self.assertNotIn("a/,", reason)
+
+    def test_no_index_yet_is_not_a_block(self) -> None:
+        """Nothing has been indexed, so nothing has been proposed to rule on.
+        Blocking here would stop a port before it started."""
+        self.given(["a/"])
+        fresh = self.port_module.Port(
+            apk=self.port.apk, version="442",
+            out=self.root / "elsewhere", captures=self.port.captures,
+        )
+        self.assertEqual("", self.port_module._unruled_candidates(fresh))
+
+    def test_it_blocks_the_ship_build_and_nothing_earlier(self) -> None:
+        """Only the build that renders the rules waits; the measurement does not."""
+        default = self.port_module.Step.__dataclass_fields__["blocked_by"].default
+        blocked = [
+            step.name for step in self.port_module.STEPS if step.blocked_by is not default
+        ]
+        self.assertEqual(["ship-build"], blocked)
+
+
+class ItStopsAtTheJudgementTests(unittest.TestCase):
+    """Ruling is the human's, and the build that renders a ruling waits for it."""
 
     def test_the_steps_are_mechanical_only(self) -> None:
         module = load()
@@ -406,11 +609,27 @@ class ItStopsBeforeTheJudgementTests(unittest.TestCase):
         for judgement in ("submit", "rule", "apply-rulings", "gate"):
             self.assertNotIn(judgement, names)
         self.assertEqual(
-            ["index", "watch", "observe-build", "sign", "install",
+            ["index", "watch", "observe-build", "sign", "install", "warm",
              "walk-one-pass-v1", "walk-three-round-v2",
-             "record-one-pass-v1", "record-three-round-v2"],
+             "record-one-pass-v1", "record-three-round-v2",
+             "ship-build", "ship-sign", "ship-install"],
             names,
         )
+
+    def test_the_shipped_build_comes_after_both_corpora_are_recorded(self) -> None:
+        """It replaces the observing build on the phone, and that build is what
+        every recorded session was measured against."""
+        module = load()
+        names = [step.name for step in module.STEPS]
+        for corpus in ("record-one-pass-v1", "record-three-round-v2"):
+            self.assertLess(names.index(corpus), names.index("ship-build"))
+        self.assertLess(names.index("ship-build"), names.index("ship-install"))
+
+    def test_the_warm_up_is_before_the_walks_and_after_the_install(self) -> None:
+        module = load()
+        names = [step.name for step in module.STEPS]
+        self.assertLess(names.index("install"), names.index("warm"))
+        self.assertLess(names.index("warm"), names.index("walk-one-pass-v1"))
 
     def test_it_says_what_is_left_for_the_human(self) -> None:
         source = (REPOSITORY / "tools" / "port.py").read_text(encoding="utf-8")

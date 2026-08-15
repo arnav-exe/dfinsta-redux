@@ -3,20 +3,29 @@
     tools/port.py --apk apks/instagram-442-….apk --version 442        # report
     tools/port.py --apk … --version 442 --run                          # do it
 
-Fourteen steps stand between a new Instagram release and a shipped DFInsta build.
-Nine of them are typing this tool runs, and until now they lived only in a
-paragraph of `docs/DESIGN_EXPLORATION_FIRST.md` — which is where `run_corpus.py`
-and `record_corpus.py` lived until the day before this was written, and the
-measurement they drove was reproducible by nobody.
+Eighteen steps stand between a new Instagram release and a patched DFInsta build
+on a phone. Thirteen of them are typing this tool runs — decode, index, watch,
+build an observing APK, sign it, install it, warm the app, walk the phone twice,
+record both corpora, then build, sign and install the APK you would actually use.
+They lived only in a paragraph of `docs/DESIGN_EXPLORATION_FIRST.md` until this
+existed, which is where `run_corpus.py` and `record_corpus.py` lived until the day
+before that, and the measurement they drove was reproducible by nobody.
 
-**It stops before the judgement, deliberately.** The last thing it does is record
-the second device corpus; the five it then prints are yours. Three of those five
-are typing too, but they need a run id, an actor and an owner token, and a tool
-that invented those would be signing a document on somebody's behalf. The other
-two are judgement: ruling on the candidates, and writing the `url_block_rules`
-entry afterwards — `rulings` refuses to guess a match kind or a preference key,
-and the regularity that once made the match kind look derivable has since
-inverted, so a generator built on it would render five rules into silent no-ops.
+**It stops at the judgement, deliberately.** If this version raised candidates and
+nobody has ruled on them, the shippable build is **blocked** rather than built:
+that build renders `url_block_rules`, so making it first would ship a decision
+nobody took, silently and with every check passing. The five steps it prints there
+are yours. Three of them are typing too, but they need a run id, an actor and an
+owner token, and a tool that invented those would be signing a document on
+somebody's behalf. The other two are judgement: ruling on the candidates, and
+writing the `url_block_rules` entry afterwards — `rulings` refuses to guess a match
+kind or a preference key, and the regularity that once made the match kind look
+derivable has since inverted, so a generator built on it would render five rules
+into silent no-ops.
+
+**The shipped build is last on purpose.** It replaces the observing build on the
+phone, and the observing build is what every recorded session was measured
+against, so both corpora are on disk and committed before it runs.
 
 ===============================================================================
   RESUMABLE, BECAUSE ONE STEP TAKES AN HOUR AND A HALF
@@ -77,6 +86,10 @@ class Step:
     done: Callable[["Port"], bool]
     #: Device steps are skipped when no phone is attached, and said so.
     needs_device: bool = False
+    #: Why this step cannot run yet, or "" when it can. Reported exactly like an
+    #: absent phone: the run stops there rather than carrying on, because every
+    #: step after it reads what this one produces.
+    blocked_by: Callable[["Port"], str] = field(default=lambda port: "")
     #: Minutes, roughly, so an operator knows what they are starting.
     minutes: int = 1
     #: What a *failed* attempt at this step leaves behind. The driver and the
@@ -126,6 +139,26 @@ class Port:
         return self.out / f"dfinsta_{self.version}_OBS.apk"
 
     @property
+    def ship_out(self) -> Path:
+        """A separate run directory for the shippable build.
+
+        Not `out`: the builder refuses to overwrite seven of its own outputs and
+        the driver three more, all of which the observing build already wrote
+        there. Sharing the directory would mean deleting the observing build to
+        make the shipped one, and the observing build is the thing the recorded
+        corpus was measured against.
+        """
+        return self.out.parent / f"{self.version}-ship"
+
+    @property
+    def ship_unsigned(self) -> Path:
+        return self.ship_out / "dfinsta.apk"
+
+    @property
+    def ship_signed(self) -> Path:
+        return self.ship_out / f"dfinsta_{self.version}.apk"
+
+    @property
     def build_sha256(self) -> str:
         """The APK that was installed, read from the release report it wrote."""
         report = self.signed.with_suffix(".release.json")
@@ -151,10 +184,10 @@ def walked(port: Port, walk: str) -> int:
     return len(list(port.captures.glob(f"{port.version}-{walk[:2]}-*.log")))
 
 
-def _driver(port: Port, *extra: str) -> list[str]:
+def _driver(port: Port, *extra: str, out: Path | None = None) -> list[str]:
     command = [
         sys.executable, "-m", "dfinsta_pipeline.driver", str(port.apk),
-        "--out", str(port.out),
+        "--out", str(out or port.out),
         "--framework-apk", str(REPOSITORY / "work" / "430-port" / "framework-res-api36.apk"),
     ]
     # Every driver step after `index` reads the decode that `index` produced, and
@@ -169,20 +202,21 @@ def _driver(port: Port, *extra: str) -> list[str]:
     return command + list(extra)
 
 
-def _sign(port: Port) -> list[str]:
+def _sign(port: Port, out: Path | None = None, output: Path | None = None) -> list[str]:
+    out = out or port.out
     tools = Path.home() / "Android" / "Sdk" / "build-tools" / "36.0.0"
     return [
         sys.executable, str(REPOSITORY / "tools" / "release" / "finalize.py"),
-        str(port.unsigned), str(port.apk),
-        "--unsigned-build-report", str(port.out / "dfinsta.build.json"),
-        "--unsigned-verification-report", str(port.out / "dfinsta.verification.json"),
+        str(out / "dfinsta.apk"), str(port.apk),
+        "--unsigned-build-report", str(out / "dfinsta.build.json"),
+        "--unsigned-verification-report", str(out / "dfinsta.verification.json"),
         "--policy", str(REPOSITORY / "release" / "signing_policy.json"),
         "--zipalign", str(tools / "zipalign"),
         "--apksigner", str(tools / "apksigner"),
         "--aapt", str(tools / "aapt"),
         "--apktool-jar", str(REPOSITORY / "apktool_2.9.3.jar"),
         "--final-verifier", str(REPOSITORY / "tools" / "verify" / "verify_build.py"),
-        "--output-apk", str(port.signed),
+        "--output-apk", str(output or port.signed),
     ]
 
 
@@ -203,6 +237,112 @@ def _build_leavings(port: Port) -> list[Path]:
     if not port.out.is_dir():
         return []
     return sorted(path for path in port.out.iterdir() if path not in keep)
+
+
+def _unruled_candidates(port: Port) -> str:
+    """Candidates this version raised that nobody has ruled on yet.
+
+    The shippable build is rendered from `url_block_rules`, and ruling changes
+    them — so building before the human has ruled ships a build that predates the
+    decision, silently and with every check passing. This is the same
+    completeness rule the feature gate already applies to a submission: a
+    candidate that was skipped is not an `ignore`, it is unanswered.
+
+    A candidate counts as answered once it has ANY row in `manifest/rulings.jsonl`.
+    Not "once it stops being a candidate": an endpoint ruled `ignore` or `defer`
+    is still an uncovered gap and would otherwise block every future port forever.
+    """
+    import importlib.util  # noqa: PLC0415
+
+    if not port.index_dir.is_dir():
+        return ""
+    spec = importlib.util.spec_from_file_location(
+        "watch_candidates", REPOSITORY / "tools" / "watch_candidates.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest = REPOSITORY / "manifest" / "hooks.json"
+    candidates = {str(item) for item in module.candidates(port.index_dir, manifest)}
+    if not candidates:
+        return ""
+    rulings = REPOSITORY / "manifest" / "rulings.jsonl"
+    ruled: set[str] = set()
+    if rulings.is_file():
+        for line in rulings.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            identifier = row.get("record", row).get("candidate_id", "")
+            ruled.add(identifier[4:] if identifier.startswith("gap:") else identifier)
+    outstanding = sorted(candidates - ruled)
+    if not outstanding:
+        return ""
+    return (
+        f"{len(outstanding)} candidate(s) have no ruling: {', '.join(outstanding[:4])}"
+        f"{' …' if len(outstanding) > 4 else ''}. The shipped build renders "
+        "url_block_rules, so building now would ship a decision nobody made. Rule "
+        "them first — the steps are printed when the mechanical ones finish."
+    )
+
+
+def _ship_leavings(port: Port) -> list[Path]:
+    """What a failed shippable build left behind.
+
+    Same rule as `_build_leavings`, with a smaller keep-list: the decode and the
+    index are reused from the port directory and were never here. `framework` is
+    an apktool cache rather than an output — `tools/port_430/build.py` says so,
+    having once refused to overwrite the directory it had just been handed.
+    """
+    if not port.ship_out.is_dir():
+        return []
+    return sorted(path for path in port.ship_out.iterdir() if path.name != "framework")
+
+
+def _shipped_is_installed(port: Port) -> bool:
+    """Is the SHIPPED build on the phone, rather than the observing one?
+
+    The version is not enough to tell them apart — both report
+    `versionName=<version>.…`, both are signed by the same key, and on 442 the two
+    APKs even came out the same number of bytes. A predicate that answered "yes"
+    for the observing build would silently skip the install that replaces it,
+    which is the one step standing between a finished port and a phone with the
+    build on it.
+
+    So it compares digests, and answers **False whenever it cannot tell**: no
+    signed APK, no release report, no `pm path`, no `sha256sum` on the device, a
+    mismatch — every one of those means run the step. Re-running `install -r` on
+    a build already installed costs twenty seconds and changes nothing, whereas a
+    wrong "already done" costs the whole point of the run.
+    """
+    report = port.ship_signed.with_suffix(".release.json")
+    if not (port.ship_signed.is_file() and report.is_file()):
+        return False
+    try:
+        expected = json.loads(report.read_text(encoding="utf-8"))["outputs"]["apk_sha256"]
+    except (OSError, KeyError, json.JSONDecodeError):
+        return False
+    try:
+        located = subprocess.run(
+            _adb() + ["shell", "pm", "path", "com.instagram.android"],
+            capture_output=True, text=True, timeout=60,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - no adb
+        return False
+    paths = [line.split(":", 1)[1].strip() for line in located.splitlines() if ":" in line]
+    if len(paths) != 1:
+        # A split APK, or none at all. Neither is a thing to guess about.
+        return False
+    try:
+        digest = subprocess.run(
+            _adb() + ["shell", "sha256sum", paths[0]],
+            capture_output=True, text=True, timeout=180,
+        ).stdout.split()
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - no adb
+        return False
+    return bool(digest) and digest[0] == expected
 
 
 STEPS: tuple[Step, ...] = (
@@ -247,6 +387,19 @@ STEPS: tuple[Step, ...] = (
         lambda port: _installed(port),
         needs_device=True,
     ),
+    Step(
+        "warm",
+        "launch the app once and wait until the bottom nav reads, because the "
+        "first launch after an install is slow enough to fail a walk",
+        lambda port: [
+            sys.executable, str(REPOSITORY / "tools" / "device_session.py"), "--warm",
+        ],
+        # No artefact of its own, so it is done when the thing it protects has
+        # started producing: one capture means a session got past the nav.
+        lambda port: walked(port, WALKS[0]) > 0,
+        needs_device=True,
+        minutes=1,
+    ),
     *[
         Step(
             f"walk-{walk}",
@@ -275,6 +428,36 @@ STEPS: tuple[Step, ...] = (
         )
         for walk in WALKS
     ],
+    # Last, and last on purpose: this replaces the observing build on the phone,
+    # and the observing build is the one every recorded session was measured
+    # against. Both corpora are on disk and committed by the time this runs.
+    Step(
+        "ship-build",
+        "build the APK you would actually use — no observer, no log tag",
+        lambda port: _driver(
+            port, "--stop-after", "build",
+            out=port.ship_out,
+        ),
+        lambda port: port.ship_unsigned.is_file(),
+        minutes=15,
+        stale=_ship_leavings,
+        blocked_by=_unruled_candidates,
+    ),
+    Step(
+        "ship-sign",
+        "sign it with the release key and put it through the release gate",
+        lambda port: _sign(port, out=port.ship_out, output=port.ship_signed),
+        lambda port: port.ship_signed.is_file(),
+        minutes=3,
+        env=lambda port: {name: os.environ[name] for name in _SIGNING if name in os.environ},
+    ),
+    Step(
+        "ship-install",
+        "put it on the phone, replacing the observing build",
+        lambda port: _adb() + ["install", "-r", str(port.ship_signed)],
+        _shipped_is_installed,
+        needs_device=True,
+    ),
 )
 
 _SIGNING = ("DFINSTA_KEYSTORE", "DFINSTA_KEY_ALIAS", "DFINSTA_KEYSTORE_PASSWORD")
@@ -364,11 +547,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"  [done] {step.name}")
             continue
         remaining += step.minutes
-        blocked = step.needs_device and not have_device
+        reason = step.blocked_by(port)
+        blocked = (step.needs_device and not have_device) or bool(reason)
         mark = "BLOCKED" if blocked else "todo"
         print(f"  [{mark}] {step.name:22} ~{step.minutes}m   {step.why}")
         if blocked:
-            print("           attach the phone; this step and everything after it need it")
+            print(f"           {reason or 'attach the phone; this step and everything after it need it'}")
+            if reason:
+                _judgement_steps()
             return 1
         if not args.run:
             continue
@@ -401,16 +587,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     if remaining and not args.run:
         print(f"\n~{remaining} minutes of work outstanding. Re-run with --run.")
         return 0
-    print("\nEvery mechanical step is done. What is left is yours:")
-    print(f"  1. record the assessment   driver --stop-after assess --state-root … "
-          f"--assessment-run-id … --actor … --owner-token …")
-    print("  2. raise the gate          python -m dfinsta_pipeline.assessment_record raise …")
-    print("  3. rule on the candidates  python -m dfinsta_pipeline.submission show/submit …")
-    print("  4. apply the rulings       python -m dfinsta_pipeline.rulings … --apply")
-    print("  5. write the url_block_rules entry by hand: the match kind and the toggle are")
-    print("     not derivable, and the regularity that made the match kind look derivable")
-    print("     has since inverted — five of eleven literals break it")
+    print(f"\nThe port is finished. {port.ship_signed.name} is signed and on the phone.")
+    print("  built   " + str(port.ship_signed))
+    print("  measured" + f"  {port.sessions_for(WALKS[0])} + {port.sessions_for(WALKS[1])} "
+          "sessions recorded against the observing build")
     return 0
+
+
+def _judgement_steps() -> None:
+    """The five things this tool does not do, printed where they are needed.
+
+    Three of them are typing, and it does not do those either: they need a run
+    id, an actor and an owner token, and a tool that invented those would be
+    signing a document on somebody's behalf. The other two are judgement.
+    """
+    print("\n  What is yours to do:")
+    print("    1. record the assessment   driver --stop-after assess --state-root … "
+          "--assessment-run-id … --actor … --owner-token …")
+    print("    2. raise the gate          python -m dfinsta_pipeline.assessment_record raise …")
+    print("    3. rule on the candidates  python -m dfinsta_pipeline.submission show/submit …")
+    print("    4. apply the rulings       python -m dfinsta_pipeline.rulings … --apply")
+    print("    5. write the url_block_rules entry by hand: the match kind and the toggle are")
+    print("       not derivable, and the regularity that made the match kind look derivable")
+    print("       has since inverted — five of eleven literals break it")
+    print("\n  Then re-run this; it resumes at the shippable build.")
 
 
 if __name__ == "__main__":
