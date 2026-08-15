@@ -108,14 +108,18 @@ def tabs() -> dict[str, tuple[int, int]]:
     """
     sh("shell", "input", "tap", *map(str, PROFILE_GUESS))
     time.sleep(8)
+    dumps = 0
+    seen_any_tab_id = False
     for attempt in range(5):
         root = dump()
         if root is not None:
+            dumps += 1
             found: dict[str, tuple[int, int]] = {}
             for node in root.iter("node"):
                 rid = (node.get("resource-id") or "").rsplit("/", 1)[-1]
                 box = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds", "") or "")
                 if rid in TAB_IDS and box:
+                    seen_any_tab_id = True
                     x1, y1, x2, y2 = map(int, box.groups())
                     found[TAB_IDS[rid]] = ((x1 + x2) // 2, (y1 + y2) // 2)
             if {"Home", "Profile", "Reels", "Search and explore"} <= set(found):
@@ -124,11 +128,30 @@ def tabs() -> dict[str, tuple[int, int]]:
                     raise SystemExit(f"refusing: nav ids are not in one row: {found}")
                 return found
         time.sleep(6)
-    raise SystemExit(
-        "refusing: could not read the bottom nav from the profile screen. Either the "
-        "screen never went idle, or the ids changed again — check which before "
-        "assuming the second."
-    )
+    # Say which of the two it was. The refusal used to name both causes and leave
+    # the operator to dump the screen by hand — which cost a walk and half an hour
+    # on 442, where it turned out to be the first and reads exactly like the
+    # second. The evidence to tell them apart was already in this loop.
+    if dumps == 0:
+        why = (
+            "no dump succeeded at all in 5 attempts, so the screen never held still. "
+            "The commonest cause is the FIRST launch after `adb install -r`, while "
+            "Android is still compiling the new build: launch the app by hand, wait "
+            "for the profile grid, and run this again"
+        )
+    elif not seen_any_tab_id:
+        why = (
+            f"{dumps} dump(s) succeeded and NONE of {sorted(TAB_IDS)} was in any of "
+            "them, so this is not the screen we think it is — a dialog, an "
+            "interstitial or a logged-out app, not a rename"
+        )
+    else:
+        why = (
+            f"{dumps} dump(s) succeeded and some of {sorted(TAB_IDS)} were present but "
+            "not all four required ones. THIS is what a rename looks like: dump the "
+            "screen and compare the ids before changing anything"
+        )
+    raise SystemExit(f"refusing: could not read the bottom nav from the profile screen. {why}")
 
 
 def rows() -> dict[str, tuple[int, bool]]:
