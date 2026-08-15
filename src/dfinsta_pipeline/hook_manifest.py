@@ -248,6 +248,17 @@ class HostFingerprint:
     descriptor: str | None = None  # kind == "named"
     literal: str | None = None  # kind == "by_literal"
     co_literals: tuple[str, ...] = ()  # kind == "by_literal"
+    # kind == "by_anchor": WHICH shape of the site identifies the class, as an
+    # index into `Hook.forms`. `None` means any of them, which is the only
+    # sensible reading for a hook with one form and the behaviour it always had.
+    #
+    # It has to be sayable, because a hook's fingerprints are UNIONED rather than
+    # tried in turn: an unscoped by_anchor alongside a by_literal would contribute
+    # the primary form's candidates on every version, and for this hook the
+    # primary anchor matches cleanly in three classes that are not the host. The
+    # scoped form matches exactly one class on the version that needs it and none
+    # anywhere else, which is what makes the union safe.
+    form: int | None = None
     note: str = ""
 
     def __post_init__(self) -> None:
@@ -257,6 +268,13 @@ class HostFingerprint:
             raise ManifestError("named fingerprint needs a descriptor")
         if self.kind == "by_literal" and not self.literal:
             raise ManifestError("by_literal fingerprint needs a literal")
+        if self.form is not None and self.kind != "by_anchor":
+            raise ManifestError(
+                f"a {self.kind} fingerprint carries form={self.form}; only by_anchor "
+                "is answered by matching the anchor, so only by_anchor has a form"
+            )
+        if self.form is not None and self.form < 0:
+            raise ManifestError(f"by_anchor form must be an index, got {self.form}")
         if self.kind == "by_anchor" and (self.descriptor or self.literal):
             carried = "descriptor" if self.descriptor else "literal"
             raise ManifestError(
@@ -287,12 +305,16 @@ class HostFingerprint:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> HostFingerprint:
+        # By keyword. Positionally, adding a field in the middle silently shifts
+        # every later one into the wrong slot, and `note` landing in `form` type-
+        # checks fine and fails much later.
         return cls(
-            data["kind"],
-            data.get("descriptor"),
-            data.get("literal"),
-            tuple(data.get("co_literals", ())),
-            data.get("note", ""),
+            kind=data["kind"],
+            descriptor=data.get("descriptor"),
+            literal=data.get("literal"),
+            co_literals=tuple(data.get("co_literals", ())),
+            form=data.get("form"),
+            note=data.get("note", ""),
         )
 
 
@@ -448,6 +470,40 @@ class CaptureSupply:
 
 
 @dataclass(frozen=True)
+class AnchorForm:
+    """One shape the same patch site can take, and what to write there.
+
+    A hook has one site, one marker and one probe. What sometimes changes between
+    versions is the *shape* the site is made of rather than where it is: 442 moved
+    `clips/discover/` out of its host class into a shared packed-switch string
+    table, so the `const-string` the anchor pinned stopped existing while the site
+    did not move at all — same class, same method, same register receiving the
+    path. A second form says "or it may look like this", and is tried only when
+    the first does not match.
+
+    **Exactly one form may match a class body.** Two matching forms is an
+    ambiguity and is refused rather than settled by order: "the first one wins"
+    would silently patch the wrong shape the day a version grows both, and the
+    whole point of a variant is that the two shapes are the same site.
+    """
+
+    anchor: tuple[str, ...]
+    payload: tuple[str, ...]
+    mode: str = "insert_after"
+    #: Why this form exists — which version grew it, and what changed.
+    note: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AnchorForm:
+        return cls(
+            anchor=tuple(data["anchor"]),
+            payload=tuple(data["payload"]),
+            mode=data.get("mode", "insert_after"),
+            note=data.get("note", ""),
+        )
+
+
+@dataclass(frozen=True)
 class Hook:
     hook_id: str
     intent: str
@@ -486,6 +542,14 @@ class Hook:
     # long-press to every profile's Options and undo the device-verified
     # other-user exclusion.
     requires_proposal: bool = False
+    # Other shapes this hook's site can take. Empty for every hook whose site
+    # looks the same on every version, which is all of them until 442.
+    variants: tuple[AnchorForm, ...] = ()
+
+    @property
+    def forms(self) -> tuple[AnchorForm, ...]:
+        """Every shape this site can take, the manifest's primary one first."""
+        return (AnchorForm(self.anchor, self.payload, self.mode), *self.variants)
 
     def __post_init__(self) -> None:
         if self.tier not in {"robust", "fragile", "ui"}:
@@ -555,6 +619,59 @@ class Hook:
                         "captures and no supplied_captures entry declares"
                     )
 
+        # A variant is a whole second form of the same patch, so every rule that
+        # makes the primary form usable has to hold for it too. Checked here and
+        # not at resolve time: a variant that cannot render is a broken manifest,
+        # and it would otherwise surface only on the one version that reaches it.
+        for position, variant in enumerate(self.variants):
+            where = f"{self.hook_id}: variant {position}"
+            if variant.mode not in {"insert_after", "replace"}:
+                raise ManifestError(f"{where} has unknown mode {variant.mode!r}")
+            if not variant.anchor:
+                raise ManifestError(f"{where} needs an anchor")
+            if not variant.payload:
+                raise ManifestError(f"{where} needs a payload")
+            count = "\n".join(variant.payload).count(self.marker)
+            if count != self.expected_marker_count:
+                raise ManifestError(
+                    f"{where} writes the marker {self.marker!r} {count} time(s) but "
+                    f"expected_marker_count is {self.expected_marker_count}. Every form "
+                    "writes the same marker, because the applier's already-applied "
+                    "check cannot know which form produced the patch it is looking at"
+                )
+            bound: set[str] = set()
+            for _, names in compile_anchor(variant.anchor):
+                bound.update(names)
+            for line in variant.payload:
+                for match in CAPTURE.finditer(line):
+                    name = match.group("name")
+                    if name not in bound:
+                        raise ManifestError(
+                            f"{where} payload uses <{name}> which its own anchor does "
+                            "not capture. A form binds its own registers; the primary "
+                            "form's captures are not in scope here"
+                        )
+        for host in self.hosts:
+            if host.form is not None and host.form >= len(self.forms):
+                raise ManifestError(
+                    f"{self.hook_id}: a by_anchor fingerprint names form {host.form} "
+                    f"but this hook has {len(self.forms)}. An out-of-range form would "
+                    "raise inside the decode scan, a long way from the manifest"
+                )
+        if self.variants and self.supplied_captures:
+            raise ManifestError(
+                f"{self.hook_id}: variants and supplied_captures together are not "
+                "supported. A supplier is run against one located site and is handed "
+                "that site's bindings, and nothing decides which form it was written "
+                "for — refused rather than guessed"
+            )
+        if self.variants and self.requires_proposal:
+            raise ManifestError(
+                f"{self.hook_id}: variants and requires_proposal together are not "
+                "supported. A proposal replaces the anchor and payload wholesale, so "
+                "the variants would be silently discarded"
+            )
+
         # An unused supplied capture is the shape of a dropped safety guard: the
         # manifest declares the machinery for an own-profile check and then renders
         # a payload without one, which is exactly how a version-independent payload
@@ -595,6 +712,7 @@ class Hook:
                 CaptureSupply.from_dict(item) for item in data.get("supplied_captures", ())
             ),
             requires_proposal=bool(data.get("requires_proposal", False)),
+            variants=tuple(AnchorForm.from_dict(item) for item in data.get("variants", ())),
         )
 
     @property
@@ -623,6 +741,12 @@ class Resolution:
     # "the anchor did not match", and prose in `reason` is not a thing to branch on.
     # `resolved` stays False throughout — an awaiting resolution is never appliable.
     awaiting: tuple[str, ...] = ()
+    # Which of the hook's forms matched, as an index into `Hook.forms`. 0 is the
+    # manifest's primary form, which is every hook but the one 442 broke. The
+    # applier's mode comes from the form, not from the hook: a variant can need a
+    # different one, and reading `hook.mode` here would apply the primary form's
+    # mode to a site the variant matched.
+    form: int = 0
 
     def as_operation(self, hook: Hook) -> dict[str, Any]:
         """Emit the resolved form the existing applier already understands."""
@@ -631,7 +755,7 @@ class Resolution:
         return {
             "id": self.hook_id,
             "descriptor": self.descriptor,
-            "mode": hook.mode,
+            "mode": hook.forms[self.form].mode,
             "anchor": list(self.anchor),
             "expected_anchor_count": hook.expected_anchor_count,
             "marker": hook.marker,
@@ -718,12 +842,30 @@ class AnchorHit:
 
 
 def find_anchor_hits(hook: Hook, smali: str) -> list[AnchorHit]:
-    """Every place the hook's anchor matches in one class body.
+    """Every place ANY of the hook's forms matches in one class body.
 
     Split out of :func:`resolve_in_source` so a capture supplier locates the site
     with the SAME matcher the resolver uses. A supplier reimplementing the loop
     would eventually disagree with it about which method the payload lands in,
     and would do so silently.
+
+    The union over forms is what a `by_anchor` host search wants — "is the site
+    in this class" — and is identical to the old behaviour for the single-form
+    hooks that are all of them but one. :func:`find_form_hits` is the one to use
+    when it matters WHICH form matched, because that decides the payload.
+    """
+    return [hit for _, hits in find_form_hits(hook, smali) for hit in hits]
+
+
+def find_form_hits(
+    hook: Hook, smali: str, only: int | None = None
+) -> list[tuple[int, list[AnchorHit]]]:
+    """Each form that matches this class body, as (index into `hook.forms`, hits).
+
+    A form that matches nowhere is absent from the result rather than present
+    with an empty list, so `len()` answers "how many shapes of this site are in
+    this class" — which is the question the resolver refuses on when it is more
+    than one.
     """
     body = significant(smali.splitlines())
     # Match the instruction, keep the line. An anchor is written to describe code,
@@ -733,7 +875,23 @@ def find_anchor_hits(hook: Hook, smali: str) -> list[AnchorHit]:
     # own copy of `significant()`. So the pattern is tried against the stripped
     # instruction and the emitted anchor is the line as written.
     code = [strip_comment(text) for _, text in body]
-    compiled = compile_anchor(hook.anchor)
+    found: list[tuple[int, list[AnchorHit]]] = []
+    for index, form in enumerate(hook.forms):
+        # `only` is the by_anchor host scoping: a fingerprint can name the one
+        # shape that identifies the class, because the union of shapes does not.
+        if only is not None and index != only:
+            continue
+        hits = _hits_for(form, body, code)
+        if hits:
+            found.append((index, hits))
+    return found
+
+
+def _hits_for(
+    form: AnchorForm, body: list[tuple[int, str]], code: list[str]
+) -> list[AnchorHit]:
+    """Every place one form matches, over an already-prepared class body."""
+    compiled = compile_anchor(form.anchor)
     width = len(compiled)
     hits: list[AnchorHit] = []
 
@@ -864,12 +1022,30 @@ def resolve_in_source(
             ),
         )
 
-    hits = find_anchor_hits(hook, smali)
+    matches = find_form_hits(hook, smali)
 
-    if not hits:
+    if len(matches) > 1:
+        # Two shapes of one site in one class. Order would settle it and must not:
+        # the forms exist because they are the same site seen on different
+        # versions, so a class carrying both means one of them is matching
+        # something else, and patching by precedence would hide that.
+        which = ", ".join(str(index) for index, _ in matches)
+        return Resolution(
+            hook.hook_id,
+            False,
+            descriptor=descriptor,
+            occurrences=sum(len(hits) for _, hits in matches),
+            reason=(
+                f"{len(matches)} anchor forms match this class (forms {which}); one site "
+                "cannot have two shapes at once, so this is refused rather than ordered"
+            ),
+        )
+    if not matches:
         return Resolution(
             hook.hook_id, False, descriptor=descriptor, reason="anchor pattern did not match"
         )
+    form_index, hits = matches[0]
+    form = hook.forms[form_index]
     if len(hits) != hook.expected_anchor_count:
         return Resolution(
             hook.hook_id,
@@ -905,7 +1081,7 @@ def resolve_in_source(
         )
 
     bindings = merge_supplied(hook, hit.bindings, supplied or {})
-    concrete_payload = [render(line, bindings) for line in hook.payload]
+    concrete_payload = [render(line, bindings) for line in form.payload]
     return Resolution(
         hook.hook_id,
         True,
@@ -914,6 +1090,7 @@ def resolve_in_source(
         payload=concrete_payload,
         bindings=bindings,
         occurrences=len(hits),
+        form=form_index,
     )
 
 

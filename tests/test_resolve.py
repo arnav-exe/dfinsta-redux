@@ -33,6 +33,7 @@ from unittest import mock
 
 from dfinsta_pipeline.hook_index import HookIndex, IndexUnusable
 from dfinsta_pipeline.hook_manifest import (
+    AnchorForm,
     Hook,
     HostFingerprint,
     ManifestError,
@@ -735,6 +736,117 @@ class SearchHostsTests(FixtureCase):
         payload = json.loads(json.dumps(search.to_dict()))
         self.assertEqual(payload["kind"], "by_literal")
         self.assertEqual(payload["candidates"], [DECOY, HOST])
+
+
+class ScopedByAnchorSearchTests(FixtureCase):
+    """A `by_anchor` fingerprint naming WHICH shape of the site identifies a class.
+
+    Instagram 442 pooled a literal out of the class that builds the Reels
+    request, so the hook grew a second anchor form. A hook's fingerprints are
+    unioned rather than tried in turn, so an unscoped by_anchor would contribute
+    the primary form's matches as well — and that form matches classes that are
+    not the host. The scoping is what makes the union safe, and the prefilter is
+    where getting it wrong is silent: a class only the variant matches does not
+    contain the primary form's fixed text, so filtering on the primary alone
+    reports it absent rather than unscanned.
+    """
+
+    # Not `str.format`: smali register lists are `{v0}`, which a format string
+    # reads as a placeholder.
+    POOLED_BODY = (
+        ".class public DESCRIPTOR\n"
+        ".super Ljava/lang/Object;\n"
+        "\n"
+        ".method public A00()Ljava/lang/String;\n"
+        "    .locals 2\n"
+        "\n"
+        "    sget-object v4, LX/008;->A01:Ljava/lang/Integer;\n"
+        "\n"
+        "    const/16 v0, 0x5e\n"
+        "\n"
+        "    invoke-static {v0}, LX/019;->A00(I)Ljava/lang/String;\n"
+        "\n"
+        "    move-result-object v8\n"
+        "\n"
+        "    return-object v8\n"
+        ".end method\n"
+    )
+
+    POOLED = "LX/08Ec;"
+
+    def two_form_hook(self, form=None):
+        return Hook(
+            hook_id="two_form_probe",
+            intent="the same site in two shapes",
+            tier="ui",
+            strategy="wrap the path",
+            semantic_deps=(),
+            hosts=(HostFingerprint("by_anchor", form=form, note="which shape"),),
+            anchor=("new-instance <l:reg>, <cls:type>",
+                    "invoke-direct {<l>, <a:reg>}, <cls>-><init>(I)V"),
+            payload=("    new-instance <l>, <cls>",
+                     "    # dfinsta_probe_by_anchor",
+                     "    invoke-static {}, Lcom/dfinstagram/probe;->h_probe()V",
+                     "    invoke-direct {<l>, <a>}, <cls>-><init>(I)V"),
+            marker="# dfinsta_probe_by_anchor",
+            expected_marker_count=1,
+            mode="replace",
+            variants=(
+                AnchorForm(
+                    anchor=("sget-object <s:reg>, <field:any>",
+                            "const/16 <k:reg>, <key:any>",
+                            "invoke-static {<k>}, <pool:any>(I)Ljava/lang/String;",
+                            "move-result-object <r:reg>"),
+                    payload=("    # dfinsta_probe_by_anchor",
+                             "    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V"),
+                    mode="insert_after",
+                ),
+            ),
+        )
+
+    def mixed_decode(self):
+        """One class per shape, plus one matching neither."""
+        return self.make_fixture(
+            {
+                CLEAN_TWIN: listener_class(CLEAN_TWIN),
+                self.POOLED: self.POOLED_BODY.replace("DESCRIPTOR", self.POOLED),
+                DECOY: analytics_class(DECOY),
+            }
+        )
+
+    def test_the_scoped_form_selects_only_its_own_shape(self):
+        fixture = self.mixed_decode()
+        hook = self.two_form_hook(form=1)
+        search = search_hosts(hook, hook.hosts[0], fixture.index, decode=fixture.decode)
+        self.assertEqual((self.POOLED,), search.candidates)
+
+    def test_the_other_form_selects_only_the_other_shape(self):
+        """The control: scoping must select, not merely narrow to one answer."""
+        fixture = self.mixed_decode()
+        hook = self.two_form_hook(form=0)
+        search = search_hosts(hook, hook.hosts[0], fixture.index, decode=fixture.decode)
+        self.assertEqual((CLEAN_TWIN,), search.candidates)
+
+    def test_unscoped_finds_both_which_is_why_scoping_exists(self):
+        fixture = self.mixed_decode()
+        hook = self.two_form_hook(form=None)
+        search = search_hosts(hook, hook.hosts[0], fixture.index, decode=fixture.decode)
+        self.assertEqual((self.POOLED, CLEAN_TWIN), tuple(sorted(search.candidates)))
+
+    def test_the_prefilter_does_not_skip_a_class_only_the_variant_matches(self):
+        """The silent one.
+
+        Both forms are asked for, so the byte-level filter has to admit a class
+        carrying either one's fixed text. Filtering on the primary's alone leaves
+        the variant's class unread and reports it as not matching — a false
+        absence, which is the failure this codebase keeps meeting in new shapes.
+        """
+        fixture = self.mixed_decode()
+        hook = self.two_form_hook(form=None)
+        scan = scan_for_anchor(hook, fixture.decode)
+        self.assertIn(self.POOLED, scan.matched)
+        # And it was actually read, rather than admitted and skipped downstream.
+        self.assertGreaterEqual(scan.survivors, 2)
 
 
 class ByAnchorSearchTests(FixtureCase):

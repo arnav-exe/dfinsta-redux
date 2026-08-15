@@ -38,6 +38,9 @@ from dfinsta_pipeline.hook_manifest import (
     load_manifest,
     render,
     resolve_in_source,
+    find_form_hits,
+    AnchorForm,
+    CaptureSupply,
     significant,
     strip_comment,
 )
@@ -2940,6 +2943,221 @@ class RealManifestContentTests(unittest.TestCase):
                         self.assertIn(match.group("name"), anchored | supplied)
 
 
+class AnchorFormTests(unittest.TestCase):
+    """A hook whose site keeps its place but changes shape.
+
+    Instagram 442 moved `clips/discover/` out of the class that builds the Reels
+    request and into a shared packed-switch string table read by integer index.
+    The site did not move — same class, same method, same register receiving the
+    path — but the `const-string` the anchor pinned stopped existing. A variant is
+    a second shape of the same site, and the thing that makes it safe is that
+    exactly one shape may match: the payload and the applier's mode both come from
+    whichever one did, so picking the wrong one writes the wrong patch.
+    """
+
+    #: The 442 shape, in miniature: the value arrives via a call, not a constant.
+    POOLED = "\n".join([
+        ".method public final A08()V",
+        "    sget-object v4, LX/008;->A01:Ljava/lang/Integer;",
+        "    const/16 v0, 0x5e",
+        "    invoke-static {v0}, LX/019;->A00(I)Ljava/lang/String;",
+        "    move-result-object v8",
+        "    return-void",
+        ".end method",
+    ])
+    #: The 439-441 shape.
+    LITERAL = "\n".join([
+        ".method public final A08()V",
+        '    const-string v8, "needle"',
+        "    return-void",
+        ".end method",
+    ])
+
+    def variant_hook(self, **overrides):
+        overrides.setdefault("mode", "replace")
+        return make_hook(
+            variants=(
+                AnchorForm(
+                    anchor=(
+                        "sget-object <s:reg>, <field:any>",
+                        "const/16 <k:reg>, <key:any>",
+                        "invoke-static {<k>}, <pool:any>(I)Ljava/lang/String;",
+                        "move-result-object <r:reg>",
+                    ),
+                    # Deliberately NOT the primary's payload. In the manifest they
+                    # differ too — the primary re-declares the literal it replaces
+                    # and the variant only wraps the register — and a fixture where
+                    # both forms render the same text cannot tell whether the right
+                    # one was chosen. It could not: rendering `hook.payload` here
+                    # instead of the matched form's survived the first mutation pass.
+                    payload=(
+                        '    const-string <r>, "from-the-variant"',
+                        "    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V",
+                    ),
+                    mode="insert_after",
+                ),
+            ),
+            **overrides,
+        )
+
+    def test_the_variant_matches_where_the_primary_cannot(self):
+        hook = self.variant_hook()
+        result = resolve_in_source(hook, "LFoo;", self.POOLED)
+        self.assertTrue(result.resolved, result.reason)
+        self.assertEqual(1, result.form)
+        # Bound by the variant's own anchor, from the instruction that receives
+        # the string — not from the constant that is no longer there.
+        self.assertEqual("v8", result.bindings["r"])
+        # And the patch written is the VARIANT's, rendered with those bindings.
+        self.assertEqual(
+            ['    const-string v8, "from-the-variant"',
+             "    invoke-static {v8}, LH;->f(Ljava/lang/String;)V"],
+            result.payload,
+        )
+
+    def test_the_primary_s_payload_is_written_where_the_primary_matched(self):
+        """The other half: neither form's payload may leak into the other's site."""
+        hook = self.variant_hook()
+        result = resolve_in_source(hook, "LFoo;", self.LITERAL)
+        self.assertEqual(
+            ["    invoke-static {v8}, LH;->f(Ljava/lang/String;)V"], result.payload
+        )
+
+    def test_the_primary_still_wins_where_it_matches(self):
+        """The control. A variant must not change a version that never needed it."""
+        hook = self.variant_hook()
+        result = resolve_in_source(hook, "LFoo;", self.LITERAL)
+        self.assertTrue(result.resolved, result.reason)
+        self.assertEqual(0, result.form)
+
+    def test_the_operation_carries_the_MATCHED_form_s_mode(self):
+        """The sharpest one: the applier is told how to write the patch.
+
+        The primary form replaces its anchor line; the variant inserts after its
+        last one. Emitting `hook.mode` here would replace six instructions —
+        including the call the anchor opens on — with a four-line payload.
+        """
+        hook = self.variant_hook()
+        pooled = resolve_in_source(hook, "LFoo;", self.POOLED).as_operation(hook)
+        literal = resolve_in_source(hook, "LFoo;", self.LITERAL).as_operation(hook)
+        self.assertEqual("insert_after", pooled["mode"])
+        self.assertEqual("replace", literal["mode"])
+
+    def test_only_selects_the_named_form(self):
+        """The scoping itself, not the byte-level filter that usually precedes it.
+
+        In `scan_for_anchor` the prefilter normally excludes the other form's
+        classes before this is reached, so scoping the match looks redundant —
+        and a mutation removing it passed everything. It stops being redundant
+        the moment a form asserts no fixed text long enough to grep, which the
+        prefilter answers by reading every class.
+        """
+        hook = self.variant_hook()
+        both = self.LITERAL + "\n" + self.POOLED
+        self.assertEqual([0, 1], [i for i, _ in find_form_hits(hook, both)])
+        self.assertEqual([0], [i for i, _ in find_form_hits(hook, both, only=0)])
+        self.assertEqual([1], [i for i, _ in find_form_hits(hook, both, only=1)])
+
+    def test_two_matching_forms_are_refused_not_ordered(self):
+        """Both shapes in one class means one of them is matching something else."""
+        hook = self.variant_hook()
+        both = self.LITERAL + "\n" + self.POOLED
+        result = resolve_in_source(hook, "LFoo;", both)
+        self.assertFalse(result.resolved)
+        self.assertIn("two shapes", result.reason)
+
+    def test_a_variant_payload_cannot_use_the_primary_s_captures(self):
+        with self.assertRaises(ManifestError) as caught:
+            make_hook(
+                variants=(
+                    AnchorForm(
+                        anchor=("move-result-object <q:reg>",),
+                        payload=("    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V",),
+                    ),
+                ),
+            )
+        self.assertIn("its own anchor does not capture", str(caught.exception))
+
+    def test_every_form_must_write_the_marker(self):
+        """The applier's already-applied check cannot know which form patched."""
+        with self.assertRaises(ManifestError) as caught:
+            make_hook(
+                variants=(
+                    AnchorForm(
+                        anchor=("move-result-object <r:reg>",),
+                        payload=("    invoke-static {<r>}, LOther;->g()V",),
+                    ),
+                ),
+            )
+        self.assertIn("expected_marker_count", str(caught.exception))
+
+    def test_a_variant_with_an_unknown_mode_is_refused(self):
+        with self.assertRaises(ManifestError):
+            make_hook(
+                variants=(
+                    AnchorForm(
+                        anchor=("move-result-object <r:reg>",),
+                        payload=("    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V",),
+                        mode="insert_sideways",
+                    ),
+                ),
+            )
+
+    def test_variants_with_supplied_captures_are_refused(self):
+        with self.assertRaises(ManifestError) as caught:
+            self.variant_hook(
+                supplied_captures=(
+                    CaptureSupply.from_dict(
+                        {
+                            "provides": [{"name": "guard", "kind": "reg"}],
+                            "suppliers": ["agent"],
+                        }
+                    ),
+                ),
+            )
+        self.assertIn("not", str(caught.exception).lower())
+
+    def test_variants_with_requires_proposal_are_refused(self):
+        with self.assertRaises(ManifestError):
+            self.variant_hook(requires_proposal=True)
+
+
+class ScopedByAnchorHostTests(unittest.TestCase):
+    """`by_anchor` naming which shape identifies the class.
+
+    A hook's fingerprints are UNIONED, not tried in turn, so an unscoped
+    by_anchor alongside a by_literal contributes the primary shape's matches on
+    every version — and for the Reels discover hook that shape matches cleanly in
+    three classes that are not the host.
+    """
+
+    def test_a_form_is_only_meaningful_on_by_anchor(self):
+        with self.assertRaises(ManifestError) as caught:
+            HostFingerprint("by_literal", literal="x", form=1)
+        self.assertIn("only by_anchor", str(caught.exception))
+
+    def test_a_form_the_hook_does_not_have_is_refused(self):
+        with self.assertRaises(ManifestError) as caught:
+            make_hook(hosts=(HostFingerprint("by_anchor", form=3),))
+        self.assertIn("but this hook has 1", str(caught.exception))
+
+    def test_from_dict_puts_the_note_in_the_note(self):
+        """Positionally, a field added in the middle shifts every later one.
+
+        `note` landing in `form` type-checks, survives every schema rule, and
+        surfaces as a class-scan for a form that does not exist.
+        """
+        host = HostFingerprint.from_dict(
+            {"kind": "by_anchor", "form": 1, "note": "why this exists"}
+        )
+        self.assertEqual(1, host.form)
+        self.assertEqual("why this exists", host.note)
+
+    def test_a_manifest_host_with_no_form_means_any_form(self):
+        host = HostFingerprint.from_dict({"kind": "by_anchor", "note": "n"})
+        self.assertIsNone(host.form)
+
+
 class DesignIntentTests(unittest.TestCase):
     """Pins the claim in the module docstring: five hooks resolve without an agent."""
 
@@ -3002,12 +3220,35 @@ class DesignIntentTests(unittest.TestCase):
                     self.assertNotRegex(stripped, r"0x7f[0-9a-f]{6}")
 
     def test_no_robust_host_needs_an_agent(self):
+        """And no hook anywhere does, which is the claim this pins.
+
+        Written when the kinds were named / by_literal / by_agent, as
+        `kind in {named, by_literal}` — which said "no agent" by listing the
+        alternatives. `by_anchor` arrived later and needs no agent either, so the
+        list stopped meaning what the test is called. Asserted directly now, and
+        over every hook rather than only the robust ones.
+        """
+        for hook in self.hooks:
+            with self.subTest(hook=hook.hook_id):
+                self.assertNotIn("by_agent", [host.kind for host in hook.hosts])
+
+    def test_every_robust_host_is_findable_without_reading_code(self):
+        """What the old spelling of the rule above was also protecting.
+
+        A robust hook is one whose host has a stable identity — a class name or a
+        literal the index already holds — rather than one recognisable only by the
+        shape of its instructions. It may ALSO carry a `by_anchor` fingerprint, as
+        the Reels discover hook does for the version that pooled its literal away,
+        but never only that: a hook findable solely by scanning code has the
+        robustness of its anchor, whatever its tier says.
+        """
         for hook in self.hooks:
             if hook.tier != "robust":
                 continue
             with self.subTest(hook=hook.hook_id):
                 self.assertTrue(
-                    all(host.kind in {"named", "by_literal"} for host in hook.hosts)
+                    any(host.kind in {"named", "by_literal"} for host in hook.hosts),
+                    "no fingerprint the index can answer",
                 )
 
     def test_both_ui_hooks_are_declared_by_anchor(self):

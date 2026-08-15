@@ -71,6 +71,7 @@ from .hook_manifest import (
     anchor_prefilter,
     assert_distinct,
     find_anchor_hits,
+    find_form_hits,
     load_manifest,
     resolve_in_source,
 )
@@ -193,6 +194,12 @@ class HookResolution:
             # used it. None when the hook did not resolve, which is the only case
             # where there is no such file.
             "smali_path": self.resolution.smali_path if self.resolution else None,
+            # WHICH shape of the site matched. A hook can carry more than one, and
+            # a version that starts matching a different one has been changed by
+            # Instagram in a way worth seeing: 442 pooled a literal out of its host
+            # and moved this hook from form 0 to form 1 while every other line of
+            # the report stayed the same. None when nothing matched.
+            "form": self.resolution.form if self.resolution else None,
             "searches": [search.to_dict() for search in self.searches],
             "candidates": [candidate.to_dict() for candidate in self.candidates],
             "supplies": [
@@ -312,7 +319,7 @@ class AnchorScan:
         return tuple(sorted(set(self.matched) | set(self.carrying_marker)))
 
 
-def scan_for_anchor(hook: Hook, decode: Path) -> AnchorScan:
+def scan_for_anchor(hook: Hook, decode: Path, form: int | None = None) -> AnchorScan:
     """Every class in *decode* whose body matches *hook*'s anchor, plus a cost record.
 
     Two stages, for the same reason :class:`generalise.DecodeLiterals` uses two: a
@@ -329,8 +336,17 @@ def scan_for_anchor(hook: Hook, decode: Path) -> AnchorScan:
     grepping the prefilter is empty and every class is matched: slower, never
     wrong.
     """
-    fragment = anchor_prefilter(hook.anchor)
-    needle = fragment.encode("utf-8") if fragment else b""
+    # One prefilter per form. A hook with a variant has two shapes of its site,
+    # and a class carrying only the variant's shape does not contain the primary
+    # form's fixed text — prefiltering on the primary alone would skip exactly the
+    # class the variant exists to find, and report it as absent rather than
+    # unscanned. If ANY form asserts no fixed text, every class is read: slower,
+    # never wrong, which is the same trade the single-form case already makes.
+    wanted = hook.forms if form is None else (hook.forms[form],)
+    fragments = tuple(anchor_prefilter(shape.anchor) for shape in wanted)
+    fragment = " | ".join(fragments) if len(fragments) > 1 else fragments[0]
+    needles = [text.encode("utf-8") for text in fragments if text]
+    usable = len(needles) == len(fragments)
     marker = hook.marker.encode("utf-8")
     matched: list[str] = []
     applied: list[str] = []
@@ -349,7 +365,7 @@ def scan_for_anchor(hook: Hook, decode: Path) -> AnchorScan:
             # The marker is tested alongside the fragment rather than relying on
             # the payload happening to re-emit the anchor: an already-applied host
             # must be findable whatever the payload did to the site.
-            if needle and needle not in data and marker not in data:
+            if usable and marker not in data and not any(n in data for n in needles):
                 continue
             survivors += 1
             body = data.decode("utf-8", "replace")
@@ -357,7 +373,7 @@ def scan_for_anchor(hook: Hook, decode: Path) -> AnchorScan:
             if declaration is None:  # pragma: no cover - smali without a .class
                 continue
             descriptor = declaration.group(1)
-            if find_anchor_hits(hook, body):
+            if find_form_hits(hook, body, only=form):
                 matched.append(descriptor)
             if hook.marker in body:
                 applied.append(descriptor)
@@ -451,7 +467,7 @@ def search_hosts(
                 "not the index, and no decode was passed. This is a caller contract "
                 "violation, not a property of the target"
             )
-        scan = scan_for_anchor(hook, Path(decode))
+        scan = scan_for_anchor(hook, Path(decode), fingerprint.form)
         candidates = scan.candidates
         evidence = {
             "prefilter": scan.prefilter,

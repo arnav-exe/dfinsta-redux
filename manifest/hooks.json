@@ -236,6 +236,11 @@
             "clips/discover/stream/"
           ],
           "note": "the class moved LX/05t2->LX/04tC; the literal did not. This literal alone appears in 5 classes on 430 and 5 on 439, and the anchor matches cleanly in 3 of them - analytics maps and prefetch allowlists load the same string. Only the class that builds the outgoing request path carries all three Reels endpoints, which is exactly one class on each version up to 441. BROKEN ON 442, 2026-08-15: this literal is no longer a const-string in the host. It lives in a packed-switch string table and the host fetches it as `const/16 v0, 0x5e; invoke-static {v0}, LX/019;->A00(I)Ljava/lang/String;` into the same register v8 that held the const-string on 441 — so this rule finds nothing, and the two sibling hooks resolve to LX/8Ec; without it. Seeding this host on one of the other two literals is NOT the repair: a by_literal host's literal must also appear in its anchor, which is what keeps the class search and the patch site from drifting apart, and the anchor here has to pin the pooled fetch. Following a pooled literal needs a host kind that by_literal cannot express. The key renumbers every release and must be derived from the table, never recorded."
+        },
+        {
+          "kind": "by_anchor",
+          "form": 1,
+          "note": "How the host is found on a version that pooled this hook's literal away, where the by_literal fingerprint above finds nothing. Scoped to form 1 because a hook's fingerprints are UNIONED, not tried in turn: unscoped, this would also contribute the primary form's matches, and the primary anchor matches cleanly in three classes that are not the host — analytics maps and prefetch allowlists carry the same literal. Form 1 matches exactly one class on 442 and none at all on 439, 440 and 441, which is what makes the union safe."
         }
       ],
       "anchor": [
@@ -268,6 +273,28 @@
       "status": "active",
       "intent_constraints": [
         "when the feature is enabled the app must behave exactly as stock"
+      ],
+      "variants": [
+        {
+          "note": "442's shape of the same site. Instagram moved `clips/discover/` into a packed-switch string table and the host now fetches it by index: same class, same method A08, same register receiving the path (v8 on 439, 440, 441 and 442) — only the shape of the fetch changed. The anchor opens on `ClipsApiUtilHelper;->A00(UserSession)`, a real Instagram class name rather than an obfuscated one, and that three-instruction opening matches EXACTLY ONE site in the whole decode on all four versions. The pool key is NOT part of the anchor and must never be recorded: it renumbers every release, and it is the only thing that would distinguish this fetch from the 1,525 others if the landmark were dropped. Patching the pool entry itself is not the repair either — four call sites read key 0x5e on 442 and only one is this host.",
+          "anchor": [
+            "invoke-static {<c:reg>}, Lcom/instagram/clips/api/ClipsApiUtilHelper;->A00(Lcom/instagram/common/session/UserSession;)<ret:any>",
+            "move-result-object <m:reg>",
+            "sget-object <s:reg>, <field:any>",
+            "const/16 <k:reg>, <key:any>",
+            "invoke-static {<k>}, <pool:any>(I)Ljava/lang/String;",
+            "move-result-object <r:reg>"
+          ],
+          "mode": "insert_after",
+          "payload": [
+            "    invoke-static {}, Lcom/dfinstagram/probe;->h_replace_reels_discover_endpoint()V",
+            "",
+            "    # dfinsta_reels_discover_endpoint",
+            "    invoke-static {<r>}, Lcom/dfinstagram/hooks;->replaceReelsEndpoint(Ljava/lang/String;)Ljava/lang/String;",
+            "",
+            "    move-result-object <r>"
+          ]
+        }
       ]
     },
     {
