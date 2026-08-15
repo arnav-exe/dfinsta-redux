@@ -235,7 +235,7 @@
             "clips/homecoming/",
             "clips/discover/stream/"
           ],
-          "note": "the class moved LX/05t2->LX/04tC; the literal did not. This literal alone appears in 5 classes on 430 and 5 on 439, and the anchor matches cleanly in 3 of them - analytics maps and prefetch allowlists load the same string. Only the class that builds the outgoing request path carries all three Reels endpoints, which is exactly one class on each version."
+          "note": "the class moved LX/05t2->LX/04tC; the literal did not. This literal alone appears in 5 classes on 430 and 5 on 439, and the anchor matches cleanly in 3 of them - analytics maps and prefetch allowlists load the same string. Only the class that builds the outgoing request path carries all three Reels endpoints, which is exactly one class on each version up to 441. BROKEN ON 442, 2026-08-15: this literal is no longer a const-string in the host. It lives in a packed-switch string table and the host fetches it as `const/16 v0, 0x5e; invoke-static {v0}, LX/019;->A00(I)Ljava/lang/String;` into the same register v8 that held the const-string on 441 — so this rule finds nothing, and the two sibling hooks resolve to LX/8Ec; without it. Seeding this host on one of the other two literals is NOT the repair: a by_literal host's literal must also appear in its anchor, which is what keeps the class search and the patch site from drifting apart, and the anchor here has to pin the pooled fetch. Following a pooled literal needs a host kind that by_literal cannot express. The key renumbers every release and must be derived from the table, never recorded."
         }
       ],
       "anchor": [
@@ -283,10 +283,9 @@
           "kind": "by_literal",
           "literal": "clips/homecoming/",
           "co_literals": [
-            "clips/discover/",
             "clips/discover/stream/"
           ],
-          "note": "same host class as the other two Reels literals, and co-location is what proves it: this literal alone matched 2 classes on both versions."
+          "note": "All three Reels replacements share one host class, and the witness is the pair of literals that are still const-strings in it on every version measured. Co-location is what proves the host: this literal alone matched 2 classes on 430, 439 and 440, and `clips/discover/` alone appears in 5 classes on 430 and 439 with the anchor matching cleanly in 3 of them — analytics maps and prefetch allowlists load the same string. The pair {clips/homecoming/, clips/discover/stream/} picks EXACTLY ONE class on 439 (LX/04tC;), 440 (LX/4Sj;), 441 (LX/08He;) and 442 (LX/8Ec;), and on the first three it is the same class the old three-literal rule picked. CHANGED 2026-08-15: `clips/discover/` was dropped from the witness set because 442 moved it into a packed-switch string table (LX/019;->A00(0x5e)) and the host fetches it by index. Requiring it co-located made the intersection empty and all three hooks failed to resolve on a version where nothing about the host had moved: 442's LX/8Ec; has the same A08 and A0A method names as 441's LX/08He;, and A0A still holds both of these literals in v9. A literal that can be pooled out is not a reliable witness."
         }
       ],
       "anchor": [
@@ -333,10 +332,9 @@
           "kind": "by_literal",
           "literal": "clips/discover/stream/",
           "co_literals": [
-            "clips/discover/",
             "clips/homecoming/"
           ],
-          "note": "same host class as the other two Reels literals. Alone it matched 3 classes on 430 and 4 on 439, with the anchor resolving in 3 of them."
+          "note": "All three Reels replacements share one host class, and the witness is the pair of literals that are still const-strings in it on every version measured. Co-location is what proves the host: this literal alone matched 2 classes on 430, 439 and 440, and `clips/discover/` alone appears in 5 classes on 430 and 439 with the anchor matching cleanly in 3 of them — analytics maps and prefetch allowlists load the same string. The pair {clips/homecoming/, clips/discover/stream/} picks EXACTLY ONE class on 439 (LX/04tC;), 440 (LX/4Sj;), 441 (LX/08He;) and 442 (LX/8Ec;), and on the first three it is the same class the old three-literal rule picked. CHANGED 2026-08-15: `clips/discover/` was dropped from the witness set because 442 moved it into a packed-switch string table (LX/019;->A00(0x5e)) and the host fetches it by index. Requiring it co-located made the intersection empty and all three hooks failed to resolve on a version where nothing about the host had moved: 442's LX/8Ec; has the same A08 and A0A method names as 441's LX/08He;, and A0A still holds both of these literals in v9. A literal that can be pooled out is not a reliable witness."
         }
       ],
       "anchor": [
