@@ -49,7 +49,7 @@ sys.path.insert(0, str(REPOSITORY / "tools"))
 from check_anchor import check as count_anchor  # noqa: E402
 from check_anchor import decodes  # noqa: E402
 
-MANIFEST = REPOSITORY / "manifest" / "hooks.json"
+DEFAULT_MANIFEST = REPOSITORY / "manifest" / "hooks.json"
 
 
 def host_from(report: dict, hook_id: str) -> tuple[str, Path]:
@@ -151,17 +151,43 @@ def render(run: ReanchorRun) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--resolution", type=Path, required=True)
+    parser.add_argument("--resolution", type=Path, default=None,
+                        help="a resolution.json whose report names the host")
+    parser.add_argument("--host", default=None,
+                        help="name the host class directly, when you already know it — "
+                             "a sibling hook resolving to the same class is the usual "
+                             "way, and is how 442's was known")
+    parser.add_argument("--decode", type=Path, default=None,
+                        help="the decoded tree the host lives in; required with --host")
     parser.add_argument("--hook", required=True)
     parser.add_argument("-k", type=int, default=3, help="proposers to ask")
     parser.add_argument("--model", default=None)
     parser.add_argument("--apply", action="store_true",
                         help="write the winning variant into manifest/hooks.json")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--within-host-only", action="store_true",
+        help="accept an anchor that is unique INSIDE the host without also being "
+             "unique across the decode. Only correct when a named or by_literal "
+             "fingerprint still finds the class — five of the eight shipped anchor "
+             "forms are like this, so the strict bar can reject a repair that works",
+    )
+    parser.add_argument(
+        "--manifest", type=Path, default=DEFAULT_MANIFEST,
+        help="which manifest to read the hook from, and write a variant into. "
+             "Point it at a copy to rehearse a repair without touching the real one",
+    )
     args = parser.parse_args(argv)
 
-    if not args.resolution.is_file():
+    if args.resolution is None and not (args.host and args.decode):
+        print("refusing: give either --resolution, or --host with --decode",
+              file=sys.stderr)
+        return 2
+    if args.resolution is not None and not args.resolution.is_file():
         print(f"refusing: {args.resolution} is not a file", file=sys.stderr)
+        return 2
+    if args.decode is not None and not args.decode.is_dir():
+        print(f"refusing: {args.decode} is not a directory", file=sys.stderr)
         return 2
     if args.k < 1:
         print("refusing: -k must be at least 1", file=sys.stderr)
@@ -171,9 +197,13 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
 
-    report = json.loads(args.resolution.read_text(encoding="utf-8"))
-    host, decode = host_from(report, args.hook)
-    hook = next((item for item in load_manifest(MANIFEST) if item.hook_id == args.hook), None)
+    if args.host:
+        host, decode, report = args.host, args.decode, {}
+    else:
+        report = json.loads(args.resolution.read_text(encoding="utf-8"))
+        host, decode = host_from(report, args.hook)
+    manifest_hooks = load_manifest(args.manifest)
+    hook = next((item for item in manifest_hooks if item.hook_id == args.hook), None)
     if hook is None:
         print(f"refusing: no hook {args.hook!r} in the manifest", file=sys.stderr)
         return 2
@@ -194,7 +224,12 @@ def main(argv: list[str] | None = None) -> int:
 
     version = str(report.get("version") or decode.parent.name)
     run = collect(
-        hook, host, source_of(host, decode), version, proposers, counts_for_anchor
+        hook, host, source_of(host, decode), version, proposers, counts_for_anchor,
+        fingerprint=not args.within_host_only,
+        # Every other hook, so a candidate that pins a site one of them already
+        # owns is refused. Counting cannot see that: the wrong endpoint in the
+        # right class is unique, selective, and compiles.
+        others=manifest_hooks,
     )
 
     print(json.dumps(run.to_dict(), indent=2) if args.json else render(run))
@@ -210,8 +245,8 @@ def main(argv: list[str] | None = None) -> int:
         f"once inside {host}, and never more than one class in any decode on disk. "
         "The port's build and its verifier are what check it next."
     )
-    apply_variant(MANIFEST, args.hook, as_variant(winner, note))
-    print(f"\n  written into {MANIFEST} as a variant of {args.hook}")
+    apply_variant(args.manifest, args.hook, as_variant(winner, note))
+    print(f"\n  written into {args.manifest} as a variant of {args.hook}")
     return 0
 
 

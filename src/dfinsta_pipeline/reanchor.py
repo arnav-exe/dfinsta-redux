@@ -63,7 +63,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .hook_manifest import (
     AnchorForm,
@@ -95,6 +95,7 @@ ACCEPTED = "accepted"
 NOT_COMPILED = "does-not-compile"
 NOT_IN_HOST = "not-once-in-the-host"
 NOT_SELECTIVE = "matches-several-classes"
+NOT_MY_SITE = "another-hook-s-site"
 DEAD = "matches-nothing"
 BAD_FORM = "form-refused"
 
@@ -324,6 +325,9 @@ def check(
     candidate: Candidate,
     host_source: str,
     counts: Mapping[str, int],
+    *,
+    fingerprint: bool = True,
+    others: Sequence[Hook] = (),
 ) -> Checked:
     """Judge one candidate. Nothing here asks an agent anything.
 
@@ -331,6 +335,21 @@ def check(
     decode on disk — `tools/check_anchor.py` computes exactly this, and the
     caller passes it in rather than this module scanning, so a test needs no
     decode and a run needs no second scanner.
+
+    *fingerprint* is whether this anchor must ALSO identify the host class, and
+    it is the difference between two very different bars. Measured over four
+    versions, only three of the eight shipped anchor forms match exactly one
+    class in a whole decode; the rest work because a `named` or `by_literal`
+    fingerprint picks the class first and the anchor only has to be unique
+    *inside* it. `tigon_url_block`'s matches seven classes on every version and
+    always has.
+
+    So demanding app-wide selectivity when the host is already findable asks for
+    something harder than the job needs, and rejects repairs that would work.
+    It defaults to True because the case this module exists for — 442 — was one
+    where the host search had died with the literal, so the new anchor had to do
+    both. Pass False only when something else really does find the class, and
+    know that a variant accepted this way needs a host fingerprint that resolves.
     """
     try:
         compile_anchor(candidate.anchor)
@@ -352,7 +371,7 @@ def check(
             counts,
             in_host,
         )
-    if counts and any(value > 1 for value in counts.values()):
+    if fingerprint and counts and any(value > 1 for value in counts.values()):
         worst = max(counts.items(), key=lambda item: item[1])
         return Checked(
             candidate,
@@ -362,7 +381,7 @@ def check(
             counts,
             in_host,
         )
-    if counts and not any(counts.values()):
+    if fingerprint and counts and not any(counts.values()):
         return Checked(
             candidate,
             DEAD,
@@ -372,7 +391,36 @@ def check(
             counts,
             in_host,
         )
-    return Checked(candidate, ACCEPTED, "once in the host, and never ambiguous", counts, in_host)
+    # Does it pin a site another hook already owns? Counting cannot tell: an
+    # anchor on the WRONG endpoint in the RIGHT class is unique, selective and
+    # compiles. A live proposer produced exactly that — it read the discover
+    # literal as having been renamed to `clips/discover/stream/` and anchored on
+    # the stream site, which `replace_reels_stream_endpoint` already patches. Two
+    # hooks on one site, a different marker each, no collision to detect, and the
+    # endpoint this hook exists for never blanked.
+    span = (hits[0][1][0].first_line, hits[0][1][0].last_line)
+    for other in others:
+        if other.hook_id == hook.hook_id:
+            continue
+        for _, found in find_form_hits(other, host_source):
+            for hit in found:
+                if hit.first_line <= span[1] and span[0] <= hit.last_line:
+                    return Checked(
+                        candidate,
+                        NOT_MY_SITE,
+                        f"lines {span[0]}-{span[1]} are where {other.hook_id} patches. "
+                        "An anchor on the wrong endpoint in the right class passes every "
+                        "count there is",
+                        counts,
+                        in_host,
+                    )
+    reason = (
+        "once in the host, and never ambiguous"
+        if fingerprint
+        else "once in the host; app-wide selectivity NOT required, so this variant "
+             "needs a host fingerprint that still resolves"
+    )
+    return Checked(candidate, ACCEPTED, reason, counts, in_host)
 
 
 def collect(
@@ -382,6 +430,9 @@ def collect(
     version_label: str,
     proposers: Mapping[str, AgentRunner],
     counts_for: Callable[[tuple[str, ...]], Mapping[str, int]],
+    *,
+    fingerprint: bool = True,
+    others: Sequence[Hook] = (),
 ) -> ReanchorRun:
     """Ask every proposer, check every answer, return all of it.
 
@@ -402,7 +453,12 @@ def collect(
         except Exception as error:  # noqa: BLE001 - any failure is one proposer lost
             failures.append(f"{name}: {type(error).__name__}: {error}")
             continue
-        checked.append(check(hook, candidate, host_source, counts_for(candidate.anchor)))
+        checked.append(
+            check(
+                hook, candidate, host_source, counts_for(candidate.anchor),
+                fingerprint=fingerprint, others=others,
+            )
+        )
     return ReanchorRun(hook.hook_id, host, tuple(checked), tuple(failures))
 
 

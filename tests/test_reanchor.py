@@ -25,6 +25,7 @@ from pathlib import Path
 from dfinsta_pipeline.hook_manifest import Hook, HostFingerprint, ManifestError
 from dfinsta_pipeline.reanchor import (
     ACCEPTED,
+    NOT_MY_SITE,
     BAD_FORM,
     NOT_COMPILED,
     NOT_IN_HOST,
@@ -146,6 +147,43 @@ class CheckingTests(unittest.TestCase):
         before = HOOK.forms
         check(HOOK, candidate(), HOST_SOURCE, {"442": 1})
         self.assertEqual(before, HOOK.forms)
+
+
+class TwoBarsTests(unittest.TestCase):
+    """App-wide selectivity is the bar for a FINGERPRINT, not for an anchor.
+
+    Measured over four versions, only three of the eight shipped forms match one
+    class in a whole decode. `tigon_url_block`'s matches seven, on every version,
+    and always has — it works because a `named` fingerprint picks the class
+    first. Demanding the strict bar everywhere asks for something harder than the
+    job needs and rejects repairs that would work.
+    """
+
+    def test_the_strict_bar_is_the_default(self) -> None:
+        """Because the case this exists for — 442 — had lost its host search
+        along with the literal, so the new anchor had to do both jobs."""
+        checked = check(HOOK, candidate(), HOST_SOURCE, {"441": 4, "442": 1})
+        self.assertEqual(NOT_SELECTIVE, checked.outcome)
+
+    def test_within_host_only_accepts_what_the_strict_bar_refuses(self) -> None:
+        checked = check(
+            HOOK, candidate(), HOST_SOURCE, {"441": 4, "442": 1}, fingerprint=False
+        )
+        self.assertEqual(ACCEPTED, checked.outcome)
+
+    def test_the_relaxed_bar_still_requires_once_in_the_host(self) -> None:
+        """It relaxes which classes may match, never how many sites in this one."""
+        twice = HOST_SOURCE + HOST_SOURCE.split(".class public LX/8Ec;")[1]
+        checked = check(HOOK, candidate(), twice, {"442": 1}, fingerprint=False)
+        self.assertEqual(NOT_IN_HOST, checked.outcome)
+
+    def test_the_relaxed_acceptance_says_what_it_still_depends_on(self) -> None:
+        """A variant accepted this way is useless without a host fingerprint that
+        resolves, and the record has to say so or the next reader will not know."""
+        checked = check(
+            HOOK, candidate(), HOST_SOURCE, {"441": 4, "442": 1}, fingerprint=False
+        )
+        self.assertIn("host fingerprint", checked.reason)
 
 
 class AcceptanceIsNotAgreementTests(unittest.TestCase):
@@ -446,3 +484,118 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             self.cli.source_of("LX/Nope;", self.root / "decode")
         self.assertIn("0 file(s)", str(caught.exception))
+
+
+class TheWrongEndpointInTheRightClassTests(unittest.TestCase):
+    """The finding a live run produced, kept as a test.
+
+    Three real proposers were asked to re-derive 442's repair on 2026-08-16. Two
+    rediscovered the hand-written anchor — same landmark, different capture names,
+    which is why agreement was never the acceptance rule. The third read the
+    discover literal as having been RENAMED to `clips/discover/stream/` and
+    anchored on the stream site, which `replace_reels_stream_endpoint` already
+    patches.
+
+    **It passed every check there was.** It compiled, matched exactly once inside
+    the host, was selective across every decode, and its form constructed. Two
+    hooks would have patched one site, with a different marker each so nothing
+    collided, and the endpoint the hook exists for would never have been blanked.
+    Counting is necessary and it is not sufficient.
+    """
+
+    #: Verbatim from the run. Capture names and all.
+    CORRECT = (
+        "invoke-static {<sess:reg>}, Lcom/instagram/clips/api/ClipsApiUtilHelper;"
+        "->A00(Lcom/instagram/common/session/UserSession;)<reqtype:type>",
+        "move-result-object <req:reg>",
+        "sget-object <enumreg:reg>, <enumcls:type>-><enumfield:member>:Ljava/lang/Integer;",
+        "const/16 <idx:reg>, <idxval:any>",
+        "invoke-static {<idx>}, <pool:type>-><poolm:member>(I)Ljava/lang/String;",
+        "move-result-object <r:reg>",
+    )
+    WRONG_SITE = (
+        'const-string <r:reg>, "clips/discover/stream/"',
+        "goto/16 <l:any>",
+    )
+
+    def setUp(self) -> None:
+        self.host = "\n".join([
+            ".class public final LX/8Ec;",
+            ".super Ljava/lang/Object;",
+            "",
+            ".method public final A0A()V",
+            "    .locals 4",
+            "",
+            '    const-string v9, "clips/discover/stream/"',
+            "",
+            "    goto/16 :goto_2",
+            "",
+            "    return-void",
+            ".end method",
+            "",
+        ])
+        self.stream_hook = Hook(
+            hook_id="replace_reels_stream_endpoint",
+            intent="blank the stream path",
+            tier="robust",
+            strategy="endpoint_replace",
+            semantic_deps=("clips/discover/stream/",),
+            hosts=(HostFingerprint("by_literal", literal="clips/discover/stream/", note="n"),),
+            anchor=('const-string <r:reg>, "clips/discover/stream/"',),
+            payload=("    # dfinsta_reels_stream_endpoint",),
+            marker="# dfinsta_reels_stream_endpoint",
+            expected_marker_count=1,
+            mode="replace",
+        )
+        self.discover_hook = Hook(
+            hook_id="replace_reels_discover_endpoint",
+            intent="blank the discover path",
+            tier="robust",
+            strategy="endpoint_replace",
+            semantic_deps=("clips/discover/",),
+            hosts=(HostFingerprint("by_literal", literal="clips/discover/", note="n"),),
+            anchor=('const-string <r:reg>, "clips/discover/"',),
+            payload=("    # dfinsta_reels_discover_endpoint",
+                     "    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V"),
+            marker="# dfinsta_reels_discover_endpoint",
+            expected_marker_count=1,
+            mode="replace",
+        )
+
+    def judge(self, anchor, others):
+        return check(
+            self.discover_hook,
+            Candidate(
+                "live",
+                anchor,
+                ("    # dfinsta_reels_discover_endpoint",
+                 "    invoke-static {<r>}, LH;->f(Ljava/lang/String;)V"),
+                "replace",
+            ),
+            self.host,
+            {"442": 1},
+            others=others,
+        )
+
+    def test_without_the_other_hooks_the_wrong_site_is_accepted(self) -> None:
+        """The control, and the state this was in before the live run. Every
+        count says yes."""
+        self.assertEqual(ACCEPTED, self.judge(self.WRONG_SITE, others=()).outcome)
+
+    def test_with_them_it_is_refused_and_names_the_hook_it_would_collide_with(self) -> None:
+        checked = self.judge(self.WRONG_SITE, others=(self.stream_hook, self.discover_hook))
+        self.assertEqual(NOT_MY_SITE, checked.outcome)
+        self.assertIn("replace_reels_stream_endpoint", checked.reason)
+
+    def test_a_hook_does_not_collide_with_itself(self) -> None:
+        """Its own old form matches its own old site; that is not a collision, it
+        is the thing being replaced."""
+        checked = check(
+            self.stream_hook,
+            Candidate("live", self.WRONG_SITE,
+                      ("    # dfinsta_reels_stream_endpoint",), "replace"),
+            self.host,
+            {"442": 1},
+            others=(self.stream_hook, self.discover_hook),
+        )
+        self.assertEqual(ACCEPTED, checked.outcome, checked.reason)
