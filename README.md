@@ -88,6 +88,19 @@ PYTHONPATH=src .venv/bin/python -m dfinsta_pipeline.driver apks/<stock>.apk \
     --version <version> --recorded-at <ISO8601> --stop-after build
 ```
 
+```bash
+# is this anchor selective enough? counts it against every decode on disk
+PYTHONPATH=src .venv/bin/python tools/check_anchor.py --anchor-file candidate.txt
+PYTHONPATH=src .venv/bin/python tools/check_anchor.py --hook <id> [--form N]
+```
+
+When a version changes the *shape* of a patch site — 442 moved a literal into a
+shared string table — the repair is a new anchor, and the only thing that makes
+one trustworthy is counting. Propose by judgement, accept by arithmetic: a
+candidate that matches 114 sites and one that matches 1 read the same on the page.
+It exits non-zero for an anchor that matches several classes **and** for one that
+matches nothing, because silence and success look identical otherwise.
+
 The two steps that stay human by design: **ruling** on candidate endpoints at the
 gate, and **writing** the `url_block_rules` entry afterwards — the match kind and
 the preference key are both refused as underivable.
