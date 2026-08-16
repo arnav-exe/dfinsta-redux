@@ -101,6 +101,18 @@ candidate that matches 114 sites and one that matches 1 read the same on the pag
 It exits non-zero for an anchor that matches several classes **and** for one that
 matches nothing, because silence and success look identical otherwise.
 
+```bash
+# the host resolved and its anchor did not: ask k agents for a new pattern,
+# and count every answer before believing any of it
+PYTHONPATH=src .venv/bin/python tools/reanchor.py \
+    --resolution work/<version>-port/resolution.json --hook <id> [--apply]
+```
+
+k is attempts, not votes. Two agents agreeing on an anchor that matches four
+classes are both wrong, and one agent alone whose answer matches exactly once is
+right — so acceptance is by counting, never by agreement. Without `--apply` it
+writes nothing.
+
 The two steps that stay human by design: **ruling** on candidate endpoints at the
 gate, and **writing** the `url_block_rules` entry afterwards — the match kind and
 the preference key are both refused as underivable.
