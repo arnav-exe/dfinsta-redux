@@ -490,6 +490,21 @@ KNOWN_REPORTS = frozenset({REPORTS_BLOCKED})
 
 #: Instagram's own error-event tag. Not ours: these events are emitted at
 #: Instagram's discretion and can go missing entirely — see the module docstring.
+#: The tag the generated probe class logs under, one line per hook whose patched
+#: site executed. A DIFFERENT tag from `TAG` on purpose: an observation is a thing
+#: the app did, and a probe is a thing OUR code did, and the two must not be
+#: countable as each other.
+PROBE_TAG = "DFInstaProbe"
+
+#: `[<stamp> <pid> <tid>] <LEVEL> DFInstaProbe: <hook_id>`, matching `_OBSERVE_LINE`
+#: in shape so a line merely mentioning the tag inside another message body cannot
+#: be read as a probe.
+_PROBE_LINE = re.compile(
+    r"^\s*(?:\S+\s+\S+\s+\d+\s+\d+\s+)?[VDIWEFS]\s+"
+    + re.escape(PROBE_TAG)
+    + r":\s?(?P<hook>.*)$"
+)
+
 BLOCK_TAG = "IgFunctionalErrorEvent"
 
 #: The exception `throwIfBlocked` raises, as the header line spells it. Matched
@@ -775,6 +790,69 @@ class BlockCount:
 
 
 @dataclass(frozen=True)
+class Probes:
+    """Which hooks reported executing in one capture, and how many times.
+
+    The probe is the one signal DFInsta emits **about itself**. A count here says
+    a patched site ran; it does not say the request was blocked, and it must never
+    be read as one — the site executes in every toggle state, because the toggle
+    is tested inside the code the probe sits next to.
+
+    What it is for is the other direction. A path whose count falls and whose hook
+    never executed did not fall because of us, and a fall too small to clear the
+    noise floor is a different thing when our machinery demonstrably ran in every
+    session of the arm. On 442 that was the whole difference between "we cannot
+    say" and "we cannot say from counting alone".
+
+    A hook that never reported is **absent**, never a recorded zero — the rule
+    `counts` and `Refusals` both follow. Absence of the whole object is different
+    again and is spelled by `None`: it means nobody looked for probes, which is
+    every row recorded before 2026-08-17.
+    """
+
+    #: `(hook_id, count)`, sorted by hook. A Mapping is accepted and normalised.
+    by_hook: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.by_hook, Mapping):
+            object.__setattr__(
+                self, "by_hook", tuple(sorted((str(k), int(v)) for k, v in self.by_hook.items()))
+            )
+        else:
+            object.__setattr__(
+                self, "by_hook", tuple(sorted((str(k), int(v)) for k, v in self.by_hook))
+            )
+        for hook, count in self.by_hook:
+            if not hook.strip():
+                raise ObservationError("a probe count carries an empty hook id")
+            if count < 1:
+                raise ObservationError(
+                    f"probe {hook!r} carries {count}; a hook that never reported is "
+                    "absent, not a recorded zero"
+                )
+        if len({hook for hook, _ in self.by_hook}) != len(self.by_hook):
+            raise ObservationError("a probe hook id appears twice")
+
+    def count(self, hook_id: str) -> int:
+        return dict(self.by_hook).get(hook_id, 0)
+
+    @property
+    def hooks(self) -> tuple[str, ...]:
+        return tuple(hook for hook, _ in self.by_hook)
+
+    @property
+    def total(self) -> int:
+        return sum(count for _, count in self.by_hook)
+
+    def as_dict(self) -> dict[str, int]:
+        return {hook: count for hook, count in self.by_hook}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "Probes":
+        return cls(by_hook=tuple(sorted((str(k), int(v)) for k, v in data.items())))
+
+
+@dataclass(frozen=True)
 class Refusals:
     """Which paths the guard refused in one capture, and how many times.
 
@@ -910,6 +988,11 @@ class Capture:
     #: `Refusals()` with nothing in it is the *measured* statement that this
     #: configuration refused nothing, and it is the baseline everything else is
     #: compared against.
+    #: Which hooks reported executing. Always present from `parse`, because a
+    #: reader that looked is what makes an empty one mean "no hook reported" —
+    #: `None` is a row recorded before anything looked for probes at all.
+    probes: "Probes | None" = None
+
     #: Defaulted to `None` and **not** to an empty `Refusals`: a hand-built capture
     #: that said nothing about refusals must not come out saying none happened.
     #: `parse` always sets this explicitly, so the default is reached only by a
@@ -1060,6 +1143,7 @@ def parse(text: str) -> Capture:
     counts: dict[str, int] = {}
     features: dict[str, int] = {}
     refused: dict[str, int] = {}
+    probed: dict[str, int] = {}
     blocks = 0
     toggles: ToggleState | None = None
     reports: frozenset[str] | None = None
@@ -1083,6 +1167,18 @@ def parse(text: str) -> Capture:
             previous = line
             continue
         previous = line
+        probe = _PROBE_LINE.match(line)
+        if probe is not None:
+            hook = probe.group("hook")
+            if not hook.strip() or hook != hook.strip():
+                raise ObservationError(
+                    f"line {number}: {PROBE_TAG} emitted {hook!r}. The contract is one "
+                    "line per hook whose site executed, and its message is the hook id "
+                    "— an empty or padded one cannot be attributed to any hook"
+                )
+            _note_stamp(line, stamps)
+            probed[hook] = probed.get(hook, 0) + 1
+            continue
         match = _OBSERVE_LINE.match(line)
         if match is None:
             continue
@@ -1195,6 +1291,10 @@ def parse(text: str) -> Capture:
             if reports is not None and REPORTS_BLOCKED in reports
             else None
         ),
+        # Always a real `Probes`, never `None`, because a parser that looked is
+        # what makes an empty one mean "no hook reported". `None` is reserved for
+        # a stored row written before anything looked — see `Capture.probes`.
+        probes=Probes(probed),
         span_seconds=_span(stamps),
     )
 
@@ -1282,6 +1382,11 @@ class ObservationSession:
     #: `append` refuses it for anything new. Required, and deliberately ahead of
     #: `counts`, for the reason `toggles` is.
     walk: str | None
+    #: Which hooks reported executing, from the build's own probe lines. `None`
+    #: is a row recorded before anything looked; an empty `Probes` is a reader
+    #: that looked and found none, which is evidence and not an absence.
+    probes: "Probes | None" = None
+
     counts: Mapping[str, int] = field(default_factory=dict)
     #: How many requests the guard refused, as the capture reported them. `None`
     #: means **nobody counted** — the shape of every row written before this host
@@ -1523,6 +1628,13 @@ class ObservationSession:
         refused = (
             {"refusals": self.refusals.as_dict()} if self.refusals is not None else {}
         )
+        # Same rule a fifth time. A row written before anything looked for probes
+        # comes back with the key absent, never with an empty object that would
+        # read as "no hook executed" — which is a measurement none of those rows
+        # took.
+        probed = (
+            {"probes": self.probes.as_dict()} if self.probes is not None else {}
+        )
         # Same rule a third time. The twelve 439 rows written before a walk was
         # named come back byte for byte rather than acquiring a walk nobody stated
         # or a span nobody measured.
@@ -1548,6 +1660,7 @@ class ObservationSession:
             **timed,
             **counted,
             **refused,
+            **probed,
             "counts": dict(sorted(self.counts.items())),
             # Derived and written anyway, following `SignalCount.to_dict`. It is
             # the number a human reads first, and `from_dict` refuses a row whose
@@ -1575,6 +1688,7 @@ class ObservationSession:
             "span_seconds",
             "blocks",
             "refusals",
+            "probes",
             "counts",
             "total",
         }
@@ -1663,6 +1777,15 @@ class ObservationSession:
                     "spelling of absent, in the one field whose zero is evidence"
                 )
             blocks = BlockCount.from_dict(data["blocks"])
+        probes: Probes | None = None
+        if "probes" in data:
+            if data["probes"] is None:
+                raise ObservationError(
+                    "an observation session states probes: null. A row nobody read "
+                    "probes for is spelled by the key being absent, and a null is a "
+                    "second spelling of absent in a field whose empty value is evidence"
+                )
+            probes = Probes.from_dict(data["probes"])
         refusals: Refusals | None = None
         if "refusals" in data:
             if data["refusals"] is None:
@@ -1687,6 +1810,7 @@ class ObservationSession:
             span_seconds=span,
             blocks=blocks,
             refusals=refusals,
+            probes=probes,
             counts={str(key): value for key, value in counts.items()},
         )
         stated = data.get("total")

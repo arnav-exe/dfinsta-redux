@@ -15,6 +15,11 @@ So the capture is reduced to a few kinds of line and committed alongside the sto
   * `DFInstaObserve: !blocked /some/path/` — one per request the guard refused,
     naming the literal that matched. This is the block signal; the two below are
     Instagram's own report of the same event, kept as corroboration
+  * `DFInstaProbe: <hook_id>` — one per hook whose patched site executed. The
+    only signal that says OUR code ran, as distinct from what the app asked for.
+    Dropped until 2026-08-17, which left the committed captures unable to
+    corroborate a row's probe counts — and this reducer's own `--verify` is what
+    said so, the moment the parser learned to read them
   * the block header `IgFunctionalErrorEvent: java.io.IOException: Blocked by …`
     and the category line immediately above it, which names the failing feature
 
@@ -39,6 +44,7 @@ import sys
 from pathlib import Path
 
 OBSERVE = re.compile(r"DFInstaObserve:")
+PROBE = re.compile(r"DFInstaProbe:")
 BLOCK = re.compile(r"IgFunctionalErrorEvent: java\.io\.IOException: Blocked by DFInsta setting")
 CATEGORY = re.compile(r"IgFunctionalErrorEvent: [A-Z_]+\s*$")
 
@@ -48,7 +54,7 @@ def redact(text: str) -> str:
     lines = text.splitlines()
     keep: list[int] = []
     for index, line in enumerate(lines):
-        if OBSERVE.search(line):
+        if OBSERVE.search(line) or PROBE.search(line):
             keep.append(index)
         elif BLOCK.search(line):
             # The category sits on the line above and is what attributes the

@@ -345,6 +345,30 @@ class State:
         return ", ".join(str(count) for count in measured)
 
     @property
+    def probing(self) -> tuple[Any, ...]:
+        """The sessions that looked for probes at all. Same rule as `reporting`."""
+
+        return tuple(item for item in self.sessions if item.probes is not None)
+
+    @property
+    def probed(self) -> bool:
+        """Can this state answer "did our code run", replicated?"""
+
+        return len(self.probing) > 1
+
+    def executions(self, hook_id: str) -> tuple[int, ...] | None:
+        """How often `hook_id` reported executing, per probing session.
+
+        `None` when fewer than two sessions looked — absent, not zero. Otherwise
+        every entry is a measurement, zeroes included: a hook missing from a
+        session's probes was instrumented and did not run.
+        """
+
+        if not self.probed:
+            return None
+        return tuple(item.probes.count(hook_id) for item in self.probing)  # type: ignore[union-attr]
+
+    @property
     def refused_total(self) -> int | None:
         """Every refusal this state made, across all paths. `None` if unreportable.
 
@@ -389,6 +413,12 @@ class Classification:
     #: Things true of this path that the verdict does not carry — an arm that also
     #: moved it, a state nobody could read. Never silently dropped.
     caveats: tuple[str, ...] = ()
+    #: What OUR code did, from the build's own probe lines: one line per hook that
+    #: declares this literal, saying whether its patched site executed in each
+    #: state. Its own field and not a caveat, because a caveat here is about a
+    #: movement nothing explains, and this is about whether the machinery ran at
+    #: all — the two read as each other if they share a list.
+    execution: tuple[str, ...] = ()
     #: `None` when no state was walked twice, which is not the same as `0`.
     noise_floor: int | None = None
     #: `state text -> counts, in recorded order`.
@@ -407,6 +437,7 @@ class Classification:
             "reason": self.reason,
             "findings": [item.to_dict() for item in self.findings],
             "caveats": list(self.caveats),
+            "execution": list(self.execution),
             "noise_floor": self.noise_floor,
             "observed": {key: list(value) for key, value in sorted(self.observed.items())},
             "declared": None if self.declared is None else list(self.declared),
@@ -581,6 +612,36 @@ def _rules(root: Path | str) -> tuple[tuple[Any, ...], str]:
         return tuple(rules_from_manifest(manifest)), ""
     except (GuardError, OSError, json.JSONDecodeError, ValueError) as error:
         return (), f"{manifest}: {error}"
+
+
+
+def hooks_owning(literal: str, root: Path | str) -> tuple[str, ...]:
+    """Which hooks declare `literal` as something they act on.
+
+    Read from `semantic_deps`, which is the manifest's own statement of what a
+    hook is about — not from `url_block_rules`, which belong to `tigon_url_block`
+    alone and so say nothing about the Reels endpoints, whose hooks blank a path
+    upstream instead of refusing a request.
+
+    Never fatal, like every other manifest read here: a report that could not say
+    which hook owns a path is worth less than one that says so and carries on.
+    """
+
+    from .assessment import spellings  # noqa: PLC0415
+    from .hook_manifest import load_manifest  # noqa: PLC0415
+
+    try:
+        hooks = load_manifest(Path(root) / "manifest" / "hooks.json")
+    except Exception:  # noqa: BLE001 - context, never the answer
+        return ()
+    wanted = {form for spelling in (literal,) for form in spellings(spelling)}
+    owning = [
+        hook.hook_id
+        for hook in hooks
+        if hook.status == "active"
+        and any(form in wanted for dep in hook.semantic_deps for form in spellings(dep))
+    ]
+    return tuple(sorted(owning))
 
 
 def classify(
@@ -949,6 +1010,7 @@ def classify(
                 baseline_clean=baseline_clean,
                 unreadable=tuple(blind),
                 declared=None if rules_refusal else _declared_for(rules, endpoint),
+                root=root,
             )
         )
 
@@ -996,6 +1058,63 @@ def classify(
     )
 
 
+def _execution(
+    endpoint: str,
+    baseline: State,
+    arms: Sequence[State],
+    root: Path | str,
+) -> tuple[str, ...]:
+    """What our own code did about this path, per state, from the probe lines.
+
+    A probe count says a patched site RAN. It never says a request was blocked —
+    the site executes in every toggle state, because the toggle is tested inside
+    the code the probe sits beside. What it answers is the other question, and it
+    is the one counting cannot: a fall with no execution behind it is not ours,
+    and a fall too small to clear the noise floor reads differently when the
+    machinery demonstrably ran in every session of the arm. On 442 that was the
+    whole distance between "we cannot say" and "we cannot say from counting".
+
+    Silent when no hook declares the literal, or when no state looked for probes.
+    A line here is a measurement; an absent one is not a zero.
+    """
+
+    owners = hooks_owning(endpoint, root)
+    if not owners:
+        return ()
+    lines: list[str] = []
+    for hook_id in owners:
+        ran = looked = 0
+        silent: list[str] = []
+        for state in (baseline, *arms):
+            counts = state.executions(hook_id)
+            if counts is None:
+                continue
+            here = sum(1 for count in counts if count)
+            ran += here
+            looked += len(counts)
+            if not here:
+                silent.append(state.label)
+        if not looked:
+            continue
+        # One line per hook, not one per state. Six identical sentences saying the
+        # same thing about every state is how a reader learns to skip the section,
+        # and `tigon_url_block` — which runs on every checked request — would print
+        # exactly that under every endpoint in the report.
+        if not ran:
+            lines.append(
+                f"{hook_id} never ran, in any of {looked} session(s) that looked — "
+                "a movement here would not be ours"
+            )
+        elif not silent:
+            lines.append(f"{hook_id} ran in all {looked} session(s), every state")
+        else:
+            lines.append(
+                f"{hook_id} ran in {ran} of {looked} session(s), and not at all in "
+                + ", ".join(sorted(silent))
+            )
+    return tuple(lines)
+
+
 def _classify_one(
     *,
     endpoint: str,
@@ -1006,6 +1125,7 @@ def _classify_one(
     baseline_clean: bool,
     unreadable: Sequence[str],
     declared: tuple[str, ...] | None,
+    root: Path | str = ".",
 ) -> Classification:
     """One path's verdict. Every branch names what it rests on."""
 
@@ -1015,6 +1135,7 @@ def _classify_one(
         noise_floor=floor,
         observed=observed,
         declared=declared,
+        execution=_execution(endpoint, baseline, arms, root),
     )
     seen_anywhere = any(any(counts) for counts in observed.values())
     if not seen_anywhere:
@@ -1435,6 +1556,12 @@ def render(report: Mapping[str, Any]) -> str:
             for finding in row["findings"]:
                 for note in finding["corroboration"]:
                     lines.append(f"      + {note}")
+            for note in row.get("execution", ()):
+                # A different mark from a caveat on purpose. `!` is "something
+                # moved and nothing explains it"; `*` is "here is what our own
+                # code did", which is the only line on this page that is not
+                # about the app.
+                lines.append(f"      * {note}")
             for note in row["caveats"]:
                 lines.append(f"      ! {note}")
             lines.append("")
