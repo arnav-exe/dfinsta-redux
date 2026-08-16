@@ -235,6 +235,51 @@ class AcceptanceIsNotAgreementTests(unittest.TestCase):
         assert run.winner is not None
         self.assertEqual(short, run.winner.candidate.anchor)
 
+    def test_one_uncompilable_answer_does_not_kill_the_run(self) -> None:
+        """What the second live run cost: three proposers, one bad pattern, no
+        result at all. `counts_for` compiles the anchor to scan with it, so a
+        malformed answer raised out of the counting before the check that exists
+        to reject it ever ran."""
+        def counting(anchor):
+            from dfinsta_pipeline.hook_manifest import compile_anchor
+
+            compile_anchor(anchor)  # exactly what the real counter does first
+            return {"442": 1}
+
+        run = collect(
+            HOOK, "LX/8Ec;", HOST_SOURCE, "442",
+            {
+                "bad": lambda _p: json.dumps(
+                    {"anchor": ["move-result-object <a>"], "payload": ["x"], "mode": "replace"}
+                ),
+                "good": lambda _p: json.dumps(
+                    {"anchor": list(GOOD_ANCHOR), "payload": list(GOOD_PAYLOAD),
+                     "mode": "insert_after"}
+                ),
+            },
+            counting,
+        )
+        self.assertEqual(2, len(run.checked))
+        self.assertEqual(1, len(run.accepted))
+        self.assertEqual(
+            {NOT_COMPILED, ACCEPTED}, {item.outcome for item in run.checked}
+        )
+
+    def test_counting_that_breaks_for_another_reason_is_a_failure_not_a_crash(self) -> None:
+        def counting(anchor):
+            raise OSError("a decode went away mid-scan")
+
+        run = collect(
+            HOOK, "LX/8Ec;", HOST_SOURCE, "442",
+            {"p": lambda _p: json.dumps(
+                {"anchor": list(GOOD_ANCHOR), "payload": list(GOOD_PAYLOAD),
+                 "mode": "insert_after"}
+            )},
+            counting,
+        )
+        self.assertEqual((), run.checked)
+        self.assertIn("counting failed", run.failures[0])
+
     def test_a_proposer_that_fails_is_recorded_and_dropped(self) -> None:
         def boom(_prompt):
             raise RuntimeError("the runtime fell over")

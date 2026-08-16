@@ -453,9 +453,24 @@ def collect(
         except Exception as error:  # noqa: BLE001 - any failure is one proposer lost
             failures.append(f"{name}: {type(error).__name__}: {error}")
             continue
+        # Compile BEFORE counting. `counts_for` scans every decode by compiling
+        # the same pattern, so a malformed answer raises out there — and it did:
+        # the second live run lost all three proposers to one undeclared capture,
+        # because the counting ran before the check that exists to reject it. One
+        # bad answer is one rejected candidate, never a dead run.
+        try:
+            compile_anchor(candidate.anchor)
+        except ManifestError as error:
+            checked.append(Checked(candidate, NOT_COMPILED, str(error), {}))
+            continue
+        try:
+            counts = counts_for(candidate.anchor)
+        except Exception as error:  # noqa: BLE001 - counting is I/O over real trees
+            failures.append(f"{name}: counting failed: {type(error).__name__}: {error}")
+            continue
         checked.append(
             check(
-                hook, candidate, host_source, counts_for(candidate.anchor),
+                hook, candidate, host_source, counts,
                 fingerprint=fingerprint, others=others,
             )
         )
