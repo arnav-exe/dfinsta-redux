@@ -1,8 +1,11 @@
+08-15 15:41:32.116 32485 32485 I DFInstaProbe: set_app_context
+08-15 15:41:32.527 32485 32641 I DFInstaProbe: tigon_url_block
 08-15 15:41:32.529 32485 32620 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
 08-15 15:41:32.529 32485 32641 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
 08-15 15:41:32.529 32485 32641 I DFInstaObserve: /feed/timeline/
 08-15 15:41:32.529 32485 32620 I DFInstaObserve: /feed/reels_tray/
 08-15 15:41:32.529 32485 32620 I DFInstaObserve: !blocked /feed/reels_tray/
+08-15 15:41:32.661 32485 32619 I DFInstaProbe: replace_reels_stream_endpoint
 08-15 15:41:32.679 32485 32555 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
 08-15 15:41:32.679 32485 32555 I DFInstaObserve: /clips/discover
 08-15 15:41:32.679 32485 32555 I DFInstaObserve: /clips/discover/stream/
@@ -10,6 +13,7 @@
 08-15 15:41:32.844 32485 32485 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
 08-15 15:41:32.883 32485 32694 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
 08-15 15:41:33.042 32485 32552 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
+08-15 15:41:33.060 32700 32700 I DFInstaProbe: set_app_context
 08-15 15:41:33.125 32485 32554 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
 08-15 15:41:33.125 32485 32554 I DFInstaObserve: /feed/reels_media_stream/
 08-15 15:41:33.260 32485 32523 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0

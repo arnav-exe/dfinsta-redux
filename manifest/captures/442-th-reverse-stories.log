@@ -1,3 +1,6 @@
+08-15 16:43:59.066 12191 12191 I DFInstaProbe: set_app_context
+08-15 16:43:59.272 12191 12257 I DFInstaProbe: replace_reels_stream_endpoint
+08-15 16:43:59.531 12191 12324 I DFInstaProbe: tigon_url_block
 08-15 16:43:59.531 12191 12324 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
 08-15 16:43:59.531 12191 12324 I DFInstaObserve: /feed/reels_tray/
 08-15 16:43:59.531 12191 12324 I DFInstaObserve: !blocked /feed/reels_tray/
@@ -7,6 +10,7 @@
 08-15 16:43:59.971 12191 12191 E IgFunctionalErrorEvent: STORY_NOT_LOADING
 08-15 16:43:59.971 12191 12191 E IgFunctionalErrorEvent: java.io.IOException: Blocked by DFInsta setting
 08-15 16:44:00.145 12191 12227 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
+08-15 16:44:00.229 12411 12411 I DFInstaProbe: set_app_context
 08-15 16:44:00.368 12191 12402 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
 08-15 16:44:00.398 12191 12344 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0
 08-15 16:44:02.633 12191 12227 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=1 disable_adds=0

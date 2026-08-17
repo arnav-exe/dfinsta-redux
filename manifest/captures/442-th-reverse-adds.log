@@ -1,8 +1,12 @@
+08-15 16:38:20.172  8671  8671 I DFInstaProbe: set_app_context
+08-15 16:38:20.385  8671  8749 I DFInstaProbe: replace_reels_stream_endpoint
+08-15 16:38:20.627  8671  8823 I DFInstaProbe: tigon_url_block
 08-15 16:38:20.628  8671  8823 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=1
 08-15 16:38:20.628  8671  8823 I DFInstaObserve: /feed/timeline/
 08-15 16:38:20.630  8671  8809 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=1
 08-15 16:38:20.630  8671  8809 I DFInstaObserve: /feed/reels_tray/
 08-15 16:38:21.031  8671  8889 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=1
+08-15 16:38:21.298  8897  8897 I DFInstaProbe: set_app_context
 08-15 16:38:21.486  8671  8889 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=1
 08-15 16:38:21.489  8671  8749 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=1
 08-15 16:38:21.526  8671  8835 I DFInstaObserve: !toggles +blocked disable_feed=0 disable_explore=0 disable_reels=0 disable_stories=0 disable_adds=1
