@@ -198,11 +198,23 @@ class BootstrapRecordTests(unittest.TestCase):
             self.assertIn(version, text, f"BOOTSTRAP.md does not mention Instagram {version}")
 
     def test_the_readme_prerequisites_survive(self) -> None:
-        """A README whose prerequisites section is gone is worse than none."""
+        """A README whose requirements section is gone is worse than none.
+
+        Checked by either heading: the section was renamed from `Prerequisites`
+        to `Requirements` on 2026-08-17, and the rule is that a reader arriving
+        at a fresh clone is told what they need — not that the heading has a
+        particular word in it.
+        """
 
         text = (REPOSITORY / "README.md").read_text(encoding="utf-8")
-        self.assertIn("## Prerequisites", text)
+        self.assertTrue(
+            "## Requirements" in text or "## Prerequisites" in text,
+            "the README names no requirements section under either heading",
+        )
         self.assertIn("docs/BOOTSTRAP.md", text)
+        # The three things a clone cannot be given and must be told about.
+        for needed in ("apktool_2.9.3.jar", "framework-res", "DFINSTA_KEYSTORE"):
+            self.assertIn(needed, text, f"the README does not mention {needed}")
         # Python is pinned in pyproject and stated in the README; the two
         # disagreeing sends a new machine to an unsupported interpreter.
         pyproject = (REPOSITORY / "pyproject.toml").read_text(encoding="utf-8")

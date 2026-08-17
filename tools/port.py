@@ -462,6 +462,10 @@ STEPS: tuple[Step, ...] = (
 
 _SIGNING = ("DFINSTA_KEYSTORE", "DFINSTA_KEY_ALIAS", "DFINSTA_KEYSTORE_PASSWORD")
 
+#: The `env` every step gets unless it asks for one. Identity against it is how a
+#: signing step is recognised, so the test and the tool agree by construction.
+_DEFAULT_ENV = Step.__dataclass_fields__["env"].default
+
 
 def _nothing_left_to_watch(port: Port) -> bool:
     """Every candidate stage 4a finds is already on the watch list."""
@@ -558,7 +562,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         if not args.run:
             continue
-        missing = [name for name in _SIGNING if name not in os.environ] if step.name == "sign" else []
+        # Any step that signs, not the one named `sign`. `ship-sign` was added
+        # later and named differently, so it would have run `finalize.py` with no
+        # credentials and failed inside the signer — a confusing error for a thing
+        # this tool exists to refuse by name.
+        # A step that signs is one that declares an `env`, not one whose NAME
+        # ends in "sign". Two traps avoided: `ship-sign` was added later under a
+        # different name and a name-equality check missed it entirely, and
+        # `step.env(port)` is empty precisely when the secrets are unset — so
+        # asking it would have made the refusal conditional on the thing it
+        # refuses the absence of.
+        missing = (
+            [name for name in _SIGNING if name not in os.environ]
+            if step.env is not _DEFAULT_ENV
+            else []
+        )
         if missing:
             print(f"refusing: {missing[0]} is not set. This tool never reads, defaults or "
                   "prints the signing secrets; export them and re-run", file=sys.stderr)

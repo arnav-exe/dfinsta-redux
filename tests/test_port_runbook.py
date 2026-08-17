@@ -24,6 +24,7 @@ from pathlib import Path
 import importlib.util
 
 REPOSITORY = Path(__file__).resolve().parent.parent
+_SIGN_ENV = ("DFINSTA_KEYSTORE", "DFINSTA_KEY_ALIAS", "DFINSTA_KEYSTORE_PASSWORD")
 
 
 def load():
@@ -354,6 +355,27 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertIn("BLOCKED", page)
         self.assertIn("attach the phone", page)
+
+    def test_every_signing_step_refuses_without_the_secrets(self) -> None:
+        """Not only the step called `sign`. `ship-sign` signs too, was added
+        later, and under a name-equality check would have run the signer with no
+        credentials — failing inside a tool this one exists to refuse in front of.
+        """
+        module = self.port_module
+        signing = [
+            step.name for step in module.STEPS if step.env is not module._DEFAULT_ENV
+        ]
+        self.assertEqual(["sign", "ship-sign"], signing)
+        # And the refusal is keyed on the same thing, so the two cannot drift.
+        source = (REPOSITORY / "tools" / "port.py").read_text(encoding="utf-8")
+        self.assertNotIn('if step.name == "sign"', source)
+        self.assertIn("step.env is not _DEFAULT_ENV", source)
+
+    def probe_port(self):
+        return self.port_module.Port(
+            apk=self.apk, version="442",
+            out=self.root / "out", captures=self.root / "captures",
+        )
 
     def test_the_signing_secrets_are_never_read_defaulted_or_printed(self) -> None:
         """It refuses by *name* and never suggests a value. The keystore password
