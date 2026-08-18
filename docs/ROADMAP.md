@@ -34,6 +34,35 @@ It is replaced by measuring first.
 The Execute and Produce machines do not know gates exist. That is why changing how
 decisions are made cost 12% of the source and none of the hard-won knowledge.
 
+## Where it stands, 2026-08-18
+
+**442 is a complete port.** Stock APK in, patched APK signed, release-gated and installed on
+the phone, with 24 recorded device sessions in between. `tools/port.py` runs all thirteen
+mechanical steps and stops at the judgement.
+
+**442 also broke mechanical resolution and no longer does.** It pooled `clips/discover/` out of
+its host class into a shared string table, so the anchor stopped matching. The repair was a
+second *anchor form* keyed on a real Instagram class name, carried by new manifest machinery
+(`variants`, and `by_anchor` fingerprints scoped to a form). 439, 440, 441 and 442 all resolve
+7/7.
+
+**Two tools now exist for the next time that happens.** `tools/check_anchor.py` counts what a
+candidate anchor picks out across every decode on disk — `unique`, `selective`, `ambiguous`,
+`dead` — and `tools/reanchor.py` asks k agents for a new anchor and accepts one **by counting,
+never by agreement**. Both have been run live. Two live runs produced two defects in the
+acceptance rule, so assume it is still incomplete.
+
+**The measurement now reports three different things, marked apart on purpose:** `@` where the
+app asked (which surface was on screen), `*` what our code did (which hooks executed), and `!` a
+movement nothing explains. The first two were added on 2026-08-17/18 and are inert until the
+next walk, because neither can be re-derived from existing captures.
+
+**What is next:** a written criterion for the ruling itself — the consent test, *"did a user
+action cause this content to appear?"* — recorded structurally at the gate, with the launch
+window serving as its measurement. The hygiene/taste default split is deliberately **not**
+being built; the app cannot express a default-off switch, and installing DFInsta is itself the
+opt-in for the whole category.
+
 ## Now
 
 - [x] **Guards are generated, not hand-written.** `guards.py` renders `throwIfBlocked`
