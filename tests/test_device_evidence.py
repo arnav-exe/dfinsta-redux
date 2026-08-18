@@ -181,6 +181,27 @@ class CommittedCorpusTests(unittest.TestCase):
     def setUp(self) -> None:
         self.computed = grid(REPOSITORY)
 
+    def every_session(self) -> int:
+        """How many sessions the whole committed store holds, derived.
+
+        Both tests below mean "every session of every corpus" and both used to
+        say `96`, which was the size of the store on the day they were written.
+        The one whose comment already said it was *not* asserting that is the one
+        that made this worth fixing: a walk added twelve sessions and the join
+        under test was unaffected, but the number was not.
+
+        `evidential` is applied for the same reason `reading_for` applies it — a
+        session that observed nothing is not a device having looked, so it is not
+        in the denominator either.
+        """
+
+        from dfinsta_pipeline.observation import evidential, read
+
+        return sum(
+            len([item for item in evidential(read(version, REPOSITORY)) if item.walk == walk])
+            for version, walk in corpora(REPOSITORY)
+        )
+
     def test_the_grid_is_discovered_and_not_configured(self) -> None:
         """A version measured and never added to a constant would be silently
         missing from every candidate's evidence, and the gate would show less than
@@ -217,7 +238,7 @@ class CommittedCorpusTests(unittest.TestCase):
         self.assertEqual(DEVICE_REQUESTED, reading.kind)
         self.assertEqual(8, len(reading.watched_in))
         self.assertEqual(("439", "440", "441", "442"), reading.versions)
-        self.assertEqual(96, reading.sessions)
+        self.assertEqual(self.every_session(), reading.sessions)
         self.assertGreater(reading.seen, 100)
         blocked = {(v, verdict, toggle) for v, _, verdict, toggle in reading.verdicts}
         self.assertEqual(
@@ -250,8 +271,10 @@ class CommittedCorpusTests(unittest.TestCase):
         reading = reading_for("clips/homecoming/", REPOSITORY, computed=self.computed)
         self.assertEqual(DEVICE_NEVER_REQUESTED, reading.kind)
         # Every session of every corpus, so the join is what is being tested and
-        # not the size of the store on the day it was written.
-        self.assertEqual(96, reading.sessions)
+        # not the size of the store on the day it was written. Derived, because
+        # this comment was true of the intent and false of the literal beneath
+        # it until a walk on 2026-08-18 grew the store from 96 to 108.
+        self.assertEqual(self.every_session(), reading.sessions)
         self.assertEqual(len(corpora(REPOSITORY)), len(reading.watched_in))
 
     def test_a_vacuous_session_is_not_a_device_looking(self) -> None:
