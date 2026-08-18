@@ -370,7 +370,7 @@ class FeatureRulingsTests(unittest.TestCase):
                     str(raised.exception),
                     "This gate needs a ruling for every candidate: pass --rulings with a "
                     'JSON object mapping each candidate id to {"verdict": …, '
-                    '"rationale": …}',
+                    '"rationale": …, "consent": …}',
                 )
 
         for entry in ("offer_toggle", ["offer_toggle", "why"], 7, True):
@@ -396,14 +396,16 @@ class FeatureRulingsTests(unittest.TestCase):
                     f"Ruling for {CANDIDATES[1]} needs a verdict and a rationale",
                 )
 
-        # An absent rationale is the one omission that is allowed here, because
+        # An absent rationale is one of the two omissions allowed here, because
         # whether a blank one is acceptable depends on the verdict and that
-        # judgement belongs to `feature_gate.validate_submission`.
+        # judgement belongs to `feature_gate.validate_submission`. An absent
+        # `consent` is the other, and for `ignore` it stays absent all the way
+        # through: the no-op verdict owes neither.
         self.assertEqual(
             _feature_rulings({**RULINGS, CANDIDATES[1]: {"verdict": "ignore"}}, CANDIDATES)[
                 CANDIDATES[1]
             ],
-            ("ignore", ""),
+            ("ignore", "", ""),
         )
 
 
@@ -974,7 +976,7 @@ class RecordedFeatureGateTests(unittest.TestCase):
         self.assertEqual(list(template), list(self.recorded.candidate_ids))
         self.assertEqual(list(template), list(self.request.candidate_ids))
         for entry in template.values():
-            self.assertEqual(entry, {"verdict": "defer", "rationale": ""})
+            self.assertEqual(entry, {"verdict": "defer", "rationale": "", "consent": ""})
         # The template is INVALID as emitted, deliberately: every verdict but
         # `ignore` needs a rationale, so a human cannot answer this gate without
         # typing something for each candidate. A template that submitted cleanly

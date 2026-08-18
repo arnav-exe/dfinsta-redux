@@ -713,7 +713,9 @@ def _resolve_feature_assessment(run_id: str) -> DerivedSubject:
     )
 
 
-def _feature_rulings(detail: object, candidates: tuple[str, ...]) -> dict[str, tuple[str, str]]:
+def _feature_rulings(
+    detail: object, candidates: tuple[str, ...]
+) -> dict[str, tuple[str, str, str]]:
     """Read the human's rulings, keyed by candidate, refusing anything unexpected.
 
     **Iterates the derived candidates and looks each one up**, never the other
@@ -724,19 +726,21 @@ def _feature_rulings(detail: object, candidates: tuple[str, ...]) -> dict[str, t
     editor. `feature_gate.validate_submission` never re-reads the assessment
     blob, so this is where a ruling about a document nobody read gets stopped.
     """
+    from .feature_gate import CONSENT_ANSWERS, UNANSWERED_CONSENT
     from .feature_gate import VERDICTS as CANDIDATE_VERDICTS
 
     if not isinstance(detail, dict):
         raise SubmissionRefused(
             "This gate needs a ruling for every candidate: pass --rulings with a JSON "
-            "object mapping each candidate id to {\"verdict\": …, \"rationale\": …}"
+            "object mapping each candidate id to "
+            "{\"verdict\": …, \"rationale\": …, \"consent\": …}"
         )
     unknown = sorted(set(detail) - set(candidates))
     if unknown:
         raise SubmissionRefused(
             f"Rulings name a candidate this gate does not cover: {unknown[0]}"
         )
-    out: dict[str, tuple[str, str]] = {}
+    out: dict[str, tuple[str, str, str]] = {}
     for candidate in candidates:
         entry = detail.get(candidate)
         if entry is None:
@@ -745,8 +749,11 @@ def _feature_rulings(detail: object, candidates: tuple[str, ...]) -> dict[str, t
             raise SubmissionRefused(f"Ruling for {candidate} must be an object")
         verdict = entry.get("verdict")
         rationale = entry.get("rationale", "")
+        consent = entry.get("consent", UNANSWERED_CONSENT)
         if type(verdict) is not str or type(rationale) is not str:
             raise SubmissionRefused(f"Ruling for {candidate} needs a verdict and a rationale")
+        if type(consent) is not str:
+            raise SubmissionRefused(f"Ruling for {candidate} has a non-string consent answer")
         # Checked here, by name, rather than left to the contract. A candidate
         # verdict is NOT the gate's own vocabulary — `approve/reject/defer` is
         # what `--verdict` takes and `block/offer_toggle/ignore/defer` is what a
@@ -769,7 +776,26 @@ def _feature_rulings(detail: object, candidates: tuple[str, ...]) -> dict[str, t
                 "'ignore' may be silent; every other verdict changes what the app does and "
                 "has to say why."
             )
-        out[candidate] = (verdict, rationale)
+        # A misspelt answer is caught here, by name, for the same reason a
+        # misspelt verdict is: `FeatureDispositionV1` would refuse it through an
+        # exception the CLI does not catch, with a message naming no candidate.
+        #
+        # **A missing answer is deliberately NOT caught here.** Requiring it is
+        # `validate_submission`'s clause 11, and this client runs that validator
+        # over its own submission a few lines further on, so checking it twice
+        # would put two places in charge of when a ruling is answerable — and the
+        # earlier one would win. That matters because the authority checks
+        # measurement *before* consent on purpose: a candidate no device has
+        # looked for may not be acted on at all, and sending a human away to
+        # think about the consent test for a candidate they will then be refused
+        # on regardless is a deliberation wasted. One authority, one order.
+        if consent not in CONSENT_ANSWERS and consent != UNANSWERED_CONSENT:
+            raise SubmissionRefused(
+                f"Ruling for {candidate} has consent {consent!r}; the consent test is "
+                f"answered with one of {', '.join(CONSENT_ANSWERS)}. Run "
+                "`show --consent-test` for the question and the measured bands behind it."
+            )
+        out[candidate] = (verdict, rationale, consent)
     return out
 
 
@@ -1155,6 +1181,60 @@ def _recorded_document(pending: PendingGate) -> str:
     return json.dumps(recorded.document, indent=2, sort_keys=True)
 
 
+def consent_test() -> str:
+    """The question a human has to answer, and the data it comes from.
+
+    Printed rather than summarised. The criterion is one sentence and could be a
+    line of help text; the bands are what stop it being answered by intuition,
+    and two of them are the reason the criterion is *consent* and not
+    *personalisation* — playlists and subscriptions are recommender surfaces the
+    user built, and across 467 coded responses nobody reported losing control to
+    either.
+
+    This project tried seven a-priori addictiveness signals and six were noise,
+    so nothing here scores, ranks or infers. It asks one question and records the
+    human's answer beside their verdict.
+    """
+
+    from .feature_gate import CONSENT_ANSWERS, CONSENT_BANDS
+
+    out = [
+        "THE CONSENT TEST",
+        "=" * 72,
+        "",
+        "  Did a user action cause this content to appear?",
+        "",
+        f"    {'  '.join(CONSENT_ANSWERS)}",
+        "",
+        "  solicited    a user action produced it — a tap, a search, a scroll into it",
+        "  unsolicited  it arrived unbidden — startup prefetch, injection, autoplay",
+        "  mixed        both, on different surfaces, and the walk shows both",
+        "",
+        "  Required for `block` and `offer_toggle`, which are the two verdicts that",
+        "  change the shipped app. `ignore` and `defer` change nothing and need no",
+        "  answer.",
+        "",
+        "  Where the question comes from: Lukoff et al., CHI 2021, 120 YouTube users,",
+        "  467 coded responses. Share of mentions reporting *less in control*:",
+        "",
+    ]
+    for feature, share, side in CONSENT_BANDS:
+        out.append(f"    {feature:<26}{share:>4}%   {side}")
+    out += [
+        "",
+        "  The 0% rows are the point. Playlists and subscriptions are recommender",
+        "  surfaces, and they cost nobody their sense of control — because the user",
+        "  asked for them. Personalisation is not the criterion; consent is.",
+        "",
+        "  The pipeline can tell you WHERE a path was requested and WHEN. The",
+        "  (startup) bucket is the strongest unsolicited signal it has, because the",
+        "  launch window carries no user action at all. It cannot tell you whether",
+        "  to block, and no method for that exists — a 2026 CHI systematic review of",
+        "  148 experimental units found time-on-platform measured in 3 of 86.",
+    ]
+    return "\n".join(out)
+
+
 def _rulings_template(pending: PendingGate) -> str:
     """A skeleton whose candidate ids are the derived ones.
 
@@ -1164,7 +1244,9 @@ def _rulings_template(pending: PendingGate) -> str:
 
     **Invalid as emitted, deliberately.** Every verdict but `ignore` needs a
     rationale, so the unedited template is refused and a human cannot answer this
-    gate without typing something for each candidate. A template that submitted
+    gate without typing something for each candidate. `consent` ships blank for
+    the same reason and is required by the two acting verdicts; `show
+    --consent-test` prints the question and the bands it comes from. A template that submitted
     cleanly as-is would let someone approve four rulings they never made — which
     is the same failure as a client copying the Workflow's hashes, one level down.
     """
@@ -1176,7 +1258,7 @@ def _rulings_template(pending: PendingGate) -> str:
     )
     return json.dumps(
         {
-            candidate: {"verdict": "defer", "rationale": ""}
+            candidate: {"verdict": "defer", "rationale": "", "consent": ""}
             for candidate in recorded.candidate_ids
         },
         indent=2,
@@ -1234,6 +1316,9 @@ async def _run(arguments: argparse.Namespace) -> int:
         if getattr(arguments, "rulings_template", False):
             print()
             print(_rulings_template(pending))
+        if getattr(arguments, "consent_test", False):
+            print()
+            print(consent_test())
         return 0
 
     # After `describe`, so a human who typed the wrong confirmation sees the
@@ -1285,6 +1370,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print a rulings skeleton whose candidate ids are the DERIVED ones",
     )
+    show.add_argument(
+        "--consent-test",
+        action="store_true",
+        help="print the consent test and the measured bands behind it. This is the "
+        "question `block` and `offer_toggle` require an answer to.",
+    )
 
     submit = subparsers.add_parser("submit", help="answer the pending gate")
     submit.add_argument("workflow_id")
@@ -1293,7 +1384,7 @@ def main(argv: list[str] | None = None) -> int:
     submit.add_argument(
         "--rulings",
         type=Path,
-        help="JSON object mapping each candidate id to {verdict, rationale}. "
+        help="JSON object mapping each candidate id to {verdict, rationale, consent}. "
         "Required by gates that rule per candidate; refused by gates that do not.",
     )
     submit.add_argument(

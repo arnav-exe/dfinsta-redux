@@ -39,6 +39,8 @@ from dfinsta_pipeline.contracts import ArtifactRef, GateDecision, canonical_json
 from dfinsta_pipeline.feature_gate import (
     ACTING_VERDICTS,
     ASSESSMENT_ARTIFACT_KIND,
+    CONSENT_ANSWERS,
+    CONSENT_BANDS,
     DEVICE_NEVER_REQUESTED,
     DEVICE_REQUESTED,
     DEVICE_UNWATCHED,
@@ -46,6 +48,7 @@ from dfinsta_pipeline.feature_gate import (
     GATE_ID_SUFFIX,
     MAX_RATIONALE,
     SILENT_VERDICT,
+    UNANSWERED_CONSENT,
     VERDICTS,
     FeatureAssessmentGateV1,
     FeatureDispositionsV1,
@@ -170,11 +173,19 @@ def make_request(
 
 
 def ruling(
-    candidate_id: str, verdict: str = "offer_toggle", rationale: str | None = None
+    candidate_id: str,
+    verdict: str = "offer_toggle",
+    rationale: str | None = None,
+    consent: str | None = None,
 ) -> FeatureDispositionV1:
     if rationale is None:
         rationale = "" if verdict == SILENT_VERDICT else f"{verdict}: injected into the timeline"
-    return FeatureDispositionV1(1, candidate_id, verdict, rationale)  # type: ignore[arg-type]
+    if consent is None:
+        # The default answers whatever the verdict needs, so a test about
+        # *anything else* stays about that thing. Every test that is about the
+        # consent clause passes it explicitly.
+        consent = "unsolicited" if verdict in ACTING_VERDICTS else UNANSWERED_CONSENT
+    return FeatureDispositionV1(1, candidate_id, verdict, rationale, consent)  # type: ignore[arg-type]
 
 
 def dispositions_document(
@@ -581,13 +592,15 @@ class FeatureDispositionsTests(GateTestCase):
     def test_an_invented_verdict_is_refused(self) -> None:
         """`approve` is not a disposition; the wrapper exists because it is not enough."""
         with self.assertRaises(ValueError):
-            FeatureDispositionV1(1, CANDIDATES[0], "approve", "why")  # type: ignore[arg-type]
+            FeatureDispositionV1(1, CANDIDATES[0], "approve", "why", "solicited")  # type: ignore[arg-type]
 
     def test_rationale_is_bounded_like_the_decision_rationale(self) -> None:
         self.assertEqual(MAX_RATIONALE, 2048)
-        FeatureDispositionV1(1, CANDIDATES[0], "block", "x" * MAX_RATIONALE)
+        FeatureDispositionV1(1, CANDIDATES[0], "block", "x" * MAX_RATIONALE, "unsolicited")
         with self.assertRaises(ValueError):
-            FeatureDispositionV1(1, CANDIDATES[0], "block", "x" * (MAX_RATIONALE + 1))
+            FeatureDispositionV1(
+                1, CANDIDATES[0], "block", "x" * (MAX_RATIONALE + 1), "unsolicited"
+            )
 
     def test_document_round_trips_and_decodes_strictly(self) -> None:
         data = json.loads(json.dumps(self.document.to_dict()))
@@ -705,12 +718,20 @@ class ValidateSubmissionTests(GateTestCase):
         every candidate serialises to exactly as many bytes as one that blocks
         them all. A size comparison sees two identical documents; the meaning is
         opposite.
+
+        Both carry the same consent answer, which is what keeps the two lengths
+        equal now that a disposition records one. `defer` does not *need* an
+        answer — only the acting verdicts do — but it may carry one, and holding
+        it constant is what keeps this test about the digest rather than
+        accidentally about a field length.
         """
         blocked = dispositions_document(
-            self.request, tuple(ruling(name, "block", "blocked") for name in CANDIDATES)
+            self.request,
+            tuple(ruling(name, "block", "blocked", "unsolicited") for name in CANDIDATES),
         )
         deferred = dispositions_document(
-            self.request, tuple(ruling(name, "defer", "blocked") for name in CANDIDATES)
+            self.request,
+            tuple(ruling(name, "defer", "blocked", "unsolicited") for name in CANDIDATES),
         )
         self.assertEqual(dispositions_ref(blocked).size, dispositions_ref(deferred).size)
         self.assertNotEqual(canonical_json(blocked), canonical_json(deferred))
@@ -943,10 +964,12 @@ class MutationTests(GateTestCase):
         identical. Only the digest distinguishes "blocked" from "deferred".
         """
         signed = dispositions_document(
-            self.request, tuple(ruling(name, "block", "blocked") for name in CANDIDATES)
+            self.request,
+            tuple(ruling(name, "block", "blocked", "unsolicited") for name in CANDIDATES),
         )
         substituted = dispositions_document(
-            self.request, tuple(ruling(name, "defer", "blocked") for name in CANDIDATES)
+            self.request,
+            tuple(ruling(name, "defer", "blocked", "unsolicited") for name in CANDIDATES),
         )
         reference = dispositions_ref(signed)
         self.assertEqual(reference.size, dispositions_ref(substituted).size)

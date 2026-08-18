@@ -107,7 +107,12 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .contracts import canonical_json
-from .feature_gate import SILENT_VERDICT, VERDICTS, FeatureDispositionsV1
+from .feature_gate import (
+    CONSENT_ANSWERS,
+    SILENT_VERDICT,
+    VERDICTS,
+    FeatureDispositionsV1,
+)
 from .hook_manifest import ManifestError, load_manifest
 from .manifest_patch import (
     DEFAULT_MANIFEST_PATH,
@@ -210,6 +215,15 @@ class Ruling:
     assessment_sha256: str
     policy_revision: str
     recorded_at: str
+    #: Which side of the consent test the human answered, or `None` for a ruling
+    #: made before the question was asked. **Optional on purpose**, and the only
+    #: optional field on this record. Six rulings were recorded on 2026-08-08
+    #: carrying prose alone, and re-reading that prose cannot recover which side
+    #: of the test each was on. Backfilling them would mean this code answering a
+    #: question a human was never asked, into a committed store — which is the
+    #: precise failure of the 36 fabricated rows this project has already shipped
+    #: once. `None` says nobody was asked, and that is true.
+    consent: str | None = None
 
     def __post_init__(self) -> None:
         if self.verdict not in VERDICTS:
@@ -226,6 +240,11 @@ class Ruling:
         ):
             if not isinstance(value, str) or not value.strip():
                 raise RulingError(f"a ruling needs a {label}")
+        if self.consent is not None and self.consent not in CONSENT_ANSWERS:
+            raise RulingError(
+                f"{self.candidate_id}: {self.consent!r} is not one of "
+                f"{', '.join(CONSENT_ANSWERS)}"
+            )
 
     @property
     def blocking(self) -> bool:
@@ -236,7 +255,7 @@ class Ruling:
         return self.verdict in SUPPRESSING_VERDICTS
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "candidate_id": self.candidate_id,
             "verdict": self.verdict,
             "rationale": self.rationale,
@@ -246,7 +265,15 @@ class Ruling:
             "policy_revision": self.policy_revision,
             "recorded_at": self.recorded_at,
         }
+        # Omitted rather than written as null, so a record made before the
+        # question existed round-trips to the bytes already committed. A stored
+        # `"consent": null` would be a new fact about six old rulings.
+        if self.consent is not None:
+            out["consent"] = self.consent
+        return out
 
+    #: Required on every record. `consent` is deliberately absent — see
+    #: :data:`OPTIONAL_FIELDS`.
     FIELDS = (
         "candidate_id",
         "verdict",
@@ -257,6 +284,11 @@ class Ruling:
         "policy_revision",
         "recorded_at",
     )
+
+    #: Keys a record MAY carry. The strict-unknown check still applies to
+    #: everything outside `FIELDS | OPTIONAL_FIELDS`, so this widens the store by
+    #: exactly one name and not by "anything new is fine".
+    OPTIONAL_FIELDS = ("consent",)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Ruling:
@@ -271,12 +303,13 @@ class Ruling:
         if not isinstance(data, Mapping):
             raise RulingError("a ruling record must be an object")
         missing = sorted(set(cls.FIELDS) - set(data))
-        unknown = sorted(set(data) - set(cls.FIELDS))
+        unknown = sorted(set(data) - set(cls.FIELDS) - set(cls.OPTIONAL_FIELDS))
         if missing:
             raise RulingError(f"ruling record is missing {', '.join(missing)}")
         if unknown:
             raise RulingError(f"ruling record has unknown field(s): {', '.join(unknown)}")
-        return cls(**{key: data[key] for key in cls.FIELDS})
+        present = [key for key in (*cls.FIELDS, *cls.OPTIONAL_FIELDS) if key in data]
+        return cls(**{key: data[key] for key in present})
 
 
 def read_store(path: Path | str = DEFAULT_STORE_PATH) -> list[Ruling]:
@@ -639,6 +672,12 @@ def plan(
                     candidate_id=item.candidate_id,
                     verdict=item.verdict,
                     rationale=item.rationale,
+                    # `""` is the document's "not asked"; `None` is the store's.
+                    # They stay distinct types on purpose — the document requires
+                    # an answer for the acting verdicts and can therefore carry a
+                    # meaningful blank, and the store must be able to say that a
+                    # record predates the question entirely.
+                    consent=item.consent or None,
                     run_id=run_id,
                     decision_id=decision_id,
                     assessment_sha256=dispositions.assessment_sha256,

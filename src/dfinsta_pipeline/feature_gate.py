@@ -81,6 +81,50 @@ SILENT_VERDICT = "ignore"
 #: url-block hook's `semantic_deps`; nothing downstream tells them apart yet.
 ACTING_VERDICTS = ("block", "offer_toggle")
 
+#: **The consent test.** Did a user action cause this content to appear?
+#:
+#: This is the only criterion this project adopts for "is this feature addictive",
+#: and it is adopted because it is the only one with measured support. Lukoff et
+#: al., CHI 2021 (arxiv.org/abs/2101.11778) coded 467 responses from 120 YouTube
+#: users and found the share reporting "less in control" tracks almost exactly
+#: with whether the user asked for the thing -- see :data:`CONSENT_BANDS`.
+#:
+#: A candidate is answered against the *request*, not against a feeling:
+#:
+#: * `solicited`   -- a user action produced it (a tap, a search, a scroll into);
+#: * `unsolicited` -- it arrived unbidden (startup prefetch, injection, autoplay);
+#: * `mixed`       -- both, on different surfaces, and the walk shows both.
+#:
+#: Deliberately not a score. Six of seven a-priori addictiveness signals this
+#: project tried were noise and a composite put the random control *between* the
+#: labelled groups, so this is one recorded answer per ruling and is never summed,
+#: ranked or compared across candidates.
+CONSENT_ANSWERS = ("solicited", "unsolicited", "mixed")
+
+#: What a disposition carries when the question was not answered. Distinct from
+#: every answer in :data:`CONSENT_ANSWERS`, so "not asked" can never be read back
+#: as an answer -- the same absence rule the device evidence above uses, where a
+#: candidate nobody watched is a different fact from one watched and never seen.
+UNANSWERED_CONSENT = ""
+
+#: Lukoff's measured bands, printed beside the question so a human answering the
+#: gate is calibrating against data rather than against intuition. Share of coded
+#: mentions reporting "less in control", by feature.
+#:
+#: The 0% rows are load-bearing and are why this is printed rather than
+#: summarised: playlists and subscriptions are *recommender surfaces a user
+#: built*, and nobody reported losing control to them. The criterion is consent,
+#: not personalisation, and these two rows are what tells them apart.
+CONSENT_BANDS = (
+    ("generic recommendations", 100, "unsolicited"),
+    ("advertisements", 98, "unsolicited"),
+    ("autoplay", 87, "unsolicited"),
+    ("notifications", 53, "unsolicited"),
+    ("search results", 33, "solicited"),
+    ("playlists", 0, "solicited"),
+    ("subscriptions", 0, "solicited"),
+)
+
 #: The evidence kinds `device_evidence` mints, named here rather than there so
 #: that `validate_submission` can key on one without importing a module that
 #: reads the filesystem, and without parsing a `detail` blob whose shape would
@@ -326,12 +370,22 @@ class FeatureDispositionV1:
     depends on the verdict, and that judgement belongs to
     :func:`validate_submission`, which is the single place that decides whether
     a submitted document may authorise anything.
+
+    `consent` is treated exactly the same way and for the same reason: this
+    checks that the answer is *in the vocabulary*, and the authority decides
+    whether the question had to be answered at all. Splitting it any other way
+    would put a second place that can refuse a submission, and the whole gate
+    rests on there being one.
     """
 
     schema_version: int
     candidate_id: str
     verdict: Literal["block", "offer_toggle", "ignore", "defer"]
     rationale: str
+    #: Which side of the consent test this falls on, or `UNANSWERED_CONSENT`.
+    #: Last, so that the positional construction in `submission.py` extends by
+    #: appending rather than by shifting `rationale` into a new meaning.
+    consent: str
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != 1:
@@ -343,6 +397,10 @@ class FeatureDispositionV1:
             raise TypeError("Feature disposition rationale must be a string")
         if len(self.rationale) > MAX_RATIONALE:
             raise ValueError("Feature disposition rationale is too long")
+        if type(self.consent) is not str:
+            raise TypeError("Feature disposition consent must be a string")
+        if self.consent not in CONSENT_ANSWERS and self.consent != UNANSWERED_CONSENT:
+            raise ValueError("Invalid feature disposition consent answer")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -350,6 +408,7 @@ class FeatureDispositionV1:
             "candidate_id": self.candidate_id,
             "verdict": self.verdict,
             "rationale": self.rationale,
+            "consent": self.consent,
         }
 
     @classmethod
@@ -360,6 +419,7 @@ class FeatureDispositionV1:
             data["candidate_id"],
             data["verdict"],
             data["rationale"],
+            data["consent"],
         )
 
     @property
@@ -655,6 +715,37 @@ def _require_measurement_before_acting(
             )
 
 
+def _require_consent_answer_before_acting(dispositions: FeatureDispositionsV1) -> None:
+    """Refuse `block` and `offer_toggle` unless the consent test was answered.
+
+    The verdict says *what to do*; this says *on what grounds*. Before it
+    existed a ruling carried only free-text `rationale`, so nothing could check
+    that the criterion had even been considered, and "show me everything ruled
+    unsolicited" had no answer -- the six rulings recorded on 2026-08-08 are all
+    prose, and re-reading them cannot recover which side of the test each was on.
+
+    Scoped to the acting verdicts for the same reason
+    :func:`_require_measurement_before_acting` is: `ignore` and `defer` change
+    nothing in the shipped app, so requiring a judgement to record one would be
+    charging for the no-op. Deciding *not* to act needs no grounds beyond the
+    rationale that every non-`ignore` verdict already carries.
+
+    It does **not** check that the answer is the right one, and there is no way
+    for it to. `unsolicited` on a candidate the phone only ever requested after a
+    tap is a wrong answer this cannot see; what it makes impossible is ruling
+    without answering, and what it makes possible is auditing the answers
+    afterwards against the corpus.
+    """
+
+    for item in dispositions.dispositions:
+        if item.verdict in ACTING_VERDICTS and item.consent == UNANSWERED_CONSENT:
+            raise ValueError(
+                f"Candidate {item.candidate_id} is ruled {item.verdict} without answering "
+                "the consent test. Did a user action cause this content to appear? Answer "
+                f"`consent` with one of {', '.join(CONSENT_ANSWERS)}"
+            )
+
+
 def validate_submission(
     request: FeatureGateRequestV1,
     submission: FeatureGateSubmissionV1,
@@ -677,7 +768,9 @@ def validate_submission(
     8. every non-`ignore` verdict carries a rationale;
     9. the assessment is the one this request pins, by hash;
     10. no candidate is *blocked* or *given a toggle* unless a device looked for
-        it — see :func:`_require_measurement_before_acting`.
+        it — see :func:`_require_measurement_before_acting`;
+    11. no candidate is *blocked* or *given a toggle* without answering the
+        consent test — see :func:`_require_consent_answer_before_acting`.
 
     `assessment` is the recorded assessment document, which both callers already
     hold: the admitting Activity from `resolve_with`, the client from the same
@@ -742,6 +835,7 @@ def validate_submission(
     for item in dispositions.dispositions:
         if item.verdict != SILENT_VERDICT and not item.rationale.strip():
             raise ValueError(f"Disposition for {item.candidate_id} has no rationale")
+    _require_consent_answer_before_acting(dispositions)
 
 
 # ------------------------------------------------- the orchestration contracts

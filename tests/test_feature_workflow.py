@@ -341,7 +341,7 @@ class FeatureAssessmentRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
             assessment_sha256 or self.recorded.assessment.sha256,
             policy_revision or self.recorded.policy_revision,
             tuple(
-                FeatureDispositionV1(1, candidate, verdict, f"revisit {candidate}")
+                FeatureDispositionV1(1, candidate, verdict, f"revisit {candidate}", "unsolicited")
                 for candidate in (
                     self.recorded.candidate_ids if candidate_ids is None else candidate_ids
                 )

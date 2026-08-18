@@ -68,7 +68,12 @@ from unittest import mock
 from dfinsta_pipeline import assessment, assessment_record, rulings
 from dfinsta_pipeline.assessment import AssessmentError
 from dfinsta_pipeline.contracts import canonical_json
-from dfinsta_pipeline.feature_gate import FeatureDispositionV1, FeatureDispositionsV1
+from dfinsta_pipeline.feature_gate import (
+    ACTING_VERDICTS,
+    UNANSWERED_CONSENT,
+    FeatureDispositionsV1,
+    FeatureDispositionV1,
+)
 from dfinsta_pipeline.hook_index import HookIndex
 from dfinsta_pipeline.ledger import Ledger
 from dfinsta_pipeline.manifest_patch import serialise
@@ -235,7 +240,14 @@ def dispositions(
         policy_revision,
         tuple(
             FeatureDispositionV1(
-                1, candidate_id, verdict, "" if verdict == "ignore" else "measured"
+                1,
+                candidate_id,
+                verdict,
+                "" if verdict == "ignore" else "measured",
+                # What an admitted document looks like: the gate refuses an
+                # acting verdict with no answer, so a fixture standing in for one
+                # has to carry it.
+                "unsolicited" if verdict in ACTING_VERDICTS else UNANSWERED_CONSENT,
             )
             for candidate_id, verdict in pairs
         ),
