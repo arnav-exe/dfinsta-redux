@@ -865,6 +865,36 @@ class SurfaceCounts:
         ]
         return tuple(sorted(found, key=lambda pair: (-pair[1], pair[0])))
 
+    def consent_split(self, path: str) -> tuple[int, int]:
+        """`(unsolicited, solicited)` for one path: launch window vs. a surface.
+
+        **The one measurement this project has that bears on the consent test.**
+        The question a human is asked at the gate is "did a user action cause
+        this content to appear", and the launch window is the only stretch of a
+        walk where the answer is knowably *no*: the harness has tapped nothing
+        yet, so every request between process start and the first surface marker
+        arrived unbidden. Everything after a marker followed a tap.
+
+        Deliberately weaker than it looks, and the summary that prints it has to
+        say so. A request on a surface followed *a* user action; it does not
+        follow that the action asked for that content, which is exactly what
+        makes generic recommendations score 100% in Lukoff's bands while search
+        scores 33% — both arrive after a tap. So a high startup count is evidence
+        of unsolicited delivery, and a low one is **not** evidence of solicited
+        delivery. The asymmetry is the finding, not a defect in it.
+
+        A dedicated idle probe would answer the other half and was designed and
+        dropped: the app goes 37 to 76 seconds without requesting a watched path
+        *while being swiped every three seconds*, so a 30-second window of
+        silence measures nothing. The launch window costs no extra walk and has
+        no user action in it at all.
+        """
+
+        return (
+            sum(count for surface, count in self.surfaces_for(path) if surface == STARTUP),
+            sum(count for surface, count in self.surfaces_for(path) if surface != STARTUP),
+        )
+
     @property
     def surfaces(self) -> tuple[str, ...]:
         return tuple(surface for surface, _ in self.by_surface)
@@ -3069,6 +3099,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blocks=capture.blocks,
                 refusals=capture.refusals,
                 counts=capture.counts,
+                # Both read off the capture, and both were being **dropped**.
+                # `parse` has produced them since 2026-08-17 and 2026-08-18, and
+                # every field beside them here is passed through, so the omission
+                # read as "the capture did not carry one" at every later stage:
+                # a row recorded through this command said `probes: None` — the
+                # value reserved for a row written before anything looked — for a
+                # build that was reporting probes on every hook.
+                #
+                # It is the same shape as every other producer gap this project
+                # has found: the parser, the record type, the store and the
+                # reader were all complete and tested, and the one line that
+                # moves the value from the first to the second did not exist.
+                probes=capture.probes,
+                per_surface=capture.per_surface,
             )
             written = append(session, root=args.root)
             print(

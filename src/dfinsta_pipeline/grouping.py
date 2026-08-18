@@ -101,6 +101,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .observation import (
+    STARTUP,
     ObservationError,
     ObservationSession,
     ToggleState,
@@ -1103,8 +1104,22 @@ def _where_seen(
     if not totals:
         return ()
     busiest = sorted(totals.items(), key=lambda pair: (-pair[1], pair[0]))
-    return (
+    where = (
         "requested on " + ", ".join(f"{surface} x{count}" for surface, count in busiest),
+    )
+    # The launch window is reported separately from the surfaces because it is a
+    # different kind of fact. Every other entry says *where* a request happened;
+    # this one says it happened with **no user action in front of it**, which is
+    # the only thing this pipeline measures that bears on the consent test the
+    # gate asks a human. Left inline it reads as one more tab, which is the same
+    # mistake as an id that reads like a label.
+    unbidden = totals.get(STARTUP, 0)
+    if not unbidden:
+        return where
+    return where + (
+        f"{unbidden} of those arrived in the launch window, before any tap — "
+        "unsolicited by measurement. The rest followed a tap, which is not the "
+        "same as having been asked for",
     )
 
 

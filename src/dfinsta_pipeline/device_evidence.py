@@ -96,6 +96,17 @@ class DeviceReading:
     seen: int = 0
     #: `(version, walk, verdict, toggle)` from `grouping`, where one was reached.
     verdicts: tuple[tuple[str, str, str, str | None], ...] = ()
+    #: How many of the matching sessions annotated which surface was on screen.
+    #: Zero means no walk marked its stream, and then the two counts below are
+    #: `None` rather than `0` — a corpus that could not attribute a request is
+    #: not a corpus that attributed it to nothing.
+    attributed_sessions: int = 0
+    #: Requests that arrived in the launch window, before the harness tapped
+    #: anything. `None` when nothing was annotated.
+    unsolicited: int | None = None
+    #: Requests that arrived on a surface the harness had navigated to. `None`
+    #: when nothing was annotated.
+    solicited: int | None = None
 
     @property
     def watched(self) -> bool:
@@ -131,6 +142,12 @@ class DeviceReading:
             "sessions": self.sessions,
             "seen": self.seen,
             "verdicts": [list(item) for item in self.verdicts],
+            "attributed_sessions": self.attributed_sessions,
+            # Null, not zero, when nothing was annotated. A consumer that reads
+            # `0` here would conclude the app never asks at startup, which is a
+            # measurement no corpus without walk markers can support.
+            "unsolicited": self.unsolicited,
+            "solicited": self.solicited,
         }
 
 
@@ -238,7 +255,8 @@ def reading_for(
 
     watched_in: list[tuple[str, str]] = []
     verdicts: list[tuple[str, str, str, str | None]] = []
-    sessions = seen = 0
+    sessions = seen = attributed = 0
+    unsolicited = solicited = 0
     for (version, walk), report in sorted(computed.items()):
         # `evidential` first, for the reason `grouping`, `walks` and `states` all
         # apply it: a session that observed nothing at all is equally well
@@ -257,6 +275,17 @@ def reading_for(
                 for key, count in item.counts.items()
                 if normalise(key) in normalised
             )
+            if item.per_surface is None:
+                # This session's walk did not annotate. Counted nowhere rather
+                # than as a session that attributed nothing to the launch window.
+                continue
+            attributed += 1
+            for key in item.counts:
+                if normalise(key) not in normalised:
+                    continue
+                unbidden, asked = item.per_surface.consent_split(key)
+                unsolicited += unbidden
+                solicited += asked
         for verdict in report.get("verdicts", ()):  # type: ignore[union-attr]
             if verdict.get("endpoint") in forms:
                 verdicts.append(
@@ -269,6 +298,53 @@ def reading_for(
         sessions=sessions,
         seen=seen,
         verdicts=tuple(verdicts),
+        attributed_sessions=attributed,
+        unsolicited=unsolicited if attributed else None,
+        solicited=solicited if attributed else None,
+    )
+
+
+def _consent_note(reading: DeviceReading) -> str:
+    """What the corpus can say about the consent test, and what it cannot.
+
+    The gate asks a human "did a user action cause this content to appear", and
+    this is the only measurement bearing on it. It goes inside the existing
+    `device_requested` item rather than beside it as a second one, because
+    `_evidence` mints exactly one per candidate and because this is not a
+    separate finding — it is the same requests, split by when they arrived.
+
+    **Three things it will not do.** It does not score, rank or recommend; a
+    composite of a-priori signals once put the random control between the
+    labelled groups. It does not read a low startup count as evidence of
+    solicited delivery — requests on a surface followed *a* tap, not necessarily
+    a request for that content, which is why search and generic recommendations
+    sit at 33% and 100% in Lukoff's bands with the same tap in front of both.
+    And it says nothing at all when no walk annotated, rather than reporting a
+    zero nobody measured.
+    """
+
+    if not reading.attributed_sessions:
+        return (
+            ". No walk annotated which surface was on screen, so this corpus "
+            "cannot say whether these requests were solicited. Re-walk with "
+            "`tools/device_session.py`, which marks the stream as it taps"
+        )
+    unbidden = reading.unsolicited or 0
+    asked = reading.solicited or 0
+    note = (
+        f". Of these, {unbidden} arrived in the launch window before the harness "
+        f"tapped anything and {asked} followed a tap, across "
+        f"{reading.attributed_sessions} annotated session(s)"
+    )
+    if unbidden:
+        return note + (
+            ". The launch window is the one stretch with no user action in it, so "
+            "those are unsolicited by measurement rather than by argument"
+        )
+    return note + (
+        ". A zero here is NOT evidence that the app only asks when asked: a "
+        "request that follows a tap need not be a request for what the tap asked "
+        "for, and no walk can tell those apart"
     )
 
 
@@ -325,13 +401,17 @@ def _evidence(reading: DeviceReading) -> Evidence:
             )
             if reading.verdicts
             else "; no corpus reached a verdict about which toggle governs it"
-        ),
+        )
+        + _consent_note(reading),
         {
             "literal": reading.literal,
             "seen": reading.seen,
             "sessions": reading.sessions,
             "versions": list(reading.versions),
             "verdicts": [list(item) for item in reading.verdicts],
+            "attributed_sessions": reading.attributed_sessions,
+            "unsolicited": reading.unsolicited,
+            "solicited": reading.solicited,
         },
     )
 
@@ -361,6 +441,21 @@ def render(reading: DeviceReading) -> str:
     )
     lines.append(f"  sessions : {reading.sessions}")
     lines.append(f"  requests : {reading.seen}")
+    # Printed as its own block rather than folded into `requests`, because it is
+    # the one line bearing on the question the gate asks a human — and because
+    # "not measured" has to be visibly different from "measured as zero".
+    lines.append("")
+    lines.append("  CONSENT")
+    if not reading.attributed_sessions:
+        lines.append("    not measured — no walk annotated which surface was on screen")
+    else:
+        lines.append(
+            f"    unsolicited : {reading.unsolicited}   (launch window, no user action)"
+        )
+        lines.append(
+            f"    after a tap : {reading.solicited}   (NOT the same as solicited)"
+        )
+        lines.append(f"    from        : {reading.attributed_sessions} annotated session(s)")
     if reading.verdicts:
         lines.append("")
         lines.append("  VERDICTS")
