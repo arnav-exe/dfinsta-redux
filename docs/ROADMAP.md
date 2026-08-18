@@ -88,10 +88,19 @@ any function returning a consent answer, proves its own coverage, and carries po
 both ways. There is no method for scoring addictiveness and this is now confirmed from outside
 the project; inventing one would repeat the seven-signals mistake.
 
-**What is next:** a walk. The three pieces above are built and tested and the launch-window
-count is **zero-data until a phone is walked with an annotating harness** — no committed corpus
-carries per-surface attribution, so every candidate currently reaches the gate saying "no walk
-annotated which surface was on screen", which is the honest answer and not a useful one.
+**And it has been measured.** Twelve annotated 442 sessions were walked on 2026-08-18 — the
+first corpus anywhere carrying per-surface attribution. Six of sixteen watched paths are
+requested at all and five of those fire in the launch window: `/feed/timeline/` 28 times,
+**`/clips/discover` 13 times**, `/feed/reels_tray/` 12, `/discover/topical_explore` 10,
+`/clips/discover/stream/` 2. The Reels rows are the finding — the app fetches Reels discovery
+content before the user goes anywhere near Reels — and `/discover/topical_explore` is the
+control that shows the signal discriminates: 1003 requests and only 10 unbidden, because
+Explore really is a place you have to go. `/feed/timeline/` at 28 is expected and uninteresting;
+the home feed is what launching Instagram means.
+
+**What is next:** 443, whenever it ships. Every mechanism above is in place and the next port
+is what tests it — including whether the anchor fallback survives a second version, which two
+live runs suggest is still incomplete.
 
 The hygiene/taste default split is deliberately **not** being built; the app cannot express a
 default-off switch, and installing DFInsta is itself the opt-in for the whole category.
