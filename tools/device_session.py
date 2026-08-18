@@ -267,6 +267,17 @@ def main() -> int:
     # content the app has already loaded costs nothing until pagination.
     for _ in range(rounds):
         for surface in WALK:
+            # Announce the surface into the log the capture is already reading,
+            # BEFORE the tap that causes its requests. Same stream, same device
+            # clock, so attribution is exact rather than inferred from this
+            # function's own timing — and the app announces nothing itself,
+            # because every tab is a fragment of one activity.
+            #
+            # It does not change what a session measures. The taps, swipes and
+            # sleeps are identical; this adds one shell call of a few tens of
+            # milliseconds against sleeps of 8 and 3 seconds, so corpora stay
+            # comparable across the change.
+            sh("shell", "log", "-t", "DFInstaWalk", f"surface={surface}")
             sh("shell", "input", "tap", *map(str, nav[surface])); time.sleep(8)
             if surface == "Home":
                 sh("shell", "input", "swipe", "540", "900", "540", "1900", "400")

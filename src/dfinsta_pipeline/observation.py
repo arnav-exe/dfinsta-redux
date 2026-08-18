@@ -505,6 +505,25 @@ _PROBE_LINE = re.compile(
     + r":\s?(?P<hook>.*)$"
 )
 
+#: The tag the WALK logs under to say which surface it has just moved to. A third
+#: tag, distinct from both others, because it is neither something the app did nor
+#: something our patched code did — it is the harness annotating its own actions.
+WALK_TAG = "DFInstaWalk"
+
+#: `[<stamp> <pid> <tid>] <LEVEL> DFInstaWalk: surface=<name>`.
+_WALK_LINE = re.compile(
+    r"^\s*(?:\S+\s+\S+\s+\d+\s+\d+\s+)?[VDIWEFS]\s+"
+    + re.escape(WALK_TAG)
+    + r":\s?surface=(?P<surface>.*)$"
+)
+
+#: Where a request that arrived before the walk touched any tab is counted. App
+#: startup fires requests before the first tap, and they are not attributable to
+#: a surface — calling them Home, because Home is where the app opens, would be
+#: inventing an attribution. Measured on 442: `/feed/reels_tray/` appeared ONLY
+#: here.
+STARTUP = "(startup)"
+
 BLOCK_TAG = "IgFunctionalErrorEvent"
 
 #: The exception `throwIfBlocked` raises, as the header line spells it. Matched
@@ -790,6 +809,79 @@ class BlockCount:
 
 
 @dataclass(frozen=True)
+class SurfaceCounts:
+    """Which surface was on screen when each path was requested.
+
+    The walk knows when it taps a tab and the app does not announce it — Instagram
+    runs every tab as a fragment of one activity, so nothing in the log marks the
+    change. So the walk annotates the same stream it is capturing, and every
+    observation after a marker belongs to that surface until the next one.
+
+    **This says where a request happened, not what caused it.** A path seen only
+    while Reels was on screen is strong evidence it serves Reels; a path seen
+    everywhere is evidence of nothing in particular. It exists to answer "which of
+    the switches should own this", which is otherwise guessed from the path's
+    name — and a name that reads like a feature is not evidence a feature exists.
+
+    A surface that saw nothing is **absent**, never a recorded zero, and requests
+    that arrived before the first marker are counted under :data:`STARTUP` rather
+    than attributed to wherever the walk went first.
+    """
+
+    #: `(surface, ((path, count), ...))`, sorted. Mappings are accepted and
+    #: normalised, so a caller can build one the obvious way.
+    by_surface: tuple[tuple[str, tuple[tuple[str, int], ...]], ...] = ()
+
+    def __post_init__(self) -> None:
+        source = (
+            self.by_surface.items() if isinstance(self.by_surface, Mapping) else self.by_surface
+        )
+        normalised = []
+        for surface, counts in source:
+            pairs = counts.items() if isinstance(counts, Mapping) else counts
+            inner = tuple(sorted((str(path), int(count)) for path, count in pairs))
+            for path, count in inner:
+                if not str(path).strip():
+                    raise ObservationError("a surface count carries an empty path")
+                if count < 1:
+                    raise ObservationError(
+                        f"{surface}/{path} carries {count}; a path a surface never saw is "
+                        "absent, not a recorded zero"
+                    )
+            if not str(surface).strip():
+                raise ObservationError("a surface count carries an empty surface name")
+            normalised.append((str(surface), inner))
+        object.__setattr__(self, "by_surface", tuple(sorted(normalised)))
+        if len({surface for surface, _ in self.by_surface}) != len(self.by_surface):
+            raise ObservationError("a surface appears twice")
+
+    def surfaces_for(self, path: str) -> tuple[tuple[str, int], ...]:
+        """`(surface, count)` for one path, busiest first. The decision lookup."""
+
+        found = [
+            (surface, dict(counts)[path])
+            for surface, counts in self.by_surface
+            if path in dict(counts)
+        ]
+        return tuple(sorted(found, key=lambda pair: (-pair[1], pair[0])))
+
+    @property
+    def surfaces(self) -> tuple[str, ...]:
+        return tuple(surface for surface, _ in self.by_surface)
+
+    @property
+    def total(self) -> int:
+        return sum(count for _, counts in self.by_surface for _, count in counts)
+
+    def as_dict(self) -> dict[str, dict[str, int]]:
+        return {surface: dict(counts) for surface, counts in self.by_surface}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SurfaceCounts":
+        return cls(by_surface=tuple((str(k), tuple(v.items())) for k, v in data.items()))
+
+
+@dataclass(frozen=True)
 class Probes:
     """Which hooks reported executing in one capture, and how many times.
 
@@ -993,6 +1085,12 @@ class Capture:
     #: `None` is a row recorded before anything looked for probes at all.
     probes: "Probes | None" = None
 
+    #: Which surface was on screen for each request. `None` when the walk never
+    #: announced one — every capture before 2026-08-18, and any run whose harness
+    #: did not annotate. Unlike `probes`, absence here is normal rather than
+    #: historical: a capture taken by hand has no walk to mark it.
+    per_surface: "SurfaceCounts | None" = None
+
     #: Defaulted to `None` and **not** to an empty `Refusals`: a hand-built capture
     #: that said nothing about refusals must not come out saying none happened.
     #: `parse` always sets this explicitly, so the default is reached only by a
@@ -1144,6 +1242,11 @@ def parse(text: str) -> Capture:
     features: dict[str, int] = {}
     refused: dict[str, int] = {}
     probed: dict[str, int] = {}
+    on_surface: dict[str, dict[str, int]] = {}
+    #: Requests before the first marker belong to app startup, not to whichever
+    #: tab the walk happened to visit first.
+    surface = STARTUP
+    marked = False
     blocks = 0
     toggles: ToggleState | None = None
     reports: frozenset[str] | None = None
@@ -1167,6 +1270,19 @@ def parse(text: str) -> Capture:
             previous = line
             continue
         previous = line
+        walked = _WALK_LINE.match(line)
+        if walked is not None:
+            named = walked.group("surface")
+            if not named.strip() or named != named.strip():
+                raise ObservationError(
+                    f"line {number}: {WALK_TAG} announced surface={named!r}. The contract is "
+                    "one line per surface the walk moves to, and its message names that "
+                    "surface — an empty or padded one attributes every request after it to "
+                    "nothing"
+                )
+            _note_stamp(line, stamps)
+            surface, marked = named, True
+            continue
         probe = _PROBE_LINE.match(line)
         if probe is not None:
             hook = probe.group("hook")
@@ -1279,6 +1395,8 @@ def parse(text: str) -> Capture:
                 "unknown one is not evidence about the app"
             )
         counts[literal] = counts.get(literal, 0) + 1
+        on_surface.setdefault(surface, {})
+        on_surface[surface][literal] = on_surface[surface].get(literal, 0) + 1
     return Capture(
         toggles=toggles,
         counts=counts,
@@ -1295,6 +1413,10 @@ def parse(text: str) -> Capture:
         # what makes an empty one mean "no hook reported". `None` is reserved for
         # a stored row written before anything looked — see `Capture.probes`.
         probes=Probes(probed),
+        # `None` unless the walk actually annotated the stream. An empty record
+        # would say "we attributed everything to nothing", which is what a capture
+        # from a walk that never marked would wrongly look like.
+        per_surface=SurfaceCounts(on_surface) if marked else None,
         span_seconds=_span(stamps),
     )
 
@@ -1382,6 +1504,10 @@ class ObservationSession:
     #: `append` refuses it for anything new. Required, and deliberately ahead of
     #: `counts`, for the reason `toggles` is.
     walk: str | None
+    #: Which surface was on screen for each request. `None` when the walk did not
+    #: annotate the stream, which is every row before 2026-08-18.
+    per_surface: "SurfaceCounts | None" = None
+
     #: Which hooks reported executing, from the build's own probe lines. `None`
     #: is a row recorded before anything looked; an empty `Probes` is a reader
     #: that looked and found none, which is evidence and not an absence.
@@ -1635,6 +1761,12 @@ class ObservationSession:
         probed = (
             {"probes": self.probes.as_dict()} if self.probes is not None else {}
         )
+        # Same rule a sixth time.
+        surfaced = (
+            {"per_surface": self.per_surface.as_dict()}
+            if self.per_surface is not None
+            else {}
+        )
         # Same rule a third time. The twelve 439 rows written before a walk was
         # named come back byte for byte rather than acquiring a walk nobody stated
         # or a span nobody measured.
@@ -1661,6 +1793,7 @@ class ObservationSession:
             **counted,
             **refused,
             **probed,
+            **surfaced,
             "counts": dict(sorted(self.counts.items())),
             # Derived and written anyway, following `SignalCount.to_dict`. It is
             # the number a human reads first, and `from_dict` refuses a row whose
@@ -1689,6 +1822,7 @@ class ObservationSession:
             "blocks",
             "refusals",
             "probes",
+            "per_surface",
             "counts",
             "total",
         }
@@ -1777,6 +1911,14 @@ class ObservationSession:
                     "spelling of absent, in the one field whose zero is evidence"
                 )
             blocks = BlockCount.from_dict(data["blocks"])
+        per_surface: SurfaceCounts | None = None
+        if "per_surface" in data:
+            if data["per_surface"] is None:
+                raise ObservationError(
+                    "an observation session states per_surface: null. A row whose walk "
+                    "did not annotate is spelled by the key being absent"
+                )
+            per_surface = SurfaceCounts.from_dict(data["per_surface"])
         probes: Probes | None = None
         if "probes" in data:
             if data["probes"] is None:
@@ -1811,6 +1953,7 @@ class ObservationSession:
             blocks=blocks,
             refusals=refusals,
             probes=probes,
+            per_surface=per_surface,
             counts={str(key): value for key, value in counts.items()},
         )
         stated = data.get("total")

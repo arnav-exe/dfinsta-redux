@@ -368,6 +368,22 @@ class State:
             return None
         return tuple(item.probes.count(hook_id) for item in self.probing)  # type: ignore[union-attr]
 
+    def surfaces_for(self, endpoint: str) -> tuple[tuple[str, int], ...]:
+        """`(surface, requests)` for one path across every annotated session here.
+
+        Empty when no session in this state was walked with annotation — absent,
+        not "seen nowhere". Summed across sessions because the question is which
+        surface a path belongs to, and one session is not evidence of that.
+        """
+
+        totals: dict[str, int] = {}
+        for item in self.sessions:
+            if item.per_surface is None:
+                continue
+            for surface, count in item.per_surface.surfaces_for(endpoint):
+                totals[surface] = totals.get(surface, 0) + count
+        return tuple(sorted(totals.items(), key=lambda pair: (-pair[1], pair[0])))
+
     @property
     def refused_total(self) -> int | None:
         """Every refusal this state made, across all paths. `None` if unreportable.
@@ -419,6 +435,10 @@ class Classification:
     #: movement nothing explains, and this is about whether the machinery ran at
     #: all — the two read as each other if they share a list.
     execution: tuple[str, ...] = ()
+    #: Where the app asked for it — which surface was on screen. Its own field for
+    #: the same reason `execution` is: three different questions sharing one list
+    #: is three questions nobody reads.
+    seen_on: tuple[str, ...] = ()
     #: `None` when no state was walked twice, which is not the same as `0`.
     noise_floor: int | None = None
     #: `state text -> counts, in recorded order`.
@@ -438,6 +458,7 @@ class Classification:
             "findings": [item.to_dict() for item in self.findings],
             "caveats": list(self.caveats),
             "execution": list(self.execution),
+            "seen_on": list(self.seen_on),
             "noise_floor": self.noise_floor,
             "observed": {key: list(value) for key, value in sorted(self.observed.items())},
             "declared": None if self.declared is None else list(self.declared),
@@ -1058,6 +1079,35 @@ def classify(
     )
 
 
+def _where_seen(
+    endpoint: str,
+    baseline: State,
+    arms: Sequence[State],
+) -> tuple[str, ...]:
+    """Which surface was on screen when this path was requested, across all states.
+
+    Kept apart from `_execution` because they answer different questions and the
+    same care applies as with caveats: `_execution` is what OUR code did, this is
+    where the APP asked, and a reader who has to work out which is which will
+    stop reading both.
+
+    Summed across every annotated session in every state, busiest surface first.
+    One session is not evidence of where a path belongs. Silent when no session
+    was walked with annotation — absent, never "seen nowhere".
+    """
+
+    totals: dict[str, int] = {}
+    for state in (baseline, *arms):
+        for surface, count in state.surfaces_for(endpoint):
+            totals[surface] = totals.get(surface, 0) + count
+    if not totals:
+        return ()
+    busiest = sorted(totals.items(), key=lambda pair: (-pair[1], pair[0]))
+    return (
+        "requested on " + ", ".join(f"{surface} x{count}" for surface, count in busiest),
+    )
+
+
 def _execution(
     endpoint: str,
     baseline: State,
@@ -1136,6 +1186,7 @@ def _classify_one(
         observed=observed,
         declared=declared,
         execution=_execution(endpoint, baseline, arms, root),
+        seen_on=_where_seen(endpoint, baseline, arms),
     )
     seen_anywhere = any(any(counts) for counts in observed.values())
     if not seen_anywhere:
@@ -1556,6 +1607,11 @@ def render(report: Mapping[str, Any]) -> str:
             for finding in row["findings"]:
                 for note in finding["corroboration"]:
                     lines.append(f"      + {note}")
+            for note in row.get("seen_on", ()):
+                # `@` for where the app asked; `*` for what our code did; `!` for
+                # a movement nothing explains. Three marks because they are three
+                # questions, and a reader should not have to parse prose to tell.
+                lines.append(f"      @ {note}")
             for note in row.get("execution", ()):
                 # A different mark from a caveat on purpose. `!` is "something
                 # moved and nothing explains it"; `*` is "here is what our own
