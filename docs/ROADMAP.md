@@ -57,11 +57,44 @@ app asked (which surface was on screen), `*` what our code did (which hooks exec
 movement nothing explains. The first two were added on 2026-08-17/18 and are inert until the
 next walk, because neither can be re-derived from existing captures.
 
-**What is next:** a written criterion for the ruling itself — the consent test, *"did a user
-action cause this content to appear?"* — recorded structurally at the gate, with the launch
-window serving as its measurement. The hygiene/taste default split is deliberately **not**
-being built; the app cannot express a default-off switch, and installing DFInsta is itself the
-opt-in for the whole category.
+**And until 2026-08-18 neither could be recorded at all.** `observation.py record` — the only
+writer of `manifest/observations/*.jsonl`, and the one `tools/record_corpus.py` and the port
+runbook both call — constructed its row naming every field the capture carries *except*
+`probes` and `per_surface`. Both were parsed, both were held by the record type, both round-
+tripped through the store and both were consumed by the reader; the line that moves them from
+the parser to the row did not exist. A row recorded through the documented runbook therefore
+said `probes: None` — the value reserved for a row written before anything looked — about a
+build reporting on every hook, and re-recording the 442 corpus through the tool would have
+silently deleted the probe data committed two days earlier.
+
+**The criterion for the ruling is now written down and enforced.** A disposition carries a
+consent answer — *"did a user action cause this content to appear?"*, answered `solicited`,
+`unsolicited` or `mixed` — and `block` and `offer_toggle` are refused without one, beside the
+clause that refuses them without a device having looked. `submission show --consent-test`
+prints the question with Lukoff's measured bands, including the two 0% rows that are the reason
+the criterion is *consent* and not *personalisation*. The six rulings recorded on 2026-08-08
+read back as unanswered rather than being backfilled, because nobody asked them the question.
+
+**The launch window is the measurement behind it, and it is one-directional.** Every request
+between process start and the first surface marker arrived with no user action in front of it,
+so a launch-window hit is unsolicited *by measurement*. A request after a tap is **not**
+solicited by measurement — generic recommendations and search sit at 100% and 33% in Lukoff's
+bands with the same tap in front of both — and every summary that prints the number says so. A
+dedicated idle probe was designed and dropped on evidence: the app goes 37 to 76 seconds
+without requesting a watched path while being swiped every three seconds.
+
+**Nothing derives the answer.** `tests/test_no_automated_judgement.py` scans the package for
+any function returning a consent answer, proves its own coverage, and carries positive controls
+both ways. There is no method for scoring addictiveness and this is now confirmed from outside
+the project; inventing one would repeat the seven-signals mistake.
+
+**What is next:** a walk. The three pieces above are built and tested and the launch-window
+count is **zero-data until a phone is walked with an annotating harness** — no committed corpus
+carries per-surface attribution, so every candidate currently reaches the gate saying "no walk
+annotated which surface was on screen", which is the honest answer and not a useful one.
+
+The hygiene/taste default split is deliberately **not** being built; the app cannot express a
+default-off switch, and installing DFInsta is itself the opt-in for the whole category.
 
 ## Now
 
