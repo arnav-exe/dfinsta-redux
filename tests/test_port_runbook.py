@@ -139,10 +139,15 @@ class ReEnteringTheRunDirectoryTests(unittest.TestCase):
         """Exactly what the `index` step leaves behind.
 
         Both directories, because the first fix here set up only the decode and
-        so did not catch the index colliding one line later.
+        so did not catch the index colliding one line later. And `header.json`,
+        because the index step is finished by the marker the indexer writes last
+        rather than by the directory it makes first — a fixture stopping at the
+        directory describes a *crashed* index, which the step now correctly
+        wants to rebuild.
         """
         for name in ("analysis-decode", "index", "framework"):
             (self.port.out / name).mkdir(parents=True)
+        (self.port.out / "index" / "header.json").write_text("{}", encoding="utf-8")
 
     def driver_commands(self):
         import sys
@@ -708,7 +713,12 @@ class EveryStepCanFinishItsOwnStepTests(unittest.TestCase):
     # ---- what each step leaves behind, and nothing later than it -------------
 
     def satisfy_index(self) -> None:
+        # `header.json` and not merely the directory: the indexer makes the
+        # directory before it reads a file and writes this after the last one,
+        # so the marker is what distinguishes a finished index from a crashed
+        # one. A fixture that only made the directory was asserting the bug.
         self.port.index_dir.mkdir(parents=True)
+        (self.port.index_dir / "header.json").write_text("{}", encoding="utf-8")
 
     def satisfy_observe_build(self) -> None:
         self.port.unsigned.parent.mkdir(parents=True, exist_ok=True)
@@ -954,3 +964,142 @@ class OneInstallCheckForBothBuildsTests(unittest.TestCase):
             with self.subTest(function=name):
                 self.assertIn("_on_device_is(", body)
                 self.assertNotIn("dumpsys", body)
+
+
+class AHalfBuiltIndexIsNotAnIndexTests(unittest.TestCase):
+    """The third of the family, found by auditing for the shape of the first two.
+
+    `build_index` makes its output directory before it reads a single smali file
+    and writes `header.json` after the last one. The step's check was
+    `index_dir.is_dir()`, so an index that died partway — killed, out of disk,
+    out of memory — left a directory the runbook called finished. It is also the
+    only expensive step with no `stale`, so it could not heal itself: the step
+    read done forever, and the failure surfaced one step later as `IndexError_`
+    raised out of `watch`'s predicate, four frames into a module the operator
+    never invoked, with no mention of the step or the fix.
+
+    Reproduced before it was fixed: `index.done` returned True on a directory
+    holding a single empty `structural.jsonl`, and `watch.done` raised.
+    """
+
+    def setUp(self) -> None:
+        self.port_module = load()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        apk = self.root / "stock.apk"
+        apk.write_bytes(b"PK\x03\x04")
+        self.port = self.port_module.Port(
+            apk=apk, version="444",
+            out=self.root / "out", captures=self.root / "captures",
+        )
+        self.step = next(s for s in self.port_module.STEPS if s.name == "index")
+
+    def half_built(self) -> None:
+        self.port.index_dir.mkdir(parents=True)
+        (self.port.index_dir / "structural.jsonl").write_text("", encoding="utf-8")
+
+    def finished(self) -> None:
+        self.half_built()
+        (self.port.index_dir / "header.json").write_text("{}", encoding="utf-8")
+
+    def test_a_directory_alone_is_not_a_finished_index(self) -> None:
+        self.half_built()
+        self.assertFalse(
+            self.step.done(self.port),
+            "a crashed index read as finished and was never rebuilt",
+        )
+
+    def test_the_marker_the_indexer_writes_last_is_what_finishes_it(self) -> None:
+        self.finished()
+        self.assertTrue(self.step.done(self.port))
+
+    def test_a_half_built_index_is_cleared_so_the_step_can_heal(self) -> None:
+        """Without this the step reruns into a directory the builder refuses to
+        overwrite, which is a different failure with the same cost."""
+        self.half_built()
+        self.assertEqual([self.port.index_dir], self.step.stale(self.port))
+
+    def test_a_reused_index_is_never_deleted(self) -> None:
+        """`--reuse-index` points at an earlier run's expensive artefact. This
+        run wanting to rebuild is not a licence to remove somebody else's."""
+        other = self.root / "elsewhere" / "index"
+        other.mkdir(parents=True)
+        port = self.port_module.Port(
+            apk=self.port.apk, version="444", out=self.root / "out2",
+            captures=self.root / "captures", reuse_index=other,
+        )
+        (port.out / "index").mkdir(parents=True)
+        self.assertEqual([], self.step.stale(port))
+
+    def test_the_real_committed_index_reads_as_finished(self) -> None:
+        """The control, against the artefact a real port produced: the marker
+        this now keys on has to be a thing the indexer actually writes."""
+        real = REPOSITORY / "work" / "443-port" / "index"
+        if not real.is_dir():
+            self.skipTest("no 443 index on disk")
+        self.assertTrue((real / "header.json").is_file())
+
+
+class APredicateThatCannotAnswerIsNamedTests(unittest.TestCase):
+    """A done-check that raises must refuse by name, not kill the run.
+
+    Every predicate is evaluated for every step at the top of the loop, before
+    the device gate and before anything runs. One of them raising took the whole
+    run down with a traceback out of a module the operator never called. It now
+    names the step, says the artefact is unreadable rather than absent, and says
+    what to do.
+
+    **It is not treated as "not done".** A predicate that cannot answer means a
+    broken artefact, and running the step on top of one is how a corrupt input
+    becomes a corrupt output.
+    """
+
+    def setUp(self) -> None:
+        self.port_module = load()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.apk = self.root / "stock.apk"
+        self.apk.write_bytes(b"PK\x03\x04")
+
+    def run_main(self, *extra: str) -> tuple[int, str]:
+        out, err = io.StringIO(), io.StringIO()
+        argv = ["--apk", str(self.apk), "--version", "444",
+                "--out", str(self.root / "out"),
+                "--captures", str(self.root / "captures"), *extra]
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = self.port_module.main(argv)
+        return code, err.getvalue()
+
+    def test_a_raising_predicate_refuses_and_names_the_step(self) -> None:
+        class Unreadable(Exception):
+            pass
+
+        def explode(port):
+            raise Unreadable("index at /somewhere is not readable")
+
+        with mock.patch.object(self.port_module, "_nothing_left_to_watch", explode):
+            code, err = self.run_main()
+        self.assertEqual(1, code)
+        self.assertIn("watch", err, "the step must be named")
+        self.assertIn("Unreadable", err, "and the cause carried")
+        self.assertIn("unreadable rather than absent", err)
+
+    def test_it_does_not_escape_as_a_traceback(self) -> None:
+        """What it did before: `IndexError_` four frames deep, no step named."""
+        def explode(port):
+            raise RuntimeError("boom")
+
+        with mock.patch.object(self.port_module, "_nothing_left_to_watch", explode):
+            try:
+                code, _ = self.run_main()
+            except RuntimeError:  # pragma: no cover - the regression
+                self.fail("the predicate's exception escaped main()")
+        self.assertEqual(1, code)
+
+    def test_a_sound_predicate_is_untouched(self) -> None:
+        """The control: the refusal must be about raising, not about running."""
+        code, err = self.run_main()
+        self.assertEqual(0, code)
+        self.assertNotIn("cannot tell whether it is already done", err)

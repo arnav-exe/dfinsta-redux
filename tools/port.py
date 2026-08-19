@@ -234,6 +234,22 @@ def _adb() -> list[str]:
     return [str(Path.home() / "Android" / "Sdk" / "platform-tools" / "adb")]
 
 
+def _index_leavings(port: Port) -> list[Path]:
+    """A half-built index, and nothing else.
+
+    Only reached when the step is about to run, which now means the completion
+    marker is absent — so a *complete* index is never a candidate for removal.
+    And never an index this run did not make: `--reuse-index` points at an
+    earlier run's directory, and deleting somebody else's expensive artefact
+    because this run wanted to rebuild is not a thing a resumable tool may do.
+    """
+
+    own = port.out / "index"
+    if port.reuse_index or not own.is_dir():
+        return []
+    return [own]
+
+
 def _build_leavings(port: Port) -> list[Path]:
     """What a failed build left in the run directory.
 
@@ -379,7 +395,19 @@ STEPS: tuple[Step, ...] = (
         "index",
         "decode the APK and index its API surface, so stage 4a can find candidates",
         lambda port: _driver(port, "--stop-after", "index"),
-        lambda port: port.index_dir.is_dir(),
+        # **The marker the indexer writes last, not the directory it makes
+        # first.** `build_index` does `mkdir(exist_ok=True)` before it reads a
+        # single file and writes `header.json` after the last one, so a crashed
+        # index leaves a directory that `is_dir()` calls finished. This is the
+        # only expensive step with no `stale`, so it could not heal itself
+        # either: the step read done forever, and the *next* step's predicate
+        # raised `IndexError_` out of the run — a traceback, not a refusal, and
+        # not a word about the fix being `rm -rf`.
+        #
+        # Third of its family, after `warm` and `install`. See
+        # `EveryStepCanFinishItsOwnStepTests`.
+        lambda port: (port.index_dir / "header.json").is_file(),
+        stale=_index_leavings,
         minutes=12,
     ),
     Step(
@@ -583,7 +611,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     remaining = 0
     for step in STEPS:
-        done = step.done(port)
+        try:
+            done = step.done(port)
+        except Exception as error:  # noqa: BLE001 - every predicate, every reason
+            # A predicate that raises used to kill the run with a traceback from
+            # a module the operator never invoked — `watch` reading a half-built
+            # index raised `IndexError_` from the indexer, four frames deep, and
+            # said nothing about which step or what to do. Named here instead.
+            # Deliberately not "treat it as not done": a predicate that cannot
+            # answer is a broken artefact, and running the step on top of one is
+            # how a corrupt input becomes a corrupt output.
+            print(f"refusing: the {step.name} step cannot tell whether it is already "
+                  f"done: {type(error).__name__}: {error}", file=sys.stderr)
+            print(f"           the artefact it reads is unreadable rather than absent. "
+                  f"Remove it and re-run, or say why it is like that.", file=sys.stderr)
+            return 1
         if done:
             print(f"  [done] {step.name}")
             continue
