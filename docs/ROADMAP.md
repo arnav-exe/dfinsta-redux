@@ -98,9 +98,29 @@ control that shows the signal discriminates: 1003 requests and only 10 unbidden,
 Explore really is a place you have to go. `/feed/timeline/` at 28 is expected and uninteresting;
 the home feed is what launching Instagram means.
 
-**What is next:** 443, whenever it ships. Every mechanism above is in place and the next port
-is what tests it — including whether the anchor fallback survives a second version, which two
-live runs suggest is still incomplete.
+**443 ported itself on 2026-08-19, the day it shipped: 7 of 7 hooks mechanical, zero agent
+invocations.** `replace_reels_discover_endpoint` matched the `by_anchor` form built to repair
+442's pooled literal — a fingerprint derived from one version's evidence, now matching a second,
+which is the only kind of confirmation that counts here. Every obfuscated descriptor moved
+(`LX/8Ec;` → `LX/04Yr;` and both settings hosts likewise) and nothing cared, and the names even
+changed *length*, three characters to four. Stage 4a raised no candidates, verified against a
+constructed positive control rather than trusted. The build is signed, release-gated, installed
+and hash-verified on the phone, and `grouping` derives `443 blocked by disable_feed` from the
+corpus on its own.
+
+**Three things broke, all of them in the runbook and none in the port.** A step whose done-check
+read the *next* step's artefact and so could never both run and pass; a warm-up that sampled
+Android's compile time once and refused with a message that reads exactly like renamed nav ids;
+and a walk that gave up when the phone dropped off USB. All three had been latent for four ports
+— every earlier run reached them with artefacts already on disk and routed around the seam. They
+are fixed, and the general property (*a step is finished by its own work*) is now a test that
+fails if a step is added without being classified.
+
+**What is next:** 444. The consent measurement now has real data across two versions and 36
+annotated sessions, and it discriminates: the unsolicited share runs from 54% on
+`/feed/reels_media_stream/` down to 6% on `/clips/discover/stream/`, ordering the endpoints the
+way the criterion predicts. `/feed/reels_media_stream/` was ruled `block` in August on static
+evidence alone; the measurement now independently supports that ruling.
 
 The hygiene/taste default split is deliberately **not** being built; the app cannot express a
 default-off switch, and installing DFInsta is itself the opt-in for the whole category.
