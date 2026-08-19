@@ -23,6 +23,16 @@ refuses when it cannot reach the toggle state it was asked for or cannot find th
 bottom nav, and the sessions after that one would be walked against a phone in an
 unknown state. A corpus with one silently wrong session is worse than a corpus with
 nine sessions, because nothing downstream can tell which one it was.
+
+**With one exception, and it is not a weakening of that rule.** If the session
+failed and the *phone is no longer reachable*, the cause is the cable rather than
+the walk: nothing touched the app, and an interrupted session leaves no capture,
+so redoing it redoes exactly what was lost. That happened three times across two
+walks on 2026-08-18/19 and the repair by hand was this every time. It waits a
+bounded three minutes, retries **the same session once**, and refuses normally if
+that fails too — moving on to the next arm is the thing the rule above exists to
+prevent, and an unbounded wait would turn a phone unplugged overnight into a
+corpus walked across two days.
 """
 
 from __future__ import annotations
@@ -45,6 +55,66 @@ def short(arm: str) -> str:
     """`disable_feed` -> `feed`. The session id carries the state, not the key."""
 
     return "none" if arm == "none" else arm.replace("disable_", "")
+
+
+#: How long to wait for a phone that vanished mid-walk, and how often to look.
+#: Thirty seconds is what the two real dropouts took to re-enumerate; three
+#: minutes is generous enough for a cable being reseated and short enough that an
+#: unattended run fails the same evening.
+DEVICE_WAIT_SECONDS = 180
+DEVICE_POLL_SECONDS = 10
+
+
+def adb() -> list[str]:
+    """The same binary and serial `device_session` uses, read from it.
+
+    Imported rather than repeated: a second copy of the serial is a second thing
+    that can name the wrong phone.
+    """
+
+    sys.path.insert(0, str(REPOSITORY / "tools"))
+    from device_session import ADB  # noqa: PLC0415
+
+    return list(ADB)
+
+
+def present() -> bool:
+    """Is the phone reachable right now? False for every reason it might not be."""
+
+    try:
+        result = subprocess.run(
+            adb() + ["get-state"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.stdout.strip() == "device"
+
+
+def wait_for_device() -> bool:
+    """Poll until the phone is back, or give up. True if it came back.
+
+    `adb wait-for-device` is not used: it blocks with no bound and no output, so
+    a phone left unplugged hangs the walk silently until someone notices.
+    """
+
+    print(f"  the phone is not reachable; waiting up to {DEVICE_WAIT_SECONDS}s",
+          flush=True)
+    for _ in range(DEVICE_WAIT_SECONDS // DEVICE_POLL_SECONDS):
+        time.sleep(DEVICE_POLL_SECONDS)
+        if present():
+            return True
+    print("  it did not come back", file=sys.stderr, flush=True)
+    return False
+
+
+def session(arm: str, out: Path, walk: str) -> subprocess.CompletedProcess:
+    """One session, as its own process. The unit that is retried."""
+
+    return subprocess.run(
+        [sys.executable, str(REPOSITORY / "tools" / "device_session.py"),
+         arm, str(out), walk],
+        capture_output=True, text=True, timeout=1800,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,14 +142,27 @@ def main(argv: list[str] | None = None) -> int:
             if out.exists():
                 print(f"  skip {out.name} (already walked)", flush=True)
                 continue
-            result = subprocess.run(
-                [sys.executable, str(REPOSITORY / "tools" / "device_session.py"),
-                 arm, str(out), walk],
-                capture_output=True, text=True, timeout=1800,
-            )
+            result = session(arm, out, walk)
             elapsed = int(time.time() - started)
             print(f"[{elapsed}s] {result.stdout.strip() or result.stderr.strip()}",
                   flush=True)
+            if result.returncode != 0 and not present():
+                # **The phone went away, rather than the walk going wrong.** This
+                # is not the unknown state the refusal below is about: nothing
+                # touched the app, and the session that was interrupted left no
+                # capture, so redoing it redoes exactly what was lost. Happened
+                # three times across two walks on 2026-08-18/19 — a cable, not a
+                # bug — and each time the repair by hand was this and only this.
+                #
+                # Bounded, and it retries the SAME session once. A loop that kept
+                # going would turn a phone unplugged for the night into a corpus
+                # walked over two days, and a retry that moved on to the next arm
+                # would be the thing the refusal exists to prevent.
+                if wait_for_device():
+                    print(f"  {arm}: the phone came back; walking it again", flush=True)
+                    result = session(arm, out, walk)
+                    print(f"[{int(time.time() - started)}s] "
+                          f"{result.stdout.strip() or result.stderr.strip()}", flush=True)
             if result.returncode != 0:
                 print(
                     f"refusing to walk the rest: {arm} stopped and every session after "

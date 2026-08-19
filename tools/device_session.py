@@ -14,6 +14,7 @@ Usage:  device_session.py <toggle-name|none> <output.log> [walk]
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -338,7 +339,15 @@ def main() -> int:
             for _ in range(scrolls):
                 sh("shell", "input", "swipe", "540", "1700", "540", "500", "280")
                 time.sleep(3)
-    out.write_text(sh("logcat", "-d"), encoding="utf-8")
+    # Written to a neighbour and renamed, following `observation.append` and
+    # `manifest_patch.write_manifest_atomically`. `run_corpus` decides a session
+    # is already walked by the capture existing, so a write interrupted halfway
+    # leaves a truncated log that a resume counts as a finished session and
+    # `record_corpus` turns into a committed row. `os.replace` within one
+    # directory is atomic: the capture is either whole or absent.
+    partial = out.with_name(out.name + ".partial")
+    partial.write_text(sh("logcat", "-d"), encoding="utf-8")
+    os.replace(partial, out)
     print(f"  {name} [{walk}]: {out.name}  nav={ {k: v for k, v in sorted(nav.items())} }")
     return 0
 
