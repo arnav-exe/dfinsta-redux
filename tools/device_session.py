@@ -13,6 +13,7 @@ Usage:  device_session.py <toggle-name|none> <output.log> [walk]
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -207,8 +208,21 @@ def set_toggles(on: set[str], nav: dict[str, tuple[int, int]]) -> dict[str, bool
     )
 
 
-def warm() -> int:
-    """Launch the app once and wait until the nav can be read. No session.
+#: How many times `warm` will relaunch and re-read the nav before giving up, and
+#: how long it waits after each launch. Three attempts at ~16s of settling plus
+#: `tabs()`' own ~38s budget is a little over two and a half minutes.
+#:
+#: **A count and not a longer sleep.** The thing being waited for is Android
+#: finishing its compile of a freshly installed 140 MB APK, and how long that
+#: takes is a property of the phone and the build, not a number anybody here
+#: knows. One sample of a moving target is what made 442 and 443 both refuse with
+#: a message about the nav.
+WARM_ATTEMPTS = 3
+WARM_SETTLE_SECONDS = 16
+
+
+def warm(out: Path | None = None) -> int:
+    """Launch the app until the nav can be read. No session.
 
     **Why this exists as a step of its own.** `adb install -r` is followed by
     Android compiling the new build, so the first launch after an install is far
@@ -222,22 +236,61 @@ def warm() -> int:
     passed once. Nothing about the walk protocol changes: this runs *before* the
     corpus, and a session still force-stops and relaunches for itself, so what a
     session measures is what it measured before this existed.
+
+    **It retries, since 2026-08-19.** One sample was not enough on 443 either: the
+    step refused with `NONE of ['clips_tab', …]`, which reads exactly like the ids
+    having been renamed, and a dump taken a minute later found all five. A
+    function whose entire job is to wait has to actually wait, so it relaunches
+    :data:`WARM_ATTEMPTS` times and only the last failure is fatal.
+
+    **And it writes what it read**, when `out` is given. `tools/port.py` needs an
+    artefact to tell a step that ran from a step that did not, and this one had
+    none: its done-check was "the first walk has produced a capture", which warm
+    does not do — so it could never both run and pass, and read as done only when
+    a walk had already started. The file is also the evidence: a nav that read
+    five tabs is what the sessions after it are relying on.
     """
-    sh("shell", "am", "force-stop", PKG)
-    time.sleep(3)
-    sh("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
-    time.sleep(16)
-    nav = tabs()
-    missing = [tab for tab in WALK if tab not in nav]
-    if missing:
-        raise SystemExit(f"refusing: nav is missing {missing}; found {sorted(nav)}")
-    print(f"  warm: nav reads {sorted(nav)}")
-    return 0
+
+    last = ""
+    for attempt in range(WARM_ATTEMPTS):
+        sh("shell", "am", "force-stop", PKG)
+        time.sleep(3)
+        sh("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
+        time.sleep(WARM_SETTLE_SECONDS)
+        try:
+            nav = tabs()
+        except SystemExit as error:
+            # `tabs()` refuses by raising, and on a cold build that refusal is
+            # the ordinary case rather than an error. Kept and re-raised as the
+            # message if the last attempt also fails, so the operator sees what
+            # the phone actually said and not a summary of it.
+            last = str(error)
+            print(f"  warm: attempt {attempt + 1} of {WARM_ATTEMPTS} could not read the nav")
+            continue
+        missing = [tab for tab in WALK if tab not in nav]
+        if not missing:
+            print(f"  warm: nav reads {sorted(nav)}")
+            if out is not None:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(
+                    json.dumps({"nav": sorted(nav), "attempts": attempt + 1}, indent=1),
+                    encoding="utf-8",
+                )
+            return 0
+        last = f"nav is missing {missing}; found {sorted(nav)}"
+        print(f"  warm: attempt {attempt + 1} of {WARM_ATTEMPTS}: {last}")
+    raise SystemExit(
+        f"refusing after {WARM_ATTEMPTS} attempts: {last}. If a dump by hand finds the "
+        "tabs, the phone was still compiling and the fix is another attempt; if it does "
+        "not, this version renamed them, which 440 really did"
+    )
 
 
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--warm":
-        return warm()
+        rest = sys.argv[2:]
+        out = Path(rest[rest.index("--out") + 1]) if "--out" in rest else None
+        return warm(out)
     name, out = sys.argv[1], Path(sys.argv[2])
     walk = sys.argv[3] if len(sys.argv) > 3 else "three-round-v2"
     if walk not in WALKS:

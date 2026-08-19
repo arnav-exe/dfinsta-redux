@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -657,3 +658,299 @@ class ItStopsAtTheJudgementTests(unittest.TestCase):
         source = (REPOSITORY / "tools" / "port.py").read_text(encoding="utf-8")
         self.assertIn("rule on the candidates", source)
         self.assertIn("not derivable", source)
+
+
+class EveryStepCanFinishItsOwnStepTests(unittest.TestCase):
+    """A step's done-check must be satisfiable by that step's own command.
+
+    **The defect this was written for.** `warm`'s done-check was
+    `walked(port, WALKS[0]) > 0` — the number of captures produced by the *next*
+    step. Warm launches the app and reads the nav; it produces no captures. So
+    the step could never both run and pass: the driver refuses a step that exits
+    zero with its check still false, and warm's check could only become true once
+    the walk it protects had already started.
+
+    It went unnoticed for four ports because it fails *safe-looking*. Every
+    earlier port reached warm with captures already on disk from a partial walk,
+    so the check read true, warm was skipped, and the seam was routed around
+    rather than exercised — the same shape as the extract-and-build seam
+    `--reuse-decode` walked past every time. 443 was the first port to reach warm
+    on a genuinely empty corpus, and it stopped the run twice.
+
+    `RefusalTests.test_a_step_that_exits_zero_without_its_output_is_refused`
+    proves the guard *bites*. Nothing proved a real step could get *past* it,
+    which is the other half and the half that was broken.
+
+    **What this covers and what it does not.** The table below says what each
+    step leaves behind, and `test_the_table_covers_every_step` fails if a step is
+    added without an entry — so a new step must be classified rather than
+    silently untested. Three predicates are not filesystem facts and are stubbed
+    here: `install` and `ship-install` ask the phone, and `watch` asks whether the
+    manifest already covers the index. They are marked in the table and their
+    stubs assert only that the predicate consults the thing named, not what it
+    answers.
+    """
+
+    def setUp(self) -> None:
+        self.port_module = load()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.apk = self.root / "stock.apk"
+        self.apk.write_bytes(b"PK\x03\x04")
+        self.port = self.port_module.Port(
+            apk=self.apk, version="443",
+            out=self.root / "out", captures=self.root / "captures",
+        )
+        self.port.captures.mkdir(parents=True)
+        self.port.out.mkdir(parents=True)
+
+    # ---- what each step leaves behind, and nothing later than it -------------
+
+    def satisfy_index(self) -> None:
+        self.port.index_dir.mkdir(parents=True)
+
+    def satisfy_observe_build(self) -> None:
+        self.port.unsigned.parent.mkdir(parents=True, exist_ok=True)
+        self.port.unsigned.write_bytes(b"PK\x03\x04")
+
+    def satisfy_sign(self) -> None:
+        self.port.signed.parent.mkdir(parents=True, exist_ok=True)
+        self.port.signed.write_bytes(b"PK\x03\x04")
+
+    def satisfy_warm(self) -> None:
+        self.port.warm_marker.parent.mkdir(parents=True, exist_ok=True)
+        self.port.warm_marker.write_text('{"nav": []}', encoding="utf-8")
+
+    def satisfy_walk(self, walk: str) -> None:
+        for index in range(12):
+            (self.port.captures / f"443-{walk[:2]}-{index}.log").write_text("x", encoding="utf-8")
+
+    def satisfy_ship_build(self) -> None:
+        self.port.ship_unsigned.parent.mkdir(parents=True, exist_ok=True)
+        self.port.ship_unsigned.write_bytes(b"PK\x03\x04")
+
+    def satisfy_ship_sign(self) -> None:
+        self.port.ship_signed.parent.mkdir(parents=True, exist_ok=True)
+        self.port.ship_signed.write_bytes(b"PK\x03\x04")
+
+    #: `None` marks a predicate that is not a filesystem fact — see the class
+    #: docstring. Everything else is a callable that creates exactly what that
+    #: step produces, and nothing a later step produces.
+    def table(self) -> dict:
+        return {
+            "index": self.satisfy_index,
+            "watch": None,                       # asks the manifest and the index
+            "observe-build": self.satisfy_observe_build,
+            "sign": self.satisfy_sign,
+            "install": None,                     # asks the phone
+            "warm": self.satisfy_warm,
+            "walk-one-pass-v1": lambda: self.satisfy_walk("one-pass-v1"),
+            "walk-three-round-v2": lambda: self.satisfy_walk("three-round-v2"),
+            "record-one-pass-v1": None,          # asks the committed store
+            "record-three-round-v2": None,       # asks the committed store
+            "ship-build": self.satisfy_ship_build,
+            "ship-sign": self.satisfy_ship_sign,
+            "ship-install": None,                # asks the phone
+        }
+
+    def test_the_table_covers_every_step(self) -> None:
+        """A step added without an entry fails here rather than going untested."""
+        self.assertEqual(
+            [step.name for step in self.port_module.STEPS], list(self.table())
+        )
+
+    def test_each_step_is_not_done_before_it_runs(self) -> None:
+        """The control. Without it the test below could pass on a predicate that
+        is simply always true, which is the other way to be unfalsifiable."""
+        table = self.table()
+        for step in self.port_module.STEPS:
+            if table[step.name] is None:
+                continue
+            with self.subTest(step=step.name):
+                self.assertFalse(
+                    step.done(self.port),
+                    f"{step.name} reads as done on an empty port",
+                )
+
+    def test_each_steps_own_artefact_makes_it_done(self) -> None:
+        """The one that was broken. Each step is satisfied in isolation, on a
+        port where **nothing after it has run**, so a predicate reading a later
+        step's output cannot pass.
+        """
+        for step in self.port_module.STEPS:
+            satisfy = self.table()[step.name]
+            if satisfy is None:
+                continue
+            with self.subTest(step=step.name):
+                self.setUp()
+                satisfy = self.table()[step.name]
+                self.assertFalse(step.done(self.port))
+                satisfy()
+                self.assertTrue(
+                    step.done(self.port),
+                    f"{step.name} ran and still does not read as done, so the run "
+                    "refuses it as 'exited 0 and its output is not there'",
+                )
+
+    def test_warm_specifically_does_not_wait_on_the_walk_it_protects(self) -> None:
+        """Named, because this is the instance and it is worth failing loudly.
+
+        The walk cannot start until warm passes, and warm used to require the
+        walk to have started. Whatever else changes, these two must not become
+        each other's precondition again.
+        """
+        warm = next(step for step in self.port_module.STEPS if step.name == "warm")
+        self.assertFalse(warm.done(self.port))
+        self.satisfy_warm()
+        self.assertTrue(
+            warm.done(self.port),
+            "warm is satisfied only by a capture, which only the walk after it makes",
+        )
+        self.assertEqual(
+            0, self.port_module.walked(self.port, self.port_module.WALKS[0]),
+            "and it must pass with no capture on disk at all",
+        )
+
+    def test_an_existing_corpus_still_short_circuits_the_warm_up(self) -> None:
+        """The half of the old check worth keeping: a corpus already in progress
+        means something stricter than warm has read the nav, and re-warming would
+        force-stop the app mid-corpus for no reason."""
+        warm = next(step for step in self.port_module.STEPS if step.name == "warm")
+        self.assertFalse(warm.done(self.port))
+        self.satisfy_walk("one-pass-v1")
+        self.assertFalse(self.port.warm_marker.is_file())
+        self.assertTrue(warm.done(self.port))
+
+    def test_the_warm_command_asks_for_the_artefact_it_is_checked_on(self) -> None:
+        """A predicate and a command that disagree is the defect one level up:
+        the check would be sound and nothing would ever write the file."""
+        warm = next(step for step in self.port_module.STEPS if step.name == "warm")
+        command = [str(part) for part in warm.command(self.port)]
+        self.assertIn("--warm", command)
+        self.assertIn("--out", command)
+        self.assertIn(str(self.port.warm_marker), command)
+
+
+class OneInstallCheckForBothBuildsTests(unittest.TestCase):
+    """`install` and `ship-install` ask the same question of the same phone.
+
+    They were two functions and the weaker one guarded the corpus. `_installed`
+    matched `versionName=<version>.` out of `dumpsys`, reasoning that dumpsys
+    reports no digest — true of dumpsys, and not true of the problem: the `pm
+    path` + `sha256sum` pair in `_shipped_is_installed` sat beside it the whole
+    time doing exactly that.
+
+    **The failure it allowed.** Both this project's builds of one version report
+    the same `versionName`, are signed by the same key, and on 442 came out the
+    same number of bytes. So `install`'s check was satisfiable by the *shipped*
+    build — the artefact of the last step of the same run. Delete the captures to
+    re-walk a finished port and `install` reads done, the walk measures a build
+    with **no observer**, and `record-*` files the resulting silence under the
+    observing build's `build_sha256`, because that is what the runbook passes.
+    Twelve well-formed captures, every check green, and a corpus that says the
+    app requested nothing.
+
+    That is the `warm` defect inverted — a predicate satisfied by a later step's
+    artefact rather than by none — and it is why
+    `EveryStepCanFinishItsOwnStepTests` states the property per step.
+    """
+
+    def setUp(self) -> None:
+        self.port_module = load()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        apk = self.root / "stock.apk"
+        apk.write_bytes(b"PK\x03\x04")
+        self.port = self.port_module.Port(
+            apk=apk, version="443",
+            out=self.root / "out", captures=self.root / "captures",
+        )
+
+    def build(self, signed: Path, digest: str) -> None:
+        signed.parent.mkdir(parents=True, exist_ok=True)
+        signed.write_bytes(b"PK\x03\x04")
+        signed.with_suffix(".release.json").write_text(
+            json.dumps({"outputs": {"apk_sha256": digest}}), encoding="utf-8"
+        )
+
+    def stub_device(self, digest: str) -> list:
+        """A phone holding one APK with `digest`. Records what it was asked."""
+        asked: list = []
+
+        def fake(command, *a, **k):
+            asked.append(command)
+            text = ""
+            if "path" in command:
+                text = "package:/data/app/base.apk\n"
+            elif "sha256sum" in command:
+                text = f"{digest}  /data/app/base.apk\n"
+            return subprocess.CompletedProcess(command, 0, text, "")
+
+        patcher = mock.patch.object(self.port_module.subprocess, "run", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return asked
+
+    def test_the_shipped_build_does_not_satisfy_the_observing_install(self) -> None:
+        """The defect, stated directly. Both builds exist and the phone holds the
+        shipped one; the step that installs the *observing* build must run."""
+        self.build(self.port.signed, "a" * 64)
+        self.build(self.port.ship_signed, "b" * 64)
+        self.stub_device("b" * 64)
+        self.assertFalse(
+            self.port_module._installed(self.port),
+            "the shipped build satisfied the observing install",
+        )
+        self.assertTrue(self.port_module._shipped_is_installed(self.port))
+
+    def test_the_observing_build_satisfies_its_own_install(self) -> None:
+        """The control, without which the test above passes on a function that
+        always says no."""
+        self.build(self.port.signed, "a" * 64)
+        self.build(self.port.ship_signed, "b" * 64)
+        self.stub_device("a" * 64)
+        self.assertTrue(self.port_module._installed(self.port))
+        self.assertFalse(self.port_module._shipped_is_installed(self.port))
+
+    def test_a_stock_apk_of_the_same_version_satisfies_neither(self) -> None:
+        """`versionName` is what the stock APK also reports. It was the whole
+        check."""
+        self.build(self.port.signed, "a" * 64)
+        self.build(self.port.ship_signed, "b" * 64)
+        self.stub_device("c" * 64)
+        self.assertFalse(self.port_module._installed(self.port))
+        self.assertFalse(self.port_module._shipped_is_installed(self.port))
+
+    def test_it_does_not_reach_for_the_phone_before_the_build_exists(self) -> None:
+        """Report mode is a question, and must be answerable with no phone.
+
+        `done()` is evaluated for every step before the `needs_device` check, so
+        a predicate that shelled out unconditionally would make `tools/port.py`
+        with no `--run` touch a device — and, in the suite, touch the real one.
+        """
+        asked = self.stub_device("a" * 64)
+        self.assertFalse(self.port_module._installed(self.port))
+        self.assertFalse(self.port_module._shipped_is_installed(self.port))
+        self.assertEqual([], asked, "it asked the phone with nothing built yet")
+
+    def test_a_build_with_no_release_report_is_not_installed(self) -> None:
+        """False whenever it cannot tell. Re-running `install -r` costs twenty
+        seconds; a wrong "already done" costs the corpus."""
+        self.port.signed.parent.mkdir(parents=True, exist_ok=True)
+        self.port.signed.write_bytes(b"PK\x03\x04")
+        asked = self.stub_device("a" * 64)
+        self.assertFalse(self.port_module._installed(self.port))
+        self.assertEqual([], asked)
+
+    def test_both_predicates_are_the_same_mechanism(self) -> None:
+        """Named, so the two cannot drift apart again. What differs between them
+        is which APK they are asked about and nothing else."""
+        import inspect
+
+        for name in ("_installed", "_shipped_is_installed"):
+            body = inspect.getsource(getattr(self.port_module, name))
+            with self.subTest(function=name):
+                self.assertIn("_on_device_is(", body)
+                self.assertNotIn("dumpsys", body)

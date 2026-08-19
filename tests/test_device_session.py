@@ -158,3 +158,136 @@ class TabIdTests(unittest.TestCase):
         source = (REPOSITORY / "tools" / "device_session.py").read_text(encoding="utf-8")
         uses = source.count("PROFILE_GUESS")
         self.assertEqual(2, uses, "declared once, used once — to reach a dumpable screen")
+
+
+class WarmUpTests(unittest.TestCase):
+    """The step that waits for Android to finish compiling a fresh install.
+
+    Two defects, found on 443 and fixed together.
+
+    **It sampled once.** One launch, sixteen seconds, one `tabs()` call — against
+    a wait whose length is a property of the phone and the build, and which
+    nobody here knows. 442 refused 68 seconds after the install and 443 refused
+    twice, both with a message about the nav ids that reads exactly like the
+    rename 440 really did. A function whose entire job is to wait has to wait.
+
+    **It left nothing behind.** `tools/port.py` tells a step that ran from a step
+    that did not by looking for its artefact, and warm had none — its check was
+    "the first walk has produced a capture", which warm does not do. So it could
+    never both run and pass. See `EveryStepCanFinishItsOwnStepTests` in
+    `test_port_runbook.py` for that half; this is the half that writes the file.
+    """
+
+    def setUp(self) -> None:
+        self.module = load()
+        self.commands: list[tuple] = []
+        patcher = mock.patch.object(
+            self.module, "sh", lambda *a: self.commands.append(a) or ""
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        naps = mock.patch.object(self.module.time, "sleep", lambda seconds: None)
+        naps.start()
+        self.addCleanup(naps.stop)
+
+    def stub_tabs(self, *results):
+        """Successive `tabs()` results; the last repeats. A `SystemExit` instance
+        is raised rather than returned, which is how `tabs()` really refuses."""
+        sequence = list(results)
+
+        def fake():
+            item = sequence.pop(0) if len(sequence) > 1 else sequence[0]
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        patcher = mock.patch.object(self.module, "tabs", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def nav(self) -> dict:
+        return {name: (x, TAB_ROW) for name, x in
+                zip(("Home", "Reels", "Message", "Search and explore", "Profile"),
+                    (108, 324, 540, 756, 972))}
+
+    # ---- it writes what it read ---------------------------------------------
+
+    def test_it_writes_the_nav_it_read(self) -> None:
+        """The artefact `port.py` checks for. Without this file the runbook
+        refuses the step as having reported success without doing the work."""
+        import json
+        import tempfile
+
+        self.stub_tabs(self.nav())
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "sub" / "warm.json"
+            self.assertEqual(0, self.module.warm(out))
+            self.assertTrue(out.is_file(), "warm exited 0 and wrote nothing")
+            written = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(
+            ["Home", "Message", "Profile", "Reels", "Search and explore"],
+            written["nav"],
+            "and the file must say what was read, not merely that it was",
+        )
+
+    def test_it_still_works_with_nowhere_to_write(self) -> None:
+        """`--out` is optional, so a hand-run warm-up stays a one-word command."""
+        self.stub_tabs(self.nav())
+        self.assertEqual(0, self.module.warm(None))
+
+    def test_it_writes_nothing_when_it_refuses(self) -> None:
+        """An artefact from a failed warm-up would make the runbook skip the step
+        on the next attempt — the failure would become permanent and invisible."""
+        import tempfile
+
+        self.stub_tabs(SystemExit("no dump succeeded"))
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "warm.json"
+            with self.assertRaises(SystemExit):
+                self.module.warm(out)
+            self.assertFalse(out.is_file())
+
+    # ---- it waits -----------------------------------------------------------
+
+    def test_a_nav_that_reads_on_the_second_launch_is_not_a_failure(self) -> None:
+        """The 443 case exactly: the first look found none of the tab ids and a
+        look a minute later found all five."""
+        self.stub_tabs(SystemExit("nav is missing"), self.nav())
+        self.assertEqual(0, self.module.warm(None))
+
+    def test_it_relaunches_between_attempts(self) -> None:
+        """Re-reading the same screen would not help. What is being waited for is
+        the app starting faster once Android has compiled it, so each attempt has
+        to be a fresh launch."""
+        self.stub_tabs(SystemExit("nav is missing"), self.nav())
+        launches = [c for c in self.commands if "monkey" in c]
+        self.assertEqual(0, len(launches), "sanity: counted before the call")
+        self.commands.clear()
+        self.stub_tabs(SystemExit("nav is missing"), self.nav())
+        self.module.warm(None)
+        self.assertEqual(2, len([c for c in self.commands if "monkey" in c]))
+        self.assertEqual(2, len([c for c in self.commands if "force-stop" in c]))
+
+    def test_it_gives_up_eventually_and_names_both_causes(self) -> None:
+        """It must not loop forever, and the message must not pick a side: on 440
+        the ids really were renamed, and on 442 and 443 they were not."""
+        self.stub_tabs(SystemExit("nav is missing ['clips_tab']"))
+        with self.assertRaises(SystemExit) as caught:
+            self.module.warm(None)
+        message = str(caught.exception)
+        self.assertIn(str(self.module.WARM_ATTEMPTS), message)
+        self.assertIn("compiling", message)
+        self.assertIn("renamed", message)
+        self.assertIn("clips_tab", message, "and it must carry what the phone said")
+
+    def test_it_makes_more_than_one_attempt(self) -> None:
+        """Pinned as a number, because `range(1)` is a one-character regression
+        that restores the original defect and changes no other behaviour."""
+        self.assertGreater(self.module.WARM_ATTEMPTS, 1)
+        self.stub_tabs(SystemExit("nav is missing"))
+        with self.assertRaises(SystemExit):
+            self.module.warm(None)
+        self.assertEqual(
+            self.module.WARM_ATTEMPTS,
+            len([c for c in self.commands if "monkey" in c]),
+        )

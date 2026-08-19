@@ -151,6 +151,16 @@ class Port:
         return self.out.parent / f"{self.version}-ship"
 
     @property
+    def warm_marker(self) -> Path:
+        """What the warm-up read, and the only thing it leaves behind.
+
+        Beside the build rather than in the corpus directory: it is a fact about
+        this port's phone state, and deleting it to force a re-warm must not look
+        like deleting a session.
+        """
+        return self.out / "warm.json"
+
+    @property
     def ship_unsigned(self) -> Path:
         return self.ship_out / "dfinsta.apk"
 
@@ -301,28 +311,35 @@ def _ship_leavings(port: Port) -> list[Path]:
     return sorted(path for path in port.ship_out.iterdir() if path.name != "framework")
 
 
-def _shipped_is_installed(port: Port) -> bool:
-    """Is the SHIPPED build on the phone, rather than the observing one?
+def _on_device_is(signed: Path) -> bool:
+    """Is the APK on the phone byte-for-byte the one `signed` names?
 
-    The version is not enough to tell them apart — both report
-    `versionName=<version>.…`, both are signed by the same key, and on 442 the two
-    APKs even came out the same number of bytes. A predicate that answered "yes"
-    for the observing build would silently skip the install that replaces it,
-    which is the one step standing between a finished port and a phone with the
-    build on it.
-
-    So it compares digests, and answers **False whenever it cannot tell**: no
-    signed APK, no release report, no `pm path`, no `sha256sum` on the device, a
+    The version is not enough to tell two of this project's builds apart — both
+    report `versionName=<version>.…`, both are signed by the same key, and on 442
+    the observing and shipped APKs even came out the same number of bytes. So it
+    compares digests, and answers **False whenever it cannot tell**: no signed
+    APK, no release report, no `pm path`, no `sha256sum` on the device, a
     mismatch — every one of those means run the step. Re-running `install -r` on
     a build already installed costs twenty seconds and changes nothing, whereas a
     wrong "already done" costs the whole point of the run.
+
+    **One function, since 2026-08-19, because there were two and only one was
+    right.** `_installed` used to ask `dumpsys` for `versionName=<version>.`,
+    reasoning that dumpsys reports no digest — true of dumpsys, and not true of
+    the problem, as the `pm path` + `sha256sum` pair below had been demonstrating
+    beside it the whole time. That made the *observing* install's check
+    satisfiable by the *shipped* build, which is the last step of the same run:
+    delete the captures to re-walk a finished port and `install` reads done, the
+    walk measures a build with no observer, and `record-*` files the silence
+    under the observing build's `build_sha256`. Every check passes and the
+    corpus is wrong.
     """
-    report = port.ship_signed.with_suffix(".release.json")
-    if not (port.ship_signed.is_file() and report.is_file()):
+    report = signed.with_suffix(".release.json")
+    if not (signed.is_file() and report.is_file()):
         return False
     try:
         expected = json.loads(report.read_text(encoding="utf-8"))["outputs"]["apk_sha256"]
-    except (OSError, KeyError, json.JSONDecodeError):
+    except (OSError, KeyError, json.JSONDecodeError, TypeError):
         return False
     try:
         located = subprocess.run(
@@ -343,6 +360,18 @@ def _shipped_is_installed(port: Port) -> bool:
     except (OSError, subprocess.SubprocessError):  # pragma: no cover - no adb
         return False
     return bool(digest) and digest[0] == expected
+
+
+def _shipped_is_installed(port: Port) -> bool:
+    """Is the SHIPPED build on the phone, rather than the observing one?
+
+    The last step of a port. Its counterpart is :func:`_installed`, which asks
+    the same question about the observing build, and the two are one function so
+    that a fix to either reaches both — they were separate, and the one guarding
+    the corpus was the weaker of the two.
+    """
+
+    return _on_device_is(port.ship_signed)
 
 
 STEPS: tuple[Step, ...] = (
@@ -393,10 +422,19 @@ STEPS: tuple[Step, ...] = (
         "first launch after an install is slow enough to fail a walk",
         lambda port: [
             sys.executable, str(REPOSITORY / "tools" / "device_session.py"), "--warm",
+            "--out", str(port.warm_marker),
         ],
-        # No artefact of its own, so it is done when the thing it protects has
-        # started producing: one capture means a session got past the nav.
-        lambda port: walked(port, WALKS[0]) > 0,
+        # **Its own artefact, since 2026-08-19.** This used to be "the first walk
+        # has produced a capture", which warm does not do — so the step could
+        # never both run and pass, and read as done only when a walk had already
+        # started. Every port before 443 had captures on disk by the time it was
+        # reached, so the seam was routed around rather than exercised.
+        #
+        # The walk count is still honoured, and deliberately: a corpus already in
+        # progress means the nav has been read by something stricter than this,
+        # and re-warming mid-corpus would force-stop the app between sessions for
+        # no reason.
+        lambda port: port.warm_marker.is_file() or walked(port, WALKS[0]) > 0,
         needs_device=True,
         minutes=1,
     ),
@@ -483,18 +521,17 @@ def _nothing_left_to_watch(port: Port) -> bool:
 
 
 def _installed(port: Port) -> bool:
-    """Is the phone running the version this port built?
+    """Is the OBSERVING build on the phone — the one every session is measured
+    against?
 
-    Version, not digest: `dumpsys` does not report one. So this answers "the right
-    version is installed" and not "the exact build is", which is why the recorded
-    rows carry `build_sha256` — the store, not this check, is what ties a session
-    to an APK.
+    The same digest comparison the shipped install uses, and for a sharper
+    reason: this predicate guards the corpus. A walk run against the wrong build
+    still produces twelve well-formed captures, and `record-*` will file them
+    under this build's `build_sha256` because that is what the runbook passes.
+    Nothing downstream can tell.
     """
-    result = subprocess.run(
-        _adb() + ["shell", "dumpsys", "package", "com.instagram.android"],
-        capture_output=True, text=True, timeout=60,
-    )
-    return f"versionName={port.version}." in result.stdout
+
+    return _on_device_is(port.signed)
 
 
 def device_attached() -> bool:
