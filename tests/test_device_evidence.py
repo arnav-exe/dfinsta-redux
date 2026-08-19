@@ -211,7 +211,11 @@ class CommittedCorpusTests(unittest.TestCase):
             {("439", "one-pass-v1"), ("439", "three-round-v2"),
              ("440", "one-pass-v1"), ("440", "three-round-v2"),
              ("441", "one-pass-v1"), ("441", "three-round-v2"),
-             ("442", "one-pass-v1"), ("442", "three-round-v2")},
+             ("442", "one-pass-v1"), ("442", "three-round-v2"),
+             # 443, walked 2026-08-19. Listed rather than derived, which is the
+             # point of this test: a version that was measured and never added
+             # here would be silently absent from every candidate's evidence.
+             ("443", "one-pass-v1"), ("443", "three-round-v2")},
             set(found),
         )
 
@@ -236,14 +240,23 @@ class CommittedCorpusTests(unittest.TestCase):
     def test_a_watched_literal_reports_every_corpus_that_watched_it(self) -> None:
         reading = reading_for("feed/timeline/", REPOSITORY, computed=self.computed)
         self.assertEqual(DEVICE_REQUESTED, reading.kind)
-        self.assertEqual(8, len(reading.watched_in))
-        self.assertEqual(("439", "440", "441", "442"), reading.versions)
+        # Derived, not pinned: this asserts the literal is watched in *every*
+        # corpus, and the number of corpora is not what it is about. It said `8`
+        # and a port made it 10 — the same trap the session count beside it hit,
+        # and the reason that one now derives too.
+        self.assertEqual(len(corpora(REPOSITORY)), len(reading.watched_in))
+        self.assertEqual(("439", "440", "441", "442", "443"), reading.versions)
         self.assertEqual(self.every_session(), reading.sessions)
         self.assertGreater(reading.seen, 100)
         blocked = {(v, verdict, toggle) for v, _, verdict, toggle in reading.verdicts}
+        # Every version measured reads the same verdict from the same toggle.
+        # Listed rather than derived: a version that stopped blocking the home
+        # feed is the single most important thing a port could break, and it
+        # should fail here rather than be absorbed by a comprehension.
         self.assertEqual(
             {("439", "blocked", "disable_feed"), ("440", "blocked", "disable_feed"),
-             ("441", "blocked", "disable_feed"), ("442", "blocked", "disable_feed")},
+             ("441", "blocked", "disable_feed"), ("442", "blocked", "disable_feed"),
+             ("443", "blocked", "disable_feed")},
             blocked,
         )
 
