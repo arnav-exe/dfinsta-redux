@@ -108,6 +108,31 @@ class Port:
     captures: Path
     reuse_decode: Path | None = None
     reuse_index: Path | None = None
+    #: Where the ledger and content store live. `None` means the gate is not
+    #: configured for this run, and the two gate steps stay out of the way —
+    #: exactly the behaviour every port before 2026-08-19 had.
+    state_root: Path | None = None
+    #: How the recorded assessment is found again. The gate client takes nothing
+    #: but this, so it is the one string that has to survive between a machine
+    #: that ports and a human who rules.
+    assessment_run_id: str = ""
+    #: Who may answer the gate, and what lets a wedged operation be reclaimed.
+    #: Neither is invented here — a tool that made up an actor would be signing
+    #: on somebody's behalf, which is the reason this handoff was manual until
+    #: now.
+    actor: str = ""
+    owner_token: str = ""
+    #: Where the worker is, and which queue and build it was started with.
+    #: `build_id` is not optional in practice: both workflows are PINNED, a
+    #: versioned worker is only dispatched its deployment's current version, and
+    #: a gate raised without it is accepted by the server, never picked up, and
+    #: every query times out with nothing naming the cause.
+    endpoint: str = "localhost:7233"
+    task_queue: str = "dfinsta-phase-a"
+    build_id: str = ""
+    #: How long the gate stays open. A week, and an unanswered one ends
+    #: `blocked` — never an implicit approval.
+    gate_timeout_seconds: int = 7 * 24 * 3600
 
     @property
     def index_dir(self) -> Path:
@@ -149,6 +174,29 @@ class Port:
         corpus was measured against.
         """
         return self.out.parent / f"{self.version}-ship"
+
+    @property
+    def gate_marker(self) -> Path:
+        """What the raised gate left behind: the workflow id, and how to reach it.
+
+        Written by `assessment_record raise --write-workflow-id`, because the id
+        is a thing only that command knows. Local, so that asking this runbook
+        where it stands never needs a Temporal server — the same rule that keeps
+        the install check off the phone until there is a build to ask about.
+        """
+        return self.out / "gate.json"
+
+    @property
+    def gate_configured(self) -> bool:
+        """Was this run given what it needs to raise the gate itself?
+
+        All or nothing. A half-configured gate would record an assessment nobody
+        can rule on, which is worse than not starting one.
+        """
+        return bool(
+            self.state_root and self.assessment_run_id and self.actor
+            and self.owner_token and self.build_id
+        )
 
     @property
     def warm_marker(self) -> Path:
@@ -232,6 +280,75 @@ def _sign(port: Port, out: Path | None = None, output: Path | None = None) -> li
 
 def _adb() -> list[str]:
     return [str(Path.home() / "Android" / "Sdk" / "platform-tools" / "adb")]
+
+
+def _assessment_recorded(port: Port) -> bool:
+    """Is this run's assessment already in the ledger, and reachable by run id?
+
+    Answers **False whenever it cannot tell** — no state root, no ledger, an
+    operation that never completed — because re-recording refuses by design and
+    a wrong "already done" would send the run to a gate with nothing behind it.
+
+    Reads the ledger and the content store, both of which are directories on
+    this machine, so asking costs nothing and needs no server. That matters:
+    every predicate is evaluated for every step before anything runs, including
+    when this tool is only being asked where the port stands.
+    """
+
+    if not port.state_root or not port.assessment_run_id:
+        return False
+    try:
+        sys.path.insert(0, str(REPOSITORY / "src"))
+        from dfinsta_pipeline import activities, assessment_record  # noqa: PLC0415
+
+        # `configure_runtime` returns None — it installs the runtime, and
+        # `runtime()` is the accessor. Getting that wrong made this predicate
+        # answer False for an assessment that had just been recorded, and the
+        # runbook refused the step it had itself completed. The broad `except`
+        # below is what hid it: it is right for "cannot tell", and it swallows a
+        # typo just as happily, which is why the live run was the thing that
+        # found this and the unit tests could not have.
+        activities.configure_runtime(port.state_root, read_only=True)
+        configured = activities.runtime()
+        assessment_record.resolve_with(
+            configured.ledger, configured.store, port.assessment_run_id
+        )
+    except Exception:  # noqa: BLE001 - absent, unreadable and incomplete alike
+        return False
+    return True
+
+
+def _gate_not_configured(port: Port) -> str:
+    """Why this run cannot raise its own gate, or "" when it can.
+
+    Named individually rather than as "the gate is not configured", because the
+    thing an operator has got wrong is almost always one of them — and
+    `--build-id` is the one whose absence produces no error at all, just a
+    Workflow nobody ever runs.
+    """
+
+    if not _unruled_candidates(port):
+        # Nothing to rule means nothing to raise, so there is nothing to be
+        # blocked from. Without this a run that was never given the gate flags
+        # — which is every run before 2026-08-19, and the default — would report
+        # BLOCKED for a step that has no work in it.
+        return ""
+    missing = [
+        name for name, value in (
+            ("--state-root", port.state_root),
+            ("--assessment-run-id", port.assessment_run_id),
+            ("--actor", port.actor),
+            ("--owner-token", port.owner_token),
+            ("--build-id", port.build_id),
+        ) if not value
+    ]
+    if not missing:
+        return ""
+    return (
+        f"this run cannot raise its own gate: {', '.join(missing)} not given. "
+        "Rule on the candidates by hand, or re-run with them and the gate is "
+        "raised and waits for you"
+    )
 
 
 def _index_leavings(port: Port) -> list[Path]:
@@ -494,6 +611,58 @@ STEPS: tuple[Step, ...] = (
         )
         for walk in WALKS
     ],
+    # ------------------------------------------------------------- the gate
+    #
+    # Both steps are **no-ops when there is nothing to rule**, which is what 443
+    # was: stage 4a raised no candidates, so there is no assessment worth
+    # recording and nobody to ask. They are also no-ops when this run was not
+    # given what raising a gate needs, which is every port before 2026-08-19 and
+    # remains the default — the handoff stays printed rather than performed.
+    #
+    # What they buy when both do apply: the run stops as a **Workflow parked in
+    # Temporal**, durable for a week, rather than as a shell command that ended.
+    # A human can answer it tomorrow from another machine holding nothing but a
+    # run id, and an unanswered gate expires to `blocked`, which is never an
+    # implicit approval.
+    Step(
+        "assess",
+        "record the assessment a human will rule against, so the gate has a subject",
+        lambda port: _driver(
+            port, "--stop-after", "assess",
+            "--state-root", str(port.state_root),
+            "--assessment-run-id", port.assessment_run_id,
+            "--actor", port.actor,
+            "--owner-token", port.owner_token,
+        ),
+        # Nothing to rule means nothing to record. Otherwise the ledger row is
+        # the artefact, and it is this step's own — `resolve_with` is the exact
+        # path the gate client uses, so a recorded assessment that this cannot
+        # find is one the human could not have ruled on either.
+        lambda port: not _unruled_candidates(port) or _assessment_recorded(port),
+        blocked_by=_gate_not_configured,
+        minutes=2,
+    ),
+    Step(
+        "raise-gate",
+        "start the Workflow that asks a human, and park until they answer",
+        lambda port: [
+            sys.executable, "-m", "dfinsta_pipeline.assessment_record", "raise",
+            "--run-id", port.assessment_run_id,
+            "--endpoint", port.endpoint,
+            "--task-queue", port.task_queue,
+            "--build-id", port.build_id,
+            "--gate-timeout-seconds", str(port.gate_timeout_seconds),
+            "--write-workflow-id", str(port.gate_marker),
+        ],
+        # The marker, not the ledger: raising twice would start a second
+        # Workflow against the same subject, and the first one would sit open
+        # until it expired. `_unruled_candidates` stays non-empty for as long as
+        # the human has not answered, so it cannot be the thing that says this
+        # step is finished.
+        lambda port: not _unruled_candidates(port) or port.gate_marker.is_file(),
+        blocked_by=_gate_not_configured,
+        minutes=1,
+    ),
     # Last, and last on purpose: this replaces the observing build on the phone,
     # and the observing build is the one every recorded session was measured
     # against. Both corpora are on disk and committed by the time this runs.
@@ -579,6 +748,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="where device captures land; default work/observations-<version>")
     parser.add_argument("--reuse-decode", type=Path, default=None)
     parser.add_argument("--reuse-index", type=Path, default=None)
+    gate = parser.add_argument_group(
+        "raising this run's gate",
+        "Give all five and the run records its assessment and raises the gate "
+        "itself, then parks in Temporal until you answer. Give none and the "
+        "handoff is printed instead, which is what it always was. Nothing here "
+        "is invented: an actor and an owner token identify a person, and a tool "
+        "that made them up would be signing on somebody's behalf.",
+    )
+    gate.add_argument("--state-root", type=Path, default=None,
+                      help="the ledger and content store")
+    gate.add_argument("--assessment-run-id", default="",
+                      help="how the recorded assessment is found again; the gate "
+                           "client takes nothing but this")
+    gate.add_argument("--actor", default="", help="who may answer the gate")
+    gate.add_argument("--owner-token", default="",
+                      help="what lets a wedged operation be reclaimed later")
+    gate.add_argument("--build-id", default="",
+                      help="the --build-id the worker was started with. Both "
+                           "workflows are PINNED, so without it the gate is "
+                           "accepted by the server, dispatched to nobody, and "
+                           "every query times out with nothing naming the cause")
+    gate.add_argument("--endpoint", default="localhost:7233")
+    gate.add_argument("--task-queue", default="dfinsta-phase-a",
+                      help="the queue the worker polls. Note this differs from "
+                           "`assessment_record raise`'s own default")
+    gate.add_argument("--gate-timeout-seconds", type=int, default=7 * 24 * 3600,
+                      help="a week by default; an unanswered gate ends `blocked`")
     parser.add_argument("--run", action="store_true",
                         help="execute the steps that are not done; without it nothing runs")
     args = parser.parse_args(argv)
@@ -598,6 +794,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         out=args.out or REPOSITORY / "work" / f"{args.version}-port",
         captures=args.captures or REPOSITORY / "work" / f"observations-{args.version}",
         reuse_decode=args.reuse_decode,
+        state_root=args.state_root,
+        assessment_run_id=args.assessment_run_id,
+        actor=args.actor,
+        owner_token=args.owner_token,
+        endpoint=args.endpoint,
+        task_queue=args.task_queue,
+        build_id=args.build_id,
+        gate_timeout_seconds=args.gate_timeout_seconds,
         reuse_index=args.reuse_index,
     )
     port.captures.mkdir(parents=True, exist_ok=True)
@@ -626,18 +830,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"           the artefact it reads is unreadable rather than absent. "
                   f"Remove it and re-run, or say why it is like that.", file=sys.stderr)
             return 1
-        if done:
+        # **Asked before `done`, since 2026-08-19.** `ship-build` renders
+        # `url_block_rules`, and a build made before a candidate was ruled does
+        # not carry the ruling — so an artefact left by an earlier run must not
+        # let the step report finished once a new candidate appears. It did:
+        # after a completed port, adding an endpoint to the manifest left
+        # `ship-build` reading `[done]` off the old APK and the run announcing
+        # "the port is finished" with a build that predates the decision, which
+        # is the exact thing `_unruled_candidates` was written to prevent.
+        #
+        # Safe in the other direction because every `blocked_by` answers "" when
+        # its step has nothing to do — a step cannot be blocked from work that
+        # does not exist.
+        reason = step.blocked_by(port)
+        if done and not reason:
             print(f"  [done] {step.name}")
             continue
         remaining += step.minutes
-        reason = step.blocked_by(port)
         blocked = (step.needs_device and not have_device) or bool(reason)
         mark = "BLOCKED" if blocked else "todo"
         print(f"  [{mark}] {step.name:22} ~{step.minutes}m   {step.why}")
         if blocked:
             print(f"           {reason or 'attach the phone; this step and everything after it need it'}")
             if reason:
-                _judgement_steps()
+                _judgement_steps(port)
             return 1
         if not args.run:
             continue
@@ -691,23 +907,56 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _judgement_steps() -> None:
-    """The five things this tool does not do, printed where they are needed.
+def _judgement_steps(port: Port) -> None:
+    """What is left for a human, which depends on whether the gate was raised.
 
-    Three of them are typing, and it does not do those either: they need a run
-    id, an actor and an owner token, and a tool that invented those would be
-    signing a document on somebody's behalf. The other two are judgement.
+    Two of the five used to be typing this tool would not do, because raising a
+    gate needs a run id, an actor and an owner token, and a tool that invented
+    those would be signing a document on somebody's behalf. Given them, it does
+    exactly those two — and what remains is judgement, or follows from it.
     """
+
+    raised = _raised_gate(port)
     print("\n  What is yours to do:")
-    print("    1. record the assessment   driver --stop-after assess --state-root … "
-          "--assessment-run-id … --actor … --owner-token …")
-    print("    2. raise the gate          python -m dfinsta_pipeline.assessment_record raise …")
-    print("    3. rule on the candidates  python -m dfinsta_pipeline.submission show/submit …")
-    print("    4. apply the rulings       python -m dfinsta_pipeline.rulings … --apply")
-    print("    5. write the url_block_rules entry by hand: the match kind and the toggle are")
-    print("       not derivable, and the regularity that made the match kind look derivable")
-    print("       has since inverted — five of eleven literals break it")
+    if raised is None:
+        print("    1. record the assessment   driver --stop-after assess --state-root … "
+              "--assessment-run-id … --actor … --owner-token …")
+        print("    2. raise the gate          python -m dfinsta_pipeline.assessment_record raise …")
+        print("       — or re-run this with --state-root/--assessment-run-id/--actor/")
+        print("         --owner-token/--build-id and both happen here, leaving the gate")
+        print("         open and waiting for you.")
+    else:
+        hours = int(raised.get("gate_timeout_seconds") or 0) // 3600
+        print(f"    the gate is raised and waiting: {raised.get('workflow_id', '?')}")
+        print(f"    on {raised.get('endpoint', '?')}, queue {raised.get('task_queue', '?')}"
+              + (f", open for {hours}h" if hours else ""))
+        print("    An unanswered gate expires to `blocked`, which is never an approval.")
+    print("    · rule on the candidates  python -m dfinsta_pipeline.submission show \\")
+    print("                                  --assessment --rulings-template --consent-test")
+    print("                              python -m dfinsta_pipeline.submission submit …")
+    print("    · apply the rulings       python -m dfinsta_pipeline.rulings … --apply")
+    print("    · write the url_block_rules entry by hand: the match kind and the toggle are")
+    print("      not derivable, and the regularity that made the match kind look derivable")
+    print("      has since inverted — five of eleven literals break it")
     print("\n  Then re-run this; it resumes at the shippable build.")
+
+
+def _raised_gate(port: Port) -> dict | None:
+    """What this run's raised gate says about itself, or `None` if none was.
+
+    Unreadable counts as absent **here and only here**: this is a message for a
+    human, and withholding the rest of it because a marker got truncated would
+    be the tail wagging the dog. Every predicate that decides anything keeps
+    absent and unreadable apart.
+    """
+
+    if not port.gate_marker.is_file():
+        return None
+    try:
+        found = json.loads(port.gate_marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return found if isinstance(found, dict) else None
 
 
 if __name__ == "__main__":

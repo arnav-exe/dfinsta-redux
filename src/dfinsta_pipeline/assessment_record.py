@@ -638,6 +638,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     raising.add_argument("--deployment-name", default="dfinsta-pipeline")
     raising.add_argument(
+        "--write-workflow-id",
+        type=Path,
+        default=None,
+        help="write the started workflow id here. A caller that raises this gate "
+        "as one step of a longer run needs an artefact to tell a step that ran "
+        "from a step that did not, and the id is the thing only this command "
+        "knows. Written after the Workflow is confirmed started, never before",
+    )
+    raising.add_argument(
         "--gate-timeout-seconds",
         type=int,
         default=7 * 24 * 3600,
@@ -659,6 +668,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (RecordError, ValueError, OSError, RuntimeError) as error:
             print(f"error: {error}", file=sys.stderr)
             return 1
+        if args.write_workflow_id is not None:
+            # After `raise_gate` returned, so the file means "this Workflow is
+            # running" and not "we tried". `raise_gate` already waits for a
+            # worker to be polling, so a written id is one a worker can reach.
+            args.write_workflow_id.parent.mkdir(parents=True, exist_ok=True)
+            args.write_workflow_id.write_text(
+                json.dumps({
+                    "workflow_id": workflow_id,
+                    "run_id": args.run_id,
+                    "endpoint": args.endpoint,
+                    "task_queue": args.task_queue,
+                    "gate_timeout_seconds": args.gate_timeout_seconds,
+                }, indent=1),
+                encoding="utf-8",
+            )
         print(f"raised {workflow_id}")
         print(
             f"Answer it with:  python -m dfinsta_pipeline.submission show {workflow_id}"

@@ -30,13 +30,16 @@ Each plants everything else genuinely and breaks exactly one thing, and each has
 a positive control planted the same way that resolves cleanly.
 """
 
+import contextlib
 import dataclasses
 import hashlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from unittest import mock
 
 from dfinsta_pipeline import assessment_record, feature_gate
 from dfinsta_pipeline.assessment import canonical_bytes, candidate_ids
@@ -922,3 +925,77 @@ class RecordedDocumentsCarryDeviceEvidenceTests(AssessmentRecordFixture):
             canonical_json(with_store.document), canonical_json(without.document)
         )
         self.assertNotEqual(with_store.input_sha256, without.input_sha256)
+
+
+class RaiseWritesDownTheWorkflowItStartedTests(unittest.TestCase):
+    """`raise --write-workflow-id` records the id, after the Workflow is running.
+
+    A caller that raises this gate as one step of a longer run needs an artefact
+    to tell a step that ran from a step that did not, and the workflow id is the
+    thing only this command knows. `tools/port.py` reads exactly this file to
+    decide whether its `raise-gate` step is finished — without it the step would
+    re-raise on every re-run, starting a second Workflow against the same subject
+    while the first sat open until it expired.
+
+    **Written after `raise_gate` returns**, so the file means "this Workflow is
+    running" and not "we tried". `raise_gate` already waits for a worker to be
+    polling before returning, so a written id is one a worker can reach.
+    """
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def raise_with(self, *extra: str, started: str = "feat-444"):
+        """Run the `raise` CLI with `raise_gate` stubbed. Returns (code, order)."""
+        order: list[str] = []
+
+        def fake_raise_gate(endpoint, task_queue, run_id, **kwargs):
+            order.append("started")
+            if started is None:
+                raise RuntimeError("no worker is polling that task queue")
+            return started
+
+        argv = ["raise", "--run-id", "feat-444", "--build-id", "worker-1", *extra]
+        with mock.patch.object(assessment_record, "raise_gate", fake_raise_gate):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    code = assessment_record.main(argv)
+                except SystemExit as exit_now:  # pragma: no cover - argparse
+                    code = exit_now.code
+        return code, order
+
+    def test_it_writes_the_id_where_it_was_told(self) -> None:
+        target = self.root / "sub" / "gate.json"
+        code, _ = self.raise_with("--write-workflow-id", str(target))
+        self.assertEqual(0, code)
+        self.assertTrue(target.is_file(), "raise exited 0 and wrote nothing")
+        written = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual("feat-444", written["workflow_id"])
+
+    def test_the_file_carries_how_to_reach_the_gate_again(self) -> None:
+        """A human coming back tomorrow holds this file and nothing else."""
+        target = self.root / "gate.json"
+        self.raise_with("--write-workflow-id", str(target),
+                        "--endpoint", "localhost:7233",
+                        "--task-queue", "dfinsta-phase-a",
+                        "--gate-timeout-seconds", "604800")
+        written = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual("localhost:7233", written["endpoint"])
+        self.assertEqual("dfinsta-phase-a", written["task_queue"])
+        self.assertEqual(604800, written["gate_timeout_seconds"])
+
+    def test_nothing_is_written_when_the_gate_could_not_be_raised(self) -> None:
+        """A marker from a failed raise would make the caller skip the step on
+        the next attempt — the failure would become permanent and invisible."""
+        target = self.root / "gate.json"
+        code, _ = self.raise_with("--write-workflow-id", str(target), started=None)
+        self.assertEqual(1, code)
+        self.assertFalse(target.exists())
+
+    def test_the_flag_is_optional(self) -> None:
+        """Raising a gate by hand stays a command with no bookkeeping in it."""
+        code, _ = self.raise_with()
+        self.assertEqual(0, code)

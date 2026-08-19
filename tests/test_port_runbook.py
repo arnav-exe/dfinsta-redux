@@ -619,30 +619,55 @@ class RulingBlocksTheShippedBuildTests(unittest.TestCase):
         )
         self.assertEqual("", self.port_module._unruled_candidates(fresh))
 
-    def test_it_blocks_the_ship_build_and_nothing_earlier(self) -> None:
-        """Only the build that renders the rules waits; the measurement does not."""
+    def test_it_blocks_the_ship_build_and_nothing_that_measures(self) -> None:
+        """Nothing that measures the phone ever waits on a human.
+
+        Three steps may block and all three are downstream of the walk: the two
+        that raise the gate, when this run was not given what raising one needs,
+        and the build that renders the rules, until they are ruled. A corpus is
+        never held up by a judgement — that ordering is why the shipped build is
+        last and why `assess` sits after both walks.
+        """
         default = self.port_module.Step.__dataclass_fields__["blocked_by"].default
+        names = [step.name for step in self.port_module.STEPS]
         blocked = [
             step.name for step in self.port_module.STEPS if step.blocked_by is not default
         ]
-        self.assertEqual(["ship-build"], blocked)
+        self.assertEqual(["assess", "raise-gate", "ship-build"], blocked)
+        for name in blocked:
+            with self.subTest(step=name):
+                self.assertGreater(
+                    names.index(name), names.index("walk-three-round-v2"),
+                    "a step that can wait on a human must come after the walks",
+                )
 
 
 class ItStopsAtTheJudgementTests(unittest.TestCase):
     """Ruling is the human's, and the build that renders a ruling waits for it."""
 
     def test_the_steps_are_mechanical_only(self) -> None:
+        """Asking is mechanical; answering is not, and only answering is barred.
+
+        `raise-gate` starts the Workflow that puts the question to a human and
+        then waits — it holds no authority, decides nothing, and cannot admit its
+        own answer. What must never appear here is a step that *rules*: submits
+        a disposition, applies one, or writes the `url_block_rules` entry that
+        follows from it.
+        """
         module = load()
         names = [step.name for step in module.STEPS]
-        for judgement in ("submit", "rule", "apply-rulings", "gate"):
+        for judgement in ("submit", "rule", "apply-rulings", "dispositions"):
             self.assertNotIn(judgement, names)
         self.assertEqual(
             ["index", "watch", "observe-build", "sign", "install", "warm",
              "walk-one-pass-v1", "walk-three-round-v2",
              "record-one-pass-v1", "record-three-round-v2",
+             "assess", "raise-gate",
              "ship-build", "ship-sign", "ship-install"],
             names,
         )
+        self.assertLess(names.index("raise-gate"), names.index("ship-build"))
+        self.assertGreater(names.index("assess"), names.index("record-three-round-v2"))
 
     def test_the_shipped_build_comes_after_both_corpora_are_recorded(self) -> None:
         """It replaces the observing build on the phone, and that build is what
@@ -759,6 +784,8 @@ class EveryStepCanFinishItsOwnStepTests(unittest.TestCase):
             "walk-three-round-v2": lambda: self.satisfy_walk("three-round-v2"),
             "record-one-pass-v1": None,          # asks the committed store
             "record-three-round-v2": None,       # asks the committed store
+            "assess": None,                      # asks the ledger, or has nothing to do
+            "raise-gate": None,                  # asks the ledger, or has nothing to do
             "ship-build": self.satisfy_ship_build,
             "ship-sign": self.satisfy_ship_sign,
             "ship-install": None,                # asks the phone
@@ -1103,3 +1130,251 @@ class APredicateThatCannotAnswerIsNamedTests(unittest.TestCase):
         code, err = self.run_main()
         self.assertEqual(0, code)
         self.assertNotIn("cannot tell whether it is already done", err)
+
+
+class RaisingItsOwnGateTests(unittest.TestCase):
+    """The run can park in Temporal instead of ending at a printed instruction.
+
+    A gate waits for a human, and a human may take days. Until 2026-08-19 the
+    runbook stopped at the judgement and printed five commands: the first two —
+    record the assessment, raise the gate — are mechanism, but they need a run
+    id, an actor and an owner token, and the tool would not invent those because
+    a tool that did would be signing a document on somebody's behalf.
+
+    Given them, it does exactly those two. The run then ends with a Workflow
+    parked on `wait_condition`, durable for a week, answerable from another
+    machine by someone holding nothing but a run id — and an unanswered gate
+    expires to `blocked`, which is never an implicit approval.
+
+    **What it still will not do is answer.** `raise-gate` asks; `submit` is
+    absent from this runbook and `ItStopsAtTheJudgementTests` keeps it that way.
+    """
+
+    def setUp(self) -> None:
+        self.port_module = load()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.apk = self.root / "stock.apk"
+        self.apk.write_bytes(b"PK\x03\x04")
+
+    def port(self, **overrides):
+        fields = dict(
+            apk=self.apk, version="444",
+            out=self.root / "out", captures=self.root / "captures",
+        )
+        fields.update(overrides)
+        return self.port_module.Port(**fields)
+
+    def configured(self, **overrides):
+        fields = dict(
+            state_root=self.root / "state", assessment_run_id="feat-444",
+            actor="sam.operator", owner_token="owner-1", build_id="worker-1",
+        )
+        fields.update(overrides)
+        return self.port(**fields)
+
+    # ---- all or nothing ------------------------------------------------------
+
+    def test_a_run_given_nothing_is_not_configured(self) -> None:
+        self.assertFalse(self.port().gate_configured)
+
+    def test_every_one_of_the_five_is_required(self) -> None:
+        """A half-configured gate would record an assessment nobody can rule on."""
+        for absent in ("state_root", "assessment_run_id", "actor",
+                       "owner_token", "build_id"):
+            with self.subTest(missing=absent):
+                port = self.configured(**{absent: None if absent == "state_root" else ""})
+                self.assertFalse(port.gate_configured)
+        self.assertTrue(self.configured().gate_configured, "the control")
+
+    def test_the_refusal_names_what_is_missing(self) -> None:
+        """`--build-id` especially: without it the Workflow is accepted by the
+        server, dispatched to nobody, and every query times out with nothing
+        naming the cause."""
+        with mock.patch.object(self.port_module, "_unruled_candidates",
+                               lambda port: "one candidate has no ruling"):
+            reason = self.port_module._gate_not_configured(self.configured(build_id=""))
+        self.assertIn("--build-id", reason)
+        self.assertNotIn("--actor", reason, "and only what is actually missing")
+
+    def test_nothing_to_rule_is_not_something_to_be_blocked_from(self) -> None:
+        """The default path. Every run before this existed, and every port whose
+        version raised no candidates — 443 raised none — must be untouched."""
+        with mock.patch.object(self.port_module, "_unruled_candidates", lambda port: ""):
+            self.assertEqual("", self.port_module._gate_not_configured(self.port()))
+
+    # ---- the steps -----------------------------------------------------------
+
+    def test_both_gate_steps_are_no_ops_when_there_is_nothing_to_rule(self) -> None:
+        steps = [s for s in self.port_module.STEPS if s.name in ("assess", "raise-gate")]
+        self.assertEqual(2, len(steps))
+        with mock.patch.object(self.port_module, "_unruled_candidates", lambda port: ""):
+            for step in steps:
+                with self.subTest(step=step.name):
+                    self.assertTrue(step.done(self.port()))
+
+    def test_the_gate_steps_have_work_when_a_candidate_is_unruled(self) -> None:
+        """The control for the test above."""
+        steps = [s for s in self.port_module.STEPS if s.name in ("assess", "raise-gate")]
+        with mock.patch.object(self.port_module, "_unruled_candidates",
+                               lambda port: "one candidate has no ruling"):
+            for step in steps:
+                with self.subTest(step=step.name):
+                    self.assertFalse(step.done(self.configured()))
+
+    def test_a_raised_gate_is_not_raised_twice(self) -> None:
+        """Raising again starts a second Workflow against the same subject while
+        the first sits open until it expires. The candidate stays unruled for as
+        long as the human has not answered, so it cannot be what says this step
+        is finished — the marker is."""
+        step = next(s for s in self.port_module.STEPS if s.name == "raise-gate")
+        port = self.configured()
+        with mock.patch.object(self.port_module, "_unruled_candidates",
+                               lambda p: "one candidate has no ruling"):
+            self.assertFalse(step.done(port))
+            port.gate_marker.parent.mkdir(parents=True, exist_ok=True)
+            port.gate_marker.write_text('{"workflow_id": "feat-444"}', encoding="utf-8")
+            self.assertTrue(step.done(port))
+
+    def test_the_raise_command_asks_for_the_marker_it_is_checked_on(self) -> None:
+        """A predicate and a command that disagree is the defect one level up."""
+        step = next(s for s in self.port_module.STEPS if s.name == "raise-gate")
+        port = self.configured()
+        command = [str(part) for part in step.command(port)]
+        self.assertIn("raise", command)
+        self.assertIn("--write-workflow-id", command)
+        self.assertIn(str(port.gate_marker), command)
+        self.assertIn("--build-id", command)
+        self.assertIn("worker-1", command)
+
+    def test_the_assess_command_carries_all_four_driver_arguments(self) -> None:
+        step = next(s for s in self.port_module.STEPS if s.name == "assess")
+        command = [str(part) for part in step.command(self.configured())]
+        for flag in ("--state-root", "--assessment-run-id", "--actor", "--owner-token"):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, command)
+        self.assertIn("assess", command)
+
+    def test_an_unrecorded_assessment_is_not_recorded(self) -> None:
+        """False whenever it cannot tell: no state root, no ledger, an operation
+        that never completed. Re-recording refuses by design, so a wrong "already
+        done" sends the run to a gate with nothing behind it."""
+        self.assertFalse(self.port_module._assessment_recorded(self.port()))
+        self.assertFalse(self.port_module._assessment_recorded(self.configured()))
+
+    # ---- a block outranks an artefact made before the block existed ----------
+
+    def test_a_step_that_is_done_but_blocked_reports_blocked(self) -> None:
+        """`ship-build` renders `url_block_rules`. A build made before a
+        candidate was ruled does not carry the ruling, so an APK left by an
+        earlier run must not let the step report finished once a new candidate
+        appears — which it did, because `done` was asked first.
+
+        Tested on a synthetic step rather than on `ship-build` itself, because
+        `blocked_by` holds a **direct reference** captured when `STEPS` was
+        built: patching `_unruled_candidates` by name reaches the `done` lambdas,
+        which look it up at call time, and never reaches the blocker. `STEPS` is
+        itself a module global the loop reads each run, so replacing that is what
+        puts a done-and-blocked step in front of the ordering under test.
+        """
+        step = self.port_module.Step(
+            "synthetic", "already done, and blocked anyway",
+            lambda port: ["true"],
+            lambda port: True,
+            blocked_by=lambda port: "a candidate has no ruling",
+        )
+        with mock.patch.object(self.port_module, "STEPS", (step,)), \
+             mock.patch.object(self.port_module, "device_attached", lambda: True):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = self.port_module.main([
+                    "--apk", str(self.apk), "--version", "444",
+                    "--out", str(self.root / "out"),
+                    "--captures", str(self.root / "captures"),
+                ])
+            page = out.getvalue()
+        self.assertEqual(1, code)
+        line = [item for item in page.splitlines() if "synthetic" in item]
+        self.assertEqual(1, len(line), f"expected one line, got {line}")
+        self.assertIn("BLOCKED", line[0])
+        self.assertNotIn("[done]", line[0])
+
+    def test_a_step_that_is_done_and_unblocked_still_reports_done(self) -> None:
+        """The control. The reorder must not turn every finished step into a
+        blocked one."""
+        step = self.port_module.Step(
+            "synthetic", "done, nothing blocking",
+            lambda port: ["true"], lambda port: True,
+        )
+        with mock.patch.object(self.port_module, "STEPS", (step,)), \
+             mock.patch.object(self.port_module, "device_attached", lambda: True):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = self.port_module.main([
+                    "--apk", str(self.apk), "--version", "444",
+                    "--out", str(self.root / "out"),
+                    "--captures", str(self.root / "captures"),
+                ])
+        self.assertEqual(0, code)
+        self.assertIn("[done] synthetic", out.getvalue())
+
+
+class TheGateMarkerIsForReadingTests(unittest.TestCase):
+    """The one place unreadable may count as absent, and why that is allowed."""
+
+    def setUp(self) -> None:
+        self.port_module = load()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        apk = self.root / "stock.apk"
+        apk.write_bytes(b"PK\x03\x04")
+        self.port = self.port_module.Port(
+            apk=apk, version="444", out=self.root / "out",
+            captures=self.root / "captures",
+        )
+        self.port.out.mkdir(parents=True)
+
+    def test_no_marker_reads_as_no_gate(self) -> None:
+        self.assertIsNone(self.port_module._raised_gate(self.port))
+
+    def test_a_marker_is_read_back(self) -> None:
+        self.port.gate_marker.write_text(
+            json.dumps({"workflow_id": "feat-444", "endpoint": "localhost:7233"}),
+            encoding="utf-8",
+        )
+        self.assertEqual("feat-444", self.port_module._raised_gate(self.port)["workflow_id"])
+
+    def test_a_torn_marker_reads_as_none_rather_than_raising(self) -> None:
+        """This one feeds a message for a human. Withholding the rest of it
+        because a marker got truncated would be the tail wagging the dog — every
+        predicate that *decides* anything keeps absent and unreadable apart."""
+        for junk in ("{ not json", "", "[1, 2, 3]"):
+            with self.subTest(content=junk):
+                self.port.gate_marker.write_text(junk, encoding="utf-8")
+                self.assertIsNone(self.port_module._raised_gate(self.port))
+
+    def test_the_handoff_names_the_workflow_when_there_is_one(self) -> None:
+        self.port.gate_marker.write_text(
+            json.dumps({"workflow_id": "feat-444", "endpoint": "localhost:7233",
+                        "task_queue": "dfinsta-phase-a",
+                        "gate_timeout_seconds": 7 * 24 * 3600}),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.port_module._judgement_steps(self.port)
+        page = out.getvalue()
+        self.assertIn("feat-444", page)
+        self.assertIn("168h", page)
+        self.assertIn("never an approval", page)
+        self.assertNotIn("raise the gate", page, "it is already raised")
+
+    def test_the_handoff_tells_you_how_when_there_is_not(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.port_module._judgement_steps(self.port)
+        page = out.getvalue()
+        self.assertIn("raise the gate", page)
+        self.assertIn("--build-id", page, "and how to make it automatic")
