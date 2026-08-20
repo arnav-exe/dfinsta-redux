@@ -5,7 +5,8 @@
 (103 GB of decodes and builds) is a cache and is deliberately left behind.
 
 This file is the rest: what git does not carry, why each item matters, and how to
-tell when you have it. `tests/test_reproducible_from_clone.py` checks the parts of
+tell when you have it. Once it is all in place, **[`RUNNING_A_PORT.md`](RUNNING_A_PORT.md)
+is the per-release procedure** — this file is done once, that one every version. `tests/test_reproducible_from_clone.py` checks the parts of
 it that can be checked, because a bootstrap list is read by people who cannot yet
 run anything to find out that it has rotted.
 
@@ -128,6 +129,15 @@ keytool -list -keystore "$DFINSTA_KEYSTORE" -alias "$DFINSTA_KEY_ALIAS" \
 
 A superseded keystore on this machine went unnoticed until that pin caught it, so
 run the check rather than assuming the file that is there is the file you want.
+
+**If you are not the original signer**, that digest is not yours and the release
+gate will refuse every build you sign — correctly, since the whole point of the
+pin is that a build claiming to be DFInsta was signed by the DFInsta key. Generate
+your own keystore and put its certificate digest in
+`release/signing_policy.json` under `expected_certificate_sha256`, with a new
+`policy_id`. Understand the consequence before you do: builds signed by your key
+cannot upgrade-install over ones signed by the original, so the first install
+uninstalls the app and costs one manual login.
 
 ### 7. A Temporal dev server — optional
 
