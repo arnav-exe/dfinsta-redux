@@ -12,7 +12,7 @@
 
 This file predates the pipeline and its Scope section above is four months old. **The current
 authority is [`docs/ROADMAP.md`](docs/ROADMAP.md)**, then
-[`docs/IMPLEMENTATION_STATE.md`](docs/IMPLEMENTATION_STATE.md), then
+[`docs/history/IMPLEMENTATION_STATE.md`](docs/history/IMPLEMENTATION_STATE.md), then
 [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) for what a machine needs.
 
 There is now an agentic porting pipeline under `src/dfinsta_pipeline/`: a hook manifest

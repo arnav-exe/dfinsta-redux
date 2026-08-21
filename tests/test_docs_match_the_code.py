@@ -22,6 +22,7 @@ false sentence be *marked*, never that it be deleted.
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -45,12 +46,48 @@ MARKED = (
 )
 
 
+def _tracked(relative: str) -> bool:
+    """Is this path in the index? Cached, because the rules ask repeatedly."""
+
+    if relative not in _TRACKED_CACHE:
+        _TRACKED_CACHE[relative] = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", relative],
+            cwd=ROOT, capture_output=True, text=True,
+        ).returncode == 0
+    return _TRACKED_CACHE[relative]
+
+
+_TRACKED_CACHE: dict[str, bool] = {}
+
+
+class RuleAimedAtNothing(AssertionError):
+    """A rot rule naming a document the repository no longer publishes."""
+
+
 def offending_lines(relative: str, phrase: str) -> list[str]:
-    """Lines containing `phrase` that do not mark themselves as superseded."""
+    """Lines containing `phrase` that do not mark themselves as superseded.
+
+    **A missing file raises rather than returning `[]`.** It used to return
+    nothing, which made a rule pointing at a departed document pass while
+    protecting nothing — and two rules here had been doing exactly that since
+    2026-08-08, when `SUBMISSION_CLIENT.md` and `WORKFLOW_REGISTRATION_DESIGN.md`
+    moved into `docs/history/` and the paths above were not updated. This file
+    exists to catch documentation that has quietly stopped being true; a rule
+    that has quietly stopped being checked is the same failure wearing the
+    reviewer's coat.
+
+    Tracked-ness, not presence on disk: a document untracked but still in the
+    author's working copy is one a clone does not get, so a rule aimed at it is
+    aimed at nothing for everybody else.
+    """
 
     path = ROOT / relative
-    if not path.is_file():
-        return []
+    if not path.is_file() or not _tracked(relative):
+        raise RuleAimedAtNothing(
+            f"a documentation rule names {relative!r}, which this repository does "
+            "not publish. Either the rule should name the document's new home, or "
+            "the rule has outlived its subject and should go with it"
+        )
     return [
         f"{relative}:{number}: {line.strip()[:110]}"
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
@@ -81,7 +118,11 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
         )
 
         found: list[str] = []
-        for relative in ("HANDOVER.md", "docs/SESSION_HANDOFF.md", "docs/ADK_PIPELINE_PLAN.md"):
+        # `HANDOVER.md`, `docs/SESSION_HANDOFF.md` and `docs/ADK_PIPELINE_PLAN.md`
+        # carried these sentences and left the repository on 2026-08-21. A rule
+        # may only name what a clone gets; `offending_lines` now refuses one that
+        # does not, which is how their absence was noticed rather than assumed.
+        for relative in ("docs/history/ROADMAP.md",):
             for phrase in (
                 "registration remains pending",
                 "deliberately not registered",
@@ -106,7 +147,10 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
         found: list[str] = []
         for relative in (
             "pipeline_flowchart.md",
-            "docs/SUBMISSION_CLIENT.md",
+            # Moved into `docs/history/` on 2026-08-08. The path here was not
+            # updated, so this rule protected nothing for two weeks — silently,
+            # because a missing file used to read as "no offending lines".
+            "docs/history/SUBMISSION_CLIENT.md",
             "docs/STAGE_4_DESIGN.md",
             "docs/STAGE_4_PRODUCER_DESIGN.md",
         ):
@@ -148,7 +192,8 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
         self.assertIn("def test_", heartbeat_tests.read_text(encoding="utf-8"))
 
         found = offending_lines(
-            "docs/WORKFLOW_REGISTRATION_DESIGN.md", "nothing anywhere asserts a heartbeat"
+            "docs/history/WORKFLOW_REGISTRATION_DESIGN.md",
+            "nothing anywhere asserts a heartbeat",
         )
         self.assertEqual([], found, "\n".join([""] + found))
 
@@ -165,7 +210,7 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
         tracked = set(listed.stdout.split())
         self.assertLessEqual({"docs/FINDINGS.md", "docs/adk_pipeline_design.md"}, tracked)
 
-        found = offending_lines("HANDOVER.md", "currently untracked")
+        found = offending_lines("docs/history/IMPLEMENTATION_STATE.md", "currently untracked")
         self.assertEqual([], found, "\n".join([""] + found))
 
     def test_the_reconstruction_operation_count_agrees_with_the_files(self) -> None:

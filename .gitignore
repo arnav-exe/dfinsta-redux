@@ -154,3 +154,28 @@ fabric.properties
 # because git does not descend into an ignored directory to find a negation.
 !manifest/captures/
 !manifest/captures/*.log
+
+#--------------------------------------------------#
+# Kept locally, not published                      #
+#--------------------------------------------------#
+# Superseded narrative records, untracked 2026-08-21. Every one of them either
+# carries its own "this is now false" banner or was written for a version the
+# project has moved past. They are still on the author's disk; they are simply
+# not what a visitor to this repository should be reading. Anything a committed
+# decision cites as its `source` was KEPT — a decision naming evidence nobody can
+# read is worse than clutter — which is why PORT_430_MAPPING, RECONSTRUCTION_1.4.1
+# and DFINSTA_1.4.1_DELTA are still here.
+HANDOVER.md
+pipeline-flowchart.drawio
+docs/SESSION_HANDOFF.md
+docs/ADK_PIPELINE_PLAN.md
+docs/BLOG_NOTES.md
+docs/FUTURE_WORK.md
+docs/PORT_439_RECON.md
+docs/CLEANUP_1.4.1.md
+docs/PRIVACY_1.4.1.md
+docs/DEVICE_VALIDATION_1.4.1.md
+
+# A raw terminal transcript, 123 KB, carrying a name and an employer. Never
+# belonged in a repository at all.
+docs/claude-opus.txt

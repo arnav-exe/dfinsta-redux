@@ -1126,8 +1126,16 @@ class APredicateThatCannotAnswerIsNamedTests(unittest.TestCase):
         self.assertEqual(1, code)
 
     def test_a_sound_predicate_is_untouched(self) -> None:
-        """The control: the refusal must be about raising, not about running."""
-        code, err = self.run_main()
+        """The control: the refusal must be about raising, not about running.
+
+        The device is stubbed **present**. Without that this passes only while a
+        phone happens to be plugged into the machine running the suite: `install`
+        blocks without one, `main` returns 1, and the control fails for a reason
+        that has nothing to do with predicates. It really did, the first time the
+        phone was unplugged after this was written.
+        """
+        with mock.patch.object(self.port_module, "device_attached", lambda: True):
+            code, err = self.run_main()
         self.assertEqual(0, code)
         self.assertNotIn("cannot tell whether it is already done", err)
 

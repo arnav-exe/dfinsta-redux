@@ -109,7 +109,9 @@ Two steps remain manual:
 ## Documentation
 
 * [`docs/ROADMAP.md`](docs/ROADMAP.md) — current status and next steps; authoritative when documents disagree
-* [`docs/IMPLEMENTATION_STATE.md`](docs/IMPLEMENTATION_STATE.md) — detailed implementation and open-item record
+* [`docs/RUNNING_A_PORT.md`](docs/RUNNING_A_PORT.md) — the per-release procedure: one command, and what to do when it stops
+* [`docs/DESIGN_EXPLORATION_FIRST.md`](docs/DESIGN_EXPLORATION_FIRST.md) — the current approach: measure on the phone before deciding what to block
+* [`docs/history/`](docs/history/) — superseded records, kept for provenance; nothing there is authoritative
 * [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) — environment setup and machine migration
 
 ## Verification
