@@ -178,3 +178,6 @@ docs/DEVICE_VALIDATION_1.4.1.md
 # A raw terminal transcript, 123 KB, carrying a name and an employer. Never
 # belonged in a repository at all.
 docs/claude-opus.txt
+
+# Agent guidance for this working copy, deliberately not published.
+CLAUDE.md
