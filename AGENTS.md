@@ -5,7 +5,7 @@
 - `dfinsta_source_1.4.1/` is the reconstructed, delta-driven 340 patch source; `dfinsta_source_1.3/` is the legacy 300 source. The repository root also holds APK oracles, large decoded trees, and research notes.
 - This is an apktool/smali patch for package `com.instagram.android`, not a Gradle Android app. The patch source targets Instagram `300.0.0.29.110` / DFInsta `1.3.0`.
 - The maintainable DFInsta `1.4.1` source was reconstructed by diffing stock Instagram 340 against `apks/dfinsta_1_4_1.apk`, built, signed, installed and behavior-validated. That was the 340 baseline, and it did its job: **430, 439, 440 and 441 have all been ported since.** Do not port the brittle 1.3 patch to anything.
-- Artifact coverage: 300 and 340 are holdout/oracle fixtures; **430, 439, 440 and 441 are ported**, with `dfinsta_source_430/`, `dfinsta_source_439/`, signed artifacts and committed device evidence under `manifest/runtime_evidence/`.
+- Artifact coverage: 300 and 340 are holdout/oracle fixtures; **430, 439, 440 and 441 are ported**, with `dfinsta_source_430/`, `dfinsta_source/`, signed artifacts and committed device evidence under `manifest/runtime_evidence/`.
 - `docs/FINDINGS.md` records a successful partial 300-to-340 dry run and is higher-value porting evidence than stale class-role prose in `dfinsta_source_1.3/CLAUDE.md`. The `autopatch/` scripts/artifacts named there are not present in this checkout.
 
 ## Where the project actually is — read this first

@@ -1,7 +1,7 @@
 """Version-independent hook intent, and the engine that resolves it onto a target.
 
 The patch manifests this project shipped so far (`dfinsta_source_430`,
-`dfinsta_source_439`) are *resolved* artifacts: they name concrete obfuscated
+`dfinsta_source`) are *resolved* artifacts: they name concrete obfuscated
 classes and concrete registers, so every one had to be rewritten by hand for a new
 Instagram version. This module holds the layer above that — what a hook means,
 expressed so it can be resolved against any version.

@@ -1057,7 +1057,7 @@ def _cli(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--source",
         type=Path,
-        default=Path("dfinsta_source_439/newCode/com/dfinstagram/hooks.smali"),
+        default=Path("dfinsta_source/newCode/com/dfinstagram/hooks.smali"),
     )
     parser.add_argument(
         "--check",

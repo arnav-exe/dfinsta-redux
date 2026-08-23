@@ -1,7 +1,7 @@
 # Exploration first: decide what to block after watching the phone, not before
 
 DFInsta blocks by failing outgoing requests. One generated method,
-`throwIfBlocked` in `dfinsta_source_439/newCode/com/dfinstagram/hooks.smali`,
+`throwIfBlocked` in `dfinsta_source/newCode/com/dfinstagram/hooks.smali`,
 takes the outgoing `java.net.URI`, tests `getPath()` against a list of literals,
 and throws `IOException` when the matching rule's toggle is on. There are five
 toggles — `disable_feed`, `disable_explore`, `disable_reels`, `disable_stories`,

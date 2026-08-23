@@ -32,7 +32,7 @@ from dfinsta_pipeline.settings_ui import (
 )
 
 REPOSITORY = Path(__file__).resolve().parent.parent
-SOURCE = REPOSITORY / "dfinsta_source_439"
+SOURCE = REPOSITORY / "dfinsta_source"
 
 
 class ShippedTreeTests(unittest.TestCase):

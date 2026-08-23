@@ -1430,7 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--custom-code",
         type=Path,
-        default=REPOSITORY / "dfinsta_source_439",
+        default=REPOSITORY / "dfinsta_source",
         help="directory holding newCode/ with the DFInsta classes",
     )
     parser.add_argument("--apktool", type=Path, default=REPOSITORY / "apktool_2.9.3.jar")

@@ -50,7 +50,7 @@ from dfinsta_pipeline.guards import (
 
 REPOSITORY = Path(__file__).resolve().parent.parent
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "throw_if_blocked_device_proved.smali"
-REAL_SOURCE = REPOSITORY / "dfinsta_source_439/newCode/com/dfinstagram/hooks.smali"
+REAL_SOURCE = REPOSITORY / "dfinsta_source/newCode/com/dfinstagram/hooks.smali"
 REAL_MANIFEST = REPOSITORY / "manifest/hooks.json"
 
 #: The five rules the device-proved method implements, written out by hand. This

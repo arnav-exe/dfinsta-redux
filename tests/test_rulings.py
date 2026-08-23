@@ -125,7 +125,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 #: DFInsta's own source, which is the app's side of every claim in the manifest.
 #: `dfinsta_source_430`'s copy is byte-identical, so one path covers both.
-REAL_SOURCE = ROOT / "dfinsta_source_439/newCode/com/dfinstagram/hooks.smali"
+REAL_SOURCE = ROOT / "dfinsta_source/newCode/com/dfinstagram/hooks.smali"
 REAL_MANIFEST = ROOT / "manifest/hooks.json"
 
 #: The 11 endpoint literals `throwIfBlocked` actually tests, read off the smali.

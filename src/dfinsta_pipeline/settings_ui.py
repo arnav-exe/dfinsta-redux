@@ -192,7 +192,7 @@ def read_rows(source: str) -> SettingsRows:
 
 def coverage(
     manifest_path: Path | str = Path("manifest") / "hooks.json",
-    custom_code: Path | str = Path("dfinsta_source_439"),
+    custom_code: Path | str = Path("dfinsta_source"),
 ) -> tuple[SettingsRows, tuple[str, ...]]:
     """The dialog's rows and the toggles the guard actually reads."""
 
@@ -208,7 +208,7 @@ def coverage(
 
 def check(
     manifest_path: Path | str = Path("manifest") / "hooks.json",
-    custom_code: Path | str = Path("dfinsta_source_439"),
+    custom_code: Path | str = Path("dfinsta_source"),
 ) -> SettingsRows:
     """Refuse unless every toggle has a row that shows it and writes it.
 
@@ -269,7 +269,7 @@ def check(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--manifest", type=Path, default=Path("manifest") / "hooks.json")
-    parser.add_argument("--custom-code", type=Path, default=Path("dfinsta_source_439"))
+    parser.add_argument("--custom-code", type=Path, default=Path("dfinsta_source"))
     args = parser.parse_args(argv)
     try:
         rows = check(args.manifest, args.custom_code)

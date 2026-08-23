@@ -385,7 +385,7 @@ def append_rulings(path: Path | str, rulings: Sequence[Ruling]) -> None:
 
 #: Where the pipeline's custom code lives. `driver.py` defaults `--custom-code`
 #: here, and `dfinsta_source_430` is byte-identical, so one path covers both.
-DEFAULT_SOURCE_PATH = Path("dfinsta_source_439/newCode/com/dfinstagram/hooks.smali")
+DEFAULT_SOURCE_PATH = Path("dfinsta_source/newCode/com/dfinstagram/hooks.smali")
 
 
 def unenforced_endpoints(

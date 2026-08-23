@@ -380,7 +380,7 @@ class DriverCase(unittest.TestCase):
         # `getBoolean(key, true)` for every key, so a key with no row is an
         # endpoint blocked with no switch to turn it off. A stub here would make
         # these tests exercise a tree that could never ship.
-        shipped = _REPOSITORY / "dfinsta_source_439" / SETTINGS_WRAPPER
+        shipped = _REPOSITORY / "dfinsta_source" / SETTINGS_WRAPPER
         (classes / "SettingsWrapper.smali").write_text(
             shipped.read_text(encoding="utf-8")
             if shipped.is_file()
