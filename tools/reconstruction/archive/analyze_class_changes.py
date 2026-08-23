@@ -1,9 +1,15 @@
 import argparse
+import sys
 import json
 from collections import Counter
 from pathlib import Path
 
-from inventory import normalized_smali
+# `inventory.py` stayed in the parent directory when these scripts were
+# archived on 2026-08-23: it is live library code that `apply_endpoint_patches`
+# imports on every port, while this script is a completed one-time job.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from inventory import normalized_smali  # noqa: E402
 
 
 def lines(path: Path) -> list[str]:
