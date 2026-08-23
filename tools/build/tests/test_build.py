@@ -681,6 +681,10 @@ class BuildGuardTests(unittest.TestCase):
             str(self.work_tree),
             "--output-apk",
             str(self.output_apk),
+            # Required since 2026-08-23. These tests never reach the verifier —
+            # the first subprocess call raises — but argparse runs first.
+            "--verifier",
+            "port430",
         ]
         with patch("build.subprocess.run", side_effect=FirstCommand), patch.object(sys, "argv", argv):
             main()

@@ -135,7 +135,7 @@ def main() -> None:
     parser.add_argument(
         "--verifier",
         choices=("port430", "generic"),
-        default="port430",
+        required=True,
         help=(
             "port430 pins 430's exact obfuscated descriptors and signatures, all of "
             "which moved in 439. generic asserts the same topology and preservation "

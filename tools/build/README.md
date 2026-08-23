@@ -6,10 +6,11 @@ was called `port_430` until 2026-08-23, and the worked example below is still a 
 that is the run it carries evidence for — but nothing here is 430-only except
 `verify_apk_430.py`, which is why that file now says so in its name.
 
-The driver passes `--verifier generic`, routing verification to
-`tools/verify/verify_build.py`, which takes every version-specific fact from the caller.
-`--verifier port430` still defaults on for a bare invocation and pins descriptors that moved in
-439, so pass `--verifier` explicitly on any target that is not 430.
+`--verifier` is **required**, with no default. The driver passes `generic`, routing verification
+to `tools/verify/verify_build.py`, which takes every version-specific fact from the caller.
+`port430` runs `verify_apk_430.py`, which pins descriptors that moved in 439 and therefore fits
+only Instagram 430. It used to be the default, which meant a hand-run build on any modern target
+silently got the wrong verifier and failed in a way that read like a broken build.
 
 This tooling decodes the supplied stock APK into a fresh refuse-overwrite tree, overlays the custom classes into a free `smali_classesN`, applies the resolved anchored host operations, and uses apktool 2.9.3/aapt1 only to assemble the changed DEX files. It then grafts the patched DEX entries into the exact supplied stock APK, removing signing artifacts while preserving every other stock ZIP entry.
 
