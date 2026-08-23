@@ -46,7 +46,7 @@ from tests.test_phase_b_replay_contracts import admit_v3, fixture_v3
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPECS = ROOT / "pipeline_specs"
+SPECS = ROOT / "tests" / "fixtures" / "phase_b"
 
 
 def digest(data: bytes) -> str:

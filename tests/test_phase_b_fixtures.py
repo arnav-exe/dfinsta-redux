@@ -29,7 +29,7 @@ from tools.phase_b.generate_specs import anchored_operations_340, resolve_classe
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPECS = ROOT / "pipeline_specs"
+SPECS = ROOT / "tests" / "fixtures" / "phase_b"
 STOCK_340_DECODE = ROOT / "work" / "1.4.1-reconstruction" / "stock-340"
 STOCK_340_APK = (
     ROOT

@@ -647,8 +647,8 @@ class ReplayRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
         # positive control that the surface contains payload content at all.
         recorded = History(events=list(history.events)).SerializeToString()
 
-        resolution = _spec("pipeline_specs", "resolutions", "instagram_340.json")
-        manifest = _spec("pipeline_specs", "source_manifests", "instagram_340.json")
+        resolution = _spec("tests", "fixtures", "phase_b", "resolutions", "instagram_340.json")
+        manifest = _spec("tests", "fixtures", "phase_b", "source_manifests", "instagram_340.json")
         descriptors = sorted(
             {value for value in _json_values(resolution, "descriptor") if len(value) >= 6}
         )

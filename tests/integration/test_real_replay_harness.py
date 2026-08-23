@@ -96,8 +96,8 @@ TARGETS = {
         340,
         "apks/com.instagram.android_340.0.0.22.109-374010893_minAPI28(arm64-v8a)(nodpi).apk",
         "68f4546f8cb597a668d6033916200ef99191a9006350fcd986fd33392aea5113",
-        "pipeline_specs/resolutions/instagram_340.json",
-        "pipeline_specs/source_manifests/instagram_340.json",
+        "tests/fixtures/phase_b/resolutions/instagram_340.json",
+        "tests/fixtures/phase_b/source_manifests/instagram_340.json",
         "dfinsta_source_1.4.1",
         "apktool-2.9.3-aapt1",
         112,
@@ -107,8 +107,8 @@ TARGETS = {
         430,
         "apks/com.instagram.android_430.0.0.53.80-383611248_minAPI28(arm64-v8a)(360,400,420,480dpi).apk",
         "38ae9861b9ca89f60f41767324e1c3d54a4e3a00ed5555b92660a08e6db14754",
-        "pipeline_specs/resolutions/instagram_430.json",
-        "pipeline_specs/source_manifests/instagram_430.json",
+        "tests/fixtures/phase_b/resolutions/instagram_430.json",
+        "tests/fixtures/phase_b/source_manifests/instagram_430.json",
         "dfinsta_source_430",
         "apktool-2.9.3-aapt1-api36",
         5,
@@ -745,7 +745,7 @@ def _create_verification_authority(
 
 
 def _load_target_inputs(config: TargetConfig) -> dict[str, Any]:
-    intent_bytes = _path("pipeline_specs/intent_v2.json").read_bytes()
+    intent_bytes = _path("tests/fixtures/phase_b/intent_v2.json").read_bytes()
     resolution_bytes = _path(config.resolution).read_bytes()
     source_manifest_bytes = _path(config.source_manifest).read_bytes()
     intent = IntentSpecV2.from_dict(strict_json_bytes(intent_bytes))

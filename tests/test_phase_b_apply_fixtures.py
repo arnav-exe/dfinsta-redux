@@ -20,7 +20,7 @@ from dfinsta_pipeline.port_contracts import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPECS = ROOT / "pipeline_specs"
+SPECS = ROOT / "tests" / "fixtures" / "phase_b"
 DECODES = {
     340: ROOT / "work" / "1.4.1-reconstruction" / "stock-340",
     430: ROOT / "work" / "430-clean-build-v2" / "stock-430",
