@@ -1,6 +1,6 @@
 # Device Validation Runner
 
-`runner.py` is a Python 3 standard-library host tool driven by `dfinsta_source_1.4.1/behavior_contract.json`. It emits one structured JSON document to stdout. Device artifacts are pulled into `--artifact-dir` or a temporary directory.
+`runner.py` is a Python 3 standard-library host tool driven by `tests/fixtures/dfinsta_source_340/behavior_contract.json`. It emits one structured JSON document to stdout. Device artifacts are pulled into `--artifact-dir` or a temporary directory.
 
 The runner only exposes package/device inspection, app force-stop/start, logcat reads, UI hierarchy capture, navigation gestures, and screenshots. It does not enter credentials, mutate settings, launch the non-exported settings activity directly, clear app data, install packages, or toggle Hardcore Mode or any preference.
 

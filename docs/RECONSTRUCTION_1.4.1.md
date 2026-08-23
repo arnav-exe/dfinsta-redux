@@ -1,5 +1,10 @@
 # DFInsta 1.4.1 Reconstruction
 
+> **Path note, 2026-08-23.** `dfinsta_source_1.4.1/` is now
+> `tests/fixtures/dfinsta_source_340/`, named for the Instagram version it targets and
+> moved beside the Phase-B fixtures it feeds. Every path below predates that move.
+
+
 ## Goal
 
 Recover a maintainable patch source for DFInsta 1.4.1 by comparing two APKs built on the same Instagram release:

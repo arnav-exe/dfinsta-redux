@@ -26,7 +26,7 @@ From the repository root, with a clean stock 340 decode:
 ```bash
 python3 tools/reconstruction/rebuild.py \
   work/1.4.1-reconstruction/stock-340 \
-  dfinsta_source_1.4.1 \
+  tests/fixtures/dfinsta_source_340 \
   apktool_2.9.3.jar \
   --work-tree work/1.4.1-reconstruction/rebuild-run \
   --output-apk work/1.4.1-reconstruction/rebuild-run-unsigned.apk
