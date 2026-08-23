@@ -101,28 +101,55 @@ class DisconnectionTests(unittest.TestCase):
 
 
 class ConfinementTests(unittest.TestCase):
-    def test_the_half_declared_toggle_is_still_confined_to_1_3(self):
-        """`disable_suggested_posts` has a guard, an id and no way to turn it off.
+    """What is left of the `disable_suggested_posts` open item.
 
-        `getBoolTrueEz` defaults true, so suggested-post filtering is permanently
-        on and un-toggleable, and nothing reports it. It stays a documented
-        inaccuracy rather than a pipeline defect *only* because the string appears
-        in no other source tree — fixing it would mean editing the CRLF-dirty 1.3
-        tree, which is never staged.
+    It used to read "still confined to 1.3": the toggle has a guard and an id and
+    no way to turn it off, and that stayed a documented inaccuracy rather than a
+    pipeline defect *only* because the string appeared in no tree the pipeline
+    ports. Deleting `dfinsta_source_1.3` on 2026-08-23 closed the item outright —
+    the string is now in no source tree at all.
 
-        If it ever appears in a tree the pipeline actually ports, that reasoning
-        expires and it becomes a real defect.
-        """
-        present = [
+    The clause worth keeping is the one the old docstring ended on: *if it ever
+    appears in a tree the pipeline actually ports, that reasoning expires and it
+    becomes a real defect.* So the assertion is inverted rather than deleted, and
+    it carries a positive control, because an absence check over a list of
+    directories that has quietly become empty passes for the wrong reason.
+    """
+
+    #: Every DFInsta patch tree a search must cover: the live custom code and the
+    #: two committed oracles. Listed rather than globbed — a glob is what let the
+    #: old version of this test keep passing after the trees moved.
+    TREES = (
+        "dfinsta_source",
+        "tests/fixtures/dfinsta_source_340",
+        "tests/fixtures/dfinsta_source_430",
+    )
+
+    def _trees(self) -> list[Path]:
+        trees = [ROOT / name for name in self.TREES]
+        missing = [str(tree) for tree in trees if not tree.is_dir()]
+        self.assertEqual([], missing, f"a named source tree is gone: {missing}")
+        return trees
+
+    def _greps(self, needle: str) -> list[str]:
+        return [
             tree.name
-            for tree in sorted(ROOT.glob("dfinsta_source_*"))
+            for tree in self._trees()
             if subprocess.run(
-                ["grep", "-rq", "disable_suggested_posts", str(tree)],
-                capture_output=True,
+                ["grep", "-rq", needle, str(tree)], capture_output=True
             ).returncode
             == 0
         ]
-        self.assertEqual(present, ["dfinsta_source_1.3"], present)
+
+    def test_the_half_declared_toggle_is_in_no_ported_tree(self):
+        self.assertEqual([], self._greps("disable_suggested_posts"))
+
+    def test_the_search_would_find_a_string_that_is_there(self):
+        """The control. Without it the assertion above cannot be shown to work."""
+        self.assertEqual(
+            ["dfinsta_source", "dfinsta_source_340", "dfinsta_source_430"],
+            self._greps("Lcom/dfinstagram/"),
+        )
 
 
 class VestigialTests(unittest.TestCase):

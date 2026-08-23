@@ -406,7 +406,10 @@ class PlanCarriesTheAnswerTests(unittest.TestCase):
                 decision_id="decision-1",
                 recorded_at="2026-08-18T00:00:00Z",
                 manifest_path=manifest,
-                source_path=REPOSITORY / "dfinsta_source_1.3",
+                # Deliberately not a `hooks.smali`: these tests are about consent answers
+                # surviving the plan, not about the source scan. Was the 1.3 tree until
+                # it was deleted on 2026-08-23.
+                source_path=REPOSITORY / "manifest",
             )
 
     def test_the_disposition_answer_lands_on_the_ruling(self) -> None:
