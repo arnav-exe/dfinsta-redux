@@ -2,11 +2,19 @@
 
 ## Scope and Goal
 
-- `dfinsta_source_1.4.1/` is the reconstructed, delta-driven 340 patch source; `dfinsta_source_1.3/` is the legacy 300 source. The repository root also holds APK oracles, large decoded trees, and research notes.
-- This is an apktool/smali patch for package `com.instagram.android`, not a Gradle Android app. The patch source targets Instagram `300.0.0.29.110` / DFInsta `1.3.0`.
-- The maintainable DFInsta `1.4.1` source was reconstructed by diffing stock Instagram 340 against `apks/dfinsta_1_4_1.apk`, built, signed, installed and behavior-validated. That was the 340 baseline, and it did its job: **430, 439, 440 and 441 have all been ported since.** Do not port the brittle 1.3 patch to anything.
-- Artifact coverage: 300 and 340 are holdout/oracle fixtures; **430, 439, 440 and 441 are ported**, with `dfinsta_source_430/`, `dfinsta_source/`, signed artifacts and committed device evidence under `manifest/runtime_evidence/`.
-- `docs/FINDINGS.md` records a successful partial 300-to-340 dry run and is higher-value porting evidence than stale class-role prose in `dfinsta_source_1.3/CLAUDE.md`. The `autopatch/` scripts/artifacts named there are not present in this checkout.
+> **The trees were renamed and moved on 2026-08-23.** `dfinsta_source_439/` is now
+> `dfinsta_source/`, because it stopped being the 439 port the moment 440 was built from it.
+> `dfinsta_source_1.4.1/` and `dfinsta_source_430/` are now
+> `tests/fixtures/dfinsta_source_340/` and `tests/fixtures/dfinsta_source_430/`, because
+> nothing ports them — they are the two worked examples the Phase-B fixtures are bound to by
+> digest. And `dfinsta_source_1.3/` was **deleted**: nothing read it, and every bullet below
+> that told you to run its scripts is struck through for that reason.
+
+- `tests/fixtures/dfinsta_source_340/` is the reconstructed, delta-driven 340 patch source. ~~`dfinsta_source_1.3/` is the legacy 300 source.~~ The repository root also holds APK oracles, large decoded trees, and research notes.
+- This is an apktool/smali patch for package `com.instagram.android`, not a Gradle Android app. ~~The patch source targets Instagram `300.0.0.29.110` / DFInsta `1.3.0`.~~ The live patch source is `dfinsta_source/newCode/`, which is version-independent and carries no obfuscated references.
+- The maintainable DFInsta `1.4.1` source was reconstructed by diffing stock Instagram 340 against `apks/dfinsta_1_4_1.apk`, built, signed, installed and behavior-validated. That was the 340 baseline, and it did its job: **430, 439, 440, 441, 442 and 443 have all been ported since.** Do not port the brittle 1.3 patch to anything.
+- Artifact coverage: 300 and 340 are holdout/oracle fixtures; **430, 439, 440, 441, 442 and 443 are ported**, with `dfinsta_source/`, signed artifacts and committed device evidence under `manifest/runtime_evidence/`.
+- `docs/FINDINGS.md` records a successful partial 300-to-340 dry run and is higher-value porting evidence than ~~stale class-role prose in `dfinsta_source_1.3/CLAUDE.md`~~ (deleted with that tree). The `autopatch/` scripts/artifacts named there are not present in this checkout.
 
 ## Where the project actually is — read this first
 
@@ -21,21 +29,22 @@ evidence ledger, four registered Temporal workflows, two human decision gates, a
 expectation that fails when a hook is lost. Instagram 441 is the newest port — seven hooks
 resolved mechanically, zero agent invocations, four of seven release-ready.
 
-**The "Version-Porting Rules" section below is still correct and still mandatory.** So is
-everything about not staging `dfinsta_source_1.3/`. The Scope and Goal bullets are historical.
+**The "Version-Porting Rules" section below is still correct and still mandatory.** ~~So is
+everything about not staging `dfinsta_source_1.3/`.~~ That tree was deleted on 2026-08-23, so the
+rule has nothing left to protect. The Scope and Goal bullets are historical.
 
 ## Build and Generated State
 
-- Rebuild 1.4.1 from a clean stock-340 decode with `python3 tools/reconstruction/rebuild.py <stock-decode> dfinsta_source_1.4.1 apktool_2.9.3.jar --work-tree <new-work-tree> --output-apk <new-unsigned.apk>`. The command applies **37** idempotent host operations — 30 in `endpoint_replacements.json` plus 7 in `anchored_patches.json`, counted from the files — builds with aapt1, and verifies the DEX contract. *(Said 38 until 2026-08-08. `HANDOVER.md:121` counts 59/45 for a wider scope including resource and manifest edits; `docs/RECONSTRUCTION_1.4.1.md:52` says 30+7 and is right.)*
-- Run patch commands from `dfinsta_source_1.3/`. On Windows: `./extract.ps1 -ApkPath <stock.apk>`, then `./build.ps1 -Version <label>`.
-- Use apktool `2.9.3` and aapt1. `build.ps1` passes `--use-aapt1`; this was also required for the 340 dry run. It invokes `python`, `zipalign`, `apksigner`, and `adb` and expects `$env:USERPROFILE/.android/dfinsta-release-key.keystore`.
-- `-Version` only names `dfinsta_<label>.apk`; it does not update the displayed version/base version in `newRes/values/istrings.xml`.
-- Always clean-extract before a release build. Repeated builds overlay files and `append_to_manifest.py` can duplicate activity declarations; deleted source files can also remain in `instagram_source/`.
-- Treat `instagram_source/` and `TESTING-PLAYGROUND/*-src/` as generated evidence, never patch source. Edit `newCode/`, `overwriteCode/`, `newRes/`, `appendRes/`, or preprocessors instead.
-- The preprocessing order is fixed: `remove_duplicate_style_tag.py`, `append_public.py`, `append_res.py`, `append_to_manifest.py`; then copy custom code to `smali_classes7`, overlay host patches/resources, and remove `assets/drawables.bin`.
-- `append_public.py` uses `instander_settings` as an all-or-nothing sentinel; `append_res.py` uses each fragment's first entry as a sentinel. Neither repairs partial prior output, so regenerate after changing resource inputs.
-- `build.ps1` signs before running plain `adb install` (no `-r`). A newly generated key can sign test builds but cannot update an app signed by a different key; uninstall the old package or use the same private key.
-- The Bash path is not equivalent: `build.sh` sources `~/.zshrc`, omits `--use-aapt1`, and both `.sh` entry scripts lack shebangs. Prefer PowerShell unless deliberately fixing/validating Linux support.
+- Rebuild 1.4.1 from a clean stock-340 decode with `python3 tools/reconstruction/rebuild.py <stock-decode> tests/fixtures/dfinsta_source_340 apktool_2.9.3.jar --work-tree <new-work-tree> --output-apk <new-unsigned.apk>`. The command applies **37** idempotent host operations — 30 in `endpoint_replacements.json` plus 7 in `anchored_patches.json`, counted from the files — builds with aapt1, and verifies the DEX contract. *(Said 38 until 2026-08-08. `HANDOVER.md:121` counts 59/45 for a wider scope including resource and manifest edits; `docs/RECONSTRUCTION_1.4.1.md:52` says 30+7 and is right.)*
+- ~~Run patch commands from `dfinsta_source_1.3/`. On Windows: `./extract.ps1 -ApkPath <stock.apk>`, then `./build.ps1 -Version <label>`.~~ *(the 1.3 tree and its scripts were deleted 2026-08-23)*
+- Use apktool `2.9.3` and aapt1. Still mandatory, and now enforced by the pipeline rather than by a script: `tools/build/build.py` assembles with aapt1 and `driver.py` pins the jar. Signing reads `DFINSTA_KEYSTORE`, `DFINSTA_KEY_ALIAS` and `DFINSTA_KEYSTORE_PASSWORD` from the environment. ~~`build.ps1` passes `--use-aapt1`; it invokes `python`, `zipalign`, `apksigner`, and `adb` and expects `$env:USERPROFILE/.android/dfinsta-release-key.keystore`.~~
+- ~~`-Version` only names `dfinsta_<label>.apk`; it does not update the displayed version/base version in `newRes/values/istrings.xml`.~~ *(the 1.3 tree and its scripts were deleted 2026-08-23)*
+- ~~Always clean-extract before a release build. Repeated builds overlay files and `append_to_manifest.py` can duplicate activity declarations; deleted source files can also remain in `instagram_source/`.~~ *(the 1.3 tree and its scripts were deleted 2026-08-23)*
+- ~~Treat `instagram_source/` and `TESTING-PLAYGROUND/*-src/` as generated evidence, never patch source. Edit `newCode/`, `overwriteCode/`, `newRes/`, `appendRes/`, or preprocessors instead.~~ *(the 1.3 tree and its scripts were deleted 2026-08-23)*
+- ~~The preprocessing order is fixed: `remove_duplicate_style_tag.py`, `append_public.py`, `append_res.py`, `append_to_manifest.py`; then copy custom code to `smali_classes7`, overlay host patches/resources, and remove `assets/drawables.bin`.~~ *(the 1.3 tree and its scripts were deleted 2026-08-23)*
+- ~~`append_public.py` uses `instander_settings` as an all-or-nothing sentinel; `append_res.py` uses each fragment's first entry as a sentinel. Neither repairs partial prior output, so regenerate after changing resource inputs.~~ *(the 1.3 tree and its scripts were deleted 2026-08-23)*
+- ~~`build.ps1` signs before running plain `adb install` (no `-r`). A newly generated key can sign test builds but cannot update an app signed by a different key; uninstall the old package or use the same private key.~~ *(the 1.3 tree and its scripts were deleted 2026-08-23)*
+- ~~The Bash path is not equivalent: `build.sh` sources `~/.zshrc`, omits `--use-aapt1`, and both `.sh` entry scripts lack shebangs. Prefer PowerShell unless deliberately fixing/validating Linux support.~~ *(the 1.3 tree and its scripts were deleted 2026-08-23)*
 
 ## Patch Architecture
 
@@ -61,6 +70,6 @@ everything about not staging `dfinsta_source_1.3/`. The Scope and Goal bullets a
 
 ## Verification
 
-- UI Automator must run from `dfinsta_source_1.3/ui-automator/`: `./run_test.sh`. For one method, use `./gradlew assembleDebug`, install `app/build/outputs/apk/debug/app-debug.apk`, then instrument `com.dfinstagram.startuptest.StartupTest#startMainActivityFromHomeScreen`.
+- ~~UI Automator must run from `dfinsta_source_1.3/ui-automator/`: `./run_test.sh`. For one method, use `./gradlew assembleDebug`, install `app/build/outputs/apk/debug/app-debug.apk`, then instrument `com.dfinstagram.startuptest.StartupTest#startMainActivityFromHomeScreen`.~~ *(the 1.3 tree and its scripts were deleted 2026-08-23)*
 - The legacy startup test requires visible text `Password`, but current Instagram 340 first-run UI shows `Join Instagram`/`I already have a profile`; that assertion is stale. It also checks only startup, not request blocking, settings, or cache clearing. See `docs/DEVICE_VALIDATION_1.4.1.md` for the observed behavioral contract.
 - A successful apktool build proves assembly, not behavior. For a port, verify injected symbols in the rebuilt DEX and manually exercise every retained toggle plus feed-cache clearing on a device.

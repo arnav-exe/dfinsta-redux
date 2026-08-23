@@ -124,7 +124,8 @@ from tests.test_hook_index import write_index
 ROOT = Path(__file__).resolve().parents[1]
 
 #: DFInsta's own source, which is the app's side of every claim in the manifest.
-#: `dfinsta_source_430`'s copy is byte-identical, so one path covers both.
+#: Not the 430 copy, which this said was byte-identical until 2026-08-23 and is
+#: not: 3136 bytes against 5620, and two fewer rules. See `rulings.py`.
 REAL_SOURCE = ROOT / "dfinsta_source/newCode/com/dfinstagram/hooks.smali"
 REAL_MANIFEST = ROOT / "manifest/hooks.json"
 

@@ -383,8 +383,15 @@ def append_rulings(path: Path | str, rulings: Sequence[Ruling]) -> None:
             )
 
 
-#: Where the pipeline's custom code lives. `driver.py` defaults `--custom-code`
-#: here, and `dfinsta_source_430` is byte-identical, so one path covers both.
+#: Where the pipeline's custom code lives, and what `driver.py` defaults
+#: `--custom-code` to.
+#:
+#: This said the 430 copy was "byte-identical, so one path covers both" until
+#: 2026-08-23, and it had stopped being true: the 430 guard is 3136 bytes of the
+#: old hand-written form, this one is 5620 bytes rendered by `guards.py`, and the
+#: two carry different rules. The other three smali files in those trees *are*
+#: identical, which is presumably where the claim came from. Nothing read the
+#: false half — both paths already pointed here.
 DEFAULT_SOURCE_PATH = Path("dfinsta_source/newCode/com/dfinstagram/hooks.smali")
 
 
