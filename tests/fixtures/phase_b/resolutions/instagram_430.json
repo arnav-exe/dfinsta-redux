@@ -424,12 +424,12 @@
         }
       ],
       "source_manifest_sha256": "aca27f2b473c4ebed8e5a388af0360126c24fa4494932906352d52cd10275f77",
-      "source_prefix": "dfinsta_source_430/newCode",
+      "source_prefix": "tests/fixtures/dfinsta_source_430/newCode",
       "target_prefix": "smali_classes20"
     }
   ],
   "schema_version": 3,
-  "source_bundle_sha256": "65164c0d51ecf9fb81b4dfd737e9e5b079d1bf8d5074f94d1d54220fb96260b8",
+  "source_bundle_sha256": "f1db355e3691550c1da51d3aa282db91f284b979344d3efbec185b6516403782",
   "target": {
     "apk_sha256": "38ae9861b9ca89f60f41767324e1c3d54a4e3a00ed5555b92660a08e6db14754",
     "composition": "monolithic",

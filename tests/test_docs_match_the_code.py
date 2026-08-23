@@ -218,7 +218,7 @@ class DocumentationMatchesCodeTests(unittest.TestCase):
 
         import json
 
-        patches = ROOT / "dfinsta_source_1.4.1" / "patches"
+        patches = ROOT / "tests/fixtures/dfinsta_source_340" / "patches"
         counts = {
             path.name: len(json.loads(path.read_text(encoding="utf-8"))["operations"])
             for path in sorted(patches.glob("*.json"))

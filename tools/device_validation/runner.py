@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 
-DEFAULT_CONTRACT = Path(__file__).resolve().parents[2] / "dfinsta_source_1.4.1" / "behavior_contract.json"
+DEFAULT_CONTRACT = Path(__file__).resolve().parents[2] / "tests/fixtures/dfinsta_source_340" / "behavior_contract.json"
 BOUNDS_RE = re.compile(r"^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$")
 FATAL_MARKERS = ("FATAL EXCEPTION", "ACRA caught a")
 

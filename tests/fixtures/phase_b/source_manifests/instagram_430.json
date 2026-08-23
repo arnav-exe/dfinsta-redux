@@ -1,22 +1,22 @@
 [
   {
-    "relative_path": "dfinsta_source_430/newCode/com/dfinstagram/SettingsWrapper.smali",
+    "relative_path": "tests/fixtures/dfinsta_source_430/newCode/com/dfinstagram/SettingsWrapper.smali",
     "sha256": "59fbff086950685e0edf35dd9f3cb7860b1da456da2ac914106bb4568093e4db"
   },
   {
-    "relative_path": "dfinsta_source_430/newCode/com/dfinstagram/dfinstagram.smali",
+    "relative_path": "tests/fixtures/dfinsta_source_430/newCode/com/dfinstagram/dfinstagram.smali",
     "sha256": "b2292aa0299d68205540f93c65e27fd452cb6bd3b0e21dbff01d3c56cbf88c32"
   },
   {
-    "relative_path": "dfinsta_source_430/newCode/com/dfinstagram/hooks.smali",
+    "relative_path": "tests/fixtures/dfinsta_source_430/newCode/com/dfinstagram/hooks.smali",
     "sha256": "f505afe5721d9da39c3c89f6d6235b6c90a75134e778a0f220ce7abd00a5138a"
   },
   {
-    "relative_path": "dfinsta_source_430/newCode/com/dfinstagram/startapp.smali",
+    "relative_path": "tests/fixtures/dfinsta_source_430/newCode/com/dfinstagram/startapp.smali",
     "sha256": "ee7a9bd8a34a150d8808e2fa712dae255be1230594377fff88922cb94e51d000"
   },
   {
-    "relative_path": "dfinsta_source_430/patches/anchored_patches.json",
+    "relative_path": "tests/fixtures/dfinsta_source_430/patches/anchored_patches.json",
     "sha256": "95402de4206b369619359baa34bb51809c982b6b0dd6c796c6047dfb5e3be679"
   }
 ]

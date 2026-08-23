@@ -113,7 +113,7 @@ class AnchoredPatchTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "    new-one\n    keep\n")
 
     def test_hardened_manifest_only_sets_application_context_at_startup(self) -> None:
-        path = REPOSITORY / "dfinsta_source_1.4.1" / "patches" / "anchored_patches.json"
+        path = REPOSITORY / "tests/fixtures/dfinsta_source_340" / "patches" / "anchored_patches.json"
         manifest = json.loads(path.read_text(encoding="utf-8"))
         operations = {operation["id"]: operation for operation in manifest["operations"]}
         rendered = json.dumps(manifest)

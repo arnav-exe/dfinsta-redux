@@ -1329,7 +1329,7 @@
         }
       ],
       "source_manifest_sha256": "7ae6ca62205e7f4ebcb359ebc83d12d1f12246a395d884114f5260c93ec39561",
-      "source_prefix": "dfinsta_source_1.4.1/newCode",
+      "source_prefix": "tests/fixtures/dfinsta_source_340/newCode",
       "target_prefix": "smali_classes11"
     },
     {
@@ -1707,7 +1707,7 @@
         }
       ],
       "source_manifest_sha256": "379b4627e0274a164c5a20e8b7ac33bff58b9f8ed7a409c91f72974e40581ed1",
-      "source_prefix": "dfinsta_source_1.4.1/newRes",
+      "source_prefix": "tests/fixtures/dfinsta_source_340/newRes",
       "target_prefix": "res"
     },
     {
@@ -2706,7 +2706,7 @@
     }
   ],
   "schema_version": 3,
-  "source_bundle_sha256": "e0054ee97e3c185429697edea3bc85cfff599ff6ce6eb34f75d2f298a2e6df8f",
+  "source_bundle_sha256": "388ca07c3e28b8a7953ad9353242bf60b55191572f686d8aca2a3bca833adfa4",
   "target": {
     "apk_sha256": "68f4546f8cb597a668d6033916200ef99191a9006350fcd986fd33392aea5113",
     "composition": "monolithic",

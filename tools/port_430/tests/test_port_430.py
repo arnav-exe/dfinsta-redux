@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parents[1]
 REPOSITORY = TOOLS.parents[1]
-SOURCE = REPOSITORY / "dfinsta_source_430"
+SOURCE = REPOSITORY / "tests/fixtures/dfinsta_source_430"
 sys.path.insert(0, str(TOOLS))
 
 from build import GRAFT_NAMES, graft_apk, main, sha256_tree

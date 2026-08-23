@@ -720,7 +720,7 @@ def resolution_340(
         raise ValueError(
             f"Stock 340 APK SHA-256 drift: {actual_apk_sha256} != {expected_apk_sha256}"
         )
-    source = root / "dfinsta_source_1.4.1"
+    source = root / "tests/fixtures/dfinsta_source_340"
     decode = stock_decode
     endpoint_path = source / "patches" / "endpoint_replacements.json"
     anchored_path = source / "patches" / "anchored_patches.json"
@@ -751,7 +751,7 @@ def resolution_340(
         *smali,
         overlay_operation(
             "340.overlay.custom-code",
-            "dfinsta_source_1.4.1/newCode",
+            "tests/fixtures/dfinsta_source_340/newCode",
             "smali_classes11",
             source / "newCode",
             ("privacy-hardening",),
@@ -759,7 +759,7 @@ def resolution_340(
         ),
         overlay_operation(
             "340.overlay.new-resources",
-            "dfinsta_source_1.4.1/newRes",
+            "tests/fixtures/dfinsta_source_340/newRes",
             "res",
             source / "newRes",
             ("settings-entry", "welcome-flow"),
@@ -862,7 +862,7 @@ def resolution_430(
         raise ValueError(
             f"Stock 430 APK SHA-256 mismatch: {actual_apk_sha256} != {expected_apk_sha256}"
         )
-    source = root / "dfinsta_source_430"
+    source = root / "tests/fixtures/dfinsta_source_430"
     anchored_path = source / "patches" / "anchored_patches.json"
     anchored = read_json(anchored_path)
     decode = stock_decode
@@ -876,7 +876,7 @@ def resolution_430(
         *anchored_operations_430(anchored, classes),
         overlay_operation(
             "430.overlay.custom-code",
-            "dfinsta_source_430/newCode",
+            "tests/fixtures/dfinsta_source_430/newCode",
             "smali_classes20",
             source / "newCode",
             ("privacy-hardening",),

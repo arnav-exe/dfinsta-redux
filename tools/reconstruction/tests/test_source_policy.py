@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 REPOSITORY = Path(__file__).resolve().parents[3]
-SOURCE = REPOSITORY / "dfinsta_source_1.4.1"
+SOURCE = REPOSITORY / "tests/fixtures/dfinsta_source_340"
 NEW_CODE = SOURCE / "newCode" / "com" / "dfinstagram"
 
 

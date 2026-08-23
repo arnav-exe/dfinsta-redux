@@ -897,14 +897,19 @@ class SourceAdmissionTests(unittest.TestCase):
             source_tree_sha256(self.source)
 
     def test_provisioned_manifests_admit_all_tracked_sources(self) -> None:
+        # The tree digest covers each file's relative path as well as its bytes,
+        # so moving the two source trees under `tests/fixtures/` on 2026-08-23
+        # changed both values while every per-file `sha256` and both file counts
+        # stayed identical. That is the whole of the difference: normalising the
+        # path prefix away makes the old and new manifests compare equal.
         expected = {
             340: (
                 112,
-                "2c63cbed0d2e9638b641a4207fd07b3b6c206595573a9b887a12a11e7eec5a84",
+                "47620a57b7f83edcf112932b56d68ceccf7b1ac7230faa24965c2a797bed8daa",
             ),
             430: (
                 5,
-                "ec629cd5323cb4c468d0cca94429927b8bf6e87045dbb81d654681f4390d99a0",
+                "fa3db9c49a0b46aa893189003a769aaea6c4a62f68f64b8271ce19f33f0546e5",
             ),
         }
         for target, (count, tree_sha256) in expected.items():
@@ -940,8 +945,8 @@ class SourceAdmissionTests(unittest.TestCase):
         source = (ROOT / "src/dfinsta_pipeline/source_admission.py").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("dfinsta_source_1.4.1", source)
-        self.assertNotIn("dfinsta_source_430", source)
+        self.assertNotIn("tests/fixtures/dfinsta_source_340", source)
+        self.assertNotIn("tests/fixtures/dfinsta_source_430", source)
 
 
 if __name__ == "__main__":

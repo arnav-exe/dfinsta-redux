@@ -33,18 +33,16 @@ Remove-Item -Recurse -Force instagram_source
 
 # DATA I HAVE:
 
-| **DF insta version** | **Source code** | **APK** | **Corresponding insta APK** |
+| **DFinsta version** | **DF source code** | **DFinsta APK** | **Corresponding insta APK** |
 |---|---|---|---|
-| 1.3 | ✅ | ✅ | ✅ (300) |
-| 1.4.1 | ❌ | ✅ | ✅ (340) |
-| 1.x.x | ❌ | ❌ | ✅ (430) |
+| 1.3 | ✅ | ✅ | ✅ (300.x) |
+| 1.4.1 | ❌ | ✅ | ✅ (340.x) |
+| 1.x.x | ❌ | ❌ | ✅ (430.x) |
 
 
-# NEXT STEPS
+# MULTI AGENT APPROACH
 
-1. verify current version (1.3) `extract.sh` and `build.sh` works on ubuntu
-
-1. `/init` codex on current codebase, figure out what appendRes, newCode, newRes, overwriteCode. etc. do
+**pre-requisite:** verify current version (1.3) `extract.sh` and `build.sh` works on ubuntu (cuz I need diff cli)
 
 1. use `apktool -d` to decompile dfinsta 1.3 and instagram 300.xxx.xx.xx and get agent to learn differences between the two
 
@@ -66,6 +64,13 @@ Remove-Item -Recurse -Force instagram_source
 
 **`ui-automator/`** — A small automated test project. Connects to a physical Android device, launches the app, and checks the login screen appears. Written in Kotlin, completely separate from the mod itself.
 
+
+# Important Notes
+
+Q.1) **Why are you decompiling with apktool instead of JADX**
+
+A.1) Apktool decompiles into smali, whereas JADX decompiles into Java. Smali decompiliation is far more determinsitc (although not perfect) than Java, as decompiled Java is inherently a lossy reconstruction problem. With apktool, we can safely assume multiple decompilations will always produce byte identical outputs 
+
 ---
 
 # Distraction Free Instagram (old readme from 1.3)
@@ -76,7 +81,7 @@ class names get mangled and in particular they get mangled differently in every 
 for every new version of instagram, you will need to edit all of the modified code so that it refers to the new class names.
 
 To build and run this project you will need 
-* [apktool](https://ibotpeaches.github.io/Apktool/)
+* [apktool](https://ibotpeaches.github.io/Apktool/) 2.9.3
 * android SDK (including adb)
 * python
 * [jadx-gui](https://github.com/skylot/jadx). This is useful for reconstructing the .smali files and viewing them

@@ -659,7 +659,7 @@ class ReplayRunWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(descriptors), 20)
         self.assertGreaterEqual(len(source_paths), 50)
         self.assertIn("LX/15J;", descriptors)
-        self.assertIn("dfinsta_source_1.4.1/appendRes/values/arrays.xml", source_paths)
+        self.assertIn("tests/fixtures/dfinsta_source_340/appendRes/values/arrays.xml", source_paths)
 
         for forbidden in (*descriptors, *source_paths):
             with self.subTest(forbidden=forbidden):
