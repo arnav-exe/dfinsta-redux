@@ -436,7 +436,7 @@ def _ship_leavings(port: Port) -> list[Path]:
 
     Same rule as `_build_leavings`, with a smaller keep-list: the decode and the
     index are reused from the port directory and were never here. `framework` is
-    an apktool cache rather than an output — `tools/port_430/build.py` says so,
+    an apktool cache rather than an output — `tools/build/build.py` says so,
     having once refused to overwrite the directory it had just been handed.
     """
     if not port.ship_out.is_dir():

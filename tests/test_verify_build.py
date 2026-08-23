@@ -6,7 +6,7 @@ named test each.
 
 No apktool, no java, no adb, and nothing under `apks/` or `work/` is touched.
 The fixtures are ordinary zip files built with `zipfile`, in the shape
-`tools/port_430/build.py:graft_apk` produces: the stock archive minus its
+`tools/build/build.py:graft_apk` produces: the stock archive minus its
 signature entries, with a few `classesN.dex` entries replaced and one new
 `classesN.dex` added. The "DEX" payloads are not real DEX — the verifier only
 greps raw bytes for type descriptors and bare method names, so bytes containing
@@ -793,7 +793,7 @@ class ArchiveShapeTests(GraftFixture):
         So an archive shipping the unpatched original *and* the patch under the
         same name read through to the patched bytes on every other check, and
         verified clean — while an installer taking the first entry would run
-        stock code. `tools/port_430/build.py` refuses duplicates when it grafts;
+        stock code. `tools/build/build.py` refuses duplicates when it grafts;
         the verifier now refuses them too.
         """
         self.assertIs(self.verify()["passed"], True)
@@ -1027,7 +1027,7 @@ def apksigner_output(*certificates: str) -> str:
 class SignatureContextTests(GraftFixture):
     """`signature_context`, against canned apksigner output.
 
-    A second implementation of the check in `tools/port_430/verify_apk.py` on
+    A second implementation of the check in `tools/build/verify_apk_430.py` on
     purpose — the two verifiers are invoked as bare scripts and must not share
     an import — so the *contract* is what these pin, in the same terms that file
     uses: verified, and signed by the key we expected.

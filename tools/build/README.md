@@ -1,16 +1,27 @@
-# Instagram 430 Minimal Port
+# APK assembly and stock graft
 
-This tooling decodes the supplied stock Instagram 430 APK into a fresh refuse-overwrite tree, overlays four custom classes into `smali_classes20`, applies seven anchored host operations, and uses apktool 2.9.3/aapt1 only to assemble the changed DEX files. It then grafts `classes.dex`, `classes3.dex`, `classes4.dex`, `classes6.dex`, and `classes20.dex` into the exact supplied stock APK, removing signing artifacts while preserving every other stock ZIP entry.
+**This is the builder every port runs.** `driver.py` pins `build.py` as its `BUILDER` and
+shells out to it with per-version arguments; it built 439, 440, 441, 442 and 443. The directory
+was called `port_430` until 2026-08-23, and the worked example below is still a 430 one because
+that is the run it carries evidence for — but nothing here is 430-only except
+`verify_apk_430.py`, which is why that file now says so in its name.
+
+The driver passes `--verifier generic`, routing verification to
+`tools/verify/verify_build.py`, which takes every version-specific fact from the caller.
+`--verifier port430` still defaults on for a bare invocation and pins descriptors that moved in
+439, so pass `--verifier` explicitly on any target that is not 430.
+
+This tooling decodes the supplied stock APK into a fresh refuse-overwrite tree, overlays the custom classes into a free `smali_classesN`, applies the resolved anchored host operations, and uses apktool 2.9.3/aapt1 only to assemble the changed DEX files. It then grafts the patched DEX entries into the exact supplied stock APK, removing signing artifacts while preserving every other stock ZIP entry.
 
 The architecture is resource-free because apktool loses data while decoding/rebuilding Instagram 430's resource table. The grafted APK therefore retains the stock `resources.arsc`, binary `AndroidManifest.xml`, and every `res/` entry byte-for-byte. Settings are a framework `AlertDialog` opened by long-pressing the existing profile Options view; no Activity, manifest component, custom resource, or fixed application resource ID is used.
 
 Run from the repository root with paths that do not already exist:
 
 ```bash
-python3 tools/port_430/build.py \
+python3 tools/build/build.py \
   work/430-build/stock-430-clean \
   'apks/com.instagram.android_430.0.0.53.80-383611248_minAPI28(arm64-v8a)(360,400,420,480dpi).apk' \
-  dfinsta_source_430 \
+  tests/fixtures/dfinsta_source_430 \
   apktool_2.9.3.jar \
   work/430-port/framework-res-api36.apk \
   --framework-path work/430-build/framework-api36 \

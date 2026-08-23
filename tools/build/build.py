@@ -273,7 +273,7 @@ def main() -> None:
     if args.verifier == "port430":
         verify_command = [
             python,
-            str(TOOLS / "verify_apk.py"),
+            str(TOOLS / "verify_apk_430.py"),
             str(args.output_apk),
             str(args.stock_apk),
             "--apktool-jar",

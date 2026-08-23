@@ -118,7 +118,7 @@ class ReEnteringTheRunDirectoryTests(unittest.TestCase):
     analysis-decode". Reusing the decode moved the same failure one line down to
     the index. Every earlier port had been driven by hand with `--reuse-decode`,
     so the runbook's own first three steps had never once run in sequence, and
-    `tools/port_430/build.py` carries a comment about the identical discovery at
+    `tools/build/build.py` carries a comment about the identical discovery at
     its own level: the refusals are deliberate, and it is re-entry that has to
     be arranged around them.
     """

@@ -3,7 +3,7 @@
 Nothing here decodes, assembles or signs anything. Every run reuses a synthetic
 decode (`--reuse-decode`/`--reuse-index`), and `driver.run_command` is replaced
 in `setUp` for every test in this file, so no test can shell out to apktool,
-java or `tools/port_430/build.py` even by accident. The decode is a handful of
+java or `tools/build/build.py` even by accident. The decode is a handful of
 hand-written smali classes spread over `smali`, `smali_classes3` and
 `smali_classes10`; the index is written by `tests.test_resolve.write_index`,
 which emits the same three files `tools/indexer/build_index.py` does. Reusing
@@ -1412,7 +1412,7 @@ class RunResultTests(DriverCase):
 
 
 class BuildInvocationTests(DriverCase):
-    """What the driver hands `tools/port_430/build.py`, computed per version."""
+    """What the driver hands `tools/build/build.py`, computed per version."""
 
     def test_the_builder_is_given_the_computed_topology(self):
         """The three arguments that move between versions, plus the verifier choice.

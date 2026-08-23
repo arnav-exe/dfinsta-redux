@@ -18,7 +18,7 @@ sys.path.insert(0, str(TOOLS))
 
 from build import GRAFT_NAMES, graft_apk, main, sha256_tree
 from prepare_tree import prepare, sanitise_manifest_for_aapt1
-from verify_apk import (
+from verify_apk_430 import (
     FORBIDDEN_CUSTOM_SYMBOLS,
     REQUIRED_CUSTOM_SYMBOLS,
     expected_dex_names,
@@ -890,7 +890,7 @@ class VerifierTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify_structural_hooks(root)
 
-    @patch("verify_apk.subprocess.run")
+    @patch("verify_apk_430.subprocess.run")
     def test_records_signature_verification(self, run_mock) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -905,7 +905,7 @@ class VerifierTests(unittest.TestCase):
             self.assertTrue(result["verified"])
             self.assertEqual(result["output"], ["Signer #1 certificate SHA-256 digest: abc"])
 
-    @patch("verify_apk.subprocess.run")
+    @patch("verify_apk_430.subprocess.run")
     def test_rejects_failed_or_unapproved_signature(self, run_mock) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

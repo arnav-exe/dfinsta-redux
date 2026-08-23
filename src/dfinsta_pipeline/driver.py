@@ -31,7 +31,7 @@ trees the resolved hosts live in. That list moved between 430 and 439 because th
 hosts moved. The resolution knows each host's path, so the driver derives it
 rather than trusting a default.
 
-The build itself is not reimplemented here. ``tools/port_430/build.py`` already
+The build itself is not reimplemented here. ``tools/build/build.py`` already
 does the apktool assembly and the stock DEX graft, and carries real-run evidence;
 this shells out to it with computed arguments.
 """
@@ -92,7 +92,7 @@ from .runtime_identity import (
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 INDEXER = REPOSITORY / "tools" / "indexer" / "build_index.py"
-BUILDER = REPOSITORY / "tools" / "port_430" / "build.py"
+BUILDER = REPOSITORY / "tools" / "build" / "build.py"
 
 STAGES = ("extract", "index", "assess", "resolve", "gate", "compose", "build")
 

@@ -1,6 +1,6 @@
 """Structural verification for a DFInsta graft, on any Instagram version.
 
-Deliberately separate from ``tools/port_430/verify_apk.py``: that verifier pins
+Deliberately separate from ``tools/build/verify_apk_430.py``: that verifier pins
 430's exact obfuscated descriptors and method signatures, all of which moved in
 439. Loosening those pins into something that passes on either target would prove
 less about both. This takes the opposite route -- every version-specific fact is
@@ -142,7 +142,7 @@ def verify(
         # A ZIP may carry the same name twice, and `ZipFile.read` returns the
         # LAST one. An archive still carrying the unpatched original alongside
         # the patched entry would verify clean on every check below, because
-        # every check reads through that name. `tools/port_430/build.py` refuses
+        # every check reads through that name. `tools/build/build.py` refuses
         # duplicates when it grafts; a verifier that does not is weaker than the
         # builder whose output it is supposed to check.
         seen: set[str] = set()
@@ -285,7 +285,7 @@ def signature_context(
     """What apksigner says about this APK, and whether that is who we expected.
 
     Deliberately a second implementation of the check in
-    `tools/port_430/verify_apk.py` rather than a shared import. The two verifiers
+    `tools/build/verify_apk_430.py` rather than a shared import. The two verifiers
     are meant to be independent — one is 430-shaped and pins things this one does
     not — and they are invoked as bare scripts from `finalize.py`, so a shared
     module would either couple them or depend on PYTHONPATH being set by whoever
@@ -400,7 +400,7 @@ def main() -> None:
     # that was verified. Without these three fields the driver could produce a
     # verified build that the release path would not accept — which is exactly
     # what happened the first time anyone tried it. Same names and same meanings
-    # as `tools/port_430/verify_apk.py`, deliberately: two verifiers that pin
+    # as `tools/build/verify_apk_430.py`, deliberately: two verifiers that pin
     # different things must still be interchangeable to the gate.
     report = {
         "schema_version": 1,
