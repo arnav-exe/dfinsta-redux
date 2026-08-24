@@ -1,5 +1,13 @@
 # Instagram 430 Port State and Mapping
 
+> **Path note, 2026-08-23.** `dfinsta_source_430/` is now
+> `tests/fixtures/dfinsta_source_430/`, moved beside the Phase-B fixtures it feeds.
+> Every path below predates that move. `behavior_contract.json` survives there and is
+> still the authority this document cites, but the tool that read it —
+> `tools/device_validation/` — was deleted on 2026-08-24 as superseded by
+> `tools/device_session.py`.
+
+
 Status: resource-free DEX graft built, structurally verified as a signed artifact, matched byte-for-byte to the installed base APK, startup-tested, settings-validated, and observed with restart-bounded Feed, Explore, Reels, and Stories differences on the Nothing Phone. Release signing has since completed; see "Exact Current Build" below and `dfinsta_source_430/behavior_contract.json`. Controlled feature verification and eligible profile-ad validation remain pending.
 
 This document is the historical 340-to-430 mapping record. For current implementation state use `dfinsta_source_430/` plus its tests; for current orchestration status use `HANDOVER.md` and `docs/SESSION_HANDOFF.md`. The "Next Deterministic Work" list below predates the completed release finalizer and the mechanical Phase B verifier.
